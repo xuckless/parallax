@@ -1,0 +1,12 @@
+# Matches upstream GPUI's toolchain. Bump only when upstream bumps (see AGENTS.md).
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = [
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "wasm32-unknown-unknown",
+]

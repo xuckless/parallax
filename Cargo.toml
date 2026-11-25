@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+# GPUI comes from build/gpui-patched/ (generated). Wired up in Phase 0:
+# [patch.crates-io]
+# gpui = { path = "build/gpui-patched/crates/gpui" }

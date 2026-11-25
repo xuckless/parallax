@@ -1,0 +1,121 @@
+# AGENTS.md
+
+Rules for any agent (or human) working in this repo. Read this first, then `ROADMAP.md`.
+
+## What Parallax is
+
+Parallax takes GPUI to Android, touchscreen desktops and the web, Flutter-style: the same GPUI app runs on
+desktop, iOS, Android and browsers. It ships as add-on crates under Apache 2.0, on top of an untouched GPUI.
+
+Upstream GPUI already covers a lot. Parallax fills only the gaps:
+
+| Area | Upstream GPUI has | Parallax adds |
+|---|---|---|
+| iOS | `gpui_ios` (UIKit, Metal, CoreText, text input, safe area) | Nothing new. Patches only for gaps found. |
+| Touch + gestures | `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag), `ScrollPhysics` | Nothing new. Uses upstream. |
+| Web | `gpui_web` (WebGPU/WebGL2, touch, IME mirror) | `parallax-web`: semantics DOM for screen readers, other gaps |
+| Android | Nothing | `parallax-android`: whole backend |
+| Desktop touch | Nothing on Windows, Linux, macOS | Patches feeding `TouchEvent` from each OS |
+| Accessibility | AccessKit tree in core, Windows adapter | Android adapter, web semantics DOM, gaps elsewhere |
+| Tooling | Nothing for mobile builds | `cargo-parallax` CLI |
+
+Re-check this table against upstream at every sync. Upstream moves fast; never assume a gap is still a gap.
+
+## Decisions (settled, do not reopen without the owner)
+
+| Topic | Decision |
+|---|---|
+| Upstream source | `gpui-pre-*` crates from crates.io: unmodified weekly snapshots of Zed's GPUI, standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
+| Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/` (generated, git-ignored). The workspace points at that via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
+| Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
+| Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |
+| Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
+| Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
+| Minimum OS | iOS 17. Android API 28 (Android 9). |
+| Android glue | `android-activity` crate with GameActivity (needed for IME). |
+| App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
+| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element. Documented, never silent. |
+| Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
+| Desktop touch | First-class. Gated by cargo feature `touch`, never by OS checks. Behaviour depends on pointer type, never on OS. |
+| Accessibility | AccessKit adapters plus a web semantics DOM. Required for v0.1. |
+| Errors | Typed errors, no panics in library code (see below). |
+| Tests | Pure-logic unit tests plus example smoke runs (see below). |
+
+## Repo layout
+
+```
+upstream/      pristine GPUI copy (vendored gpui-pre-* snapshot), never hand-edited
+patches/       numbered small diffs against upstream (0001-….patch), applied in order
+build/         generated: upstream + patches. Git-ignored. Never edit.
+crates/
+  parallax/    facade: re-exports GPUI + Parallax crates
+  platform/    parallax-platform: one table maps target → platform
+  android/     parallax-android: Platform + PlatformWindow for Android
+  web/         parallax-web: gaps on top of gpui_web
+  ext/         parallax-ext: extension traits on GPUI elements
+  cli/         cargo-parallax: build/run on iOS, Android, web
+examples/      one app, built for every target
+```
+
+## Upstream and patch rules
+
+1. **Upstream is read-only.** Never edit `upstream/` or `build/`. Change upstream only by adding a patch.
+2. **Dependencies point one way.** Parallax depends on GPUI. GPUI never depends on Parallax.
+3. **Add, don't modify.** New behaviour goes in a Parallax crate or an extension trait first. A patch needs a written reason why neither works.
+4. **Patches are small and gated.** One concern each, about 200 lines max, behind a `cfg` (target or feature `touch`).
+5. **Each patch has a header:** what it changes, why, and the upstream PR link once filed.
+6. **Upstream what you can.** Every patch is meant to be filed upstream. When upstream merges it, delete it at the next sync.
+7. **No editor code.** Never copy Zed's editor or text stack crates (GPL). Only Apache-licensed GPUI crates.
+8. **Licenses.** Every vendored dependency keeps its license file. Flag anything not Apache-compatible before it lands. Keep `NOTICE` current.
+9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a crate or product name.
+
+## Coding style: Caveman Code
+
+Code small. Code obvious. Apply the `caveman-code` principles to every change. Priority order, earlier wins:
+
+1. **Declarative.** Behaviour is data (tables, maps, `const` arrays) read by a small engine.
+   A `match`/`if` chain on one key becomes a lookup. Example: target → platform, target → `ScrollPhysics`,
+   Android key code → GPUI key are each one table.
+2. **Explicit state.** Every lifecycle is one enum with data attached to the variant that owns it.
+   Never two `bool`s for one thing's mode. Transitions live in one place (`state × event → next`).
+   Matches are exhaustive: no `_ =>` arm that hides a new variant.
+   Example: Android surface = `enum Surface { None, Ready(ANativeWindow), Lost { since: Instant } }`.
+3. **Simplest implementation** that keeps 1 and 2. No speculative options, layers, generics or caching.
+
+Hard rules:
+
+- **No implicit state.** No globals, thread-locals or statics holding mutable state unless the OS forces it
+  (e.g. JNI callbacks). When forced, wrap it in one named type and document why at the definition.
+- **No hidden behaviour.** No action at a distance: no `Drop` side effects beyond freeing resources,
+  no `Deref` to fake inheritance, no `Default` that picks platform behaviour silently, no magic env vars.
+  Platform-dependent defaults live in a visible table, and the docs say so.
+- **Decide in pure functions, act at the edges.** OS and FFI calls sit in a thin shell. Logic that decides
+  what to do takes plain values and returns plain values, so it is testable without a device.
+- **Search before you write.** Reuse upstream GPUI types and helpers first, then Parallax ones.
+- **No duplication. No single-use helpers.** Inline a helper with one caller.
+- **Comments say why, not what.** Every table that drives behaviour gets a one-line comment on how to extend it.
+- **Unsafe / FFI:** every `unsafe` block has a `// SAFETY:` comment naming the invariant.
+
+## Errors
+
+- Each library crate has one error enum (`thiserror` is fine). No `anyhow` in library public APIs.
+- No `unwrap`, `panic!` or `todo!` in library code (enforced by workspace clippy lints).
+- `expect("why this cannot fail")` only for states that are impossible by construction. The message names the invariant.
+- Examples, the CLI and tests may use `anyhow` and `unwrap`.
+
+## Tests
+
+- Test pure logic with **table-driven unit tests**: cases as data, one loop, a name per row.
+  State machines get one row per `(state, event) → next`, including rejected events.
+- Test behaviour through public inputs and outputs. Mock only at I/O edges.
+- No throwaway tests. Every test stays in the suite and checks a requirement.
+- Platform code is verified by running `examples/` on a simulator, emulator or browser. Before a release, on real devices.
+- Never write a test that locks in a bug. Fix the code.
+
+## Workflow
+
+- Work from `ROADMAP.md`. Tick a box only when its work is merged and verified. A phase ends only when its gate passes.
+- Before finishing a change: `cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
+- New targets or features get a CI row (see ROADMAP Phase 0) in the same change.
+- Commits: one concern each, imperative subject line.
+- When upstream behaviour surprises you, write it down in `ROADMAP.md` under "Upstream notes" with the upstream commit.
