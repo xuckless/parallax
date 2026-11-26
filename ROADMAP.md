@@ -1,6 +1,7 @@
 # ROADMAP
 
-Parallax ships in five phases. Each one ends with a gate, and the next phase starts only after the gate passes.
+Parallax ships in six phases, in order. Each one ends with a gate, and the next phase starts only after the gate passes.
+Each phase uses only what earlier phases produced.
 No dates are set. Tick a box only when the work is merged and verified (see `AGENTS.md`).
 
 Upstream GPUI already ships iOS, touch and gestures, web touch and IME, and a core accessibility tree.
@@ -26,7 +27,7 @@ adapters and build tooling.**
 - [ ] Android font audit: cosmic-text on Android needs system font discovery (`/system/etc/fonts.xml`), emoji and CJK
       fallback. Size the work and add it to Phase 1.
 - [ ] Oracle inventory: list Flutter's test files for text input, gestures, velocity tracking and scroll physics,
-      and which upstream GPUI code each one checks. This sets the order of Phase 3.
+      and which upstream GPUI code each one checks. This sets the order of Phases 2 and 4.
 - [ ] `parallax-platform`: one target → platform table (desktop, web, iOS upstream; Android later).
 - [ ] Reserve `parallax*` crate names on crates.io and the GitHub org name.
 - [ ] Set up a GitHub fork of `zed-industries/zed` for filing upstream PRs (patches are re-based onto Zed main there).
@@ -61,7 +62,24 @@ View are Parallax's own, small, written with Flutter's as reference.
 **Gate 1:** the example app runs on an Android device (API 28+) with Gboard and Samsung Keyboard: typing, autocorrect,
 composing, selection, emoji, rotation, background/resume.
 
-## Phase 2: Desktop touch
+## Phase 2: Gestures, physics and platform behaviour
+
+Flutter's gesture and physics tests check upstream `gestures.rs` and `ScrollPhysics`. Where upstream fails, Flutter's
+fix goes in as a small patch and is filed upstream. The tables built here are what Phase 3 replays desktop traces through.
+
+- [ ] Gestures and physics: `velocity_tracker`, `lsq_solver`, `scroll_physics`, `friction_simulation`, `arena` test
+      cases → tests against upstream `gestures.rs` and `ScrollPhysics`; patch the failures.
+- [ ] Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized from touch
+      (patch if upstream lacks it).
+- [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
+      Covers scroll physics preset, gesture tuning, touch → mouse emulation, haptics, touch-target minimum.
+- [ ] Trace recorder: capture raw touch traces into test fixtures, starting with an Android phone, an iPhone and a browser.
+- [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
+
+**Gate 2:** the ported gesture and physics tables pass on every target, and the phone and browser traces replay to the
+same gestures and scroll outcomes everywhere.
+
+## Phase 3: Desktop touch
 
 Always compiled in; behaviour follows pointer type at runtime. Each patch feeds upstream `TouchEvent` and drops the
 fake mouse events the OS makes from touch, so a tap fires once.
@@ -69,36 +87,30 @@ fake mouse events the OS makes from touch, so a tap fires once.
 - [ ] `0001-touch-windows`: `WM_POINTER` touch and pen in `gpui_windows`.
 - [ ] `0002-touch-linux`: Wayland `wl_touch` and X11 XInput2 touch in `gpui_linux`.
 - [ ] `0003-touch-macos`: touchscreen events in `gpui_macos`. Confirm the macOS 27 API first (open question).
-- [ ] Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized from touch
-      (patch if upstream lacks it).
-- [ ] Trace recorder: capture raw touch traces on each device (phone, browser, each touch laptop) into test fixtures.
-- [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
+- [ ] Record traces on a touchscreen laptop for each desktop OS and add them to the Phase 2 fixtures.
 - [ ] File each patch upstream.
 
-**Gate 2:** replaying the recorded traces gives the same gestures and scroll outcomes on a phone, a browser and a
-touchscreen laptop on each desktop OS.
+**Gate 3:** the touchscreen laptop traces replay to the same gestures and scroll outcomes as the phone and browser
+traces, on each desktop OS.
 
-## Phase 3: Flutter oracle, platform behaviour and accessibility
+## Phase 4: Text input oracle, selection and accessibility
 
-Flutter's tests check upstream GPUI. Where upstream fails, Flutter's fix goes in as a small patch and is filed upstream.
+Flutter's text-input and accessibility tests check upstream GPUI. Where upstream fails, Flutter's fix goes in as a
+small patch and is filed upstream.
 
 - [ ] iOS text input: `FlutterTextInputPluginTest.mm` cases → table-driven tests against `gpui_ios`; patch the failures.
       Limit: once these patches total about 800 lines or Zed rejects 3, move iOS text input into its own Parallax crate.
 - [ ] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`; patch or `parallax-web`.
-- [ ] Gestures and physics: `velocity_tracker`, `lsq_solver`, `scroll_physics`, `friction_simulation`, `arena` test
-      cases → tests against upstream `gestures.rs` and `ScrollPhysics`; patch the failures.
-- [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
-      Covers scroll physics preset, gesture tuning, touch → mouse emulation, haptics, touch-target minimum.
 - [ ] Text selection behaviour: selection handles, magnifier, text toolbar, ported from Flutter's behaviour (no Material/Cupertino look).
 - [ ] Accessibility: `accesskit_android` in `parallax-android`; `parallax-web` semantics DOM; iOS and macOS per the
       audit. Flutter's `AccessibilityBridge` and `SemanticsObject` tests as the oracle.
 - [ ] Remaining lifecycle and safe-area gaps from the audit, as patches.
 - [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`).
 
-**Gate 3:** the ported Flutter test tables pass on every target, and VoiceOver, TalkBack and a desktop screen
+**Gate 4:** the ported Flutter text-input tables pass on every target, and VoiceOver, TalkBack and a desktop screen
 reader can operate the example app.
 
-## Phase 4: Tooling, docs and v0.1
+## Phase 5: Tooling, docs and v0.1
 
 - [ ] `cargo parallax run ios` (generates the Xcode project) and `cargo parallax run web`.
 - [ ] `parallax` facade crate: one dependency for apps.
@@ -107,7 +119,7 @@ reader can operate the example app.
 - [ ] License review: `NOTICE`, `third_party/flutter/PORTED.md` complete, crate license fields, no GPL editor code.
 - [ ] Publish to crates.io.
 
-**Gate 4:** Parallax v0.1 published.
+**Gate 5:** Parallax v0.1 published.
 
 ## Open questions
 
