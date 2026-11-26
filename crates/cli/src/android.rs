@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::error::CliError;
+use crate::icon;
 
 /// One Android ABI. `clang_target` is the NDK's clang prefix (it differs from the Rust target only for armv7).
 #[derive(Debug, PartialEq)]
@@ -187,6 +188,11 @@ pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliErr
         "Point ANDROID_HOME at the Android SDK directory",
     )?;
     let ndk = find_ndk(&sdk)?;
+    // Rendered before the long build so a bad SVG fails fast; written with the other project files.
+    let icon_files = match &config.icon {
+        Some(svg) => icon::launcher_icon(&app_dir.join(svg))?,
+        None => Vec::new(),
+    };
     // AGP wants the NDK's version next to its path, or it warns and skips stripping the .so files.
     let props = ndk.join("source.properties");
     let ndk_version = std::fs::read_to_string(&props)
@@ -266,6 +272,9 @@ pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliErr
             Content::Binary(bytes) => bytes.to_vec(),
         };
         write(&project.join(path), &bytes)?;
+    }
+    for (path, bytes) in &icon_files {
+        write(&project.join(path), bytes)?;
     }
     let so_name = format!("lib{}.so", app.lib);
     for abi in abis {
@@ -466,6 +475,13 @@ fn project_vars(
     let groovy_path = |p: &Path| p.to_string_lossy().replace('\\', "/").replace('\'', "\\'");
     vec![
         ("name", xml_escape(&config.name)),
+        (
+            "icon",
+            match config.icon {
+                Some(_) => r#" android:icon="@mipmap/ic_launcher""#.into(),
+                None => String::new(),
+            },
+        ),
         ("id", config.id.clone()),
         ("lib", app.lib.clone()),
         ("project", app.package.clone()),
@@ -689,6 +705,7 @@ mod tests {
         let config = Config {
             name: "Tom & Jerry".into(),
             id: "a.b".into(),
+            icon: None,
             android: crate::config::Android {
                 min_sdk: 28,
                 target_sdk: 35,

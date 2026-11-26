@@ -3,6 +3,7 @@
 mod android;
 mod config;
 mod error;
+mod icon;
 
 use android::{Profile, RunArgs};
 use config::Config;
