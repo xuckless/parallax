@@ -20,3 +20,5 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent, what is not yet wired, following Flutter packet changes |
 | [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
+| [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch, rebuilding it with sync-fork.sh, and how apps can opt in to unmerged patches |
+| [upstream-drafts/](upstream-drafts/) | Drafts of upstream issues, PRs and discussions, each with a note for the owner; never posted before the owner reviews them |
