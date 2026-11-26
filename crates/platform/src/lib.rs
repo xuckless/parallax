@@ -5,6 +5,11 @@ use std::rc::Rc;
 
 use gpui::Platform;
 
+/// Browser panic hook and console logger. A web app calls it first in its `#[wasm_bindgen(start)]` function,
+/// as upstream's web examples do; Android's `android_main!` does the same for logcat.
+#[cfg(target_family = "wasm")]
+pub use gpui_platform::web_init;
+
 /// A target Parallax builds for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {

@@ -28,6 +28,9 @@ let platform = parallax::parallax_platform::current_platform(false)?;
 gpui::Application::with_platform(platform).run(|cx| { /* ... */ });
 ```
 
+On the web, call `parallax_platform::web_init()` first (upstream's panic hook and console logger, re-exported on
+wasm only), as upstream's web examples do; [hello](../examples/hello/src/lib.rs) shows it.
+
 `current_platform(headless)` looks up the current row. For `Upstream` rows it calls upstream
 [`gpui_platform::current_platform`](../upstream/gpui-pre-platform/src/gpui_platform.rs), which builds the backend
 itself. Parallax does not build upstream backends a second way. For the `Parallax` row (Android) it calls
