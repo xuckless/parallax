@@ -19,10 +19,11 @@ app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`
 
 ## Steps
 
-Each row is `name | command | regex | seconds`: run the command, then poll logcat once a second (`adb logcat -d`;
-a streaming `adb logcat` stalled for good on a CI runner) for a line logged after the command started that matches
-the regex. A crash, a native signal, an ANR for the app, or a surface it cannot attach or a GPU device it cannot
-recover (`host.rs`'s error lines) fails the current step at once.
+Each row is `step <name> <command> <regex> <seconds>` (trusted code: the command runs through `eval`): run the
+command, then poll logcat once a second (`adb logcat -d`; a streaming `adb logcat` stalled for good on a CI runner)
+for a line logged at or after the command started that matches the regex. A crash, a native signal, an ANR for the
+app, or a surface it cannot attach or a GPU device it cannot recover (`host.rs`'s error lines) fails the current step
+at once.
 
 | Step | Does | Waits for |
 |---|---|---|
@@ -39,7 +40,7 @@ The rotate and resume steps wait for a frame drawn on the new surface, at the ne
 event: that line is logged before the surface is made, and a late `surfaceChanged` from the previous rotation could
 pass the next step. After the table it checks the whole log once more for crashes and that the app process is still alive.
 
-To add a step, add a row to `steps`. Commands may call `on_device` (`adb shell`), `tap_colour` and `launch`.
+To add a step, add a `step` row. Commands may call `on_device` (`adb shell`), `tap_colour` and `launch`.
 
 ## Finding what to tap
 
