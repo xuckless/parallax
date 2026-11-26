@@ -103,19 +103,10 @@ const POINTER_CHANGES: [PointerChange; 10] = [
     PointerChange::PanZoomEnd,
 ];
 
-/// Packet value → device kind, indexed by Flutter's value. To follow Flutter: append new values in its order.
-const POINTER_DEVICE_KINDS: [PointerDeviceKind; 6] = [
-    PointerDeviceKind::Touch,
-    PointerDeviceKind::Mouse,
-    PointerDeviceKind::Stylus,
-    PointerDeviceKind::InvertedStylus,
-    PointerDeviceKind::Trackpad,
-    PointerDeviceKind::Unknown,
-];
-
-/// Flutter's device kind → GPUI's `TouchEvent::device`. An inverted stylus is the eraser end of a pen; a trackpad
-/// is an indirect pointer like a mouse; an unknown device is taken for a finger. To add a kind, add its row.
-const DEVICES: [(PointerDeviceKind, PointerDevice); 6] = [
+/// Packet value → Flutter's device kind and the GPUI `TouchEvent::device` it becomes, indexed by Flutter's value.
+/// An inverted stylus is the eraser end of a pen; a trackpad is an indirect pointer like a mouse; an unknown device
+/// is taken for a finger. To follow Flutter: append new values in its order; to remap a kind, change its row.
+const DEVICE_KINDS: [(PointerDeviceKind, PointerDevice); 6] = [
     (PointerDeviceKind::Touch, PointerDevice::Touch),
     (PointerDeviceKind::Mouse, PointerDevice::Mouse),
     (PointerDeviceKind::Stylus, PointerDevice::Pen),
@@ -144,7 +135,8 @@ const TOUCH_PHASES: [(PointerChange, Option<TouchPhase>); 10] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PointerData {
     pub(crate) change: PointerChange,
-    pub(crate) kind: PointerDeviceKind,
+    /// Flutter's `kind`, as the GPUI device it becomes (`DEVICE_KINDS`).
+    pub(crate) kind: PointerDevice,
     /// `(pointerId << 3) | toolType`: Android reuses pointer ids, so this names a pointer, not one touch.
     pub(crate) device: i64,
     pub(crate) physical_x: f64,
@@ -176,7 +168,8 @@ pub(crate) fn decode(packet: &[u8]) -> Result<Vec<PointerData>, Error> {
                     .ok_or(Error::PointerChange(change))?,
                 kind: usize::try_from(kind)
                     .ok()
-                    .and_then(|index| POINTER_DEVICE_KINDS.get(index).copied())
+                    .and_then(|index| DEVICE_KINDS.get(index))
+                    .map(|(_, device)| *device)
                     .ok_or(Error::PointerKind(kind))?,
                 device: long(Field::Device),
                 physical_x: double(Field::PhysicalX),
@@ -208,7 +201,6 @@ impl Touches {
                     .iter()
                     .find(|(change, _)| *change == data.change)
                     .and_then(|(_, phase)| *phase)?;
-                let (_, device) = DEVICES.iter().find(|(kind, _)| *kind == data.kind)?;
                 let id = match phase {
                     TouchPhase::Started => {
                         let id = TouchId(self.next);
@@ -236,7 +228,7 @@ impl Touches {
                     force: (range > 0.0).then(|| {
                         ((data.pressure - data.pressure_min) / range).clamp(0.0, 1.0) as f32
                     }),
-                    device: *device,
+                    device: data.kind,
                 })
             })
             .collect()
@@ -270,6 +262,9 @@ mod tests {
     const TOUCH: i64 = 0;
     const MOUSE: i64 = 1;
     const STYLUS: i64 = 2;
+    const INVERTED_STYLUS: i64 = 3;
+    const TRACKPAD: i64 = 4;
+    const UNKNOWN: i64 = 5;
     // Device ids as uniquePointerIdByType makes them: (pointerId << 3) | TOOL_TYPE_FINGER (1).
     const FINGER_0: i64 = 1;
     const FINGER_1: i64 = (1 << 3) | 1;
@@ -432,9 +427,9 @@ mod tests {
             ("finger", TOUCH, PointerDevice::Touch),
             ("mouse", MOUSE, PointerDevice::Mouse),
             ("stylus", STYLUS, PointerDevice::Pen),
-            ("inverted_stylus", 3, PointerDevice::Pen),
-            ("trackpad", 4, PointerDevice::Mouse),
-            ("unknown", 5, PointerDevice::Touch),
+            ("inverted_stylus", INVERTED_STYLUS, PointerDevice::Pen),
+            ("trackpad", TRACKPAD, PointerDevice::Mouse),
+            ("unknown", UNKNOWN, PointerDevice::Touch),
         ];
         for (name, kind, device) in cases {
             let mut touches = Touches::default();

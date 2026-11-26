@@ -25,7 +25,7 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
     is `Mouse`.
   - Web touches are `Touch`.
-  - Android maps Flutter's device kind through the `DEVICES` table in
+  - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
     are `Pen`, mouse and trackpad are `Mouse`.
   - Later patches that build a `TouchEvent` literal must set `device` (0006's test does).

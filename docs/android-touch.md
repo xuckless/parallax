@@ -21,15 +21,16 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    `Shell::touch`.
 3. **Decoder.** [pointer.rs](../crates/android/src/pointer.rs) reads the packet with Flutter's own layout: the
    `Field` enum lists `PointerData` from Flutter's `pointer_data.h` in order, so a field's offset is its position.
-   `PointerChange` and `PointerDeviceKind` values come from two tables indexed by Flutter's numbers. A packet that is
-   not whole records, or carries an unknown change or kind, is rejected whole with a typed `Error` and logged.
+   `PointerChange` and `PointerDeviceKind` values come from two tables indexed by Flutter's numbers
+   (`POINTER_CHANGES`, `DEVICE_KINDS`). A packet that is not whole records, or carries an unknown change or kind, is
+   rejected whole with a typed `Error` and logged.
 4. **TouchEvent.** `Touches` maps Flutter's `device` (Android pointer id and tool type) to a fresh upstream `TouchId`
    per touch, since GPUI ids must never be reused and Android's are. The `TOUCH_PHASES` table says what each change
    becomes: down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove, hover and trackpad
-   pan/zoom send nothing yet. The `DEVICES` table maps Flutter's device kind to `TouchEvent::device`: stylus and
-   eraser → `Pen`, mouse and trackpad → `Mouse`, finger and unknown → `Touch`. Positions are divided by the display
-   density (logical pixels); pressure becomes
-   `force` when the device reports a range. A move or up for a pointer that never went down is dropped.
+   pan/zoom send nothing yet. Each `DEVICE_KINDS` row also names the `TouchEvent::device` its kind becomes: stylus
+   and eraser → `Pen`, mouse and trackpad → `Mouse`, finger and unknown → `Touch`. Positions are divided by the
+   display density (logical pixels); pressure becomes `force` when the device reports a range. A move or up for a
+   pointer that never went down is dropped.
 5. **GPUI.** Each event goes to the window as `PlatformInput::Touch` through `Callbacks::input`, in packet order.
    Upstream's [gestures.rs](../upstream/gpui-pre/src/gestures.rs) recognizes taps (synthesized mouse down/up, so
    `on_click` fires), pans (scroll events with touch phases) and long presses. `mouse_position` reports the last
@@ -38,7 +39,7 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 ## Not yet
 
 - **Mouse buttons as a mouse.** Every kind (finger, stylus, eraser, mouse button) still becomes a `TouchEvent`;
-  the `DEVICES` table only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)).
+  `DEVICE_KINDS` only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)).
 - **Mouse hover, wheel and trackpad.** `AndroidTouchProcessor.onGenericMotionEvent` is ported but the view does not
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported
