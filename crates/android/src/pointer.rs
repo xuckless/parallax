@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{Pixels, Point, TouchEvent, TouchId, TouchPhase, point, px};
+use gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase, point, px};
 
 use crate::Error;
 
@@ -113,6 +113,17 @@ const POINTER_DEVICE_KINDS: [PointerDeviceKind; 6] = [
     PointerDeviceKind::Unknown,
 ];
 
+/// Flutter's device kind → GPUI's `TouchEvent::device`. An inverted stylus is the eraser end of a pen; a trackpad
+/// is an indirect pointer like a mouse; an unknown device is taken for a finger. To add a kind, add its row.
+const DEVICES: [(PointerDeviceKind, PointerDevice); 6] = [
+    (PointerDeviceKind::Touch, PointerDevice::Touch),
+    (PointerDeviceKind::Mouse, PointerDevice::Mouse),
+    (PointerDeviceKind::Stylus, PointerDevice::Pen),
+    (PointerDeviceKind::InvertedStylus, PointerDevice::Pen),
+    (PointerDeviceKind::Trackpad, PointerDevice::Mouse),
+    (PointerDeviceKind::Unknown, PointerDevice::Touch),
+];
+
 /// What GPUI gets for each change; `None` sends nothing. Add and remove are Flutter's own bookkeeping (a remove
 /// follows every touch up). Hover and trackpad pan/zoom have no `TouchEvent` meaning: they come with mouse support.
 /// To route a change somewhere else, change its row.
@@ -197,6 +208,7 @@ impl Touches {
                     .iter()
                     .find(|(change, _)| *change == data.change)
                     .and_then(|(_, phase)| *phase)?;
+                let (_, device) = DEVICES.iter().find(|(kind, _)| *kind == data.kind)?;
                 let id = match phase {
                     TouchPhase::Started => {
                         let id = TouchId(self.next);
@@ -216,8 +228,6 @@ impl Touches {
                 );
                 self.last_position = position;
                 let range = data.pressure_max - data.pressure_min;
-                // The device kind (`data.kind`) and Flutter's `synthesized` plug in here once the core patch gives
-                // GPUI pointer events a device and a synthesized flag; until then every kind is a touch.
                 Some(TouchEvent {
                     id,
                     phase,
@@ -226,6 +236,7 @@ impl Touches {
                     force: (range > 0.0).then(|| {
                         ((data.pressure - data.pressure_min) / range).clamp(0.0, 1.0) as f32
                     }),
+                    device: *device,
                 })
             })
             .collect()
@@ -412,6 +423,29 @@ mod tests {
             });
             assert_eq!(format!("{got:?}"), format!("{expected:?}"), "{name}");
         }
+    }
+
+    #[test]
+    fn devices() -> Result<(), Error> {
+        // (row name, Flutter device kind, expected GPUI device).
+        let cases = [
+            ("finger", TOUCH, PointerDevice::Touch),
+            ("mouse", MOUSE, PointerDevice::Mouse),
+            ("stylus", STYLUS, PointerDevice::Pen),
+            ("inverted_stylus", 3, PointerDevice::Pen),
+            ("trackpad", 4, PointerDevice::Mouse),
+            ("unknown", 5, PointerDevice::Touch),
+        ];
+        for (name, kind, device) in cases {
+            let mut touches = Touches::default();
+            let events = touches.events(&decode(&record(DOWN, kind, 2, 0., 0.))?, 2.0);
+            assert_eq!(
+                events.iter().map(|event| event.device).collect::<Vec<_>>(),
+                [device],
+                "{name}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
