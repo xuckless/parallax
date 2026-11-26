@@ -20,7 +20,7 @@ import android.view.WindowManager;
 public class ParallaxActivity extends Activity {
   private static final String LIB_NAME_KEY = "parallax.lib_name";
 
-  // Event codes for ParallaxSurfaceView.nativeActivityEvent; must match ActivityEvent::from_java in
+  // Event codes for ParallaxSurfaceView.nativeActivityEvent; must match Callback::from_java in
   // crates/android/src/lifecycle.rs. To add a callback: a constant here, a row there.
   private static final int EVENT_START = 0;
   private static final int EVENT_RESUME = 1;

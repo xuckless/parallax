@@ -49,7 +49,7 @@ how the renderer survives GPU device loss. The backend around it: [android.md](a
   no id; only the focused, newest view receives input.
 - Back is the keys port's (`on_should_close`); `quit` (`Activity.finish()`) is still a stub ([android.md](android.md#stubs-not-yet-on-android)).
 
-To add a callback: an `EVENT_*` constant in `ParallaxActivity`, a row in `ActivityEvent::from_java`, the variant, and
+To add a callback: an `EVENT_*` constant in `ParallaxActivity`, a row in `Callback::from_java`, the variant, and
 the arms the compiler then asks for in `Lifecycle::next`, each with a test row.
 
 ## Device loss
