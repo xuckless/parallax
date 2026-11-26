@@ -11,7 +11,8 @@ scripts/android-smoke.sh [serial]   # default: the only device in `adb devices`
 
 Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
 system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
-off in portrait, then runs the `steps` table in order. It prints each step's name and exits 0 after
+off in portrait (the `settings` table; an `EXIT` trap puts the old values back, pass or fail), then runs the `steps`
+table in order. It prints each step's name and exits 0 after
 `all N steps passed` and the renderer line (which GPU drew); any failure prints `FAIL: <step>: <why>` and the last
 app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`failure.png`), stay in
 `target/android-smoke/`; CI uploads that folder as the `android-smoke` artifact when the job fails.
@@ -60,7 +61,7 @@ never returned and `am start -W` gave up (2026-11-26).
 
 ## Limits
 
-- It leaves the device with auto-rotate off (portrait) and error dialogs hidden (`hide_error_dialogs 1`).
+- Killed with `SIGKILL`, it cannot restore the device settings it changed.
 - One emulator image in CI (API 35, `google_apis`, Pixel 7 profile). The API 28/33/35 Gboard matrix of
   [ROADMAP Gate 1](../ROADMAP.md) stays a local check.
 - `input text` sends key events, not IME commits: composition and autocorrect are not covered here

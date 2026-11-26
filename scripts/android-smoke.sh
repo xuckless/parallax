@@ -110,12 +110,38 @@ fail() {
   exit 1
 }
 
-# A slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no crash or ANR
-# dialogs at all (the logcat lines that catch our own crashes stay).
-on_device settings put global hide_error_dialogs 1
-# Portrait with auto-rotate off: tap_colour expects portrait, and the rotate steps are the only rotations.
-on_device settings put system accelerometer_rotation 0
-on_device settings put system user_rotation 0
+# Device settings the run changes: "namespace key value". To change another, add a row; it is restored on exit.
+# hide_error_dialogs: a slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no
+# crash or ANR dialogs at all (the logcat lines that catch our own crashes stay).
+# accelerometer_rotation, user_rotation: portrait with auto-rotate off: tap_colour expects portrait, and the rotate
+# steps are the only rotations (they change user_rotation again).
+settings=(
+  "global hide_error_dialogs 1"
+  "system accelerometer_rotation 0"
+  "system user_rotation 0"
+)
+# Each setting's value before the run, in the same order; "null" means it was unset.
+originals=()
+for setting in "${settings[@]}"; do
+  read -r namespace key _ <<<"$setting"
+  originals+=("$(on_device settings get "$namespace" "$key" | tr -d '\r')")
+done
+restore_settings() {
+  local i namespace key
+  for i in "${!settings[@]}"; do
+    read -r namespace key _ <<<"${settings[i]}"
+    if [[ ${originals[i]} == null ]]; then
+      on_device settings delete "$namespace" "$key" >/dev/null || true
+    else
+      on_device settings put "$namespace" "$key" "${originals[i]}" || true
+    fi
+  done
+}
+trap restore_settings EXIT
+for setting in "${settings[@]}"; do
+  read -r namespace key value <<<"$setting"
+  on_device settings put "$namespace" "$key" "$value"
+done
 start=$(log_mark)
 
 for row in "${steps[@]}"; do
