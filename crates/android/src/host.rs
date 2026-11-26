@@ -867,7 +867,7 @@ impl Shell {
             .then(|| self.with_input_handler(read_state).flatten())
             .flatten();
         let calls = pending.calls(&self.text_input.borrow().configuration, state.as_ref());
-        log::debug!("parallax: text input {pending:?} → {calls:?}");
+        log::info!("parallax: text input {pending:?} → {calls:?}");
         calls
     }
 
@@ -875,7 +875,7 @@ impl Shell {
     /// latest change: then GPUI wins and Java gets GPUI's state at the end of the frame.
     fn update_editing_state(&self, java: &EditingState) {
         if self.text_input.borrow().pending.behind() {
-            log::debug!("parallax: IME edit on a stale state dropped: {java:?}");
+            log::info!("parallax: IME edit on a stale state dropped: {java:?}");
             return;
         }
         self.with_input_handler(|handler| {
@@ -883,7 +883,7 @@ impl Shell {
                 return;
             };
             let edits = text_input::edits(&gpui, java);
-            log::debug!("parallax: IME {java:?} over {gpui:?} → {edits:?}");
+            log::info!("parallax: IME {java:?} over {gpui:?} → {edits:?}");
             self.text_input.borrow_mut().origin = Origin::Java;
             for edit in edits {
                 match edit {
