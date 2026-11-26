@@ -61,18 +61,25 @@ View are Parallax's own, small, written with Flutter's as reference. The phase r
 
 Spike (throwaway, Android emulator):
 
-- [ ] One Activity, `gpui_wgpu` drawing a box from the main thread, one tap changing its colour, on the Android
+- [x] One Activity, `gpui_wgpu` drawing a box from the main thread, one tap changing its colour, on the Android
       emulator. Proves wgpu on the emulator's `Surface` and GPUI on the main `Looper` before the real code is written.
       Write down what it learns (Looper integration, Vulkan vs GL on the emulator) in `docs/`, then delete the code.
+      Done: both worked; see [docs/android-spike.md](docs/android-spike.md).
 
 Skeleton (0.1.1):
 
 - [x] `parallax` facade crate: one dependency for apps, re-exporting GPUI and the Parallax crates.
 - [ ] `cargo-parallax`: `parallax.toml` schema and `cargo parallax run android` (generates the Gradle project around the Java port).
-- [ ] Main-thread dispatcher: GPUI's foreground executor on the Android main `Looper`.
+- [ ] Main-thread dispatcher: GPUI's foreground executor on the Android main `Looper` via `ALooper_addFd` + an eventfd
+      (no Java `Handler`). Small patch: export upstream's `PriorityQueue*` on Android (today only windows/linux/wasm).
 - [ ] Activity and View: write a small Parallax Activity and `SurfaceView`, using `FlutterActivity`, `FlutterView` and
       `FlutterSurfaceView` as reference for lifecycle, surface and insets.
 - [ ] Rendering: `gpui_wgpu` on the ported view's `Surface`, Vulkan with GL fallback. The backend choice is one visible table.
+      The renderer is created on the main thread (about 0.5 s on the emulator); measure on a device and move it off
+      only if startup exceeds the budget.
+- [ ] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss. Needed in the
+      skeleton: in the spike, returning from Home failed on a stale surface.
+- [ ] Insets: `targetSdk` 35 forces edge-to-edge, so the window draws under the system bars; report safe-area insets.
 - [ ] Touch: port `AndroidTouchProcessor` and `MotionEventTracker`; emit upstream `TouchEvent`.
 - [ ] Example app: one window with a box that changes colour on tap, built for desktop, web and Android.
 - [ ] Publish 0.1.1.
@@ -89,7 +96,6 @@ Core patches (needed by Android from the start; iOS and web get them too):
 
 Full Android:
 
-- [ ] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss.
 - [ ] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
       Back button → `BackGestureEvent`.
 - [ ] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,
@@ -197,9 +203,9 @@ tests are the oracle.
 ## Open questions
 
 - [ ] macOS 27: how are touchscreen events exposed? Needed before `0003-touch-macos`.
-- [ ] Which Android `Looper` integration does GPUI's dispatcher need (ALooper fd callbacks vs a Java `Handler`)?
+- [x] Which Android `Looper` integration does GPUI's dispatcher need? `ALooper_addFd` with an eventfd ([spike](docs/android-spike.md)).
 - [ ] Which patches to file upstream first.
-- [ ] Is upstream adding Android itself? (`crates/gpui/Cargo.toml` already has a `target_os = "android"` dependency block.) Check before Phase 1 starts.
+- [x] Is upstream adding Android itself? No: the one Android PR (#61057) was closed as stale and too large (checked 2026-11-26).
 - [ ] When `zed-industries/gpui` holds code, move `upstream/` to it. Same code as `gpui-pre`, so only the source changes.
 - [ ] `gpui-pre` is published by one person. If its snapshots stop, fall back to vendoring Zed `crates/gpui*` with a generated manifest.
 - [ ] Will Zed accept patches whose code is BSD-3 (Flutter-derived) into an Apache-2.0 crate? Ask before filing the first one.
@@ -224,6 +230,7 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-26 | gpui-pre 0.3.14 | The vendored `gpui-pre-ios` example doesn't build as shipped (uses `gpui_platform`, not a dev-dependency). Built from crates.io `=0.3.14` instead; it runs on the iOS 26.5 simulator. |
 | 2026-11-26 | gpui-pre 0.3.14 vs flutter 3.50.1 | GPUI's touch slop is 8 px, Flutter's 18 px. All gesture logic (`VelocityTracker`, fling, recognizers) is private to `gestures.rs`. |
 | 2026-11-26 | fontdb 0.23, swash 0.2.10 | fontdb has no Android font discovery (empty list, no warning); swash draws CBDT and COLR v0, not COLRv1. See the [font audit](docs/audits/android-fonts.md). |
+| 2026-11-26 | gpui-pre 0.3.14 on Android emulator | GPUI draws via `gpui_wgpu` on Vulkan and GLES 3.1 with no glue patch; a backend needs ~10 `Platform` + ~12 `PlatformWindow` methods for real (~1,500 lines). Start with `Application::run_embedded`. `PriorityQueue*` is not exported on Android. Emulator needs `-gpu host` (`swiftshader_indirect` crashed). See the [spike](docs/android-spike.md). |
 | 2026-11-25 | gpui-ce main | `gpui-ce` has no `gpui_ios` and is moving to Parley text with API drift. Not used. |
 | 2026-11-25 | zed `8aeb64f7` | `gpui_ios` exists (added 2026-10-14, #63068): UIKit, Metal, CoreText, text input (49 KB), safe area, back gesture. |
 | 2026-11-25 | zed `8aeb64f7` | Core gpui has `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag) and `ScrollPhysics::{ios, android}`. |

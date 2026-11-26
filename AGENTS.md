@@ -74,6 +74,7 @@ Rules for ported code:
 | Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
 | Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |
 | Android fonts | Loaded on the main thread at startup. Measure; move off it only if startup exceeds the budget. |
+| Android renderer startup | The wgpu renderer is created on the main thread (about 0.5 s on the emulator). Same rule as fonts: measure, move only if over budget. |
 | iOS text selection | Native `UITextInteraction` on iOS. Flutter's selection behaviour is ported for Android and touch desktops. |
 | Errors | Typed errors, no panics in library code (see below). |
 | Tests | Pure-logic unit tests plus example smoke runs (see below). |
