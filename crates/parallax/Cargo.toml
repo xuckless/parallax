@@ -11,4 +11,5 @@ workspace = true
 
 [dependencies]
 gpui.workspace = true
+parallax-android.workspace = true
 parallax-platform.workspace = true

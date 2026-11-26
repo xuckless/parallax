@@ -13,6 +13,9 @@ workspace = true
 gpui.workspace = true
 thiserror.workspace = true
 
-# Upstream gpui_platform has no Android arm and does not compile there; Android's backend will be parallax-android.
+# Upstream gpui_platform has no Android arm and does not compile there; Android's backend is parallax-android.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 gpui_platform.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+parallax-android.workspace = true

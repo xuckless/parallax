@@ -1,0 +1,69 @@
+# Android backend
+
+[`parallax-android`](../crates/android/src/lib.rs) runs GPUI on Android: the 0.1.1 skeleton of
+[ROADMAP.md](../ROADMAP.md) Phase 1. Rules: [AGENTS.md](../AGENTS.md) (Android glue, Android threading, Renderer).
+Background: [android-spike.md](android-spike.md).
+
+## How it fits together
+
+- **Activity → JNI → Platform.** [`ParallaxActivity`](../crates/android/java/io/github/xuckless/parallax/ParallaxActivity.java)
+  reads `parallax.lib_name` from `<application>` meta-data, `System.loadLibrary`s the app, sets edge to edge and shows
+  [`ParallaxSurfaceView`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java). The app's
+  `JNI_OnLoad` binds the view's static natives from one table (`natives` in [host.rs](../crates/android/src/host.rs)).
+  On the first surface, `host.rs` builds the platform ([platform.rs](../crates/android/src/platform.rs)) and starts
+  GPUI with `Application::run_embedded`; the app's launch function opens the one window ([window.rs](../crates/android/src/window.rs)).
+- **Main thread only.** All JNI calls, GPUI and the renderer run on the Android main thread. They find their state in
+  one thread-local, `MainThreadHost` in `host.rs` (why: static JNI methods carry no user pointer).
+- **Looper dispatcher.** [dispatcher.rs](../crates/android/src/dispatcher.rs): main-thread runnables go into GPUI's
+  `PriorityQueue` (exported on Android by [patch 0001](../patches/0001-export-priority-queue-android.patch)); an eventfd
+  registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
+- **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty.
+- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Lost}`,
+  one `next(state, event) → (state, action)` for `Created`, `Resized`, `Destroyed` and `DeviceLost`. The shell applies
+  the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android destroys it,
+  upstream `recover` after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
+- **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
+  that configures the surface seeds the shared `GpuContext`. Created on the main thread; the time is logged.
+- **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
+  cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
+- **Rotation** does not recreate the Activity (manifest `configChanges`, as Flutter): `surfaceChanged` resizes.
+- **Touch seam (Wave 6):** `onTouchEvent` → ported `AndroidTouchProcessor` → a `nativeTouch` row → `Callbacks::input`.
+
+## The app entry point
+
+An app is a `cdylib` crate depending on `parallax`. It writes its launch function and one macro line:
+
+```rust
+fn launch(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
+parallax::android_main!(launch);
+```
+
+`android_main!` defines `JNI_OnLoad` on Android (logging to logcat, tag `parallax`; panics logged there too) and
+nothing elsewhere. `launch` runs when the first surface exists, because GPUI needs one to open its window.
+Apps that pick a platform themselves call `parallax_platform::current_platform`, which routes Android to
+`parallax_android::current_platform` ([platform.md](platform.md)).
+
+## Stubs (not yet on Android)
+
+Each is marked `Not yet on Android` in the source with where it will come from: a no-op, a fixed value, or a typed
+`Error::NotYet`. 53 in all:
+
+| Area | Stubs | Comes with |
+|---|---|---|
+| Lifecycle | `quit`, `on_quit`, `on_reopen`, `on_system_sleep/wake`, `is_active`, `visibility`, `on_active_status_change`, `on_visibility_change`, `on_should_close`, `on_close` | Full Android lifecycle |
+| Input | `mouse_position`, `modifiers`, `capslock`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | touch (Wave 6), keys, text input |
+| Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
+| System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |
+| Display | `on_displays_changed`, `on_display_changed`, display `uuid`, window raw handle | multi-display |
+| Other | text system has no system fonts; `spawn_realtime` without realtime priority; `prompt` (GPUI draws its own) | Fonts (Phase 1) |
+
+Methods with no Android meaning (`restart`, `minimize`, `zoom`, `set_title`, menus, dock, `on_moved`, window
+controls) are no-ops with a one-line reason, not stubs. Density changes without a resize are not tracked yet.
+
+## Run it on the emulator today
+
+`cargo parallax run android` is coming; until then build an APK by hand as in [android-spike.md](android-spike.md):
+NDK linker for `x86_64-linux-android`, `javac --release 11` on `crates/android/java/` + `d8`, `aapt2 link` with a
+manifest declaring `ParallaxActivity`, the `parallax.lib_name` meta-data and `configChanges`, `zipalign`,
+`apksigner`. Start the emulator with `-gpu host`, `adb install`, then `adb logcat -s parallax` shows the renderer
+backend and creation time, surface events and insets.

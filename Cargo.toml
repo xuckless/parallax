@@ -13,6 +13,8 @@ publish = false
 gpui = { package = "gpui-pre", version = "=0.3.14" }
 # No default features: `multithreaded` (gpui_web threads) needs nightly and affects only wasm32. See AGENTS.md, Web threading.
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.14" }
+parallax-android = { path = "crates/android" }
 parallax-platform = { path = "crates/platform" }
 thiserror = "2"
 
