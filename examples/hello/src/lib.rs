@@ -33,8 +33,16 @@ struct Hello {
     colour: usize,
     prose: Entity<TextField>,
     email: Entity<TextField>,
-    /// The emoji grid's rows while it is shown.
-    grid: Option<Vec<String>>,
+    shown: Shown,
+}
+
+/// What sits under the button.
+#[derive(Clone, Copy)]
+enum Shown {
+    /// The box that changes colour on each click.
+    Box,
+    /// `EMOJI_GRID` in rows of `GRID_COLUMNS`.
+    EmojiGrid,
 }
 
 impl Render for Hello {
@@ -63,29 +71,49 @@ impl Render for Hello {
                     .py(px(8.))
                     .rounded_md()
                     .bg(rgb(0x45475a))
-                    .child(if self.grid.is_some() {
-                        "Hide emoji"
-                    } else {
-                        "Show emoji"
+                    .child(match self.shown {
+                        Shown::Box => "Show emoji",
+                        Shown::EmojiGrid => "Hide emoji",
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.grid = match this.grid {
-                            Some(_) => None,
-                            None => {
-                                log_grid_frame(window);
-                                Some(grid_rows())
+                        this.shown = match this.shown {
+                            Shown::Box => {
+                                // Logs the time from the start of the frame that draws the grid to the start of
+                                // the next: that frame's draw and present, rounded up to a vsync (16.7 ms at 60 Hz
+                                // when nothing is slow). Next-frame callbacks run before the draw.
+                                window.on_next_frame(|window, cx| {
+                                    let started = cx.background_executor().now();
+                                    window.on_next_frame(move |_, cx| {
+                                        let took = cx.background_executor().now() - started;
+                                        log::info!("emoji grid: frame {took:?}");
+                                    });
+                                });
+                                Shown::EmojiGrid
                             }
+                            Shown::EmojiGrid => Shown::Box,
                         };
                         cx.notify();
                     })),
             )
-            .child(match &self.grid {
+            .child(match self.shown {
                 // Near a picker's emoji size; rows of ten fit a phone's width and all rows its height.
-                Some(rows) => div()
-                    .text_size(px(28.))
-                    .children(rows.iter().cloned())
-                    .into_any_element(),
-                None => div()
+                Shown::EmojiGrid => {
+                    let emoji: Vec<char> = EMOJI_GRID
+                        .iter()
+                        .cloned()
+                        .flatten()
+                        .filter_map(char::from_u32)
+                        .collect();
+                    div()
+                        .text_size(px(28.))
+                        .children(
+                            emoji
+                                .chunks(GRID_COLUMNS)
+                                .map(|row| row.iter().collect::<String>()),
+                        )
+                        .into_any_element()
+                }
+                Shown::Box => div()
                     .id("box")
                     .size(px(160.))
                     .rounded_lg()
@@ -107,32 +135,6 @@ impl Render for Hello {
                     .into_any_element(),
             })
     }
-}
-
-/// `EMOJI_GRID` as text rows of `GRID_COLUMNS`.
-fn grid_rows() -> Vec<String> {
-    let emoji: Vec<char> = EMOJI_GRID
-        .iter()
-        .cloned()
-        .flatten()
-        .filter_map(char::from_u32)
-        .collect();
-    emoji
-        .chunks(GRID_COLUMNS)
-        .map(|row| row.iter().collect())
-        .collect()
-}
-
-/// Logs the time from the start of the frame that draws the grid to the start of the next: that frame's draw and
-/// present, rounded up to a vsync (16.7 ms at 60 Hz when nothing is slow). Next-frame callbacks run before the draw.
-fn log_grid_frame(window: &mut Window) {
-    window.on_next_frame(|window, cx| {
-        let started = cx.background_executor().now();
-        window.on_next_frame(move |_, cx| {
-            let took = cx.background_executor().now() - started;
-            log::info!("emoji grid: frame {took:?}");
-        });
-    });
 }
 
 /// Opens the one window. Android and the web size it themselves and ignore the bounds.
@@ -173,7 +175,7 @@ pub fn launch(cx: &mut App) {
                     cx,
                 )
             }),
-            grid: None,
+            shown: Shown::Box,
         })
     });
     match opened {
