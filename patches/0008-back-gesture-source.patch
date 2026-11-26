@@ -1,0 +1,229 @@
+Say whether a back gesture came from an edge swipe or a key.
+
+What: `BackGestureEvent` gets a `source: BackGestureSource` field, `EdgeSwipe` or `Key`, with no default: every
+literal names its source, so `BackGestureEvent` no longer derives `Default`. The `pointer_source` table in window.rs
+(patch 0003) reads it: an edge swipe stays `Touch`, synthesized; a key-driven gesture is `None`, like a key. iOS's
+edge swipe sets `EdgeSwipe`. Updates the back-gesture literals in core tests, iOS, and 0006's test.
+
+Why: a back gesture can come from a key or button with no pointer behind it (Android's Back key and navigation-bar
+button, which parallax-android sends as a `BackGestureEvent`), so `Window::pointer_source()` must not report a touch
+for it. A default would silently pick one of the two behaviours for any literal that forgot the field.
+
+Depends on: 0003 (`pointer_source` table and its test), 0006 (its test's gesture literal).
+
+Test: two rows in `pointer_source_names_the_device_and_synthesis_of_each_event` (window.rs): edge swipe back (touch,
+synthesized) and back key (none).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
+index c17b8f4..7205282 100644
+--- a/gpui-pre-ios/src/ios/events.rs
++++ b/gpui-pre-ios/src/ios/events.rs
+@@ -1,8 +1,8 @@
+ //! Conversion from UIKit events to GPUI input events.
+ 
+ use gpui::{
+-    BackGestureEvent, BackGesturePhase, Modifiers, Pixels, Point, PointerDevice, ScrollDelta,
+-    ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
++    BackGestureEvent, BackGesturePhase, BackGestureSource, Modifiers, Pixels, Point, PointerDevice,
++    ScrollDelta, ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
+ };
+ use objc2_core_foundation::CGPoint;
+ use objc2_ui_kit::{
+@@ -57,6 +57,7 @@ pub fn back_event(
+         phase,
+         start_position,
+         progress: progress as f32,
++        source: BackGestureSource::EdgeSwipe,
+     })
+ }
+ 
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 88e6df6..0ca4cd3 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -13,12 +13,13 @@ use super::events::*;
+ use super::text_input::TextInputView;
+ use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
+ use gpui::{
+-    AnyWindowHandle, BackGestureEvent, BackGesturePhase, Bounds, Capslock, Corners, DevicePixels,
+-    DispatchEventResult, DisplayId, Edges, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
+-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+-    PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration, TextInputStateChange,
+-    TouchEvent, TouchId, TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+-    WindowControlArea, WindowInsets, WindowParams, WindowVisibility, px, size,
++    AnyWindowHandle, BackGestureEvent, BackGesturePhase, BackGestureSource, Bounds, Capslock,
++    Corners, DevicePixels, DispatchEventResult, DisplayId, Edges, GpuSpecs, Modifiers, Pixels,
++    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
++    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration,
++    TextInputStateChange, TouchEvent, TouchId, TouchPhase, WindowAppearance,
++    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets, WindowParams,
++    WindowVisibility, px, size,
+ };
+ use gpui_apple::{
+     main_thread_marker,
+@@ -571,6 +572,7 @@ impl IosWindowState {
+                     phase: BackGesturePhase::Started,
+                     start_position,
+                     progress: 0.,
++                    source: BackGestureSource::EdgeSwipe,
+                 }))
+             })
+             .is_some_and(|result| result.default_prevented);
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index 82108f8..21db052 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -406,7 +406,7 @@ impl MouseEvent for TouchDragEvent {}
+ /// gesture when it starts; the platform cancels the gesture if no element does.
+ /// Every phase is delivered at the start position, so the claiming element
+ /// should stay in place while it animates its contents.
+-#[derive(Clone, Debug, Default)]
++#[derive(Clone, Debug)]
+ pub struct BackGestureEvent {
+     /// The phase of the gesture.
+     pub phase: BackGesturePhase,
+@@ -414,6 +414,19 @@ pub struct BackGestureEvent {
+     pub start_position: Point<Pixels>,
+     /// How far the gesture has travelled toward going back, from 0 to 1.
+     pub progress: f32,
++    /// What the user did to go back.
++    pub source: BackGestureSource,
++}
++
++/// What produced a [`BackGestureEvent`]. No default: every gesture names
++/// its source.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BackGestureSource {
++    /// A swipe from the screen edge, recognized from touches (iOS).
++    EdgeSwipe,
++    /// A key or button with no pointer behind it, such as Android's Back key
++    /// or navigation-bar button.
++    Key,
+ }
+ 
+ /// The phase of a [`BackGestureEvent`].
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 6e31dd7..ece537e 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -27,7 +27,9 @@ use crate::{
+     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+ };
+ 
+-use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
++use crate::gestures::{
++    BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
++};
+ use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
+ use anyhow::{Context as _, Result, anyhow};
+ use collections::{FxHashMap, FxHashSet};
+@@ -1660,9 +1662,9 @@ enum TouchRoute {
+ }
+ 
+ /// The pointer behind each platform input: one arm per variant, so a new
+-/// variant must pick its row. Keys carry no pointer. Gestures the core
+-/// recognizes from touches are not platform input:
+-/// `dispatch_recognized_touch_gesture` names their touch.
++/// variant must pick its row. Keys, and a back gesture driven by a key,
++/// carry no pointer. Gestures the core recognizes from touches are not
++/// platform input: `dispatch_recognized_touch_gesture` names their touch.
+ fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
+     let (device, synthesized) = match event {
+         PlatformInput::KeyDown(_)
+@@ -1680,9 +1682,11 @@ fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
+         | PlatformInput::FileDrop(_) => (PointerDevice::Mouse, false),
+         PlatformInput::Touch(touch) => (touch.device, false),
+         // The platform recognized these from touches it does not name.
+-        PlatformInput::LongPress(_)
+-        | PlatformInput::TouchDrag(_)
+-        | PlatformInput::BackGesture(_) => (PointerDevice::Touch, true),
++        PlatformInput::LongPress(_) | PlatformInput::TouchDrag(_) => (PointerDevice::Touch, true),
++        PlatformInput::BackGesture(back) => match back.source {
++            BackGestureSource::EdgeSwipe => (PointerDevice::Touch, true),
++            BackGestureSource::Key => return None,
++        },
+     };
+     Some(PointerSource {
+         device,
+@@ -8564,15 +8568,15 @@ mod tests {
+     };
+ 
+     use crate::{
+-        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
+-        Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
+-        ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
+-        InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
+-        MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
+-        PointerDevice, PointerSource, Render, RequestFrameOptions, ScaledPixels, ScrollEvent,
+-        StatefulInteractiveElement as _, Styled, TestAppContext, ThermalState, TouchDragEvent,
+-        TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance,
+-        WindowOptions, canvas, div, hsla, point, px, size,
++        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
++        Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
++        ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
++        InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke,
++        LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
++        Pixels, PlatformInput, Point, PointerDevice, PointerSource, Render, RequestFrameOptions,
++        ScaledPixels, ScrollEvent, StatefulInteractiveElement as _, Styled, TestAppContext,
++        ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle,
++        Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px, size,
+     };
+ 
+     #[gpui::test]
+@@ -10170,6 +10174,7 @@ mod tests {
+                                 phase: BackGesturePhase::Started,
+                                 start_position: point(px(x), px(10.)),
+                                 progress: 0.,
++                                source: BackGestureSource::EdgeSwipe,
+                             }
+                             .to_platform_input(),
+                             cx,
+@@ -10223,6 +10228,7 @@ mod tests {
+                                 phase: BackGesturePhase::Started,
+                                 start_position: point(px(x), px(10.)),
+                                 progress: 0.,
++                                source: BackGestureSource::Key,
+                             }
+                             .to_platform_input(),
+                             cx,
+@@ -10343,6 +10349,15 @@ mod tests {
+                 touch(TouchPhase::Ended, 10., device),
+             ]
+         };
++        let back = |source| {
++            BackGestureEvent {
++                phase: BackGesturePhase::Started,
++                start_position: point(px(10.), px(10.)),
++                progress: 0.,
++                source,
++            }
++            .to_platform_input()
++        };
+         let source = |device, synthesized| {
+             Some(PointerSource {
+                 device,
+@@ -10451,16 +10466,14 @@ mod tests {
+             ),
+             (
+                 "edge swipe back",
+-                vec![
+-                    BackGestureEvent {
+-                        phase: BackGesturePhase::Started,
+-                        start_position: point(px(10.), px(10.)),
+-                        progress: 0.,
+-                    }
+-                    .to_platform_input(),
+-                ],
++                vec![back(BackGestureSource::EdgeSwipe)],
+                 vec![render, ("back", source(PointerDevice::Touch, true)), render],
+             ),
++            (
++                "back key",
++                vec![back(BackGestureSource::Key)],
++                vec![render, ("back", None), render],
++            ),
+         ];
+         for (name, inputs, expected) in rows {
+             let seen = Rc::new(RefCell::new(Vec::new()));

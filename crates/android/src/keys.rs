@@ -333,7 +333,7 @@ impl Keyboard {
                             | BackGesturePhase::Progressed
                             | BackGesturePhase::Cancelled => 0.,
                         },
-                        // A key, so `Window::pointer_source` is `None` (patch 0003).
+                        // A key, so `Window::pointer_source` is `None` (patch 0008).
                         source: BackGestureSource::Key,
                     })
                 };

@@ -1,9 +1,8 @@
 # Core patches
 
-Three patches to GPUI core: pointer device tags, opting an element out of touch → mouse, and keyboard data for text
-input. The rules they follow are in [AGENTS.md](../AGENTS.md#upstream-and-patch-rules) (the "Touch → mouse" row under
-Decisions); how to write and translate a patch is in [patches.md](patches.md). Apps get these patches through the
-`parallax-gpui*` fork crates ([gpui-fork-crates.md](gpui-fork-crates.md)).
+Patches to GPUI core: pointer device tags (0003, and 0008 for back gestures), opting an element out of touch →
+mouse, and keyboard data for text input. Rules: [AGENTS.md](../AGENTS.md#upstream-and-patch-rules) ("Touch → mouse"
+under Decisions); how to write a patch: [patches.md](patches.md); apps get them via [fork crates](gpui-fork-crates.md).
 
 ## 0003: pointer source
 
@@ -18,7 +17,8 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   `window.rs`, with one arm per `PlatformInput` variant:
   - backend mouse, scroll, pinch and file-drop input: `Mouse`, not synthesized;
   - `Touch`: its own `device`, not synthesized;
-  - back gesture by its `BackGestureSource`: `EdgeSwipe` is `Touch`, synthesized; `Key` is `None`, like a key;
+  - back gesture by its `BackGestureSource` ([patch 0008](../patches/0008-back-gesture-source.patch), no default):
+    `EdgeSwipe` is `Touch`, synthesized; `Key` is `None`, like a key;
   - the platform's long press and touch drag (no backend sends them; they name no touch): `Touch`, synthesized.
   Taps, pans and long presses that the core recognizer builds carry the device of the touch they come from,
   synthesized, including ones fired later by timers (long press, momentum): the recognizer's per-touch state records
@@ -26,11 +26,10 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 - **How backends set it:** they set `TouchEvent::device` and `BackGestureEvent::source`. Mouse input needs nothing.
   - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
     is `Mouse`. Its edge swipe is `EdgeSwipe`; Android's Back key is `Key` ([android-keys.md](android-keys.md#back)).
-  - Web touches are `Touch`.
-  - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
+  - Web touches are `Touch`. Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
     are `Pen`; a mouse and trackpad send real mouse events instead ([android-mouse.md](android-mouse.md)).
-  - Later patches that build a `TouchEvent` or `BackGestureEvent` literal must set the new field (0006's test does).
+  - Later patches that build a `TouchEvent` or `BackGestureEvent` literal set the new field (0008 does in 0006's test).
 - **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
   `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
   which means ~95 struct literals across every backend. That is why 0003 is a per-dispatch query, not a field.

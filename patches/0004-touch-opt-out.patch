@@ -31,7 +31,9 @@ Test: `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs): one row p
 pan, mouse click; canvas alone, button inside a canvas, canvas inside a canvas, scroller inside a canvas, custom
 element inside a canvas, a thumb that follows the finger), also checking the post-release draw and the mouse position.
 
-Size: ~440 added lines, ~260 of them the test table and its fixture; the code is ~180.
+Size: ~440 added lines, ~260 of them the test table and its fixture; the code is ~180. Kept as one patch past the
+~200-line rule by owner exception (2026-11-26): `TouchEvent` becoming a `MouseEvent`, the touch route and the element
+API are one mechanism, and its test table checks them together.
 
 Upstream PR: not filed yet.
 
@@ -475,19 +477,19 @@ index 7863032..ff33d63 100644
  /// A mouse down event from the platform
  #[derive(Clone, Debug, Default)]
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 51bea70..e0c440b 100644
+index ce0c07e..77aaa7b 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -30,7 +30,7 @@ use crate::{
- use crate::gestures::{
-     BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
+@@ -28,7 +28,7 @@ use crate::{
  };
+ 
+ use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 -use crate::interactive::{PointerDevice, PointerSource, TouchEvent};
 +use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
  use derive_more::{Deref, DerefMut};
-@@ -1307,6 +1307,8 @@ pub struct Window {
+@@ -1305,6 +1305,8 @@ pub struct Window {
      touch_prediction_enabled: bool,
      /// `Some` only while a pointer event is being dispatched.
      pointer_source: Option<PointerSource>,
@@ -496,7 +498,7 @@ index 51bea70..e0c440b 100644
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
-@@ -1645,6 +1647,20 @@ fn default_bounds(
+@@ -1643,6 +1645,20 @@ fn default_bounds(
      window_bounds_ctor(Bounds::new(final_origin, base_size))
  }
  
@@ -515,9 +517,9 @@ index 51bea70..e0c440b 100644
 +}
 +
  /// The pointer behind each platform input: one arm per variant, so a new
- /// variant must pick its row. Keys, and a back gesture driven by a key,
- /// carry no pointer. Gestures the core recognizes from touches are not
-@@ -2531,6 +2547,7 @@ impl Window {
+ /// variant must pick its row. Keys carry no pointer. Gestures the core
+ /// recognizes from touches are not platform input:
+@@ -2527,6 +2543,7 @@ impl Window {
              ),
              touch_prediction_enabled: true,
              pointer_source: None,
@@ -525,7 +527,7 @@ index 51bea70..e0c440b 100644
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
-@@ -3834,6 +3851,41 @@ impl Window {
+@@ -3830,6 +3847,41 @@ impl Window {
          self.captured_hitbox
      }
  
@@ -567,7 +569,7 @@ index 51bea70..e0c440b 100644
      /// Captures the current long press for the given entity.
      ///
      /// The capture is released when the gesture ends or is cancelled, or when
-@@ -6380,6 +6432,30 @@ impl Window {
+@@ -6376,6 +6428,30 @@ impl Window {
      /// dispatches whatever it resolves (scroll steps, synthesized taps)
      /// through the ordinary mouse-event path.
      fn dispatch_touch_event(&mut self, event: &TouchEvent, cx: &mut App) {
@@ -598,7 +600,7 @@ index 51bea70..e0c440b 100644
          let mut event = event.clone();
          if !self.touch_prediction_enabled {
              event.predicted_position = None;
-@@ -6406,20 +6482,26 @@ impl Window {
+@@ -6401,20 +6477,26 @@ impl Window {
          } else if self.touch_gestures.pending_long_press().is_none() {
              self.long_press_timer.take();
          }

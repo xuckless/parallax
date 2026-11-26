@@ -11,7 +11,8 @@ modality exists to hide hover under a stale cursor; a back gesture carries its o
 it as a `BackGestureEvent`) arrives right after typing; iPad users with a hardware keyboard hit the same case.
 Not platform-specific, so no cfg.
 
-Depends on: 0003 (`PointerDevice` and `BackGestureSource` in the test).
+Depends on: 0003 (`PointerDevice` in the test). Patch 0008 later adds `BackGestureEvent::source` to the
+test's gesture.
 
 Upstream PR: not filed yet.
 
@@ -33,10 +34,10 @@ index eb24700..6e4ff9f 100644
                      window.prevent_default();
                      cx.stop_propagation();
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index e0c440b..19a084f 100644
+index 77aaa7b..6e31dd7 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -10190,6 +10190,58 @@ mod tests {
+@@ -10184,6 +10184,57 @@ mod tests {
          assert_eq!(claims.borrow().as_slice(), ["inner", "outer"]);
      }
  
@@ -79,7 +80,6 @@ index e0c440b..19a084f 100644
 +                                phase: BackGesturePhase::Started,
 +                                start_position: point(px(x), px(10.)),
 +                                progress: 0.,
-+                                source: BackGestureSource::Key,
 +                            }
 +                            .to_platform_input(),
 +                            cx,

@@ -1,41 +1,134 @@
 Tag every pointer event with its device and whether it was synthesized from touch.
 
-What: `TouchEvent` gets a `device: PointerDevice` field (Mouse, Touch, Pen), and `BackGestureEvent` a `source:
-BackGestureSource` (`EdgeSwipe` or `Key`). The new `Window::pointer_source()` returns a `PointerSource { device,
-synthesized }` for the pointer event being dispatched, and `None` otherwise (key events, render, after dispatch
-returns). Render sees `None` even for the draw a tap runs before its dispatch returns. `dispatch_event` sets it from a
-table with one arm per variant (`pointer_source`):
+What: `TouchEvent` gets a `device: PointerDevice` field (Mouse, Touch, Pen). The new `Window::pointer_source()`
+returns a `PointerSource { device, synthesized }` for the pointer event being dispatched, and `None` otherwise (key
+events, render, after dispatch returns). Render sees `None` even for the draw a tap runs before its dispatch returns.
+`dispatch_event` sets it from a table with one arm per variant (`pointer_source`):
 - backend mouse, scroll, pinch and file-drop input is `Mouse`, not synthesized;
 - a raw touch is its own device, not synthesized;
-- an edge-swipe back gesture, and the platform's long press and touch drag (which name no touch), are `Touch`,
-  synthesized; a key-driven back gesture (Android's Back key) is `None`, like a key.
+- a back gesture, and the platform's long press and touch drag (which name no touch), are `Touch`, synthesized.
 Every tap, pan and long press that the core recognizer builds from a touch carries that touch's device, synthesized:
 the recognizer's per-touch state (`ActiveTouch`, and `Momentum` for the fling it leaves) records the device, so a pen
-and a finger down together each label their own gestures. The value is saved and restored around each dispatch, so
-neither a nested dispatch nor a timer-driven gesture (long press, momentum) can leave it stale. iOS reads
-`UITouch.type`: Pencil is `Pen`, an iPad pointer's indirect touch is `Mouse`; its edge swipe is `EdgeSwipe`. Web
-touches are `Touch`.
+and a finger down together each label their own gestures. The value is saved and restored around each dispatch,
+so neither a nested dispatch nor a timer-driven gesture (long press, momentum) can leave it stale. iOS reads
+`UITouch.type`: Pencil is `Pen`, an iPad pointer's indirect touch is `Mouse`. Web touches are `Touch`.
 
 Why: GPUI turns taps into mouse presses and pans into scroll events, so a listener cannot tell a finger from a mouse.
 The only signal is the window-wide `last_input_was_touch()`. Platform behaviour (touch targets, selection handles,
 hover) depends on the device behind the event in hand. A field on every mouse and scroll event would touch ~95 struct
-literals across all backends; a per-dispatch query carries the same information without changing those types. A
-back gesture can come from a key with no pointer behind it, so it says which.
+literals across all backends; a per-dispatch query carries the same information without changing those types.
 
 Known limit: web pens take the mouse path (`pointerType == "pen"` is not a touch), so they read as `Mouse`. Only a
 device field on mouse events could carry that.
 
 Test: `pointer_source_names_the_device_and_synthesis_of_each_event` (window.rs), one row per input kind (pen and
-finger down together, a finger after a pen, edge-swipe and key back included); each row also records what render
-sees.
+finger down together, a finger after a pen, a back gesture); each row also records what render sees.
 
-Size: the diff is ~800 lines but adds ~375, and ~205 of those are the test. It is not split: the new
-`TouchEvent::device` and `BackGestureEvent::source` fields break every struct literal of their types (core tests, iOS,
-web), so the types and the literal updates must land together to compile. Moving the window query into its own patch
-would leave fields that nothing reads. The iOS mapping is ~20 lines, the recognizer's per-touch device ~30.
+Size: ~680 lines, ~320 added, ~200 of those the test. Kept as one patch past the ~200-line rule by owner exception
+(2026-11-26): the new `TouchEvent::device` field breaks every struct literal of its type (core tests, iOS, web), so
+the type and the literal updates land together to compile, and the window query is what reads it. The iOS mapping is
+~20 lines, the recognizer's per-touch device ~30.
 
 Upstream PR: not filed yet.
 
+diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
+index b5ae74c..c17b8f4 100644
+--- a/gpui-pre-ios/src/ios/events.rs
++++ b/gpui-pre-ios/src/ios/events.rs
+@@ -1,13 +1,13 @@
+ //! Conversion from UIKit events to GPUI input events.
+ 
+ use gpui::{
+-    BackGestureEvent, BackGesturePhase, Modifiers, Pixels, Point, ScrollDelta, ScrollEvent,
+-    ScrollSource, TouchId, TouchPhase, px,
++    BackGestureEvent, BackGesturePhase, Modifiers, Pixels, Point, PointerDevice, ScrollDelta,
++    ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
+ };
+ use objc2_core_foundation::CGPoint;
+ use objc2_ui_kit::{
+     UIGestureRecognizerState, UIKeyModifierFlags, UIPanGestureRecognizer, UIRectEdge,
+-    UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UIView,
++    UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UITouchType, UIView,
+ };
+ 
+ /// A release faster than this, in points per second toward going back, commits
+@@ -126,3 +126,17 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+     }
+     Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
+ }
++
++/// The device behind a touch: Apple Pencil is a pen, and an iPad pointer's
++/// click arrives as an indirect-pointer touch.
++pub fn touch_device(touch: &UITouch) -> PointerDevice {
++    match touch.r#type() {
++        UITouchType::Pencil => PointerDevice::Pen,
++        UITouchType::IndirectPointer => PointerDevice::Mouse,
++        // `Indirect` is a remote's touch surface: a finger too.
++        UITouchType::Direct | UITouchType::Indirect => PointerDevice::Touch,
++        // objc2 makes `UITouchType` an open newtype, so a match needs this arm; a
++        // type UIKit adds later reads as a finger.
++        _ => PointerDevice::Touch,
++    }
++}
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 09b7e4e..88e6df6 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -541,6 +541,7 @@ impl IosWindowState {
+             position,
+             predicted_position: None,
+             force: touch_force(touch),
++            device: touch_device(touch),
+         };
+         self.handle_keyboard_dismiss_touch(&event);
+         self.input_callback
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+index bd1fbd0..2116396 100644
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -4,8 +4,8 @@ use gpui::{
+     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
+     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
+     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
+-    Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
+-    TouchPhase, point, px,
++    Pixels, PlatformInput, Point, PointerDevice, ScrollDelta, ScrollEvent, ScrollSource,
++    TouchEvent, TouchId, TouchPhase, point, px,
+ };
+ use wasm_bindgen::prelude::*;
+ 
+@@ -274,6 +274,7 @@ impl WebWindowInner {
+                     position,
+                     predicted_position: None,
+                     force: None,
++                    device: PointerDevice::Touch,
+                 }));
+                 // Keyboard and IME focus intentionally do not change here:
+                 // whether this touch is a tap or a pan is only known at
+@@ -347,6 +348,7 @@ impl WebWindowInner {
+                     position,
+                     predicted_position: None,
+                     force: None,
++                    device: PointerDevice::Touch,
+                 }));
+ 
+                 // A keyboard opening or closing mid-gesture reflows the
+@@ -459,6 +461,7 @@ impl WebWindowInner {
+                     position: pointer_position_in_element(&event),
+                     predicted_position: None,
+                     force: None,
++                    device: PointerDevice::Touch,
+                 }));
+             } else {
+                 this.pressed_button.set(None);
+@@ -588,6 +591,7 @@ impl WebWindowInner {
+                     position,
+                     predicted_position: predicted_pointer_position(&event, position),
+                     force: None,
++                    device: PointerDevice::Touch,
+                 }));
+                 return;
+             }
 diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
 index 754a975..f0790e6 100644
 --- a/gpui-pre/src/elements/div.rs
@@ -90,7 +183,7 @@ index 754a975..f0790e6 100644
                          .to_platform_input(),
                          cx,
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 665da3d..5fd05b5 100644
+index 665da3d..26b7858 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -15,8 +15,8 @@ use smallvec::SmallVec;
@@ -104,28 +197,7 @@ index 665da3d..5fd05b5 100644
  };
  
  const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
-@@ -414,6 +414,20 @@ pub struct BackGestureEvent {
-     pub start_position: Point<Pixels>,
-     /// How far the gesture has travelled toward going back, from 0 to 1.
-     pub progress: f32,
-+    /// What the user did to go back.
-+    pub source: BackGestureSource,
-+}
-+
-+/// What produced a [`BackGestureEvent`].
-+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-+pub enum BackGestureSource {
-+    /// A swipe from the screen edge, recognized from touches (iOS). The
-+    /// default, so a gesture built with `..Default::default()` stays a swipe.
-+    #[default]
-+    EdgeSwipe,
-+    /// A key or button with no pointer behind it, such as Android's Back key
-+    /// or navigation-bar button.
-+    Key,
- }
- 
- /// The phase of a [`BackGestureEvent`].
-@@ -575,6 +589,8 @@ enum TouchGestureState {
+@@ -575,6 +575,8 @@ enum TouchGestureState {
  
  struct ActiveTouch {
      id: TouchId,
@@ -134,7 +206,7 @@ index 665da3d..5fd05b5 100644
      start_position: Point<Pixels>,
      /// The latest raw position reported for this touch.
      last_position: Point<Pixels>,
-@@ -600,6 +616,8 @@ struct CompletedTap {
+@@ -600,6 +602,8 @@ struct CompletedTap {
  /// exactly frame-rate independent: a stalled frame simply resumes further
  /// along the same curve.
  struct Momentum {
@@ -143,7 +215,7 @@ index 665da3d..5fd05b5 100644
      /// Where the pan started; synthesized scroll events keep hit-testing
      /// there so momentum stays with the container the gesture began on.
      position: Point<Pixels>,
-@@ -653,6 +671,7 @@ impl TouchGestureRecognizer {
+@@ -653,6 +657,7 @@ impl TouchGestureRecognizer {
                      velocity_tracker.push(now, event.position);
                      let touch = ActiveTouch {
                          id: event.id,
@@ -151,7 +223,7 @@ index 665da3d..5fd05b5 100644
                          start_position: event.position,
                          last_position: event.position,
                          emitted_position: event.position,
-@@ -878,6 +897,7 @@ impl TouchGestureRecognizer {
+@@ -878,6 +883,7 @@ impl TouchGestureRecognizer {
                                  0.
                              };
                              self.momentum = Some(Momentum {
@@ -159,7 +231,7 @@ index 665da3d..5fd05b5 100644
                                  position: touch.start_position,
                                  direction,
                                  speed,
-@@ -940,7 +960,7 @@ impl TouchGestureRecognizer {
+@@ -940,7 +946,7 @@ impl TouchGestureRecognizer {
          recognized
      }
  
@@ -168,7 +240,7 @@ index 665da3d..5fd05b5 100644
          let TouchGestureState::Pending {
              touch,
              deadline,
-@@ -950,7 +970,11 @@ impl TouchGestureRecognizer {
+@@ -950,7 +956,11 @@ impl TouchGestureRecognizer {
          else {
              return None;
          };
@@ -181,7 +253,7 @@ index 665da3d..5fd05b5 100644
      }
  
      pub(crate) fn offer_long_press(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
-@@ -1030,8 +1054,10 @@ impl TouchGestureRecognizer {
+@@ -1030,8 +1040,10 @@ impl TouchGestureRecognizer {
      /// Advances post-fling momentum by one frame, returning the scroll step
      /// to dispatch, or `None` when no momentum is in progress. The final step
      /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
@@ -194,7 +266,7 @@ index 665da3d..5fd05b5 100644
      }
  
      fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
-@@ -2326,6 +2352,7 @@ mod tests {
+@@ -2326,6 +2338,7 @@ mod tests {
              position: point(px(x), px(y)),
              predicted_position: None,
              force: None,
@@ -242,23 +314,19 @@ index cfb1410..7863032 100644
  
  impl Sealed for TouchEvent {}
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 775021f..51bea70 100644
+index 775021f..2e77344 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -27,8 +27,10 @@ use crate::{
-     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+@@ -28,7 +28,7 @@ use crate::{
  };
  
--use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
+ use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 -use crate::interactive::TouchEvent;
-+use crate::gestures::{
-+    BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
-+};
 +use crate::interactive::{PointerDevice, PointerSource, TouchEvent};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
  use derive_more::{Deref, DerefMut};
-@@ -1303,6 +1305,8 @@ pub struct Window {
+@@ -1303,6 +1303,8 @@ pub struct Window {
      last_input_modality: InputModality,
      touch_gestures: TouchGestureRecognizer,
      touch_prediction_enabled: bool,
@@ -267,14 +335,14 @@ index 775021f..51bea70 100644
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
-@@ -1641,6 +1645,39 @@ fn default_bounds(
+@@ -1641,6 +1643,37 @@ fn default_bounds(
      window_bounds_ctor(Bounds::new(final_origin, base_size))
  }
  
 +/// The pointer behind each platform input: one arm per variant, so a new
-+/// variant must pick its row. Keys, and a back gesture driven by a key,
-+/// carry no pointer. Gestures the core recognizes from touches are not
-+/// platform input: `dispatch_recognized_touch_gesture` names their touch.
++/// variant must pick its row. Keys carry no pointer. Gestures the core
++/// recognizes from touches are not platform input:
++/// `dispatch_recognized_touch_gesture` names their touch.
 +fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
 +    let (device, synthesized) = match event {
 +        PlatformInput::KeyDown(_)
@@ -292,11 +360,9 @@ index 775021f..51bea70 100644
 +        | PlatformInput::FileDrop(_) => (PointerDevice::Mouse, false),
 +        PlatformInput::Touch(touch) => (touch.device, false),
 +        // The platform recognized these from touches it does not name.
-+        PlatformInput::LongPress(_) | PlatformInput::TouchDrag(_) => (PointerDevice::Touch, true),
-+        PlatformInput::BackGesture(back) => match back.source {
-+            BackGestureSource::EdgeSwipe => (PointerDevice::Touch, true),
-+            BackGestureSource::Key => return None,
-+        },
++        PlatformInput::LongPress(_)
++        | PlatformInput::TouchDrag(_)
++        | PlatformInput::BackGesture(_) => (PointerDevice::Touch, true),
 +    };
 +    Some(PointerSource {
 +        device,
@@ -307,7 +373,7 @@ index 775021f..51bea70 100644
  impl Window {
      pub(crate) fn new(
          handle: AnyWindowHandle,
-@@ -2493,6 +2530,7 @@ impl Window {
+@@ -2493,6 +2526,7 @@ impl Window {
                      .map_or_else(GestureTuning::default, |gestures| gestures.tuning()),
              ),
              touch_prediction_enabled: true,
@@ -315,7 +381,7 @@ index 775021f..51bea70 100644
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
-@@ -3826,6 +3864,15 @@ impl Window {
+@@ -3826,6 +3860,15 @@ impl Window {
          self.last_input_modality == InputModality::Touch
      }
  
@@ -331,7 +397,7 @@ index 775021f..51bea70 100644
      /// The current state of the keyboard's capslock
      pub fn capslock(&self) -> Capslock {
          self.capslock
-@@ -6130,6 +6177,9 @@ impl Window {
+@@ -6130,6 +6173,9 @@ impl Window {
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -341,7 +407,7 @@ index 775021f..51bea70 100644
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -6267,6 +6317,7 @@ impl Window {
+@@ -6267,6 +6313,7 @@ impl Window {
          // Must run after the move is dispatched: the platform owns the gesture afterwards, so this
          // is the last chance for drag listeners to see the pointer leave and reset their state.
          self.promote_external_drag_to_platform(&event, cx);
@@ -349,7 +415,7 @@ index 775021f..51bea70 100644
  
          let caused_invalidation = self.invalidator.update_count() > update_count_before;
          if caused_invalidation {
-@@ -6337,7 +6388,7 @@ impl Window {
+@@ -6337,7 +6384,7 @@ impl Window {
          if event.phase == crate::TouchPhase::Started
              && let Some(touch_drag) = self.touch_gestures.offer_touch_drag(event.id)
          {
@@ -358,7 +424,7 @@ index 775021f..51bea70 100644
          }
          if event.phase == crate::TouchPhase::Started
              && self.touch_gestures.pending_long_press().is_some()
-@@ -6347,7 +6398,8 @@ impl Window {
+@@ -6347,7 +6394,8 @@ impl Window {
          let mut tapped = false;
          for gesture in recognized_gestures {
              tapped |= matches!(gesture, RecognizedTouchGesture::Tap { .. });
@@ -368,7 +434,7 @@ index 775021f..51bea70 100644
          }
          if event.phase == crate::TouchPhase::Started {
              self.schedule_long_press_timer(cx);
-@@ -6360,14 +6412,29 @@ impl Window {
+@@ -6360,14 +6408,29 @@ impl Window {
          // are registered during draw, so draw now to make them reflect any
          // focus change the tap just caused.
          if tapped && self.invalidator.is_dirty() {
@@ -399,7 +465,7 @@ index 775021f..51bea70 100644
          match gesture {
              RecognizedTouchGesture::Scroll(scroll_wheel) => {
                  self.mouse_position = scroll_wheel.position;
-@@ -6418,11 +6485,12 @@ impl Window {
+@@ -6418,11 +6481,12 @@ impl Window {
                  }
              }
          }
@@ -413,7 +479,7 @@ index 775021f..51bea70 100644
              return;
          };
          self.long_press_timer = Some(self.spawn(cx, async move |cx| {
-@@ -6430,7 +6498,7 @@ impl Window {
+@@ -6430,7 +6494,7 @@ impl Window {
              cx.update(move |window, cx| {
                  window.long_press_timer.take();
                  if let Some(gesture) = window.touch_gestures.offer_long_press(touch_id) {
@@ -422,7 +488,7 @@ index 775021f..51bea70 100644
                  }
              })
              .with_context(|| {
-@@ -6445,8 +6513,8 @@ impl Window {
+@@ -6445,8 +6509,8 @@ impl Window {
  
      fn schedule_touch_momentum_tick(&mut self) {
          self.on_next_frame(|window, cx| {
@@ -433,40 +499,22 @@ index 775021f..51bea70 100644
              }
              if window.touch_gestures.has_momentum() {
                  window.schedule_touch_momentum_tick();
-@@ -8419,15 +8487,15 @@ mod tests {
-     };
- 
-     use crate::{
--        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
--        Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
--        ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
--        InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
--        MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
+@@ -8424,10 +8488,10 @@ mod tests {
+         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
+         InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
+         MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
 -        Render, RequestFrameOptions, ScaledPixels, StatefulInteractiveElement as _, Styled,
 -        TestAppContext, ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline,
 -        UnderlineStyle, Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px,
 -        size,
-+        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
-+        Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
-+        ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
-+        InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke,
-+        LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-+        Pixels, PlatformInput, Point, PointerDevice, PointerSource, Render, RequestFrameOptions,
-+        ScaledPixels, ScrollEvent, StatefulInteractiveElement as _, Styled, TestAppContext,
-+        ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle,
-+        Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px, size,
++        PointerDevice, PointerSource, Render, RequestFrameOptions, ScaledPixels, ScrollEvent,
++        StatefulInteractiveElement as _, Styled, TestAppContext, ThermalState, TouchDragEvent,
++        TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle, Window, WindowAppearance,
++        WindowOptions, canvas, div, hsla, point, px, size,
      };
  
      #[gpui::test]
-@@ -10025,6 +10093,7 @@ mod tests {
-                                 phase: BackGesturePhase::Started,
-                                 start_position: point(px(x), px(10.)),
-                                 progress: 0.,
-+                                source: BackGestureSource::EdgeSwipe,
-                             }
-                             .to_platform_input(),
-                             cx,
-@@ -10085,6 +10154,193 @@ mod tests {
+@@ -10085,6 +10149,186 @@ mod tests {
          }
      }
  
@@ -531,15 +579,6 @@ index 775021f..51bea70 100644
 +                touch(TouchPhase::Started, 10., device),
 +                touch(TouchPhase::Ended, 10., device),
 +            ]
-+        };
-+        let back = |source| {
-+            BackGestureEvent {
-+                phase: BackGesturePhase::Started,
-+                start_position: point(px(10.), px(10.)),
-+                progress: 0.,
-+                source,
-+            }
-+            .to_platform_input()
 +        };
 +        let source = |device, synthesized| {
 +            Some(PointerSource {
@@ -629,13 +668,15 @@ index 775021f..51bea70 100644
 +            ),
 +            (
 +                "edge swipe back",
-+                vec![back(BackGestureSource::EdgeSwipe)],
++                vec![
++                    BackGestureEvent {
++                        phase: BackGesturePhase::Started,
++                        start_position: point(px(10.), px(10.)),
++                        progress: 0.,
++                    }
++                    .to_platform_input(),
++                ],
 +                vec![render, ("back", source(PointerDevice::Touch, true)), render],
-+            ),
-+            (
-+                "back key",
-+                vec![back(BackGestureSource::Key)],
-+                vec![render, ("back", None), render],
 +            ),
 +        ];
 +        for (name, inputs, expected) in rows {
@@ -660,7 +701,7 @@ index 775021f..51bea70 100644
      #[gpui::test]
      fn long_press_is_claimed_only_when_started_prevents_default(cx: &mut TestAppContext) {
          for response in [
-@@ -10811,6 +11067,7 @@ mod tests {
+@@ -10811,6 +11055,7 @@ mod tests {
                          position: point(px(x), px(0.)),
                          predicted_position: None,
                          force: None,
@@ -668,137 +709,3 @@ index 775021f..51bea70 100644
                      }
                      .to_platform_input(),
                      cx,
-diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
-index b5ae74c..7205282 100644
---- a/gpui-pre-ios/src/ios/events.rs
-+++ b/gpui-pre-ios/src/ios/events.rs
-@@ -1,13 +1,13 @@
- //! Conversion from UIKit events to GPUI input events.
- 
- use gpui::{
--    BackGestureEvent, BackGesturePhase, Modifiers, Pixels, Point, ScrollDelta, ScrollEvent,
--    ScrollSource, TouchId, TouchPhase, px,
-+    BackGestureEvent, BackGesturePhase, BackGestureSource, Modifiers, Pixels, Point, PointerDevice,
-+    ScrollDelta, ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
- };
- use objc2_core_foundation::CGPoint;
- use objc2_ui_kit::{
-     UIGestureRecognizerState, UIKeyModifierFlags, UIPanGestureRecognizer, UIRectEdge,
--    UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UIView,
-+    UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UITouchType, UIView,
- };
- 
- /// A release faster than this, in points per second toward going back, commits
-@@ -57,6 +57,7 @@ pub fn back_event(
-         phase,
-         start_position,
-         progress: progress as f32,
-+        source: BackGestureSource::EdgeSwipe,
-     })
- }
- 
-@@ -126,3 +127,17 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
-     }
-     Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
- }
-+
-+/// The device behind a touch: Apple Pencil is a pen, and an iPad pointer's
-+/// click arrives as an indirect-pointer touch.
-+pub fn touch_device(touch: &UITouch) -> PointerDevice {
-+    match touch.r#type() {
-+        UITouchType::Pencil => PointerDevice::Pen,
-+        UITouchType::IndirectPointer => PointerDevice::Mouse,
-+        // `Indirect` is a remote's touch surface: a finger too.
-+        UITouchType::Direct | UITouchType::Indirect => PointerDevice::Touch,
-+        // objc2 makes `UITouchType` an open newtype, so a match needs this arm; a
-+        // type UIKit adds later reads as a finger.
-+        _ => PointerDevice::Touch,
-+    }
-+}
-diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 09b7e4e..0ca4cd3 100644
---- a/gpui-pre-ios/src/ios/window.rs
-+++ b/gpui-pre-ios/src/ios/window.rs
-@@ -13,12 +13,13 @@ use super::events::*;
- use super::text_input::TextInputView;
- use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
- use gpui::{
--    AnyWindowHandle, BackGestureEvent, BackGesturePhase, Bounds, Capslock, Corners, DevicePixels,
--    DispatchEventResult, DisplayId, Edges, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
--    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
--    PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration, TextInputStateChange,
--    TouchEvent, TouchId, TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
--    WindowControlArea, WindowInsets, WindowParams, WindowVisibility, px, size,
-+    AnyWindowHandle, BackGestureEvent, BackGesturePhase, BackGestureSource, Bounds, Capslock,
-+    Corners, DevicePixels, DispatchEventResult, DisplayId, Edges, GpuSpecs, Modifiers, Pixels,
-+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-+    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration,
-+    TextInputStateChange, TouchEvent, TouchId, TouchPhase, WindowAppearance,
-+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets, WindowParams,
-+    WindowVisibility, px, size,
- };
- use gpui_apple::{
-     main_thread_marker,
-@@ -541,6 +542,7 @@ impl IosWindowState {
-             position,
-             predicted_position: None,
-             force: touch_force(touch),
-+            device: touch_device(touch),
-         };
-         self.handle_keyboard_dismiss_touch(&event);
-         self.input_callback
-@@ -570,6 +572,7 @@ impl IosWindowState {
-                     phase: BackGesturePhase::Started,
-                     start_position,
-                     progress: 0.,
-+                    source: BackGestureSource::EdgeSwipe,
-                 }))
-             })
-             .is_some_and(|result| result.default_prevented);
-diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
-index bd1fbd0..2116396 100644
---- a/gpui-pre-web/src/events.rs
-+++ b/gpui-pre-web/src/events.rs
-@@ -4,8 +4,8 @@ use gpui::{
-     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
-     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
-     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
--    Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
--    TouchPhase, point, px,
-+    Pixels, PlatformInput, Point, PointerDevice, ScrollDelta, ScrollEvent, ScrollSource,
-+    TouchEvent, TouchId, TouchPhase, point, px,
- };
- use wasm_bindgen::prelude::*;
- 
-@@ -274,6 +274,7 @@ impl WebWindowInner {
-                     position,
-                     predicted_position: None,
-                     force: None,
-+                    device: PointerDevice::Touch,
-                 }));
-                 // Keyboard and IME focus intentionally do not change here:
-                 // whether this touch is a tap or a pan is only known at
-@@ -347,6 +348,7 @@ impl WebWindowInner {
-                     position,
-                     predicted_position: None,
-                     force: None,
-+                    device: PointerDevice::Touch,
-                 }));
- 
-                 // A keyboard opening or closing mid-gesture reflows the
-@@ -459,6 +461,7 @@ impl WebWindowInner {
-                     position: pointer_position_in_element(&event),
-                     predicted_position: None,
-                     force: None,
-+                    device: PointerDevice::Touch,
-                 }));
-             } else {
-                 this.pressed_button.set(None);
-@@ -588,6 +591,7 @@ impl WebWindowInner {
-                     position,
-                     predicted_position: predicted_pointer_position(&event, position),
-                     force: None,
-+                    device: PointerDevice::Touch,
-                 }));
-                 return;
-             }

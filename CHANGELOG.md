@@ -12,8 +12,8 @@ Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 
 ### Added
 
 - `BackGestureEvent::source` (`BackGestureSource::EdgeSwipe` or `Key`): Android's Back key and navigation-bar button
-  are `Key`, with no pointer behind them. **Breaking** for `BackGestureEvent` struct literals without
-  `..Default::default()` (the default is `EdgeSwipe`).
+  are `Key`, with no pointer behind them. **Breaking:** every `BackGestureEvent` literal names its source; neither
+  type has a `Default` any more, so a literal can't pick one silently.
 - `Window::leave_touch_to_gestures` is public: a custom element that handles taps or scrolls itself keeps an ancestor's
   `on_touch` from taking the touch, as a div with `on_click` or `on_scroll` already does.
 - `parallax-android`: a mouse or trackpad is a real mouse: clicks with click count, right and middle click, hover

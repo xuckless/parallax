@@ -124,7 +124,7 @@ Core patches (needed by Android from the start; iOS and web get them too):
       ([docs/patch-tests.md](docs/patch-tests.md)).
 - [x] Per-touch device attribution (Wave 10): a recognized gesture reports the device of its own touch (patch 0003).
 - [x] Back key's `pointer_source` (Wave 10): `BackGestureEvent::source` (`EdgeSwipe` / `Key`); Android's Back key is
-      `Key` and reports no pointer (patch 0003, 0006).
+      `Key` and reports no pointer (patches 0003, 0006, 0008).
 - [x] Touch opt-out for custom elements (Wave 10): `Window::leave_touch_to_gestures` is public (patch 0004).
 - [ ] Web pens as `Pen`: `gpui_web` sends pens down the mouse path, so they read as `Mouse` (see Upstream notes); needs
       a device field on mouse events (~95 struct literals across backends, [core-patches.md](docs/core-patches.md)).

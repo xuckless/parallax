@@ -38,7 +38,7 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
 `KEYCODE_BACK` (Flutter's `goBack`) becomes upstream's
 [`BackGestureEvent`](../upstream/gpui-pre/src/gestures.rs): `Started` on the press, at the window's left edge,
 mid-height (GPUI hit-tests back gestures; a key has no position), with `source: BackGestureSource::Key`, so
-`Window::pointer_source()` is `None` during it ([patch 0003](core-patches.md#0003-pointer-source)). An element with `on_back_gesture` claims it
+`Window::pointer_source()` is `None` during it ([patch 0008](../patches/0008-back-gesture-source.patch), [0003](core-patches.md#0003-pointer-source)). An element with `on_back_gesture` claims it
 (`default_prevented`); then repeats are swallowed and the release sends `Committed`, or `Cancelled` when Android
 cancelled it (`FLAG_CANCELED`, passed next to the packet because key data has no field for it). Unclaimed, the press and release
 go to Android, whose default finishes the Activity. One state enum, `Back::{Idle, Offered, Claimed}`, and one
