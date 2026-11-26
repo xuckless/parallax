@@ -80,20 +80,25 @@ launch() {
 
 # The smoke run, in order: step name | command | extended regex a new logcat line must match | seconds to wait.
 # To add a step, add a row; the command may use on_device (adb shell), tap_colour and launch.
+# The rotate and resume steps wait for the first frame drawn on a surface of the new orientation (window.rs logs it once
+# per surface), not for the surface event: that is logged before the surface is made, and a late surfaceChanged from
+# the previous rotation could satisfy the next step.
+drawn="parallax: first frame drawn on a [0-9]+x[0-9]+"
 steps=(
-  "launch|launch|parallax: first frame drawn|60"
+  "launch|launch|$drawn portrait surface|60"
   "tap the box|tap_colour 3b82f6|box colour ef4444 \(touch click|20"
   "focus the field|tap_colour ffffff|insets in pixels: .*ime Edges .*bottom: [1-9]|20"
   "type and submit|on_device input text $typed && on_device input keyevent KEYCODE_ENTER|text field submitted: ${#typed} bytes|20"
-  "rotate to landscape|on_device settings put system user_rotation 1|parallax: surface .*Attach|30"
-  "rotate to portrait|on_device settings put system user_rotation 0|parallax: surface .*Attach|30"
+  "rotate to landscape|on_device settings put system user_rotation 1|$drawn landscape surface|30"
+  "rotate to portrait|on_device settings put system user_rotation 0|$drawn portrait surface|30"
   "background|on_device input keyevent KEYCODE_HOME|parallax: lifecycle From\(.*, Stop\)|20"
-  "resume|on_device am start -n $component|parallax: surface .*Attach|20"
+  "resume|on_device am start -n $component|$drawn portrait surface|20"
   "tap the box again|tap_colour ef4444|box colour 22c55e \(touch click|20"
 )
 
-# Lines that mean the app crashed or hung, at any step.
+# Lines that mean the app crashed, hung or cannot draw (host.rs logs the last two), at any step.
 crashed="FATAL EXCEPTION|Fatal signal|ANR in $app|Process $app .* has died"
+crashed+="|parallax: cannot attach the new surface|parallax: GPU device recovery failed"
 
 fail() {
   log_since "$start" >"$log" || true
@@ -120,14 +125,14 @@ for row in "${steps[@]}"; do
   eval "$command" || fail "$name: command failed: $command"
   deadline=$((SECONDS + timeout))
   until log_since "$since" >"$log" && grep -Eq -- "$pattern" "$log"; do
-    if grep -Eq -- "$crashed" "$log"; then fail "$name: the app crashed or stopped responding"; fi
+    if grep -Eq -- "$crashed" "$log"; then fail "$name: the app crashed, stopped responding or lost its surface"; fi
     ((SECONDS < deadline)) || fail "$name: no logcat line matching /$pattern/ within ${timeout}s"
     sleep 1
   done
 done
 
 log_since "$start" >"$log"
-grep -Eq -- "$crashed" "$log" && fail "the app crashed or stopped responding"
+grep -Eq -- "$crashed" "$log" && fail "the app crashed, stopped responding or lost its surface"
 [[ -n $(on_device pidof "$app") ]] || fail "the app is no longer running"
 echo "android-smoke: all ${#steps[@]} steps passed on $serial"
 grep -m 1 "renderer created" "$log" || true  # which GPU drew, for comparing runs

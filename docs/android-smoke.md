@@ -20,20 +20,23 @@ app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`
 
 Each row is `name | command | regex | seconds`: run the command, then poll logcat once a second (`adb logcat -d`;
 a streaming `adb logcat` stalled for good on a CI runner) for a line logged after the command started that matches
-the regex. A crash, a native signal or an ANR for the app fails the current step at once.
+the regex. A crash, a native signal, an ANR for the app, or a surface it cannot attach or a GPU device it cannot
+recover (`host.rs`'s error lines) fails the current step at once.
 
 | Step | Does | Waits for |
 |---|---|---|
-| launch | `cargo-parallax run android` (build, install, `am start -W`) | `parallax: first frame drawn` ([window.rs](../crates/android/src/window.rs), logged once per window) |
+| launch | `cargo-parallax run android` (build, install, `am start -W`) | `parallax: first frame drawn on a WxH portrait surface` ([window.rs](../crates/android/src/window.rs), once per surface) |
 | tap the box | taps the blue box | `box colour ef4444 (touch click` |
 | focus the field | taps the first white field | an insets line with a non-zero IME bottom (the keyboard opened) |
 | type and submit | `input text smoke`, then Enter | `text field submitted: 5 bytes` (the app logs the length, never the text) |
-| rotate to landscape / portrait | `settings put system user_rotation` (auto-rotate turned off) | `parallax: surface … Attach` (a resize makes a new surface) |
+| rotate to landscape / portrait | `settings put system user_rotation` (auto-rotate turned off) | the first frame on a `landscape` / `portrait` surface (the new surface drew) |
 | background | Home | `parallax: lifecycle From(…, Stop)` |
-| resume | `am start` again | `parallax: surface … Attach` (a new surface) |
+| resume | `am start` again | the first frame on a `portrait` surface |
 | tap the box again | taps the red box | `box colour 22c55e (touch click` |
 
-After the table it checks the whole log once more for crashes and that the app process is still alive.
+The rotate and resume steps wait for a frame drawn on the new surface, at the new orientation, not for the surface
+event: that line is logged before the surface is made, and a late `surfaceChanged` from the previous rotation could
+pass the next step. After the table it checks the whole log once more for crashes and that the app process is still alive.
 
 To add a step, add a row to `steps`. Commands may call `on_device` (`adb shell`), `tap_colour` and `launch`.
 
