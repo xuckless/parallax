@@ -29,7 +29,7 @@ use jni::{
 
 use crate::{
     Error,
-    emoji::{self, Raster},
+    emoji::{self, Clusters, Raster},
     fonts::{self, Face, FontPlan},
 };
 
@@ -67,10 +67,8 @@ struct Emoji {
     class: GlobalRef,
     /// Each system emoji face → its Android `Typeface`, made from the same file cosmic-text shapes with.
     faces: HashMap<fontdb::ID, GlobalRef>,
-    /// Each emoji glyph a layout produced → the text it was shaped from. Android draws text, not glyph ids
-    /// (`Canvas.drawGlyphs` is API 31+, the minimum is 28). Grows with the distinct emoji shown, at most the emoji
-    /// fonts' glyph count. Not a raster cache: GPUI's atlas keeps the pixels.
-    clusters: Mutex<HashMap<(FontId, GlyphId), String>>,
+    /// The emoji clusters layouts produced, by the glyph id [`emoji::mark`] gave each.
+    clusters: Mutex<Clusters>,
 }
 
 /// Loads the system fonts for `locales` (BCP-47, the app's preference order). On any failure the text system has
@@ -208,8 +206,8 @@ impl AndroidTextSystem {
             .clusters
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&(params.font_id, params.glyph_id))
-            .cloned();
+            .text(params.glyph_id)
+            .map(str::to_string);
         match emoji::route(params.is_emoji, face, cluster) {
             Raster::Android { face, cluster } => Some((emoji, face, cluster)),
             Raster::Upstream => None,
@@ -228,7 +226,7 @@ impl Emoji {
             vm: env.get_java_vm()?,
             class: env.new_global_ref(class)?,
             faces: HashMap::new(),
-            clusters: Mutex::new(HashMap::new()),
+            clusters: Mutex::default(),
         };
         for (id, face) in faces {
             let typeface = emoji.call(|env, class| {
@@ -337,7 +335,7 @@ impl Emoji {
             env.get_int_array_region(&pixels, 0, &mut out)?;
             Ok(out)
         })?;
-        log::info!(
+        log::debug!(
             "parallax: emoji: drew {cluster:?} at {size_px} px ({}x{}) in {:?}",
             bounds.size.width.0,
             bounds.size.height.0,
@@ -439,26 +437,26 @@ impl PlatformTextSystem for AndroidTextSystem {
         }
     }
 
-    /// Upstream's layout; glyphs of the system emoji faces are marked emoji and their text kept for Android to draw.
+    /// Upstream's layout, with the system emoji faces' runs rewritten for Android to draw ([`emoji::mark`]).
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         let mut layout = self.cosmic.layout_line(text, font_size, runs);
         if let Some(emoji) = &self.emoji {
-            let found = emoji::clusters(&mut layout, text.len(), |font_id| {
-                self.cosmic
-                    .font_database_id(font_id)
-                    .is_some_and(|id| emoji.faces.contains_key(&id))
-            });
-            if !found.is_empty() {
-                let mut clusters = emoji
-                    .clusters
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                for (glyph, range) in found {
-                    if let Some(cluster) = text.get(range) {
-                        clusters.entry(glyph).or_insert_with(|| cluster.to_string());
-                    }
-                }
-            }
+            emoji::mark(
+                &mut layout,
+                text,
+                |font_id| {
+                    self.cosmic
+                        .font_database_id(font_id)
+                        .is_some_and(|id| emoji.faces.contains_key(&id))
+                },
+                |cluster| {
+                    emoji
+                        .clusters
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .id(cluster)
+                },
+            );
         }
         layout
     }
