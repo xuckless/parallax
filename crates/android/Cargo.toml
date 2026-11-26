@@ -11,6 +11,8 @@ keywords = ["gpui", "android", "gui", "jni", "touch"]
 categories = ["gui", "os::android-apis"]
 # java/ (ParallaxActivity and the ported Flutter embedding) ships in the package: cargo-parallax compiles it from
 # wherever cargo metadata puts this crate, crates.io included.
+# java-tests/ (the JVM test project, docs/android-tests.md) does not.
+exclude = ["java-tests/"]
 
 [lints]
 workspace = true
