@@ -36,10 +36,22 @@ glyph origin with Android's own bounds.
 
 ## Cost
 
-Per new cluster and size, on the main thread (release build, emulator; the `parallax: emoji: drew …` line at debug
-level gives each): API 35 (COLRv1) 0.5–14 ms, most 1–3 ms; API 28 (CBDT) 0.6–3.6 ms. The first cluster after start
-is the slowest. Once drawn, a cluster costs nothing (GPUI's atlas). It matters only for a screen showing many new
-emoji at once (an emoji picker: 100 clusters ≈ 0.2 s on API 35); move drawing off the first frame if that shows up.
+Per new cluster and size, on the main thread; once drawn a cluster costs nothing (GPUI's atlas). An emoji picker's
+first screen is the worst case: hello's "Show emoji" ([examples.md](examples.md)) shows 100 distinct emoji at 28 px
+and logs `emoji grid: frame …`, from the start of the frame that draws them to the start of the next (release build,
+emulator at 60 Hz, 6 cold launches each):
+
+| Image | Font | 100 new emoji | Same grid again (cached) |
+|---|---|---|---|
+| API 35 | COLRv1 | 25–44 ms, median 32 ms (1–2 frames late) | 16.6–18.3 ms (one frame) |
+| API 28 | CBDT | 54–154 ms, median 92 ms (3–9 frames late) | 16.6–17.5 ms (one frame) |
+
+Decision (AGENTS.md: measure, move only if over budget): API 35 is within budget, so nothing changes. API 28 drops a
+few frames once, when a screen first shows many new emoji. No clean fix exists on the main thread alone: GPUI asks
+for each glyph inside its paint and keeps what it gets, so a late (async) fill would leave blanks. Proposal, if an
+Android 9–12 device shows it: when `layout_line` meets new clusters (before paint), draw them on worker threads
+attached to the JVM (`Canvas` into a `Bitmap` works off the UI thread) and let `rasterize_glyph` take the pixels
+from that cache. GPUI itself stays on the main thread.
 
 ## Verified
 

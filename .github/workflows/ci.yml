@@ -1,4 +1,5 @@
-# Six builds, one per target, no feature variants (ROADMAP Phase 0). See docs/ci.md.
+# Six builds, one per target, no feature variants (ROADMAP Phase 0), plus the Java tests, the patch tests (GPUI's own
+# tests on the patched fork crate) and an Android emulator smoke test of examples/hello. See docs/ci.md.
 name: CI
 
 on:
@@ -106,18 +107,116 @@ jobs:
               echo "::warning::the pinned parallax-gpui* version is not on crates.io yet; published libraries not packaged" ;;
             *) exit "$status" ;;
           esac
-      # JVM tests of the ported Android Java (docs/android-tests.md). JDK 21: Robolectric needs it for SDK 37.
-      - if: matrix.target == 'linux'
-        uses: actions/setup-java@v6.3.0
+
+  # JVM tests of the ported Android Java (docs/android-tests.md). No Rust or build/, so a job of its own.
+  java-tests:
+    name: java-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # JDK 21: Robolectric needs it for SDK 37. `cache: gradle` keeps Gradle's caches and wrapper.
+      - uses: actions/setup-java@v6.3.0
         with:
           distribution: temurin
           java-version: 21.0.13+9
           cache: gradle
       # Robolectric's android-all jars (one per emulated SDK, ~1.5 GB) download outside Gradle's cache.
-      - if: matrix.target == 'linux'
-        uses: actions/cache@v6.1.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.m2/repository/org/robolectric
           key: robolectric-${{ hashFiles('crates/android/java-tests/build.gradle') }}
-      - if: matrix.target == 'linux'
-        run: scripts/java-test.sh
+      # The runner's Android SDK (ANDROID_HOME); Gradle fetches platforms;android-37 into it.
+      - run: scripts/java-test.sh
+
+  # GPUI's own lib tests on the patched fork crate parallax-gpui, every patch's tests among them; the build jobs never
+  # compile them (docs/patch-tests.md). Stand-in fonts come from fonts-dejavu-core.
+  patch-tests:
+    name: patch tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: patch-tests
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core
+      - run: scripts/apply-patches.sh
+      - run: scripts/patch-test.sh
+
+  # examples/hello on an API 35 emulator: scripts/android-smoke.sh builds, installs and drives it (docs/android-smoke.md).
+  # It boots an emulator and builds a whole APK, so it runs on main, pull requests and manual runs, not on every
+  # branch push (docs/ci.md). The full API 28/33/35 keyboard matrix stays local.
+  android-smoke:
+    name: android-smoke
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # One emulator for both runner steps below: the first creates and caches it, the second runs the smoke test.
+      # `-gpu auto` picks lavapipe (Vulkan) on the GPU-less runner; on SwiftShader's Vulkan (`swiftshader_indirect`,
+      # `swangle_indirect`) the renderer never finishes creating (docs/android-smoke.md#in-ci).
+      EMULATOR_OPTIONS: -no-window -gpu auto -noaudio -no-boot-anim -camera-back none
+      # The emulator image, for both runner steps and the AVD cache key.
+      AVD_API_LEVEL: 35
+      AVD_TARGET: google_apis
+      AVD_ARCH: x86_64
+      AVD_PROFILE: pixel_7
+      # Part of the AVD cache key: the emulator runner's tag (keep it equal to the two `uses:` lines below, which
+      # cannot read env), and a number to bump by hand to throw away a bad cached AVD.
+      AVD_RUNNER: v2.38.0
+      AVD_CACHE_BUMP: 1
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: android-smoke
+      # JDK 21 runs Gradle, which fetches JDK 17 to compile (docs/cli.md); `cache: gradle` keeps Gradle's caches.
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13+9
+          cache: gradle
+      # The runner has several NDKs; cargo-parallax needs one named (docs/cli.md, Requirements). /dev/kvm opened
+      # to the runner user, as the emulator runner's README does, so the x86_64 emulator is hardware-accelerated.
+      - run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: scripts/apply-patches.sh
+      # The AVD with a booted snapshot, made once and cached; the key names everything that shapes it.
+      - uses: actions/cache@v6.1.0
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.AVD_API_LEVEL }}-${{ env.AVD_TARGET }}-${{ env.AVD_ARCH }}-${{ env.AVD_PROFILE }}-runner-${{ env.AVD_RUNNER }}-${{ env.AVD_CACHE_BUMP }}
+      - if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
+          force-avd-creation: false
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: false
+          script: echo "AVD snapshot made for the cache"
+      - uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: true
+          script: scripts/android-smoke.sh
+      # The run's logcat and the screen at the failing step.
+      - if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: android-smoke
+          path: target/android-smoke/

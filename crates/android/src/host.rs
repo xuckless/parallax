@@ -22,12 +22,15 @@ use jni::{
 };
 
 use crate::{
-    Error, keys,
+    Error,
+    backend::Device,
+    keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
     text_input::{self, Edit, EditingState},
+    text_system::AndroidTextSystem,
 };
 
 /// The Java class whose static `native` methods [`natives`] binds.
@@ -35,7 +38,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 13] {
+fn natives() -> [NativeMethod; 14] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -58,6 +61,11 @@ fn natives() -> [NativeMethod; 13] {
             surface_destroyed as *mut c_void,
         ),
         row("nativeFrame", "(I)V", frame as *mut c_void),
+        row(
+            "nativeLocalesChanged",
+            "(ILjava/lang/String;)V",
+            locales_changed as *mut c_void,
+        ),
         row(
             "nativeTextInputCalls",
             "(I)Ljava/lang/String;",
@@ -115,8 +123,51 @@ struct MainThreadHost {
 enum AppState {
     /// `JNI_OnLoad` ran; the app launches on the first surface (GPUI needs one to open its window).
     Loaded { launch: fn(&mut App) },
-    /// GPUI is running; the handle keeps it alive for the life of the process.
-    Running(#[allow(dead_code, reason = "held only to keep GPUI alive")] ApplicationHandle),
+    /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
+    /// change; `fonts` is `None` when the system fonts did not load (logged), then there is no order to change.
+    Running {
+        app: Rc<ApplicationHandle>,
+        fonts: Option<Arc<AndroidTextSystem>>,
+    },
+}
+
+impl MainThreadHost {
+    /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
+    /// order follows them. If it moved, GPUI drops the font ids and line layouts it cached with the old order and
+    /// redraws. Before launch there is nothing to do: the first surface brings the locales.
+    fn follow_locales(&self, locales: &[String]) {
+        // Cloned so the borrow ends before GPUI runs: code inside `update` may reach `self.app` again.
+        let (app, fonts) = match &*self.app.borrow() {
+            AppState::Loaded { .. } | AppState::Running { fonts: None, .. } => return,
+            AppState::Running {
+                app,
+                fonts: Some(fonts),
+            } => (app.clone(), fonts.clone()),
+        };
+        if fonts.set_locales(locales) {
+            app.update(|cx| {
+                cx.text_system().invalidate_fonts();
+                cx.refresh_windows();
+            });
+        }
+    }
+}
+
+/// The app's locales from Java: BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`),
+/// per-app locales on API 33+ included, which the system property cosmic-text reads lacks. Unreadable: none (logged),
+/// so the fonts keep fonts.xml order.
+fn locales(env: &mut JNIEnv, tags: &JString) -> Vec<String> {
+    match env.get_string(tags) {
+        Ok(tags) => String::from(tags)
+            .split(',')
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(error) => {
+            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
+            Vec::new()
+        }
+    }
 }
 
 thread_local! {
@@ -189,9 +240,8 @@ fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
-/// `tags` are the app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`):
-/// per-app locales on API 33+, which the system property cosmic-text reads does not have. The first surface starts
-/// the platform with them; runtime per-app locale changes are not followed yet (a later item).
+/// `tags`: the app's locales ([`locales`]). The first surface starts the platform with them; a later one (a recreated
+/// Activity) brings the current ones ([`MainThreadHost::follow_locales`]).
 extern "system" fn surface_created(
     mut env: JNIEnv,
     _class: JClass,
@@ -201,13 +251,7 @@ extern "system" fn surface_created(
     refresh_rate: jfloat,
     tags: JString,
 ) {
-    let locales: Vec<String> = match env.get_string(&tags) {
-        Ok(tags) => String::from(tags).split(',').map(str::to_string).collect(),
-        Err(error) => {
-            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
-            Vec::new()
-        }
-    };
+    let locales = locales(&mut env, &tags);
     // SAFETY: `env` and `surface` are this call's live JNI arguments; fromSurface returns a new reference or null.
     let raw = unsafe {
         ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast())
@@ -218,20 +262,30 @@ extern "system" fn surface_created(
     };
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
-        host.shell.set_display(window.size(), density, refresh_rate);
+        let size = window.size();
+        host.shell.set_display(size, density, refresh_rate);
         host.shell.handle(SurfaceEvent::Created {
             window,
             activity: ActivityId(activity),
+            size,
         });
-        let launch = match &*host.app.borrow() {
-            AppState::Loaded { launch } => *launch,
-            AppState::Running(_) => return,
+        // Read first, so the borrow ends before `follow_locales` runs GPUI.
+        let loaded = match &*host.app.borrow() {
+            AppState::Loaded { launch } => Some(*launch),
+            AppState::Running { .. } => None,
         };
-        match crate::platform::AndroidPlatform::new(host.shell.clone(), &locales) {
+        let Some(launch) = loaded else {
+            return host.follow_locales(&locales);
+        };
+        let fonts = crate::text_system::load(&host.shell.vm, &locales);
+        match crate::platform::AndroidPlatform::new(host.shell.clone(), fonts.clone()) {
             Ok(platform) => {
                 let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
-                *host.app.borrow_mut() = AppState::Running(app);
+                *host.app.borrow_mut() = AppState::Running {
+                    app: Rc::new(app),
+                    fonts,
+                };
                 // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
                 let phases = host.shell.lifecycle.borrow().launch_phases();
                 for &phase in phases {
@@ -256,12 +310,9 @@ extern "system" fn surface_changed(
 ) {
     with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
-        host.shell.set_display(
-            size(DevicePixels(width), DevicePixels(height)),
-            density,
-            refresh_rate,
-        );
-        host.shell.handle(SurfaceEvent::Resized);
+        let size = size(DevicePixels(width), DevicePixels(height));
+        host.shell.set_display(size, density, refresh_rate);
+        host.shell.handle(SurfaceEvent::Resized { size });
     });
 }
 
@@ -311,6 +362,19 @@ extern "system" fn activity_event(
         }),
         None => log::error!("parallax: unknown Activity event {code} ({value})"),
     }
+}
+
+/// The view's `onConfigurationChanged` (the manifest handles `locale|layoutDirection` itself, as Flutter's does):
+/// the app's locales, which may not have changed. From any live Activity's view: locales are the app's, not one
+/// Activity's, and an unchanged order costs nothing.
+extern "system" fn locales_changed(
+    mut env: JNIEnv,
+    _class: JClass,
+    _activity: jint,
+    tags: JString,
+) {
+    let locales = locales(&mut env, &tags);
+    with_host(|host| host.follow_locales(&locales));
 }
 
 /// Every vsync: GPUI draws if anything changed. Java then asks for the text-input calls ([`text_input_calls`]) and
@@ -420,7 +484,7 @@ extern "system" fn dispatch_pointer_data_packet(
     // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
-    with_owner(activity, |host| host.shell.touch(packet));
+    with_owner(activity, |host| host.shell.pointer(packet));
 }
 
 /// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
@@ -575,7 +639,7 @@ impl<F: ?Sized> Default for Slot<F> {
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]), keys as key, modifier and back events
+    /// Pointers arrive here as touch, mouse and scroll input ([`Shell::pointer`]), keys as key, modifier and back events
     /// ([`Shell::key`]).
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
@@ -587,6 +651,15 @@ pub(crate) struct Callbacks {
     pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
+/// Whether the renderer's current surface has shown a frame. Each new surface (attach, device recovery) starts
+/// `Pending`; the window's first successful draw on it logs "parallax: first frame drawn on a WxH … surface" and
+/// moves it to `Drawn`. scripts/android-smoke.sh greps that line to know a launch, rotation or resume really drew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FirstFrame {
+    Pending,
+    Drawn,
+}
+
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
@@ -595,14 +668,18 @@ pub(crate) struct Shell {
     pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
+    /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
+    device: Device,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
-    pub(crate) touches: RefCell<pointer::Touches>,
+    pub(crate) pointers: RefCell<pointer::Pointers>,
     pub(crate) keyboard: RefCell<keys::Keyboard>,
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
+    /// A plain `Cell`: only the main thread draws and attaches surfaces.
+    pub(crate) first_frame: Cell<FirstFrame>,
 }
 
 impl Shell {
@@ -613,12 +690,14 @@ impl Shell {
             lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
+            device: renderer::device(),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
-            touches: RefCell::new(pointer::Touches::default()),
+            pointers: RefCell::new(pointer::Pointers::default()),
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
+            first_frame: Cell::new(FirstFrame::Pending),
         }
     }
 
@@ -660,7 +739,7 @@ impl Shell {
             return Err(Error::OneWindow);
         }
         let window = self.current_window().ok_or(Error::NoSurface)?;
-        let renderer = renderer::create(&self.gpu, &window, self.metrics.get().size)?;
+        let renderer = renderer::create(&self.gpu, self.device, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
         *self.renderer.borrow_mut() = Some(renderer);
         Ok(atlas)
@@ -678,32 +757,39 @@ impl Shell {
         let size = self.metrics.get().size;
         match action {
             Action::Attach { previous } => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.current_window())
-                {
-                    let instance = self
-                        .gpu
-                        .borrow()
-                        .as_ref()
-                        .map(|context| context.instance.clone());
-                    let replaced = instance.ok_or(Error::NoBackend).and_then(|instance| {
-                        renderer
-                            .replace_surface(&window, renderer::surface_config(size), &instance)
-                            .map_err(|error| Error::Renderer(format!("{error:#}")))
-                    });
-                    if let Err(error) = replaced {
-                        log::error!("parallax: cannot attach the new surface: {error}");
+                let attached = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
+                    (Some(renderer), Some(window)) => {
+                        // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow
+                        // once, and the window may be the same one (a resize).
+                        renderer.unconfigure_surface();
+                        let instance = self
+                            .gpu
+                            .borrow()
+                            .as_ref()
+                            .map(|context| context.instance.clone());
+                        instance.ok_or(Error::NoBackend).and_then(|instance| {
+                            renderer
+                                .replace_surface(&window, renderer::surface_config(size), &instance)
+                                .map_err(|error| Error::Renderer(format!("{error:#}")))
+                        })
                     }
-                }
+                    // Before GPUI opens the window there is no renderer: it is created on this window then.
+                    (None, _) | (_, None) => Ok(()),
+                };
                 // Released only now: the renderer has dropped its surface on the previous window.
                 drop(previous);
-                self.resized();
-            }
-            Action::Resize => {
-                if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
-                    renderer.update_drawable_size(size);
+                match attached {
+                    Ok(()) => {
+                        self.first_frame.set(FirstFrame::Pending);
+                        self.resized();
+                    }
+                    Err(error) => {
+                        // The state machine rebuilds the renderer after the backoff. scripts/android-smoke.sh fails
+                        // on this line: keep its wording.
+                        log::error!("parallax: cannot attach the new surface: {error}");
+                        self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
+                    }
                 }
-                self.resized();
             }
             Action::Detach { window } => {
                 if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
@@ -715,18 +801,23 @@ impl Shell {
             Action::RecoverDevice => {
                 let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
                     (Some(renderer), Some(window)) => {
-                        renderer::recover(&self.gpu, renderer, &window, size)
+                        renderer::recover(&self.gpu, self.device, renderer, &window, size)
                     }
                     (None, _) | (_, None) => Err(Error::NoSurface),
                 };
                 match recovered {
                     Ok(()) => self.handle(SurfaceEvent::Recovered),
                     Err(error) => {
-                        // The state machine waits longer before the next try.
+                        // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
+                        // this line: keep its wording.
                         log::error!("parallax: GPU device recovery failed: {error}");
                         self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
                     }
                 }
+            }
+            Action::Redraw => {
+                self.first_frame.set(FirstFrame::Pending);
+                self.resized();
             }
             Action::Draw => {
                 self.callbacks
@@ -797,22 +888,25 @@ impl Shell {
         });
     }
 
-    /// One pointer data packet → GPUI touch events, dispatched in packet order. Upstream turns a tap into a click.
-    fn touch(&self, packet: &[u8]) {
+    /// One pointer data packet → GPUI touch, mouse and scroll events, dispatched in packet order. Upstream turns a
+    /// tap into a click; a mouse clicks itself. The keyboard is read before GPUI runs (it reads modifiers too).
+    fn pointer(&self, packet: &[u8]) {
+        let modifiers = self.keyboard.borrow().modifiers();
         let events = match pointer::decode(packet) {
-            Ok(data) => self
-                .touches
-                .borrow_mut()
-                .events(&data, self.metrics.get().density),
+            Ok(data) => {
+                self.pointers
+                    .borrow_mut()
+                    .events(&data, self.metrics.get().density, modifiers)
+            }
             Err(error) => {
-                log::error!("parallax: touch dropped: {error}");
+                log::error!("parallax: pointer packet dropped: {error}");
                 return;
             }
         };
         for event in events {
             log::debug!("parallax: {event:?}");
             self.callbacks.input.with(|callback| {
-                callback(PlatformInput::Touch(event));
+                callback(event);
             });
         }
     }
@@ -872,7 +966,18 @@ impl Shell {
     fn text_input_calls(&self) -> Option<String> {
         let pending = self.text_input.borrow_mut().take()?;
         let state = if pending.sends_state() {
-            self.with_input_handler(read_state).flatten()
+            self.with_input_handler(|handler| {
+                let state = read_state(handler)?;
+                match pending.commit(&state) {
+                    Some(edit) => {
+                        log::debug!("parallax: composition committed for a new client");
+                        apply(handler, edit);
+                        read_state(handler)
+                    }
+                    None => Some(state),
+                }
+            })
+            .flatten()
         } else {
             None
         };
@@ -883,11 +988,23 @@ impl Shell {
                  the IME sees it empty"
             );
         }
-        log::debug!(
-            "parallax: text input {pending:?}, state: {}",
-            state.as_ref().map_or("none".to_string(), describe)
-        );
-        let calls = self.text_input.borrow_mut().send(pending, state)?;
+        // The field's text bounds, for autofill's rect: the caret when the field is empty.
+        let reads_bounds = self.text_input.borrow().reads_bounds(&pending);
+        let bounds = if reads_bounds {
+            self.with_input_handler(|handler| {
+                let length = match &state {
+                    Some(state) => state.text.encode_utf16().count(),
+                    None => handler.text_length_utf16().unwrap_or(0),
+                };
+                handler.bounds_for_range(0..length)
+            })
+            .flatten()
+        } else {
+            None
+        };
+        let described = state.as_ref().map_or("none".to_string(), describe);
+        let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
+        log::debug!("parallax: text input {pending:?}, state: {described}");
         Some(calls.to_string())
     }
 
@@ -911,18 +1028,7 @@ impl Shell {
                 edits.len()
             );
             for edit in edits {
-                match edit {
-                    Edit::Replace { range, text } => {
-                        handler.replace_text_in_range(Some(range), &text)
-                    }
-                    Edit::Mark {
-                        range,
-                        text,
-                        selected,
-                    } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
-                    Edit::Unmark => handler.unmark_text(),
-                    Edit::Select(range) => handler.set_selected_text_range(range),
-                }
+                apply(handler, edit);
             }
             // The app may refuse or change the edit (a filter, a length limit): the session decides whether Java
             // must take GPUI's state.
@@ -964,6 +1070,20 @@ impl Shell {
             at: Instant::now(),
             device_lost,
         });
+    }
+}
+
+/// One [`Edit`] as GPUI's `InputHandler` call.
+fn apply(handler: &mut PlatformInputHandler, edit: Edit) {
+    match edit {
+        Edit::Replace { range, text } => handler.replace_text_in_range(Some(range), &text),
+        Edit::Mark {
+            range,
+            text,
+            selected,
+        } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
+        Edit::Unmark => handler.unmark_text(),
+        Edit::Select(range) => handler.set_selected_text_range(range),
     }
 }
 

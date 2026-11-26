@@ -11,13 +11,16 @@ modality exists to hide hover under a stale cursor; a back gesture carries its o
 it as a `BackGestureEvent`) arrives right after typing; iPad users with a hardware keyboard hit the same case.
 Not platform-specific, so no cfg.
 
+Depends on: 0003 (`PointerDevice` in the test). Patch 0008 later adds `BackGestureEvent::source` to the
+test's gesture.
+
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
-index 754a975..aa20f93 100644
+index eb24700..6e4ff9f 100644
 --- a/gpui-pre/src/elements/div.rs
 +++ b/gpui-pre/src/elements/div.rs
-@@ -427,7 +427,11 @@ impl Interactivity {
+@@ -428,7 +428,11 @@ impl Interactivity {
      ) {
          self.back_gesture_listeners
              .push(Box::new(move |event, phase, hitbox, window, cx| {
@@ -31,10 +34,10 @@ index 754a975..aa20f93 100644
                      window.prevent_default();
                      cx.stop_propagation();
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 775021f..2231499 100644
+index 77aaa7b..6e31dd7 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -10039,6 +10039,57 @@ mod tests {
+@@ -10184,6 +10184,62 @@ mod tests {
          assert_eq!(claims.borrow().as_slice(), ["inner", "outer"]);
      }
  
@@ -57,7 +60,12 @@ index 775021f..2231499 100644
 +        .to_platform_input();
 +        let rows = [
 +            ("after a key press", key_down.clone(), 10., Some("inner")),
-+            ("after a key press, outer", key_down.clone(), 80., Some("outer")),
++            (
++                "after a key press, outer",
++                key_down.clone(),
++                80.,
++                Some("outer"),
++            ),
 +            ("after a key press, unclaimed", key_down, 150., None),
 +            ("after a touch", touch.clone(), 10., Some("inner")),
 +            ("after a touch, unclaimed", touch, 150., None),

@@ -37,7 +37,8 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
 
 `KEYCODE_BACK` (Flutter's `goBack`) becomes upstream's
 [`BackGestureEvent`](../upstream/gpui-pre/src/gestures.rs): `Started` on the press, at the window's left edge,
-mid-height (GPUI hit-tests back gestures; a key has no position). An element with `on_back_gesture` claims it
+mid-height (GPUI hit-tests back gestures; a key has no position), with `source: BackGestureSource::Key`, so
+`Window::pointer_source()` is `None` during it ([patch 0008](../patches/0008-back-gesture-source.patch), [0003](pointer-source.md)). An element with `on_back_gesture` claims it
 (`default_prevented`); then repeats are swallowed and the release sends `Committed`, or `Cancelled` when Android
 cancelled it (`FLAG_CANCELED`, passed next to the packet because key data has no field for it). Unclaimed, the press and release
 go to Android, whose default finishes the Activity. One state enum, `Back::{Idle, Offered, Claimed}`, and one
@@ -54,7 +55,6 @@ preceding input (key press, touch).
 
 - **Keyboard layout.** `keyboard_layout` and `keyboard_mapper` are still stubs ([android.md](android.md#stubs-not-yet-on-android)).
 - **Predictive back** (API 33+ `OnBackInvokedCallback`, progress while swiping) and the device type field.
-- **Java tests.** Flutter's `KeyboardManagerTest` (needs Robolectric); its channel-responder cases drop.
 
 ## Changing it
 
@@ -65,4 +65,5 @@ preceding input (key press, touch).
   (shift+a). `Shell::key` logs each packet and its step with `log::debug!`. Injected events have meta state 0 on the
   virtual keyboard device, so the responder (as in Flutter) synthesizes a Shift release right after the press; a hardware
   keyboard keeps it held.
-- Tests: `cargo test -p parallax-android` (`keys::tests`: one row per key sequence and per packet case).
+- Tests: `cargo test -p parallax-android` (`keys::tests`: one row per key sequence and per packet case) and
+  `scripts/java-test.sh` (Flutter's `KeyboardManagerTest` on Robolectric, [android-tests.md](android-tests.md)).

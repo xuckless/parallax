@@ -37,6 +37,8 @@ raw-window-handle = "0.6"
 roxmltree = "0.21"
 # Flutter's `flutter/textinput` calls are JSON (src/text_input.rs); already in GPUI's dependency graph.
 serde_json = "1"
+# A field's autofill id from its `FocusId` (GPUI's slotmap key, src/text_input.rs); already in GPUI's dependency graph.
+slotmap = "1"
 thiserror.workspace = true
 uuid = "1"
 
@@ -45,6 +47,6 @@ uuid = "1"
 gpui.workspace = true
 roxmltree = "0.21"
 serde_json = "1"
-# Distinct `FocusId`s (GPUI's slotmap keys) for the text-input session's tests.
+# Distinct `FocusId`s (GPUI's slotmap keys) for the text-input session's tests, and their autofill ids.
 slotmap = "1"
 thiserror.workspace = true

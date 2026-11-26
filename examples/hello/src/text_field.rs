@@ -5,11 +5,11 @@
 use std::ops::Range;
 
 use parallax::gpui::{
-    App, Autocapitalize, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextInputAction,
-    TextInputConfiguration, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    FocusHandle, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, PaintQuad,
+    Pixels, Point, ShapedLine, SharedString, Style, TextInputConfiguration, TextRun,
+    UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla, point, prelude::*, px,
+    relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -41,6 +41,8 @@ pub struct TextField {
     /// UTF-8; GPUI's input handler speaks UTF-16, converted at the trait boundary.
     content: String,
     placeholder: SharedString,
+    /// What the platform's keyboard and autofill are told about this field.
+    configuration: TextInputConfiguration,
     selected: Range<usize>,
     reversed: bool,
     marked: Option<Range<usize>>,
@@ -49,11 +51,16 @@ pub struct TextField {
 }
 
 impl TextField {
-    pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        placeholder: &str,
+        configuration: TextInputConfiguration,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: String::new(),
             placeholder: placeholder.to_string().into(),
+            configuration,
             selected: 0..0,
             reversed: false,
             marked: None,
@@ -254,27 +261,25 @@ impl EntityInputHandler for TextField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let line = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        // An empty field has no shaped line: its caret is at the start (the IME and autofill still need a rect).
+        let x = |index| {
+            self.last_layout
+                .as_ref()
+                .map_or(px(0.), |line| line.x_for_index(index))
+        };
         Some(Bounds::from_corners(
-            point(bounds.left() + line.x_for_index(range.start), bounds.top()),
-            point(bounds.left() + line.x_for_index(range.end), bounds.bottom()),
+            point(bounds.left() + x(range.start), bounds.top()),
+            point(bounds.left() + x(range.end), bounds.bottom()),
         ))
     }
 
-    /// Prose: the keyboard may suggest, correct and capitalize (GPUI's default turns all of that off).
     fn text_input_configuration(
         &mut self,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> TextInputConfiguration {
-        TextInputConfiguration {
-            autocorrect: true,
-            autocapitalize: Autocapitalize::Sentences,
-            suggestions: true,
-            input_action: TextInputAction::Done,
-            ..TextInputConfiguration::default()
-        }
+        self.configuration.clone()
     }
 
     fn character_index_for_point(
@@ -321,7 +326,8 @@ impl Render for TextField {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Submit, _window, _cx| {
-                log::info!("text field submitted: {:?}", this.content);
+                // The length only: a field may hold an email or a password, and logs are readable.
+                log::info!("text field submitted: {} bytes", this.content.len());
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .w_full()

@@ -120,24 +120,40 @@ Core patches (needed by Android from the start; iOS and web get them too):
       has neither ([gap audit](docs/audits/gap-audit.md)).
 - [x] Per-element opt-out of touch → mouse emulation: build upstream's declared-but-unused `ClickEvent::Touch`.
 - [x] `TextInputConfiguration`: keyboard type, secure entry and autofill hint.
-- [ ] Run each patch's own GPUI tests in CI (the fork crates' tests don't build as shipped).
-- [ ] Per-touch device attribution (Wave 10): patch 0003 keeps one `touch_device`; key it by `TouchId`, since a pen and
-      a finger down together can mislabel each other.
-- [ ] Back key's `pointer_source` (Wave 10): a key-driven `BackGestureEvent` should report `None`; needs a source on
-      `BackGestureEvent` (iOS edge swipe stays a touch).
-- [ ] Touch opt-out for custom elements (Wave 10): `leave_touch_to_gestures` is `pub(crate)`, so a custom element can't
-      opt out of an ancestor's `on_touch`; decide whether to make it public.
+- [x] Run each patch's own GPUI tests in CI: the `patch-tests` job runs `scripts/patch-test.sh`
+      ([docs/patch-tests.md](docs/patch-tests.md)).
+- [x] Per-touch device attribution (Wave 10): a recognized gesture reports the device of its own touch (patch 0003).
+- [x] Back key's `pointer_source` (Wave 10): `BackGestureEvent::source` (`EdgeSwipe` / `Key`); Android's Back key is
+      `Key` and reports no pointer (patches 0003, 0006, 0008).
+- [x] Touch opt-out for custom elements (Wave 10): `Window::leave_touch_to_gestures` is public (patch 0004).
+- [ ] Web pens as `Pen`: `gpui_web` sends pens down the mouse path, so they read as `Mouse` (see Upstream notes); needs
+      a device field on mouse events (~95 struct literals across backends, [core-patches.md](docs/core-patches.md)).
+- [ ] `PointerDevice` still defaults to Touch (`#[default]`); drop the Default (needs `TouchEvent` without Default) — patch 0003.
 - [x] Fork `zed-industries/zed` (`xuckless/zed`, `parallax` branch). Filing is paused (AGENTS.md rule 14).
 
 Full Android:
 
-- [ ] Runtime locale changes (Wave 10): follow per-app / system locale changes after start (today only the first surface's
-      locales are used).
-- [ ] Android autofill (Wave 10): port `TextInputChannel.Configuration.Autofill` and emit GPUI's autofill hints (today
-      the hint is not sent; [android-text-input.md](docs/android-text-input.md)).
-- [ ] Mouse and trackpad as a real mouse (Wave 10): route Mouse/Trackpad packets to MouseDown/MouseMove/MouseUp with
-      buttons and click counting, and wire `onGenericMotionEvent` for hover and wheel (today their clicks arrive as
-      synthesized taps).
+- [x] Runtime locale changes (Wave 10): `onConfigurationChanged` sends the new locales and the font fallback follows
+      ([android-fonts.md](docs/android-fonts.md#locale-changes)).
+- [x] Android autofill (Wave 10): `TextInputChannel.Configuration.Autofill` and the autofill parts of `TextInputPlugin`
+      ported; GPUI's hint is sent ([android-autofill.md](docs/android-autofill.md)).
+- [ ] Autofill save prompts: GPUI has no finish-autofill-context API, so Rust never sends `finishAutofillContext`.
+- [ ] Autofill field groups: GPUI announces only the focused field, so `setClient` has no `fields`.
+- [ ] Autofill suggestion already on screen doesn't follow a moved field (ported Java doesn't re-call
+      `notifyViewEntered`; Flutter behaves the same).
+- [x] Mouse and trackpad as a real mouse (Wave 10): MouseDown/MouseMove/MouseUp with buttons and click counting, hover
+      and wheel through `onGenericMotionEvent`, trackpad pans as scrolls ([android-mouse.md](docs/android-mouse.md)).
+- [ ] Mouse hover enter/exit: Flutter's processor ignores `ACTION_HOVER_ENTER/EXIT`, so `is_hovered` stays false and
+      leaving the view sends no `MouseExited`.
+- [ ] A second mouse button during a drag (`ACTION_BUTTON_PRESS`) sends no down or up of its own.
+- [ ] Chorded mouse: GPUI's div fires `on_click` on the first MouseUp after a Left down, whichever button (upstream
+      desktop behaviour) — see Upstream notes.
+- [ ] Pointer icons: `set_cursor_style` on Android.
+- [x] Email keyboard (Wave 10): GPUI's default no-suggestions turned Flutter's email variation into
+      `VARIATION_FILTER`; email, URL and search now always send suggestions on.
+- [ ] Emoji picker stall on API 28 (owner decision, deferred): 100 new emoji cost a median 92 ms once (3–9 frames);
+      API 35 is within budget. The off-thread design is in [android-emoji.md](docs/android-emoji.md#cost); build it
+      if Gate 1 or a real device shows it matters.
 - [ ] Multi-window (after Gate 1, Wave 12): one GPUI window per process, so in split-screen only the most recently started Activity draws;
       decide whether to support a window per Activity.
 - [x] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
@@ -149,23 +165,48 @@ Full Android:
       answers queries straight from GPUI's `InputHandler` (both use UTF-16 offsets); Flutter's editing state is kept for
       its batch-edit logic. Ledger rows list the parts left out.
 - [x] Java test setup copied from Flutter's `test_runner`: Gradle, JDK 21 toolchain, Robolectric 4.17, Mockito 5.20 (JVM, no device).
-- [ ] Port the matching Flutter Android tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`,
+- [x] Port the matching Flutter Android tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`,
       `AndroidTouchProcessorTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) as tests of the Java port.
       Cases pinned below API 28 are dropped and listed in the ledger.
+- [x] Java tests in CI: the `java-tests` job runs `scripts/java-test.sh` ([docs/ci.md](docs/ci.md)).
 - [x] Fonts ([audit](docs/audits/android-fonts.md)): a small upstream patch so `CosmicTextSystem` takes our own font
       list; a `fonts.xml` / `font_fallback.xml` parser with table tests; the Android fallback table (per-language CJK,
       emoji); load fonts by path and prefer the CBDT `NotoColorEmojiLegacy.ttf` (swash can't draw COLRv1; superseded in Wave 9: Android draws emoji itself via Canvas/Typeface over JNI, patch 0007, [docs/android-emoji.md](docs/android-emoji.md)); pass the
       app locale over JNI. Fonts load on the main thread at startup; measure startup and move them off it only if it
       exceeds the budget.
-- [ ] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35.
+- [x] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35 ([gate-1.md](docs/gate-1.md)).
 - [x] Lifecycle: implement upstream's existing lifecycle, memory-warning, inset and back hooks for Android. Map
       `onDestroy` to an explicit choice (upstream has no terminate phase).
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge, fonts.xml parser.
 - [x] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
+- [x] CI emulator smoke (Wave 10): the `android-smoke` job runs `scripts/android-smoke.sh` on an API 35 emulator
+      ([docs/android-smoke.md](docs/android-smoke.md)).
+- [x] Gate 1 run on API 28, 33 and 35 with Gboard, recorded in [docs/gate-1.md](docs/gate-1.md) (Wave 10).
+- [x] Gate 1 fix: GL first on emulators (API 33 Vulkan drew black, then garbled glyphs).
+- [x] Gate 1 fix: a resize makes a new surface (API 28 kept the old-size frame after rotation).
+- [x] Gate 1 fix: Android's default focus highlight is off (it dimmed every colour).
+- [x] Gate 1 fix: a composition left behind when focus moves is ended (patch 0010, `Pending::commit`).
+- [ ] Gboard select mode (Shift + arrows) doesn't extend the selection — Phase 4 (owner deferred).
+- [x] Patch 0010 tells the native IME (Wave 10): `PlatformWindow::end_composition` blurs and refocuses the web IME
+      mirror while the browser composes (checked in headless Chromium); Android and iOS restart their sessions on a
+      field change, so they keep the no-op ([core-patches.md](docs/core-patches.md)).
+- [ ] macOS: verify patch 0010's discardMarkedText with a real Japanese IME (needs the owner's console session on pixl-mac).
+- [ ] Web smoke test in CI (headless browser) — hello panicked on web unnoticed (no fonts on the web until Wave 10
+      embedded `WEB_FONTS`, [examples.md](docs/examples.md#web)).
+- [ ] Web CJK in hello: no CJK font is embedded (several MB); gpui_web's `CanvasFontFallback::EmojiAndCjk` could draw
+      it from the browser's fonts, but `gpui_platform` builds `WebPlatform` with the default (emoji only).
+- [ ] Emulator GL uses RGB565 (wgpu-hal `choose_config` without sRGB): dark colours are quantized on emulators only.
 
-**Gate 1:** the example app runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect,
-composing, selection, emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner
-has devices to test on (until then, releases are emulator-verified).
+- [x] **Gate 1** (Wave 10, 0.1.4; emulator-verified per owner decision, [gate-1.md](docs/gate-1.md)): the example app
+      runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect, composing, selection,
+      emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner has devices to
+      test on (until then, releases are emulator-verified).
+
+Gate 1 needs Play images (Gboard as users get it, updated from Play) for API 28, 33 and 35. Installed under `~/Android/Sdk`
+(2026-11-26): `system-images;android-28;google_apis;x86_64` and `system-images;android-35;google_apis;x86_64`, used by
+the `parallax_*` and `Pixel_7_API35` AVDs; none is a Play image and there is no API 33 image. To install:
+`system-images;android-28;google_apis_playstore;x86_64`, `system-images;android-33;google_apis_playstore;x86_64`,
+`system-images;android-35;google_apis_playstore;x86_64`, plus one AVD on each.
 
 ## Phase 2: Gestures, physics and platform behaviour
 
@@ -282,6 +323,8 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-26 | fontdb 0.23, swash 0.2.10 | fontdb has no Android font discovery (empty list, no warning); swash draws CBDT and COLR v0, not COLRv1. See the [font audit](docs/audits/android-fonts.md). |
 | 2026-11-26 | gpui-pre 0.3.14 on Android emulator | GPUI draws via `gpui_wgpu` on Vulkan and GLES 3.1 with no glue patch; a backend needs ~10 `Platform` + ~12 `PlatformWindow` methods for real (~1,500 lines). Start with `Application::run_embedded`. `PriorityQueue*` is not exported on Android. Emulator needs `-gpu host` (`swiftshader_indirect` crashed). See the [spike](docs/android-spike.md). |
 | 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | `gpui_web` turns only `pointerType == "touch"` into a `TouchEvent`; pens take the mouse path, so with patch 0003 a web pen reads as `PointerDevice::Mouse` (`events.rs`). |
+| 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | Chorded mouse: a div's `on_click` fires on the first `MouseUpEvent` after a Left `MouseDownEvent`, whichever button goes up (`elements/div.rs`, `pending_mouse_down`); same on every desktop backend. |
+| 2026-11-26 | wgpu-hal 30.0.2 | GL on Android: `choose_config` asks for no colour sizes unless EGL has sRGB (1.5 or `EGL_KHR_gl_colorspace`), so EGL's sort picks a 16-bit RGB 565 config; the emulator's EGL has neither. `configure` keeps the EGL window surface on resize. |
 | 2026-11-25 | gpui-ce main | `gpui-ce` has no `gpui_ios` and is moving to Parley text with API drift. Not used. |
 | 2026-11-25 | zed `8aeb64f7` | `gpui_ios` exists (added 2026-10-14, #63068): UIKit, Metal, CoreText, text input (49 KB), safe area, back gesture. |
 | 2026-11-25 | zed `8aeb64f7` | Core gpui has `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag) and `ScrollPhysics::{ios, android}`. |
@@ -291,3 +334,5 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-25 | flutter `322dfd0771` (master) | BSD-3-Clause. Android text input: `TextInputPlugin.java` 36 KB, `InputConnectionAdaptor.java` 21 KB. iOS: `FlutterTextInputPlugin.mm` 141 KB + 207 KB of tests. Web: `text_editing.dart` 113 KB. |
 | 2026-11-25 | flutter GitHub releases | `releases/latest` returns `3.19.0-0.1.pre` (a 2024 beta not marked pre-release). Find stable tags from the tag list, highest plain `X.Y.Z`. |
 | 2026-11-25 | accesskit | `accesskit_android` exists (permissive: Apache, MIT, Chromium-derived BSD). Use it, don't port Flutter's `AccessibilityBridge`. 0.9.1 needs AccessKit 0.25; upstream pins 0.24, so use the 0.7.x line until upstream bumps. |
+| 2026-11-26 | zed `f126950f` | A tap's focus change is drawn inside the touch dispatch (`draw_before_touch_release`), so a platform learns of it after the left field's input handler is dropped; core ends a composition on focus moves only toward a native view (`end_composition_before_focusing_native_view`). Patch 0010 ends it in the draw. |
+| 2026-11-26 | zed `f126950f` | `notify` inside a focus listener (`on_blur`, …) is ignored: listeners run in the draw's Focus phase, where `invalidate_view` marks nothing dirty. Defer it (`defer_in`). |

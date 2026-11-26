@@ -10,7 +10,7 @@ use std::{
     fs::File,
     path::Path,
     path::PathBuf,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, RwLock},
     time::Instant,
 };
 
@@ -30,7 +30,7 @@ use jni::{
 use crate::{
     Error,
     emoji::{self, Clusters, Raster},
-    fonts::{self, Face, FontPlan},
+    fonts::{self, Face, FontPlan, Tagged},
 };
 
 /// Where Android lists its fonts, newest format first; the first readable one is used. API 35+ ship both (the old
@@ -54,8 +54,13 @@ pub(crate) struct AndroidTextSystem {
     /// fonts.xml family and alias names (`sans-serif`, `monospace`, `arial`) → the family name inside the file,
     /// and the weight an alias implies (`sans-serif-medium`).
     generics: HashMap<String, (SharedString, Option<FontWeight>)>,
-    /// The per-language faces' family names, the app's locales first: appended to every font's fallbacks.
-    by_locale: Vec<String>,
+    /// The per-language faces' family names with their `lang` tags, XML order.
+    tagged: Vec<Tagged<String>>,
+    /// `tagged` ordered for the app's current locales ([`fonts::by_locale`]): appended to every font's fallbacks.
+    /// Reordered when the locales change ([`Self::set_locales`]). A lock because `PlatformTextSystem` is
+    /// `Send + Sync`; GPUI on Android runs on the main thread only (AGENTS.md, Decisions: Android threading), so it
+    /// is never contended. Kept as `FontFallbacks` (an `Arc`) so a font without fallbacks of its own shares it.
+    by_locale: RwLock<FontFallbacks>,
     /// `None` when the Java helper could not be reached (logged): emoji stay on upstream's path.
     emoji: Option<Emoji>,
 }
@@ -73,9 +78,9 @@ struct Emoji {
     clusters: Mutex<Clusters>,
 }
 
-/// Loads the system fonts for `locales` (BCP-47, the app's preference order). On any failure the text system has
-/// no system fonts, as before Phase 1, and the error is logged: text still renders with fonts the app adds.
-pub(crate) fn load(vm: &JavaVM, locales: &[String]) -> Arc<dyn PlatformTextSystem> {
+/// Loads the system fonts for `locales` (BCP-47, the app's preference order). `None` on any failure, logged: the
+/// caller then runs upstream's text system without system fonts, so text still renders with fonts the app adds.
+pub(crate) fn load(vm: &JavaVM, locales: &[String]) -> Option<Arc<AndroidTextSystem>> {
     let started = Instant::now();
     let planned = FONT_LISTS
         .iter()
@@ -85,7 +90,7 @@ pub(crate) fn load(vm: &JavaVM, locales: &[String]) -> Arc<dyn PlatformTextSyste
             let config = fonts::parse(&xml)?;
             Ok((
                 list,
-                fonts::plan(&config, Path::new(FONT_DIR), locales, |path| {
+                fonts::plan(&config, Path::new(FONT_DIR), |path| {
                     File::open(path).is_ok()
                 })?,
             ))
@@ -100,20 +105,24 @@ pub(crate) fn load(vm: &JavaVM, locales: &[String]) -> Arc<dyn PlatformTextSyste
                     plan.missing.len(),
                     started.elapsed(),
                     plan.default.path.display(),
-                    text_system.by_locale,
+                    text_system
+                        .by_locale
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .fallback_list(),
                     text_system
                         .emoji
                         .as_ref()
                         .map_or(0, |emoji| emoji.faces.len()),
                     plan.emoji.len(),
                 );
-                return Arc::new(text_system);
+                return Some(Arc::new(text_system));
             }
             Err(error) => log::error!("parallax: fonts: cannot load {list}: {error}"),
         },
         Err(error) => log::error!("parallax: fonts: {error}"),
     }
-    Arc::new(CosmicTextSystem::new_without_system_fonts("sans-serif"))
+    None
 }
 
 impl AndroidTextSystem {
@@ -165,7 +174,22 @@ impl AndroidTextSystem {
                 ))
             })
             .collect();
-        let by_locale = plan.by_locale.iter().filter_map(family).collect();
+        let tagged: Vec<Tagged<String>> = plan
+            .tagged
+            .iter()
+            .filter_map(|tagged| {
+                Some(Tagged {
+                    langs: tagged.langs.clone(),
+                    face: family(&tagged.face)?,
+                })
+            })
+            .collect();
+        let by_locale = RwLock::new(FontFallbacks::from_fonts(
+            fonts::by_locale(&tagged, locales)
+                .into_iter()
+                .cloned()
+                .collect(),
+        ));
         let emoji_faces = plan.emoji.iter().filter_map(|face| {
             let id = ids
                 .get(&face.path)?
@@ -181,7 +205,8 @@ impl AndroidTextSystem {
             .ok();
 
         // cosmic-text's Android fallback table is empty, so its locale changes nothing yet; the per-language order
-        // stays GPUI fallbacks on every font (`font_id`). The app's locale is still the right one to hand over.
+        // stays GPUI fallbacks on every font (`font_id`). The app's locale is still the right one to hand over; it
+        // stays the launch one (a `FontSystem` cannot change locale), harmless while that table is empty.
         let locale = locales
             .first()
             .map_or(FALLBACK_LOCALE, String::as_str)
@@ -192,9 +217,29 @@ impl AndroidTextSystem {
                 &default,
             ),
             generics,
+            tagged,
             by_locale,
             emoji,
         })
+    }
+
+    /// Reorders the per-language fallbacks for new `locales` (a runtime locale change). Returns whether the order
+    /// changed: only then must GPUI drop the font ids and layouts it cached with the old order.
+    pub(crate) fn set_locales(&self, locales: &[String]) -> bool {
+        let order: Vec<String> = fonts::by_locale(&self.tagged, locales)
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut by_locale = self
+            .by_locale
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if by_locale.fallback_list() == order.as_slice() {
+            return false;
+        }
+        log::info!("parallax: fonts: per-language order {order:?} for locales {locales:?}");
+        *by_locale = FontFallbacks::from_fonts(order);
+        true
     }
 
     /// Android's drawing of `params` and its size in device pixels, or `None` for upstream's path
@@ -378,14 +423,25 @@ impl PlatformTextSystem for AndroidTextSystem {
             font.family = family.clone();
             font.weight = weight.unwrap_or(font.weight);
         }
+        let by_locale = self
+            .by_locale
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        // A font without fallbacks of its own (the usual case) shares the order; only one with its own copies.
         let own = font
             .fallbacks
             .as_ref()
             .map(FontFallbacks::fallback_list)
             .unwrap_or_default();
-        font.fallbacks = Some(FontFallbacks::from_fonts(
-            own.iter().chain(&self.by_locale).cloned().collect(),
-        ));
+        font.fallbacks = Some(match own {
+            [] => by_locale.clone(),
+            own => FontFallbacks::from_fonts(
+                own.iter()
+                    .chain(by_locale.fallback_list())
+                    .cloned()
+                    .collect(),
+            ),
+        });
         self.cosmic.font_id(&font)
     }
 

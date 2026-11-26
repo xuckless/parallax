@@ -8,8 +8,9 @@
 //! GPUI gets. Pure, so it is tested on any host. How keys fit together: `docs/android-keys.md`.
 
 use gpui::{
-    BackGestureEvent, BackGesturePhase, Capslock, DispatchEventResult, KeyDownEvent, KeyUpEvent,
-    Keystroke, Modifiers, ModifiersChangedEvent, Pixels, PlatformInput, Point,
+    BackGestureEvent, BackGesturePhase, BackGestureSource, Capslock, DispatchEventResult,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, Pixels, PlatformInput,
+    Point,
 };
 
 use crate::Error;
@@ -332,6 +333,8 @@ impl Keyboard {
                             | BackGesturePhase::Progressed
                             | BackGesturePhase::Cancelled => 0.,
                         },
+                        // A key, so `Window::pointer_source` is `None` (patch 0008).
+                        source: BackGestureSource::Key,
                     })
                 };
                 match outcome {
@@ -506,7 +509,9 @@ mod tests {
                 modifiers(&event.modifiers),
                 event.capslock.on
             ),
-            PlatformInput::BackGesture(event) => format!("back {:?}", event.phase),
+            PlatformInput::BackGesture(event) => {
+                format!("back {:?} {:?}", event.phase, event.source)
+            }
             other => format!("unexpected {other:?}"),
         }
     }
@@ -639,9 +644,9 @@ mod tests {
                     (packet(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![
-                    (Some("back Started"), true),
+                    (Some("back Started Key"), true),
                     (None, true),
-                    (Some("back Committed"), true),
+                    (Some("back Committed Key"), true),
                 ],
             ),
             (
@@ -651,7 +656,11 @@ mod tests {
                     (packet(REPEAT, GO_BACK, ""), UNHANDLED),
                     (packet(UP, GO_BACK, ""), UNHANDLED),
                 ],
-                vec![(Some("back Started"), false), (None, false), (None, false)],
+                vec![
+                    (Some("back Started Key"), false),
+                    (None, false),
+                    (None, false),
+                ],
             ),
             (
                 // Propagation stopped without a back listener is not a claim.
@@ -660,7 +669,7 @@ mod tests {
                     (packet(DOWN, GO_BACK, ""), HANDLED),
                     (packet(UP, GO_BACK, ""), UNHANDLED),
                 ],
-                vec![(Some("back Started"), false), (None, false)],
+                vec![(Some("back Started Key"), false), (None, false)],
             ),
             (
                 "back_claimed_after_unclaimed",
@@ -671,10 +680,10 @@ mod tests {
                     (packet(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![
-                    (Some("back Started"), false),
+                    (Some("back Started Key"), false),
                     (None, false),
-                    (Some("back Started"), true),
-                    (Some("back Committed"), true),
+                    (Some("back Started Key"), true),
+                    (Some("back Committed Key"), true),
                 ],
             ),
         ];

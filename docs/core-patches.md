@@ -1,37 +1,13 @@
 # Core patches
 
-Three patches to GPUI core: pointer device tags, opting an element out of touch → mouse, and keyboard data for text
-input. The rules they follow are in [AGENTS.md](../AGENTS.md#upstream-and-patch-rules) (the "Touch → mouse" row under
-Decisions); how to write and translate a patch is in [patches.md](patches.md). Apps get these patches through the
-`parallax-gpui*` fork crates ([gpui-fork-crates.md](gpui-fork-crates.md)).
+Patches to GPUI core: pointer device tags (0003, and 0008 for back gestures), opting an element out of touch →
+mouse, and keyboard data for text input. Rules: [AGENTS.md](../AGENTS.md#upstream-and-patch-rules) ("Touch → mouse"
+under Decisions); how to write a patch: [patches.md](patches.md); apps get them via [fork crates](gpui-fork-crates.md).
 
 ## 0003: pointer source
 
-[0003-pointer-source.patch](../patches/0003-pointer-source.patch). Upstream turns taps into mouse presses and pans
-into scroll events, and the only clue it leaves is the window-wide `last_input_was_touch()`.
-
-- **API:** `Window::pointer_source() -> Option<PointerSource>`, where `PointerSource { device: PointerDevice,
-  synthesized: bool }` and `PointerDevice` is `Mouse`, `Touch` or `Pen`. It is `Some` only while a pointer event is
-  being dispatched, and `None` during key events, render (even the draw a tap runs before its dispatch returns), and
-  after the event returns. Read it inside a listener.
-- **How core sets it:** in `Window::dispatch_event`, from the `pointer_source` table that the patch adds to
-  `window.rs`, with one arm per `PlatformInput` variant:
-  - backend mouse, scroll, pinch and file-drop input: `Mouse`, not synthesized;
-  - `Touch`: its own `device`, not synthesized;
-  - long press, touch drag and back gesture: the latest touch's device, synthesized.
-  Taps, pans and long presses that the core recognizer builds are the latest touch's device, synthesized, including
-  ones fired later by timers (long press, momentum). The value is saved and restored around each dispatch.
-- **How backends set it:** they set only `TouchEvent::device`. Mouse input needs nothing.
-  - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
-    is `Mouse`.
-  - Web touches are `Touch`.
-  - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
-    [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
-    are `Pen`, mouse and trackpad are `Mouse`.
-  - Later patches that build a `TouchEvent` literal must set `device` (0006's test does).
-- **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
-  `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
-  which means ~95 struct literals across every backend. That is why 0003 is a per-dispatch query, not a field.
+`Window::pointer_source()` names the device of the pointer event being dispatched (mouse, touch, pen) and whether it
+was synthesized: [pointer-source.md](pointer-source.md).
 
 ## 0004: touch opt-out
 
@@ -46,7 +22,9 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 - **Mechanism:** `TouchEvent` is a `MouseEvent` now. One `TouchRoute` per touch id: `Deciding` during `Started`
   (first decision wins; bubble order visits the frontmost element first), then `Gestures` or
   `Claimed(GlobalElementId)`. Later phases of a claimed touch reach the owner by `Window::touch_owner`, not by hit
-  test. Custom elements claim with `Window::claim_touch` from a `TouchEvent` listener. The window's mouse position
+  test. Custom elements decide from a `TouchEvent` listener: `Window::claim_touch` to own the touch, or
+  `Window::leave_touch_to_gestures` when they handle taps or scrolls themselves (as divs do), so an ancestor's
+  `on_touch` cannot take it. The window's mouse position
   does not move. After a claimed touch ends the window draws if dirty, as after a tap, so the web keyboard opens for
   a field focused in an `Ended` handler.
 - **Taps click as touches:** div's `on_click` now receives the declared `ClickEvent::Touch(TouchClickEvent)` when the
@@ -64,16 +42,28 @@ fields from `TextInputConfiguration` in `set_text_input_configuration`.
 | `autofill` | `Option<AutofillHint>` | `Username`, `Password`, `NewPassword`, `OneTimeCode`, `Email`, `Phone`, `Name`, `PostalAddress`, `PostalCode`, `CreditCardNumber` |
 
 Each `AutofillHint` maps to an HTML `autocomplete` token, an Android `AUTOFILL_HINT_*` and an iOS
-`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)). iOS and web don't read them yet.
+`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)),
+autofill included ([android-autofill.md](android-autofill.md)). iOS and web don't read them yet.
+
+## 0010: composition ends on focus loss
+
+[0010-end-composition-on-focus-loss.patch](../patches/0010-end-composition-on-focus-loss.patch). No app API. When a
+draw finds that focus left the field whose input handler it holds (blur, or another element), it calls the field's
+`unmark_text` if it has marked text, before the handler is dropped: the text stays, the underline goes, and no stale
+composing range reaches the next IME session ([android-text-input.md](android-text-input.md)). It runs in the draw
+because a tap's focus change is drawn inside the touch dispatch, before any platform call; core's own deferred
+`end_composition_before_focusing_native_view` (native views only) would come too late there.
+
+When it unmarked something it calls `PlatformWindow::end_composition` (no-op by default), so the native IME drops its
+composition too and doesn't type it again: macOS `discardMarkedText`; web blurs and refocuses the hidden IME mirror if
+the browser is composing. iOS and Android keep the no-op: a field change or blur already restarts their IME session.
 
 ## Tests
 
 Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_device_and_synthesis_of_each_event`
 (window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
-gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs).
+gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs), 0010
+`focus_moves_end_the_left_fields_composition` (input.rs, one row per focus move, a tap among them; it counts the
+test platform's `end_composition` calls).
 
-The packaged crate can't run its own lib tests as shipped: `svg_renderer.rs` includes two fonts from Zed's
-`assets/`, and `style.rs` tests use `util_macros`, which is not vendored. To run them, copy `build/parallax-gpui/`,
-add any two `.ttf` files at the font paths, drop the `#[perf]` lines, then run
-`cargo test -p parallax-gpui --features test-support --lib` (the three `svg_renderer` font tests fail on stand-in
-fonts).
+Run them with [`scripts/patch-test.sh`](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)); CI does too.

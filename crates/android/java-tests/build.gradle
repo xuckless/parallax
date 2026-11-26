@@ -67,6 +67,8 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.17'
     testImplementation 'org.mockito:mockito-core:5.20.0'
+    // ICU4J answers the mocked FlutterTextUtils.CodePoints in InputConnectionAdaptorTest, as in Flutter.
+    testImplementation 'com.ibm.icu:icu4j:75.1'
     mockitoAgent('org.mockito:mockito-core:5.20.0') {
         transitive = false
     }

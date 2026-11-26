@@ -3,8 +3,10 @@
 package io.github.xuckless.parallax;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.os.Build;
+import android.util.SparseArray;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
 import android.view.KeyEvent;
@@ -12,7 +14,10 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
+import android.view.ViewStructure;
 import android.view.WindowInsets;
+import android.view.autofill.AutofillValue;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import java.nio.ByteBuffer;
@@ -21,10 +26,11 @@ import java.nio.ByteBuffer;
  * The surface GPUI draws into. Forwards the surface lifecycle, vsync frames and system-bar insets
  * to Rust (parallax-android, crates/android/src/host.rs); everything runs on the main thread.
  *
- * <p>Touch: onTouchEvent → the ported AndroidTouchProcessor → nativeDispatchPointerDataPacket (see
- * docs/android-touch.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
- * nativeDispatchKeyData (see docs/android-keys.md). Text input: the ported TextInputPlugin, synced
- * with GPUI over the natives below (see docs/android-text-input.md).
+ * <p>Touch and mouse: onTouchEvent and onGenericMotionEvent → the ported AndroidTouchProcessor →
+ * nativeDispatchPointerDataPacket (see docs/android-touch.md, docs/android-mouse.md). Keys:
+ * dispatchKeyEvent → the ported KeyboardManager → nativeDispatchKeyData (see docs/android-keys.md).
+ * Text input: the ported TextInputPlugin, synced with GPUI over the natives below (see
+ * docs/android-text-input.md).
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
@@ -37,6 +43,10 @@ final class ParallaxSurfaceView extends SurfaceView
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
       int activity, Surface surface, float density, float refreshRate, String languageTags);
+
+  // The app's locales after a configuration change (system or per-app language), as above; the
+  // per-language font order follows them. Named after Flutter's LocalizationPlugin.sendLocalesToFlutter.
+  private static native void nativeLocalesChanged(int activity, String languageTags);
 
   private static native void nativeSurfaceChanged(
       int activity, int width, int height, float density);
@@ -131,9 +141,16 @@ final class ParallaxSurfaceView extends SurfaceView
     textInputChannel = new TextInputChannel(activity);
     textInputPlugin = new TextInputPlugin(this, textInputChannel);
     getHolder().addCallback(this);
+    // No default focus highlight (API 26+): out of touch mode Android draws a translucent grey over
+    // the focused view, which here is GPUI's whole frame (white read 224 of 255). GPUI draws its own
+    // focus.
+    setDefaultFocusHighlightEnabled(false);
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
     setFocusableInTouchMode(true);
+    // As FlutterView: the autofill service asks this view for its fields (TextInputPlugin's virtual
+    // structure).
+    setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_YES);
   }
 
   void startFrames() {
@@ -168,6 +185,15 @@ final class ParallaxSurfaceView extends SurfaceView
         getResources().getConfiguration().getLocales().toLanguageTags());
   }
 
+  // As FlutterView.onConfigurationChanged: send the locales on every configuration change (the
+  // manifest's configChanges includes locale|layoutDirection, so the Activity is not recreated);
+  // Rust ignores an unchanged list.
+  @Override
+  protected void onConfigurationChanged(Configuration newConfig) {
+    super.onConfigurationChanged(newConfig);
+    nativeLocalesChanged(activity, newConfig.getLocales().toLanguageTags());
+  }
+
   @Override
   public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
     nativeSurfaceChanged(activity, width, height, density());
@@ -184,6 +210,16 @@ final class ParallaxSurfaceView extends SurfaceView
     // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
     requestUnbufferedDispatch(event);
     return touchProcessor.onTouchEvent(event);
+  }
+
+  // As FlutterView.onGenericMotionEvent: mouse hover moves and wheel turns (the processor takes
+  // pointer-class hover moves and scrolls, and leaves the rest to Android). Hover events reach here
+  // because this view's onHoverEvent does not take them (it is not clickable), as in FlutterView
+  // without accessibility.
+  @Override
+  public boolean onGenericMotionEvent(MotionEvent event) {
+    boolean handled = touchProcessor.onGenericMotionEvent(event, getContext());
+    return handled || super.onGenericMotionEvent(event);
   }
 
   // The app's only view takes focus as soon as it is in the window: without it, key events stop at
@@ -219,6 +255,20 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
     return textInputPlugin.createInputConnection(this, keyboardManager, outAttrs);
+  }
+
+  // As FlutterView: the focused field, if it has an autofill hint, as a virtual child.
+  @Override
+  public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+    super.onProvideAutofillVirtualStructure(structure, flags);
+    textInputPlugin.onProvideAutofillVirtualStructure(structure, flags);
+  }
+
+  // As FlutterView: values the user picked from the autofill service. The focused field's value
+  // goes to GPUI as an IME edit would (TextInputPlugin.autofill → nativeUpdateEditingState).
+  @Override
+  public void autofill(SparseArray<AutofillValue> values) {
+    textInputPlugin.autofill(values);
   }
 
   // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's

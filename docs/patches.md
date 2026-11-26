@@ -56,7 +56,10 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0001](../patches/0001-export-priority-queue-android.patch) | export `PriorityQueueSender`/`Receiver` on Android |
 | [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `CosmicTextSystem::new_with_font_system` |
 | [0003](../patches/0003-pointer-source.patch) | `TouchEvent::device`, `Window::pointer_source()` ([core-patches.md](core-patches.md)) |
-| [0004](../patches/0004-touch-opt-out.patch) | `on_touch` opts an element out of touch → mouse; taps click as `ClickEvent::Touch` ([core-patches.md](core-patches.md)) |
+| [0004](../patches/0004-touch-opt-out.patch) | `on_touch` opts an element out of touch → mouse, `Window::leave_touch_to_gestures`; taps click as `ClickEvent::Touch` ([core-patches.md](core-patches.md)) |
 | [0005](../patches/0005-text-input-keyboard-type.patch) | keyboard type, secure entry, autofill hint in `TextInputConfiguration` ([core-patches.md](core-patches.md)) |
 | [0006](../patches/0006-claim-back-gesture-after-key-input.patch) | `on_back_gesture` claims after key input ([android-keys.md](android-keys.md#back)) |
 | [0007](../patches/0007-cosmic-text-system-font-database-id.patch) | `CosmicTextSystem::font_database_id`, so Android can draw emoji ([android-emoji.md](android-emoji.md)) |
+| [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
+| [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
+| [0010](../patches/0010-end-composition-on-focus-loss.patch) | a field that focus leaves ends its IME composition ([core-patches.md](core-patches.md)) |

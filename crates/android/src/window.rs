@@ -13,7 +13,10 @@ use gpui::{
 };
 use raw_window_handle as rwh;
 
-use crate::{host::Shell, platform::AndroidDisplay};
+use crate::{
+    host::{FirstFrame, Shell},
+    platform::AndroidDisplay,
+};
 
 pub(crate) struct AndroidWindow {
     pub(crate) shell: Rc<Shell>,
@@ -68,7 +71,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        self.shell.touches.borrow().last_position
+        self.shell.pointers.borrow().last_position
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -137,7 +140,8 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn is_hovered(&self) -> bool {
-        false // Not yet on Android: mouse and stylus hover (the ported onGenericMotionEvent, not wired yet)
+        // Not yet on Android: Flutter's processor sends hover moves (mouse moves in GPUI), not hover enter or exit.
+        false
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
@@ -185,7 +189,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_hover_status_change(&self, _callback: Box<dyn FnMut(bool)>) {
-        // No hover yet; comes with mouse and stylus hover (onGenericMotionEvent).
+        // Not yet on Android: no hover enter or exit (see is_hovered).
     }
 
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
@@ -219,7 +223,22 @@ impl PlatformWindow for AndroidWindow {
     fn draw(&self, scene: &Scene) {
         if let Some(renderer) = self.shell.renderer.borrow_mut().as_mut() {
             // `false` means no surface or a lost device; the shell handles both on the next surface event or frame.
-            renderer.draw(scene);
+            if renderer.draw(scene)
+                && self.shell.first_frame.replace(FirstFrame::Drawn) == FirstFrame::Pending
+            {
+                let size = self.shell.metrics.get().size;
+                let orientation = if size.width > size.height {
+                    "landscape"
+                } else {
+                    "portrait"
+                };
+                // scripts/android-smoke.sh waits for this line, orientation included: keep its wording.
+                log::info!(
+                    "parallax: first frame drawn on a {}x{} {orientation} surface",
+                    size.width.0,
+                    size.height.0
+                );
+            }
         }
     }
 
