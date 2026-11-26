@@ -4,7 +4,42 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased] (0.1.3)
+## [Unreleased] (0.1.4)
+
+Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 0.3.14 plus Parallax's patches (fork
+`0.3.14-parallax.4`). Checked by unit, JVM and patch tests; no real-device testing yet.
+
+### Added
+
+- `BackGestureEvent::source` (`BackGestureSource::EdgeSwipe` or `Key`): Android's Back key and navigation-bar button
+  are `Key`, with no pointer behind them. **Breaking** for `BackGestureEvent` struct literals without
+  `..Default::default()` (the default is `EdgeSwipe`).
+- `Window::leave_touch_to_gestures` is public: a custom element that handles taps or scrolls itself keeps an ancestor's
+  `on_touch` from taking the touch, as a div with `on_click` or `on_scroll` already does.
+- `parallax-android`: a mouse or trackpad is a real mouse: clicks with click count, right and middle click, hover
+  moves, wheel and two-finger trackpad scrolling (no longer synthesized taps).
+- `parallax-android`: autofill. `TextInputConfiguration`'s autofill hint reaches Android's autofill service, which can
+  offer and fill the focused field.
+- `parallax-android`: runtime locale changes. Changing the app's or system language reorders the font fallback (for
+  example Chinese vs Japanese glyphs for the same Han characters) without a restart.
+
+### Changed
+
+- A gesture recognized from touches (tap, pan, long press) reports the device of its own touch in
+  `Window::pointer_source()`, not of the latest touch, so a pen and a finger down together no longer mislabel each
+  other.
+
+### Fixed
+
+- `parallax-android`: an email, URL or search field keeps its keyboard layout when suggestions are off (GPUI's
+  default); a secure one is a plain password field.
+
+### Known limits
+
+- Android mouse: no hover enter/exit (`is_hovered` stays false), no pointer icons. Android autofill sees one field at
+  a time and never offers to save (GPUI has no API to end an autofill context).
+
+## [0.1.3]
 
 Wave 9: our GPUI fork, core patches and Android text input. Built on `gpui-pre` 0.3.14 plus Parallax's patches.
 Verified on the Android emulator (no real-device testing yet).
