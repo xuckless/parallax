@@ -27,8 +27,9 @@ and 35, with Gboard. Last run: 2026-11-26 on `wave-10` (10e6361). **Not passed**
 | 8. Back hides keyboard, then exits | pass | pass | pass |
 | Cold start (`am start -W`) | 0.38–0.53 s | 1.3–2.3 s | 0.9–1.0 s |
 
-Every API level: text field white draws as grey (239, 178 on GL, 224 of 255) while Gboard's white is 255 in the
-same screenshot. The example has no long-press or double-tap selection; handles are Phase 4, not a failure. No app
+Colours (fixed): text field white read 239, 178 and 224 of 255 while Gboard's was 255. Android's default focus
+highlight greyed the whole view; it is now off, and white reads 255 on all three. On the emulator's GL, wgpu uses a
+16-bit EGL config, so darker colours are quantized (`#1e1e2e` reads 24,28,41); Vulkan reads exact. The example has no long-press or double-tap selection; handles are Phase 4, not a failure. No app
 crash or ANR in logcat.
 
 ## Failures, worst first
@@ -40,7 +41,7 @@ crash or ANR in logcat.
    reaches GPUI before the new client; see the sync protocol in [android-text-input.md](android-text-input.md).
 3. ~~**API 28 rotation.**~~ Fixed: a resize makes a new surface ([android-surface.md](android-surface.md#resize));
    wgpu's GL kept the EGL surface, whose next buffer had the old size, and API 28 drops such a buffer.
-4. **Dimmed colours** on every level (above).
+4. ~~**Dimmed colours.**~~ Fixed: Android's default focus highlight is off (above).
 5. **Gboard select mode** sends Shift down/up, then plain arrows; a `TextView` keeps Shift as sticky meta state, the
    ported `KeyboardManager` path does not, so the caret moves instead of extending.
 

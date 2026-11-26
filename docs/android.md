@@ -32,6 +32,7 @@
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
 - **Rotation** keeps the Activity (manifest `configChanges`, as Flutter); [a new surface](android-surface.md#resize).
+- **No focus highlight.** Android's default one greyed the whole frame out of touch mode (white read 224 of 255).
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).

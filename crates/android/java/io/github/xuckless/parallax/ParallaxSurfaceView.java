@@ -141,6 +141,10 @@ final class ParallaxSurfaceView extends SurfaceView
     textInputChannel = new TextInputChannel(activity);
     textInputPlugin = new TextInputPlugin(this, textInputChannel);
     getHolder().addCallback(this);
+    // No default focus highlight (API 26+): out of touch mode Android draws a translucent grey over
+    // the focused view, which here is GPUI's whole frame (white read 224 of 255). GPUI draws its own
+    // focus.
+    setDefaultFocusHighlightEnabled(false);
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
     setFocusableInTouchMode(true);
