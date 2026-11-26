@@ -112,6 +112,10 @@ third_party/
 8. **Licenses.** Every vendored dependency keeps its license file. Flag anything not Apache-compatible before it lands. Keep `NOTICE` current.
 9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a crate or product name.
 10. **One patch, two layouts.** Patches are written against the vendored `gpui-pre` layout; `scripts/patch-paths.sh` translates them to Zed's `crates/gpui*` layout for filing upstream.
+11. **Published crates build on stock upstream.** Crates on crates.io can't carry `patches/`, so every published Parallax
+    crate must build against unpatched `gpui-pre`. When code needs a patch, the published crate carries a small local
+    copy or workaround (credited, with a comment naming the patch) until Zed merges it; then the copy is deleted.
+    Patches stay for filing upstream and for local work.
 
 ## Coding style: Caveman Code
 
@@ -153,7 +157,8 @@ Hard rules:
   State machines get one row per `(state, event) → next`, including rejected events.
 - Test behaviour through public inputs and outputs. Mock only at I/O edges.
 - No throwaway tests. Every test stays in the suite and checks a requirement.
-- Platform code is verified by running `examples/` on a simulator, emulator or browser. Before a release, on real devices.
+- Platform code is verified by running `examples/` on a simulator, emulator or browser. 0.1.1 ships emulator-verified;
+  from Gate 1 on, releases are also verified on real devices.
 - Never write a test that locks in a bug. Fix the code.
 
 ## Docs
