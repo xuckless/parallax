@@ -12,6 +12,8 @@ publish = false
 [workspace.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14" }
+parallax-platform = { path = "crates/platform" }
+thiserror = "2"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

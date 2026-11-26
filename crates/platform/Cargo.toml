@@ -8,3 +8,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+gpui.workspace = true
+thiserror.workspace = true
+
+# Upstream gpui_platform has no Android arm and does not compile there; Android's backend will be parallax-android.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+gpui_platform.workspace = true
