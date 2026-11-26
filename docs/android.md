@@ -19,10 +19,10 @@ Background: [android-spike.md](android-spike.md).
   [patch 0001](../patches/0001-export-priority-queue-android.patch) lands upstream ([patches.md](patches.md#published-crates)); an eventfd
   registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
 - **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty.
-- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Lost}`,
-  one `next(state, event) → (state, action)` for `Created`, `Resized`, `Destroyed` and `DeviceLost`. The shell applies
-  the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android destroys it,
-  device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
+- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
+  one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
+  The shell applies the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android
+  destroys it, device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
 - **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
   that configures the surface seeds the shared `GpuContext`, at startup and after device loss
   ([android-lifecycle.md](android-lifecycle.md#device-loss)). Created on the main thread; the time is logged.

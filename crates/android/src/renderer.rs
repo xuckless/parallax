@@ -152,7 +152,7 @@ pub(crate) fn create(
 
 /// Rebuilds `renderer` after GPU device loss, keeping its atlas. Upstream's `WgpuRenderer::recover` would pick the
 /// backend itself when the shared context is lost; seeding a live context from [`BACKENDS`] first makes it adopt
-/// ours instead. On error the renderer still reports its device lost, so the next frame tries again.
+/// ours instead. The surface state machine decides when to call it (after upstream's 350 ms, backing off on error).
 pub(crate) fn recover(
     gpu: &GpuContext,
     renderer: &mut WgpuRenderer,

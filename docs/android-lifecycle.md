@@ -48,9 +48,11 @@ the arms the compiler then asks for in `Lifecycle::next`, each with a test row.
 
 ## Device loss
 
-Each vsync, `Shell::frame` asks the renderer whether its device is lost; the surface state machine
-([surface.rs](../crates/android/src/surface.rs)) turns that into `RecoverDevice`, and
-[`renderer::recover`](../crates/android/src/renderer.rs) rebuilds it:
+Each vsync, `Shell::frame` sends the surface state machine ([surface.rs](../crates/android/src/surface.rs)) a `Frame`
+saying whether the renderer's device is lost. A loss moves `Ready` to `Recovering { since, failures }`; once
+`RECOVERY_DELAYS[failures]` has passed (upstream's 350 ms first, doubling per failure up to 5.6 s, without blocking the
+Looper as upstream's sleep does), the action is `RecoverDevice`, and [`renderer::recover`](../crates/android/src/renderer.rs)
+rebuilds it:
 
 1. `WgpuRenderer::destroy` drops the surface and the renderer's hold on the lost device.
 2. `seed` replaces the lost shared `GpuContext` with one from the first backend in `BACKENDS` that can drive the
@@ -58,5 +60,5 @@ Each vsync, `Shell::frame` asks the renderer whether its device is lost; the sur
 3. Upstream's `WgpuRenderer::recover` finds a live context, so it adopts ours instead of picking a backend itself, and
    refills the same atlas GPUI holds.
 
-On failure the renderer still reports its device lost and the next frame tries again. No patch is needed: stock
+`Recovered` returns to `Ready` and resizes to the current surface; `RecoveryFailed` restarts the wait. No patch is needed: stock
 `gpui-pre` exposes `destroy`, `recover` and `WgpuContext::device_lost` (AGENTS.md, patch rule 11).

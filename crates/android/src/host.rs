@@ -423,10 +423,10 @@ impl Shell {
             .with(|callback| callback(metrics.insets()));
     }
 
-    /// The current native window, when the surface is ready.
-    fn ready_window(&self) -> Option<NativeWindow> {
+    /// The current native window: ready, or waiting for the renderer to be rebuilt on it.
+    fn current_window(&self) -> Option<NativeWindow> {
         match &*self.surface.borrow() {
-            Surface::Ready(window) => Some(window.clone()),
+            Surface::Ready(window) | Surface::Recovering { window, .. } => Some(window.clone()),
             Surface::None | Surface::Lost { .. } => None,
         }
     }
@@ -436,7 +436,7 @@ impl Shell {
         if self.renderer.borrow().is_some() {
             return Err(Error::OneWindow);
         }
-        let window = self.ready_window().ok_or(Error::NoSurface)?;
+        let window = self.current_window().ok_or(Error::NoSurface)?;
         let renderer = renderer::create(&self.gpu, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
         *self.renderer.borrow_mut() = Some(renderer);
@@ -447,13 +447,16 @@ impl Shell {
     fn handle(&self, event: SurfaceEvent<NativeWindow>) {
         let state = self.surface.replace(Surface::None);
         let (next, action) = state.next(event);
-        log::info!("parallax: surface {next:?}, {action:?}");
+        // Not every vsync: Draw and Wait are the quiet steady states.
+        if !matches!(action, Action::Draw | Action::Wait) {
+            log::info!("parallax: surface {next:?}, {action:?}");
+        }
         *self.surface.borrow_mut() = next;
         let size = self.metrics.get().size;
         match action {
             Action::Attach { previous } => {
                 if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.ready_window())
+                    (self.renderer.borrow_mut().as_mut(), self.current_window())
                 {
                     let instance = self
                         .gpu
@@ -487,15 +490,26 @@ impl Shell {
                 drop(window);
             }
             Action::RecoverDevice => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.ready_window())
-                    && let Err(error) = renderer::recover(&self.gpu, renderer, &window, size)
-                {
-                    // The next frame sees the device still lost and tries again.
-                    log::error!("parallax: GPU device recovery failed: {error:#}");
+                let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
+                    (Some(renderer), Some(window)) => {
+                        renderer::recover(&self.gpu, renderer, &window, size)
+                    }
+                    (None, _) | (_, None) => Err(Error::NoSurface),
+                };
+                match recovered {
+                    Ok(()) => self.handle(SurfaceEvent::Recovered),
+                    Err(error) => {
+                        // The state machine waits longer before the next try.
+                        log::error!("parallax: GPU device recovery failed: {error}");
+                        self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
+                    }
                 }
-                self.redraw();
             }
+            Action::Draw => self
+                .callbacks
+                .request_frame
+                .with(|callback| callback(RequestFrameOptions::default())),
+            Action::Wait => {}
             Action::Reject { why } => log::warn!("parallax: surface event ignored: {why}"),
         }
     }
@@ -568,22 +582,16 @@ impl Shell {
         }
     }
 
-    /// Every vsync (Choreographer): lets GPUI draw if anything changed.
+    /// Every vsync (Choreographer): GPUI draws if anything changed, or device recovery moves on.
     fn frame(&self) {
-        if !matches!(*self.surface.borrow(), Surface::Ready(_)) {
-            return;
-        }
         let device_lost = self
             .renderer
             .borrow()
             .as_ref()
             .is_some_and(WgpuRenderer::device_lost);
-        if device_lost {
-            self.handle(SurfaceEvent::DeviceLost);
-            return;
-        }
-        self.callbacks
-            .request_frame
-            .with(|callback| callback(RequestFrameOptions::default()));
+        self.handle(SurfaceEvent::Frame {
+            at: Instant::now(),
+            device_lost,
+        });
     }
 }
