@@ -47,18 +47,23 @@ autofill included ([android-autofill.md](android-autofill.md)). iOS and web don'
 
 ## 0010: composition ends on focus loss
 
-[0010-end-composition-on-focus-loss.patch](../patches/0010-end-composition-on-focus-loss.patch). No API. When a
+[0010-end-composition-on-focus-loss.patch](../patches/0010-end-composition-on-focus-loss.patch). No app API. When a
 draw finds that focus left the field whose input handler it holds (blur, or another element), it calls the field's
 `unmark_text` if it has marked text, before the handler is dropped: the text stays, the underline goes, and no stale
 composing range reaches the next IME session ([android-text-input.md](android-text-input.md)). It runs in the draw
 because a tap's focus change is drawn inside the touch dispatch, before any platform call; core's own deferred
 `end_composition_before_focusing_native_view` (native views only) would come too late there.
 
+When it unmarked something it calls `PlatformWindow::end_composition` (no-op by default), so the native IME drops its
+composition too and doesn't type it again: macOS `discardMarkedText`; web blurs and refocuses the hidden IME mirror if
+the browser is composing. iOS and Android keep the no-op: a field change or blur already restarts their IME session.
+
 ## Tests
 
 Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_device_and_synthesis_of_each_event`
 (window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
 gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs), 0010
-`focus_moves_end_the_left_fields_composition` (input.rs, one row per focus move, a tap among them).
+`focus_moves_end_the_left_fields_composition` (input.rs, one row per focus move, a tap among them; it counts the
+test platform's `end_composition` calls).
 
 Run them with [`scripts/patch-test.sh`](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)); CI does too.

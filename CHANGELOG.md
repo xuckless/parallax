@@ -49,7 +49,8 @@ run on API 28, 33 and 35 emulators; no real-device testing yet.
   next input); a resize now makes a new surface.
 - `parallax-android`: colours are no longer dimmed: Android's default focus highlight greyed the whole view.
 - A field's composition (an underlined IME range) ends when focus leaves it (patch 0010), so the next IME session
-  doesn't get a stale range back and replace typed text.
+  doesn't get a stale range back and replace typed text. The native IME is told too, on macOS and the web, so moving
+  focus from code mid-composition no longer types the composed text a second time.
 
 ### Known limits
 
