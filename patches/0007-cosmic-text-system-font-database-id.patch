@@ -1,0 +1,35 @@
+Let an outer text system ask which font database face a FontId is.
+
+What: add `CosmicTextSystem::font_database_id(FontId) -> Option<fontdb::ID>` in gpui_wgpu. Read-only, no
+behaviour change.
+
+Why: Parallax's Android text system wraps CosmicTextSystem and has Android draw colour emoji itself (swash
+cannot paint COLRv1, the only emoji font on API 33+ images without NotoColorEmojiLegacy.ttf). It must know
+which shaped runs come from the system emoji files listed in fonts.xml (NotoColorEmoji.ttf and the separate
+flags font), including the fallback faces cosmic-text picks during layout. A `FontId` is an index into
+CosmicTextSystem's private font list, so without this the wrapper cannot map a run back to its file.
+`check_is_known_emoji_font` matches the PostScript name `NotoColorEmoji` only and misses the flags font.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-wgpu/src/cosmic_text_system.rs b/gpui-pre-wgpu/src/cosmic_text_system.rs
+index 392c05c..74b7d3b 100644
+--- a/gpui-pre-wgpu/src/cosmic_text_system.rs
++++ b/gpui-pre-wgpu/src/cosmic_text_system.rs
+@@ -115,6 +115,16 @@ impl CosmicTextSystem {
+         Ok((gpui::FontWeight(face.weight.0 as f32), style))
+     }
+ 
++    /// The font database face a `FontId` was loaded from, so an outer text system can tell which
++    /// font file a shaped run's glyphs come from (fallback faces included).
++    pub fn font_database_id(&self, font_id: FontId) -> Option<cosmic_text::fontdb::ID> {
++        self.0
++            .read()
++            .loaded_fonts
++            .get(font_id.0)
++            .map(|loaded_font| loaded_font.font.id())
++    }
++
+     /// Builds reports for unresolved source indices after an outer text system
+     /// has applied its own fallback.
+     pub fn missing_glyphs(

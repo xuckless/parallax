@@ -23,5 +23,6 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, porting the next Flutter test |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, the FontSystem from patch 0002 |
+| [android-emoji.md](android-emoji.md) | Android colour emoji: fonts.xml emoji faces drawn by Android over JNI, one glyph per cluster, metrics and cost |
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
