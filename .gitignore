@@ -4,3 +4,4 @@
 /.claude/worktrees
 # wasm-pack output of the examples (docs/examples.md).
 /examples/*/pkg
+/drafts

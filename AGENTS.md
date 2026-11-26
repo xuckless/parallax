@@ -120,12 +120,12 @@ third_party/
     opt-out, keyboard type), published crates get the feature through Parallax API on stock GPUI (e.g. `parallax-ext`
     element methods, a per-window query from the backend). Once Zed merges the patch, the side-channel becomes a thin
     wrapper over upstream's API.
-13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `docs/upstream-drafts/`
+13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `drafts/upstream/` (git-ignored, owner-only)
     and shown to the owner before they are opened.
 14. **Our Zed fork carries the patches; upstreaming is paused.** `xuckless/zed` keeps a `parallax` branch: the snapshot
     commit from `upstream/UPSTREAM` plus every patch, rebuilt by `scripts/sync-fork.sh` at each sync. The owner has
     paused contacting Zed (2026-11-26): Zed's AI policy wants PRs and posts written and opened by a person, so agents
-    only keep patches, the fork branch and notes in `docs/upstream-drafts/` ready. There is no app opt-in to the fork
+    only keep patches, the fork branch and notes in `drafts/upstream/` (git-ignored, owner-only) ready. There is no app opt-in to the fork
     (its crate names differ from `gpui-pre`); apps get backend patches only when Zed merges them.
 
 ## Coding style: Caveman Code
@@ -194,6 +194,10 @@ Hard rules:
   land before the merge.
 - **Releases.** Every wave that changes what an app can see ships the next 0.1.x (dry-run, CI green, changelog,
   publish, tag). Internal-only waves (audits, CI, docs) don't.
+- **Memory budget** (the owner's machine has 31 GB; the Claude session is capped at 24 GB). Every agent runs builds
+  with `CARGO_BUILD_JOBS=6` and Gradle with `-Dorg.gradle.workers.max=4 -Dorg.gradle.jvmargs=-Xmx2g`. At most two
+  emulators run at once, each started with `-memory 2048 -cores 2 -no-snapshot-save`, and each agent shuts its
+  emulator down as soon as its check is done. Over budget, wait for another agent to finish rather than start more.
 - **iOS simulator.** Waves that change iOS code run `examples/hello` on the iOS simulator on the owner's Mac, all files
   under `/Users/Shared/parallax/`. Other waves rely on CI's iOS build.
 - When upstream behaviour surprises you, write it down in `ROADMAP.md` under "Upstream notes" with the upstream commit.

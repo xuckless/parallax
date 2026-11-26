@@ -5,7 +5,7 @@
 [`parallax`](https://github.com/xuckless/zed/tree/parallax) branch is the Zed commit in
 [`upstream/UPSTREAM`](../upstream/UPSTREAM) plus one commit per patch in [`patches/`](../patches/), translated with
 [`patch-paths.sh`](../scripts/patch-paths.sh) ([patches.md](patches.md#translating-for-filing-upstream)).
-Upstream PRs are cut from it; drafts of them live in [`upstream-drafts/`](upstream-drafts/).
+Upstream PRs are cut from it; drafts of them live in `drafts/upstream/` (git-ignored, owner-only).
 
 ## Rebuilding the branch: sync-fork.sh
 
