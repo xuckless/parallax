@@ -46,7 +46,7 @@ no fixed schedule and no planned last number.
       and which upstream GPUI code each one checks. This sets the order of Phases 2 and 4.
       See [docs/audits/oracle-inventory.md](docs/audits/oracle-inventory.md).
 - [x] `parallax-platform`: one target → platform table (desktop, web, iOS upstream; Android later).
-- [ ] Reserve the `parallax*` crate names on crates.io (`parallax`, `parallax-platform`, `parallax-android`,
+- [x] Reserve the `parallax*` crate names on crates.io (`parallax`, `parallax-platform`, `parallax-android`,
       `parallax-web`, `parallax-ext`, `parallax-ios`, `cargo-parallax`).
 
 **Gate 0:** a fresh clone builds `build/gpui-patched/` from scripts alone, CI is green with zero patches, and the
