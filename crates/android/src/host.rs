@@ -16,7 +16,7 @@ use gpui::{
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JByteBuffer, JClass, JObject},
+    objects::{JByteBuffer, JClass, JObject, JString},
     sys::{JNI_ERR, JNI_VERSION_1_6, jfloat, jint},
 };
 
@@ -31,7 +31,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 6] {
+fn natives() -> [NativeMethod; 7] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -59,6 +59,11 @@ fn natives() -> [NativeMethod; 6] {
             "nativeDispatchPointerDataPacket",
             "(Ljava/nio/ByteBuffer;I)V",
             dispatch_pointer_data_packet as *mut c_void,
+        ),
+        row(
+            "nativeLocales",
+            "(Ljava/lang/String;)V",
+            locales as *mut c_void,
         ),
     ]
 }
@@ -223,6 +228,22 @@ extern "system" fn dispatch_pointer_data_packet(
     with_host(|host| host.shell.touch(packet));
 }
 
+/// The app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`): per-app
+/// locales on API 33+, which the system property cosmic-text reads does not have. Sent from `onCreate`, before the
+/// first surface starts the platform and loads the fonts.
+extern "system" fn locales(mut env: JNIEnv, _class: JClass, tags: JString) {
+    let tags: String = match env.get_string(&tags) {
+        Ok(tags) => tags.into(),
+        Err(error) => {
+            log::error!("parallax: unreadable locales: {error}");
+            return;
+        }
+    };
+    with_host(|host| {
+        *host.shell.locales.borrow_mut() = tags.split(',').map(str::to_string).collect();
+    });
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the JNI signature: two edge sets"
@@ -356,6 +377,8 @@ pub(crate) struct Shell {
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) touches: RefCell<pointer::Touches>,
+    /// The app's locales (BCP-47), preference order; the fonts read them once, when the platform starts.
+    pub(crate) locales: RefCell<Vec<String>>,
 }
 
 impl Shell {
@@ -367,6 +390,7 @@ impl Shell {
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
             touches: RefCell::new(pointer::Touches::default()),
+            locales: RefCell::new(Vec::new()),
         }
     }
 

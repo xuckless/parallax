@@ -46,6 +46,10 @@ final class ParallaxSurfaceView extends SurfaceView
   // read before the call returns. Named after FlutterJNI.nativeDispatchPointerDataPacket.
   static native void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position);
 
+  // The app's locales, BCP-47 tags joined by commas, preference order (LocaleList.toLanguageTags()).
+  // ParallaxActivity sends them before the first surface; the fonts read them when the app starts.
+  static native void nativeLocales(String languageTags);
+
   // As FlutterView: no platform views, so motion events are not tracked.
   private final AndroidTouchProcessor touchProcessor =
       new AndroidTouchProcessor(/* trackMotionEvents= */ false);

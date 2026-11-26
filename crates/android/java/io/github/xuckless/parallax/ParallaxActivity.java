@@ -27,6 +27,8 @@ public class ParallaxActivity extends Activity {
     super.onCreate(savedInstanceState);
     // The app's JNI_OnLoad (android_main!) runs here, on the main thread, and binds the natives.
     System.loadLibrary(libName());
+    // Per-app locales (API 33+) are in the Activity's configuration, not the system property.
+    ParallaxSurfaceView.nativeLocales(getResources().getConfiguration().getLocales().toLanguageTags());
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
     view = new ParallaxSurfaceView(this);

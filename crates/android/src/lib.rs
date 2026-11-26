@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "android")]
 mod dispatcher;
+#[cfg(any(target_os = "android", test))]
+mod fonts;
 #[cfg(target_os = "android")]
 mod host;
 #[cfg(target_os = "android")]
@@ -25,6 +27,8 @@ mod renderer;
 mod queue;
 #[cfg(any(target_os = "android", test))]
 mod surface;
+#[cfg(target_os = "android")]
+mod text_system;
 #[cfg(target_os = "android")]
 mod window;
 
@@ -95,6 +99,22 @@ pub enum Error {
     PointerChange(i64),
     #[error("pointer data packet has an unknown PointerDeviceKind {0}")]
     PointerKind(i64),
+    #[error("fonts.xml: {0}")]
+    FontsXml(#[source] roxmltree::Error),
+    #[error("fonts.xml: root element is <{0}>, not <familyset>")]
+    FontsXmlRoot(String),
+    #[error("fonts.xml: <{element} {attribute}> is missing or invalid: {value:?}")]
+    FontsXmlAttribute {
+        element: String,
+        attribute: &'static str,
+        value: Option<String>,
+    },
+    #[error("no system font: the font list names no font file that is on disk")]
+    NoSystemFont,
+    #[error("cannot add the system fonts: {0}")]
+    AddFonts(String),
+    #[error("no readable font list (tried {0:?})")]
+    NoFontList(&'static [&'static str]),
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,
