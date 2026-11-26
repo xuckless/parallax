@@ -651,6 +651,15 @@ pub(crate) struct Callbacks {
     pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
+/// Whether the renderer's current surface has shown a frame. Each new surface (attach, device recovery) starts
+/// `Pending`; the window's first successful draw on it logs "parallax: first frame drawn on a WxH … surface" and
+/// moves it to `Drawn`. scripts/android-smoke.sh greps that line to know a launch, rotation or resume really drew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FirstFrame {
+    Pending,
+    Drawn,
+}
+
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
@@ -669,6 +678,8 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
+    /// A plain `Cell`: only the main thread draws and attaches surfaces.
+    pub(crate) first_frame: Cell<FirstFrame>,
 }
 
 impl Shell {
@@ -686,6 +697,7 @@ impl Shell {
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
+            first_frame: Cell::new(FirstFrame::Pending),
         }
     }
 
@@ -767,9 +779,13 @@ impl Shell {
                 // Released only now: the renderer has dropped its surface on the previous window.
                 drop(previous);
                 match attached {
-                    Ok(()) => self.resized(),
+                    Ok(()) => {
+                        self.first_frame.set(FirstFrame::Pending);
+                        self.resized();
+                    }
                     Err(error) => {
-                        // The state machine rebuilds the renderer after the backoff.
+                        // The state machine rebuilds the renderer after the backoff. scripts/android-smoke.sh fails
+                        // on this line: keep its wording.
                         log::error!("parallax: cannot attach the new surface: {error}");
                         self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
                     }
@@ -792,13 +808,17 @@ impl Shell {
                 match recovered {
                     Ok(()) => self.handle(SurfaceEvent::Recovered),
                     Err(error) => {
-                        // The state machine waits longer before the next try.
+                        // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
+                        // this line: keep its wording.
                         log::error!("parallax: GPU device recovery failed: {error}");
                         self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
                     }
                 }
             }
-            Action::Redraw => self.resized(),
+            Action::Redraw => {
+                self.first_frame.set(FirstFrame::Pending);
+                self.resized();
+            }
             Action::Draw => {
                 self.callbacks
                     .request_frame

@@ -6,7 +6,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, Once},
+    sync::Arc,
     time::Duration,
 };
 
@@ -178,7 +178,6 @@ impl Platform for AndroidPlatform {
         Ok(Box::new(AndroidWindow {
             shell: self.shell.clone(),
             atlas,
-            first_frame: Once::new(),
         }))
     }
 
