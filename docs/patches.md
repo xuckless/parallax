@@ -82,3 +82,13 @@ Every patch reaches crates.io through our fork crates ([AGENTS.md](../AGENTS.md#
 renames the patched `gpui-pre*` crates to `parallax-gpui*` in `build/parallax-gpui/`, and every Parallax crate depends
 on those. Changing a patch between syncs means bumping [`patches/FORK_REVISION`](../patches/FORK_REVISION) and
 publishing a new fork version: [gpui-fork-crates.md](gpui-fork-crates.md).
+
+## The patches
+
+One row per file in [`patches/`](../patches/); the header of each says what and why.
+
+| Patch | Concern |
+|---|---|
+| [0001](../patches/0001-export-priority-queue-android.patch) | export `PriorityQueueSender`/`Receiver` on Android |
+| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `CosmicTextSystem::new_with_font_system` |
+| [0006](../patches/0006-claim-back-gesture-after-key-input.patch) | `on_back_gesture` claims after key input ([android-keys.md](android-keys.md#back)) |
