@@ -50,8 +50,6 @@ jobs:
             checks: |
               cargo check --workspace --target aarch64-apple-ios
               cargo check --workspace --target aarch64-apple-ios-sim
-          # Excludes the `parallax` facade: gpui_platform's current_platform() has no Android arm
-          # (cfg_select! fails to compile). gpui core itself compiles, so it is checked on its own.
           - target: android
             os: ubuntu-latest
             checks: |
@@ -59,14 +57,11 @@ jobs:
               export CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android28-clang"
               export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
               export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android28-clang"
-              cargo check --workspace --exclude parallax --target aarch64-linux-android
-              cargo check -p gpui-pre --target aarch64-linux-android
-          # Excludes the `parallax` facade: gpui on wasm needs nightly (wasm_thread uses #![feature],
-          # gpui_web enables parking_lot/nightly), and our toolchain is upstream's stable channel.
+              cargo check --workspace --target aarch64-linux-android
           - target: wasm
             os: ubuntu-latest
             checks: |
-              cargo check --workspace --exclude parallax --target wasm32-unknown-unknown
+              cargo check --workspace --target wasm32-unknown-unknown
     steps:
       - uses: actions/checkout@v7.0.1
       # rustup reads channel, components and targets from rust-toolchain.toml.

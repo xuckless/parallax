@@ -18,22 +18,22 @@ cancels the older run.
 | windows | windows-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | macos | macos-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | ios | macos-latest | `cargo check --workspace` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` |
-| android | ubuntu-latest | `cargo check --workspace --exclude parallax` and `cargo check -p gpui-pre`, `aarch64-linux-android` |
-| wasm | ubuntu-latest | `cargo check --workspace --exclude parallax`, `wasm32-unknown-unknown` |
+| android | ubuntu-latest | `cargo check --workspace --target aarch64-linux-android` |
+| wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown` |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
 (a subset of Zed's `script/linux`).
 
-## What Android and wasm exclude today
+## Android and wasm
 
-- **Android** skips the `parallax` facade. Upstream `gpui_platform::current_platform()` is a `cfg_select!` with no
-  Android arm, so it does not compile there. GPUI core (`gpui-pre`) does compile and is checked on its own.
-  The facade comes back once `parallax-android` provides the platform.
-- **wasm** skips the `parallax` facade. GPUI on wasm needs nightly Rust: `wasm_thread` uses `#![feature]` and
-  `gpui_web` turns on `parking_lot/nightly`. Parallax pins upstream's stable channel, and upstream's own web gallery
-  builds with nightly.
+Both check the whole workspace, nothing excluded.
 
-Both exclusions are explicit `--exclude` flags with a comment in `ci.yml`, never `continue-on-error`.
+- **Android:** `parallax-platform` depends on upstream `gpui_platform` only off Android (it has no Android arm), so
+  every crate compiles there. See [platform.md](platform.md).
+- **wasm:** single-threaded on stable (AGENTS.md "Web threading"). The workspace takes `gpui_platform` without its
+  default `multithreaded` feature, whose `wasm_thread` needs nightly.
+
+A target that cannot build a crate gets an explicit `--exclude` with a comment in `ci.yml`, never `continue-on-error`.
 
 ## Run the same checks locally
 
@@ -42,7 +42,7 @@ scripts/apply-patches.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo check --workspace --exclude parallax --target wasm32-unknown-unknown
+cargo check --workspace --target wasm32-unknown-unknown
 ```
 
 Android needs the NDK's clang as C compiler and linker (CI reads `$ANDROID_NDK_LATEST_HOME`; locally use your
@@ -52,7 +52,7 @@ Android needs the NDK's clang as C compiler and linker (CI reads `$ANDROID_NDK_L
 bin=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 CC_aarch64_linux_android=$bin/aarch64-linux-android28-clang AR_aarch64_linux_android=$bin/llvm-ar \
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android28-clang \
-  cargo check --workspace --exclude parallax --target aarch64-linux-android
+  cargo check --workspace --target aarch64-linux-android
 ```
 
 iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-apple-ios`.
