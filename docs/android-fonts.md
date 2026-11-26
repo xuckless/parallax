@@ -17,8 +17,10 @@ itself. Rules: [AGENTS.md](../AGENTS.md) (Decisions: Android fonts; patch rule 1
    `lang` lists are comma-separated on API 35, space-separated on API 28. Unknown elements are skipped; malformed
    XML or a bad number is a typed `Error`.
 4. **Plan.** `plan` (pure, tested on the host) turns that into files to load in XML order (once each, missing ones
-   listed), the default face (the first family), generic names and the per-language order.
-5. **Load.** Files are memory-mapped (pages stay in the shared page cache) and handed to upstream's
+   listed), the default face (the first family), generic names and the per-language order. A file that is on disk
+   but cannot be opened counts as missing: it costs only itself, and the family's next font stands in.
+5. **Load.** Files are memory-mapped (pages stay in the shared page cache; one that fails to map is skipped and
+   logged) and handed to upstream's
    `CosmicTextSystem`. The log line `parallax: fonts: … in …` gives the count and the time, next to the renderer's.
 
 Measured (release build, emulator): about 300 ms on the first launch after boot (API 35, cold page cache), 3–10 ms

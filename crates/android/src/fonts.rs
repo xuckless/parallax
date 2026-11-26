@@ -166,23 +166,25 @@ pub(crate) struct FontPlan {
     /// Language-tagged fallbacks (CJK), those matching the app's locales first, then XML order: per-language glyphs
     /// for Han text, as Android picks them.
     pub(crate) by_locale: Vec<Face>,
-    /// Listed files not on disk (OEM images drop some).
+    /// Listed files not on disk (OEM images drop some) or not readable.
     pub(crate) missing: Vec<PathBuf>,
 }
 
-/// Plans the load: files in `dir` that `exists`, substitutes applied, ignored families skipped.
+/// Plans the load: files in `dir` that are `readable`, substitutes applied, ignored families skipped. A file that
+/// is on disk but cannot be read (permissions, a broken OEM image) is `missing` like an absent one, so it costs only
+/// itself, never the other system fonts.
 pub(crate) fn plan(
     config: &FontConfig,
     dir: &Path,
     locales: &[String],
-    exists: impl Fn(&Path) -> bool,
+    readable: impl Fn(&Path) -> bool,
 ) -> Result<FontPlan, Error> {
     let path = |file: &str| {
         let substitute = SUBSTITUTES
             .iter()
             .find(|(over, _)| *over == file)
             .map(|(_, with)| dir.join(with))
-            .filter(|with| exists(with));
+            .filter(|with| readable(with));
         substitute.unwrap_or_else(|| dir.join(file))
     };
     // A family's face for primary or per-language use: its first font that is on disk and not serif-only.
@@ -195,7 +197,7 @@ pub(crate) fn plan(
                 path: path(&font.file),
                 index: font.index,
             })
-            .find(|face| exists(&face.path))
+            .find(|face| readable(&face.path))
     };
 
     let mut files = Vec::new();
@@ -207,7 +209,7 @@ pub(crate) fn plan(
         .flat_map(|family| &family.fonts)
     {
         let path = path(&font.file);
-        let list = if exists(&path) {
+        let list = if readable(&path) {
             &mut files
         } else {
             &mut missing
@@ -726,6 +728,34 @@ mod tests {
                 }),
             ),
             (
+                "an unreadable file is missing, the rest load",
+                FONTS_XML_28,
+                all.iter()
+                    .copied()
+                    .filter(|file| *file != "DroidSansMono.ttf")
+                    .collect(),
+                Ok(FontPlan {
+                    files: paths(&[
+                        "Roboto-Regular.ttf",
+                        "Roboto-Bold.ttf",
+                        "NotoNaskhArabic-Regular.ttf",
+                        "NotoSansCJK-Regular.ttc",
+                        "NotoSerifCJK-Regular.otf",
+                        "NotoColorEmoji.ttf",
+                    ]),
+                    default: face("Roboto-Regular.ttf", 0),
+                    generics: vec![
+                        generic("sans-serif", "Roboto-Regular.ttf", None),
+                        generic("sans-serif-medium", "Roboto-Regular.ttf", Some(500)),
+                        generic("arial", "Roboto-Regular.ttf", None),
+                    ],
+                    by_locale: [2, 3, 0, 1]
+                        .map(|index| face("NotoSansCJK-Regular.ttc", index))
+                        .to_vec(),
+                    missing: paths(&["DroidSansMono.ttf"]),
+                }),
+            ),
+            (
                 "API 35 with the CBDT copy: COLRv1 emoji swapped for Legacy, ignored family skipped",
                 FONT_FALLBACK_XML_35,
                 vec![
@@ -785,10 +815,10 @@ mod tests {
                 Err(NO_SYSTEM_FONT),
             ),
         ];
-        for (name, xml, on_disk, expected) in rows {
-            let on_disk = paths(&on_disk);
+        for (name, xml, readable, expected) in rows {
+            let readable = paths(&readable);
             let planned = plan(&parse(xml)?, Path::new("/f"), &[], |path| {
-                on_disk.iter().any(|file| file == path)
+                readable.iter().any(|file| file == path)
             });
             let planned = planned.map_err(|error| error.to_string());
             assert_eq!(planned, expected.map_err(str::to_string), "{name}");

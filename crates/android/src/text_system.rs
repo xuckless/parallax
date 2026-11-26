@@ -53,7 +53,9 @@ pub(crate) fn load(locales: &[String]) -> Arc<dyn PlatformTextSystem> {
             let config = fonts::parse(&xml)?;
             Ok((
                 list,
-                fonts::plan(&config, Path::new(FONT_DIR), locales, Path::exists)?,
+                fonts::plan(&config, Path::new(FONT_DIR), locales, |path| {
+                    File::open(path).is_ok()
+                })?,
             ))
         });
     match planned {
@@ -80,19 +82,29 @@ pub(crate) fn load(locales: &[String]) -> Arc<dyn PlatformTextSystem> {
 impl AndroidTextSystem {
     fn new(plan: &FontPlan) -> Result<Self, Error> {
         // Each file is mapped for the life of the process: fonts are never unloaded, and stock `add_fonts` needs
-        // `'static` bytes. The pages stay in the shared page cache, not in the app's heap.
+        // `'static` bytes. The pages stay in the shared page cache, not in the app's heap. The plan opened each
+        // file once already; one that still fails here is skipped and logged, like a missing one.
         let mapped: HashMap<&PathBuf, &'static [u8]> = plan
             .files
             .iter()
-            .map(|path| {
-                let file = File::open(path).map_err(|error| Error::Os("open font", error))?;
-                // SAFETY: system fonts live on the read-only system partition; nothing truncates or rewrites them
-                // while mapped.
-                let mapped = unsafe { memmap2::Mmap::map(&file) }
-                    .map_err(|error| Error::Os("mmap font", error))?;
-                Ok((path, &**Box::leak(Box::new(mapped))))
+            .filter_map(|path| {
+                let mapped = File::open(path)
+                    .map_err(|error| Error::Os("open font", error))
+                    .and_then(|file| {
+                        // SAFETY: system fonts live on the read-only system partition; nothing truncates or
+                        // rewrites them while mapped.
+                        unsafe { memmap2::Mmap::map(&file) }
+                            .map_err(|error| Error::Os("mmap font", error))
+                    });
+                match mapped {
+                    Ok(mapped) => Some((path, &**Box::leak(Box::new(mapped)))),
+                    Err(error) => {
+                        log::warn!("parallax: fonts: skipped {}: {error}", path.display());
+                        None
+                    }
+                }
             })
-            .collect::<Result<_, Error>>()?;
+            .collect();
 
         // Family names live in the files, not the XML: read them for the few faces the plan names.
         let mut names = fontdb::Database::new();
