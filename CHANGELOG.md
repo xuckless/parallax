@@ -27,7 +27,8 @@ Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 
 
 - A gesture recognized from touches (tap, pan, long press) reports the device of its own touch in
   `Window::pointer_source()`, not of the latest touch, so a pen and a finger down together no longer mislabel each
-  other.
+  other. A fling's momentum keeps the device that flung it, its closing scroll included when another touch catches
+  it.
 
 ### Fixed
 

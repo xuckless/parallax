@@ -9,9 +9,10 @@ events, render, after dispatch returns). Render sees `None` even for the draw a 
 - a back gesture, and the platform's long press and touch drag (which name no touch), are `Touch`, synthesized.
 Every tap, pan and long press that the core recognizer builds from a touch carries that touch's device, synthesized:
 the recognizer's per-touch state (`ActiveTouch`, and `Momentum` for the fling it leaves) records the device, so a pen
-and a finger down together each label their own gestures. The value is saved and restored around each dispatch,
-so neither a nested dispatch nor a timer-driven gesture (long press, momentum) can leave it stale. iOS reads
-`UITouch.type`: Pencil is `Pen`, an iPad pointer's indirect touch is `Mouse`. Web touches are `Touch`.
+and a finger down together each label their own gestures. Momentum keeps the device of the touch that flung, up to
+its closing scroll, even when a different touch catches the fling. The value is saved and restored around each
+dispatch, so neither a nested dispatch nor a timer-driven gesture (long press, momentum) can leave it stale. iOS
+reads `UITouch.type`: Pencil is `Pen`, an iPad pointer's indirect touch is `Mouse`. Web touches are `Touch`.
 
 Why: GPUI turns taps into mouse presses and pans into scroll events, so a listener cannot tell a finger from a mouse.
 The only signal is the window-wide `last_input_was_touch()`. Platform behaviour (touch targets, selection handles,
@@ -22,12 +23,13 @@ Known limit: web pens take the mouse path (`pointerType == "pen"` is not a touch
 device field on mouse events could carry that.
 
 Test: `pointer_source_names_the_device_and_synthesis_of_each_event` (window.rs), one row per input kind (pen and
-finger down together, a finger after a pen, a back gesture); each row also records what render sees.
+finger down together, a finger after a pen, a finger catching a pen's fling, a back gesture); each row also records
+what render sees.
 
-Size: ~680 lines, ~320 added, ~200 of those the test. Kept as one patch past the ~200-line rule by owner exception
+Size: ~745 lines, ~350 added, ~215 of those the test. Kept as one patch past the ~200-line rule by owner exception
 (2026-11-26): the new `TouchEvent::device` field breaks every struct literal of its type (core tests, iOS, web), so
 the type and the literal updates land together to compile, and the window query is what reads it. The iOS mapping is
-~20 lines, the recognizer's per-touch device ~30.
+~20 lines, the recognizer's per-touch device ~40.
 
 Upstream PR: not filed yet.
 
@@ -183,7 +185,7 @@ index 754a975..f0790e6 100644
                          .to_platform_input(),
                          cx,
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 665da3d..26b7858 100644
+index 665da3d..82108f8 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -15,8 +15,8 @@ use smallvec::SmallVec;
@@ -215,7 +217,42 @@ index 665da3d..26b7858 100644
      /// Where the pan started; synthesized scroll events keep hit-testing
      /// there so momentum stays with the container the gesture began on.
      position: Point<Pixels>,
-@@ -653,6 +657,7 @@ impl TouchGestureRecognizer {
+@@ -623,11 +627,24 @@ impl TouchGestureRecognizer {
+         }
+     }
+ 
++    /// Each gesture is paired with the device it reports: the touch's own,
++    /// except the closing step of a fling this touch catches, which keeps the
++    /// device of the touch that flung, like the momentum steps before it.
+     pub(crate) fn handle_event(
+         &mut self,
+         event: &TouchEvent,
+-    ) -> SmallVec<[RecognizedTouchGesture; 2]> {
+-        self.handle_event_at(event, Instant::now())
++    ) -> SmallVec<[(PointerDevice, RecognizedTouchGesture); 2]> {
++        let flung_by = match event.phase {
++            TouchPhase::Started => self.momentum.as_ref().map(|momentum| momentum.device),
++            TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => None,
++        };
++        let mut gestures = self.handle_event_at(event, Instant::now()).into_iter();
++        // A touch that catches a fling closes the fling's scroll first.
++        let fling_end = flung_by.and_then(|device| Some((device, gestures.next()?)));
++        fling_end
++            .into_iter()
++            .chain(gestures.map(|gesture| (event.device, gesture)))
++            .collect()
+     }
+ 
+     fn handle_event_at(
+@@ -638,6 +655,7 @@ impl TouchGestureRecognizer {
+         let mut recognized = SmallVec::new();
+         match event.phase {
+             TouchPhase::Started => {
++                // Pushed first: `handle_event` tags it with the momentum's device.
+                 let caught_fling = if let Some(momentum) = self.momentum.take() {
+                     recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                         momentum.position,
+@@ -653,6 +671,7 @@ impl TouchGestureRecognizer {
                      velocity_tracker.push(now, event.position);
                      let touch = ActiveTouch {
                          id: event.id,
@@ -223,7 +260,7 @@ index 665da3d..26b7858 100644
                          start_position: event.position,
                          last_position: event.position,
                          emitted_position: event.position,
-@@ -878,6 +883,7 @@ impl TouchGestureRecognizer {
+@@ -878,6 +897,7 @@ impl TouchGestureRecognizer {
                                  0.
                              };
                              self.momentum = Some(Momentum {
@@ -231,7 +268,7 @@ index 665da3d..26b7858 100644
                                  position: touch.start_position,
                                  direction,
                                  speed,
-@@ -940,7 +946,7 @@ impl TouchGestureRecognizer {
+@@ -940,7 +960,7 @@ impl TouchGestureRecognizer {
          recognized
      }
  
@@ -240,7 +277,7 @@ index 665da3d..26b7858 100644
          let TouchGestureState::Pending {
              touch,
              deadline,
-@@ -950,7 +956,11 @@ impl TouchGestureRecognizer {
+@@ -950,7 +970,11 @@ impl TouchGestureRecognizer {
          else {
              return None;
          };
@@ -253,7 +290,7 @@ index 665da3d..26b7858 100644
      }
  
      pub(crate) fn offer_long_press(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
-@@ -1030,8 +1040,10 @@ impl TouchGestureRecognizer {
+@@ -1030,8 +1054,10 @@ impl TouchGestureRecognizer {
      /// Advances post-fling momentum by one frame, returning the scroll step
      /// to dispatch, or `None` when no momentum is in progress. The final step
      /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
@@ -266,7 +303,16 @@ index 665da3d..26b7858 100644
      }
  
      fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
-@@ -2326,6 +2338,7 @@ mod tests {
+@@ -2282,7 +2308,7 @@ mod tests {
+                 .is_empty()
+         );
+         let cancelled = recognizer.handle_event(&touch_event(touch, TouchPhase::Cancelled, 6., 7.));
+-        let [RecognizedTouchGesture::LongPress(cancelled)] = cancelled.as_slice() else {
++        let [(_, RecognizedTouchGesture::LongPress(cancelled))] = cancelled.as_slice() else {
+             panic!("expected cancelled long press, got {cancelled:?}");
+         };
+         assert_eq!(cancelled.phase, TouchPhase::Cancelled);
+@@ -2326,6 +2352,7 @@ mod tests {
              position: point(px(x), px(y)),
              predicted_position: None,
              force: None,
@@ -314,7 +360,7 @@ index cfb1410..7863032 100644
  
  impl Sealed for TouchEvent {}
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 775021f..2e77344 100644
+index 775021f..ce0c07e 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -28,7 +28,7 @@ use crate::{
@@ -424,17 +470,19 @@ index 775021f..2e77344 100644
          }
          if event.phase == crate::TouchPhase::Started
              && self.touch_gestures.pending_long_press().is_some()
-@@ -6347,7 +6394,8 @@ impl Window {
+@@ -6345,9 +6392,9 @@ impl Window {
+             self.long_press_capture = None;
+         }
          let mut tapped = false;
-         for gesture in recognized_gestures {
+-        for gesture in recognized_gestures {
++        for (device, gesture) in recognized_gestures {
              tapped |= matches!(gesture, RecognizedTouchGesture::Tap { .. });
 -            self.dispatch_recognized_touch_gesture(gesture, cx);
-+            // Every gesture comes from this touch, including the end of a fling it caught.
-+            self.dispatch_recognized_touch_gesture(gesture, event.device, cx);
++            self.dispatch_recognized_touch_gesture(gesture, device, cx);
          }
          if event.phase == crate::TouchPhase::Started {
              self.schedule_long_press_timer(cx);
-@@ -6360,14 +6408,29 @@ impl Window {
+@@ -6360,14 +6407,29 @@ impl Window {
          // are registered during draw, so draw now to make them reflect any
          // focus change the tap just caused.
          if tapped && self.invalidator.is_dirty() {
@@ -465,7 +513,7 @@ index 775021f..2e77344 100644
          match gesture {
              RecognizedTouchGesture::Scroll(scroll_wheel) => {
                  self.mouse_position = scroll_wheel.position;
-@@ -6418,11 +6481,12 @@ impl Window {
+@@ -6418,11 +6480,12 @@ impl Window {
                  }
              }
          }
@@ -479,7 +527,7 @@ index 775021f..2e77344 100644
              return;
          };
          self.long_press_timer = Some(self.spawn(cx, async move |cx| {
-@@ -6430,7 +6494,7 @@ impl Window {
+@@ -6430,7 +6493,7 @@ impl Window {
              cx.update(move |window, cx| {
                  window.long_press_timer.take();
                  if let Some(gesture) = window.touch_gestures.offer_long_press(touch_id) {
@@ -488,7 +536,7 @@ index 775021f..2e77344 100644
                  }
              })
              .with_context(|| {
-@@ -6445,8 +6509,8 @@ impl Window {
+@@ -6445,8 +6508,8 @@ impl Window {
  
      fn schedule_touch_momentum_tick(&mut self) {
          self.on_next_frame(|window, cx| {
@@ -499,7 +547,7 @@ index 775021f..2e77344 100644
              }
              if window.touch_gestures.has_momentum() {
                  window.schedule_touch_momentum_tick();
-@@ -8424,10 +8488,10 @@ mod tests {
+@@ -8424,10 +8487,10 @@ mod tests {
          ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
          InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
          MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, PlatformInput, Point,
@@ -514,7 +562,7 @@ index 775021f..2e77344 100644
      };
  
      #[gpui::test]
-@@ -10085,6 +10149,186 @@ mod tests {
+@@ -10085,6 +10148,206 @@ mod tests {
          }
      }
  
@@ -667,6 +715,26 @@ index 775021f..2e77344 100644
 +                ],
 +            ),
 +            (
++                "finger catches a pen's fling",
++                vec![
++                    touch(TouchPhase::Started, 10., PointerDevice::Pen),
++                    touch(TouchPhase::Moved, 60., PointerDevice::Pen),
++                    touch(TouchPhase::Ended, 60., PointerDevice::Pen),
++                    touch(TouchPhase::Started, 60., PointerDevice::Touch),
++                ],
++                // The fling's closing scroll is the pen's, the catching drag the finger's.
++                vec![
++                    render,
++                    ("scroll", source(PointerDevice::Pen, true)),
++                    render,
++                    ("scroll", source(PointerDevice::Pen, true)),
++                    render,
++                    ("scroll", source(PointerDevice::Pen, true)),
++                    ("scroll", source(PointerDevice::Touch, true)),
++                    render,
++                ],
++            ),
++            (
 +                "edge swipe back",
 +                vec![
 +                    BackGestureEvent {
@@ -701,7 +769,7 @@ index 775021f..2e77344 100644
      #[gpui::test]
      fn long_press_is_claimed_only_when_started_prevents_default(cx: &mut TestAppContext) {
          for response in [
-@@ -10811,6 +11055,7 @@ mod tests {
+@@ -10811,6 +11074,7 @@ mod tests {
                          position: point(px(x), px(0.)),
                          predicted_position: None,
                          force: None,

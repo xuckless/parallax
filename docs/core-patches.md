@@ -22,7 +22,8 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   - the platform's long press and touch drag (no backend sends them; they name no touch): `Touch`, synthesized.
   Taps, pans and long presses that the core recognizer builds carry the device of the touch they come from,
   synthesized, including ones fired later by timers (long press, momentum): the recognizer's per-touch state records
-  it, so a pen and a finger down together each label their own. The value is saved and restored around each dispatch.
+  it, so a pen and a finger down together each label their own. A fling keeps its device up to its closing scroll,
+  even when another touch catches it. The value is saved and restored around each dispatch.
 - **How backends set it:** they set `TouchEvent::device` and `BackGestureEvent::source`. Mouse input needs nothing.
   - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
     is `Mouse`. Its edge swipe is `EdgeSwipe`; Android's Back key is `Key` ([android-keys.md](android-keys.md#back)).
