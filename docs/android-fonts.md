@@ -35,11 +35,11 @@ stay on the main thread.
 | `.SystemUIFont` | `plan.default` | First family's first font (`sans-serif`, Roboto) |
 | `sans-serif`, `monospace`, `serif`, `arial`, `sans-serif-medium`… | `plan.generics` | Named families and `<alias>`es → the family name inside the file, plus the alias's weight |
 | Han, kana, Hangul | `plan.by_locale` | `lang`-tagged families (not `und-`), the app's locales first (`LIKELY_SCRIPTS`: `zh-TW`/`HK`/`MO` → Hant, other `zh` → Hans), then XML order |
-| Emoji | `SUBSTITUTES` | COLRv1 `NotoColorEmoji.ttf` → CBDT `NotoColorEmojiLegacy.ttf` when that file exists (swash draws CBDT, not COLRv1) |
+| Emoji | `plan.emoji` | Families tagged `und-Zsye` (`EMOJI_SCRIPT`), flags font included; Android draws their glyphs ([android-emoji.md](android-emoji.md)) |
 | Everything else (Arabic, Devanagari…) | cosmic-text | Its last-resort scan tries faces in load order (XML order), emoji faces first |
 
-To extend: a new locale → script rule is a row in `LIKELY_SCRIPTS`; a file swash can't draw is a row in
-`SUBSTITUTES`; a new list location is a row in `FONT_LISTS`. Each gets a row in the tests in `fonts.rs`.
+To extend: a new locale → script rule is a row in `LIKELY_SCRIPTS`; a new list location is a row in `FONT_LISTS`.
+Each gets a row in the tests in `fonts.rs`.
 
 ## The FontSystem (patch 0002)
 
@@ -56,9 +56,5 @@ locale.
 
 ## Known gaps
 
-- **Emoji on API 33+ images without `NotoColorEmojiLegacy.ttf`** (the API 35 `google_apis` emulator) are blank:
-  only COLRv1 is left. The CBDT `NotoColorEmojiFlags.ttf` is not drawn either: upstream flags emoji fonts by the
-  PostScript name `NotoColorEmoji` only (`check_is_known_emoji_font` in
-  [cosmic_text_system.rs](../upstream/gpui-pre-wgpu/src/cosmic_text_system.rs)).
 - Han glyphs follow the app locale, not a per-run language (GPUI text has none).
 - Not read: OEM `/product/etc/fonts_customization.xml`, updatable fonts in `/data/fonts`, locale changes after start.
