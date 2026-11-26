@@ -13,6 +13,16 @@ mod platform;
 mod pointer;
 #[cfg(target_os = "android")]
 mod renderer;
+// Local copy of upstream's queue until patch 0001 lands upstream (AGENTS.md, patch rule 11).
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "host tests build the queue without its dispatcher"
+    )
+)]
+mod queue;
 #[cfg(any(target_os = "android", test))]
 mod surface;
 #[cfg(target_os = "android")]

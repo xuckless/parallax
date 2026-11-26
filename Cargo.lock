@@ -3639,6 +3639,7 @@ dependencies = [
  "libc",
  "log",
  "ndk-sys",
+ "rand 0.9.5",
  "raw-window-handle",
  "thiserror 2.0.21",
  "uuid",

@@ -21,10 +21,13 @@ libc = "0.2"
 log = "0.4"
 ndk-sys = "0.6"
 raw-window-handle = "0.6"
+# For src/queue.rs, the local copy of upstream's priority queue; features as upstream gpui needs for it.
+rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
 uuid = "1"
 
 # The pure modules (surface state machine, pointer packet decoder) are tested on the host.
 [dev-dependencies]
 gpui.workspace = true
+rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
