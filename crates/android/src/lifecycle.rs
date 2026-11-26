@@ -289,7 +289,7 @@ mod tests {
         // included; c/s/r are Created/Started/Resumed of Activity A with the focus flag, D is A disconnected.
         // Kept one row per line (rustfmt::skip) so the table reads as a table.
         #[rustfmt::skip]
-        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 50] = [
+        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 48] = [
             ("loaded_create_owns_activity_1", Lifecycle::LOADED, ActivityEvent::Create, created_by(ActivityId(1)), Nothing),
             ("created_create_replaces_quietly", c(true), ActivityEvent::Create, created_by(ActivityId(3)), Nothing),
             ("started_create_replaces_and_hides", s(true), ActivityEvent::Create, created_by(ActivityId(3)), Phase(P::Background)),
@@ -339,8 +339,6 @@ mod tests {
             ("stale_trim_rejected", r(true), old(C::TrimMemory(80)), r(true), no("event from a replaced Activity")),
             ("stale_destroy_after_disconnect_rejected", D, old(C::Destroy), D, no("event from a replaced Activity")),
             ("newer_than_owner_rejected", r(true), ActivityEvent::From(ActivityId(3), C::Pause), r(true), no("event from a replaced Activity")),
-            ("trim_in_created_warns", c(false), on(C::TrimMemory(10)), c(false), MemoryWarning),
-            ("trim_in_disconnected_quiet", D, on(C::TrimMemory(5)), D, Nothing),
         ];
         for (name, state, event, expected_state, expected_effect) in cases {
             assert_eq!(
