@@ -55,6 +55,8 @@ The [`android-smoke` job](../.github/workflows/ci.yml) runs the script inside
 [reactivecircus/android-emulator-runner](https://github.com/ReactiveCircus/android-emulator-runner) on ubuntu with
 KVM opened to the runner user, JDK 21 for Gradle, and the newest NDK named as `ANDROID_NDK_HOME` (the runner has
 several, [cli.md](cli.md#requirements)). The AVD and a booted snapshot are cached; a cache miss boots once to make them.
+The job's `AVD_*` env names the image once; the cache key is built from it, the emulator runner's tag (`AVD_RUNNER`,
+kept equal to its `uses:` lines) and `AVD_CACHE_BUMP`, bumped by hand to drop a bad cached AVD.
 
 Runners have no GPU. `-gpu auto` gives lavapipe for Vulkan (ANGLE on SwiftShader for GLES), and hello draws on it.
 With `swiftshader_indirect` or `swangle_indirect` the app gets SwiftShader's Vulkan, where creating the renderer
