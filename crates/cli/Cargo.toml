@@ -2,6 +2,7 @@
 name = "cargo-parallax"
 description = "cargo parallax: build and run GPUI apps on Android from parallax.toml (iOS and web later)."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

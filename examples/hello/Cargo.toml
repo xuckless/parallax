@@ -2,6 +2,7 @@
 name = "hello"
 description = "Parallax example: one window with a box that changes colour on tap, on every target."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 # Examples are never published.

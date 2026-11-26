@@ -5,4 +5,4 @@ Picks the GPUI platform for the current target from one table: upstream `gpui_pl
 [Parallax](https://github.com/xuckless/parallax), built on GPUI (`gpui-pre`).
 
 How it works and how to add a target: [docs/platform.md](https://github.com/xuckless/parallax/blob/main/docs/platform.md).
-Licensed Apache-2.0.
+Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0.

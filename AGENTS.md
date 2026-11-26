@@ -157,8 +157,8 @@ Hard rules:
   State machines get one row per `(state, event) → next`, including rejected events.
 - Test behaviour through public inputs and outputs. Mock only at I/O edges.
 - No throwaway tests. Every test stays in the suite and checks a requirement.
-- Platform code is verified by running `examples/` on a simulator, emulator or browser. 0.1.1 ships emulator-verified;
-  from Gate 1 on, releases are also verified on real devices.
+- Platform code is verified by running `examples/` on a simulator, emulator or browser. Releases are verified on the
+  Android emulator and iOS simulator until the owner has real devices to test on; then device runs are added.
 - Never write a test that locks in a bug. Fix the code.
 
 ## Docs

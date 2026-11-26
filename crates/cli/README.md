@@ -9,5 +9,5 @@ cargo parallax run android [--release] [--device <serial>]
 ```
 
 Keys, requirements (Android SDK, NDK, Java 17) and each step:
-[docs/cli.md](https://github.com/xuckless/parallax/blob/main/docs/cli.md). Licensed Apache-2.0; includes the Gradle
+[docs/cli.md](https://github.com/xuckless/parallax/blob/main/docs/cli.md). Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0; includes the Gradle
 Wrapper jar (Apache-2.0, see [NOTICE](https://github.com/xuckless/parallax/blob/main/NOTICE)).
