@@ -1,8 +1,7 @@
 # Android backend
 
 [`parallax-android`](../crates/android/src/lib.rs) runs GPUI on Android: the 0.1.1 skeleton of
-[ROADMAP.md](../ROADMAP.md) Phase 1. Rules: [AGENTS.md](../AGENTS.md) (Android glue, Android threading, Renderer).
-Background: [android-spike.md](android-spike.md).
+[ROADMAP.md](../ROADMAP.md) Phase 1. Rules: [AGENTS.md](../AGENTS.md) (Android glue, Android threading, Renderer). Background: [android-spike.md](android-spike.md).
 
 ## How it fits together
 
@@ -38,9 +37,8 @@ Background: [android-spike.md](android-spike.md).
   `CosmicTextSystem` and orders CJK by the app locale (sent over JNI). Details: [android-fonts.md](android-fonts.md).
 - **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →
   `nativeDispatchKeyData` → [keys.rs](../crates/android/src/keys.rs): key, modifier and back events. Details: [android-keys.md](android-keys.md).
-- **Text input.** Flutter's `TextInputPlugin` and `InputConnectionAdaptor` (ported Java) serve the IME; GPUI's
-  `InputHandler` answers on the same thread ([text_input.rs](../crates/android/src/text_input.rs)): IME edits go to
-  GPUI synchronously, GPUI's changes go back at the end of each frame. Details: [android-text-input.md](android-text-input.md).
+- **Text input.** Flutter's `TextInputPlugin` and `InputConnectionAdaptor` (ported Java) serve the IME; GPUI's `InputHandler` answers on the same thread
+  ([text_input.rs](../crates/android/src/text_input.rs)), IME edits synchronously, GPUI's changes after each frame. Details: [android-text-input.md](android-text-input.md).
 
 ## The app entry point
 
@@ -78,5 +76,4 @@ controls, `on_quit`: Android announces no process death) are no-ops with a one-l
 
 ## Run it on the emulator
 
-`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then
-`adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events and insets.
+`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then `adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events and insets.

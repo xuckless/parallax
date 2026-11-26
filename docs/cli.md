@@ -73,8 +73,7 @@ installs without a keystore.
 | Network on first run | Gradle 9.8.2, AGP, JDK 17 download to `~/.gradle` | |
 | A device or emulator | `adb devices` | Start one; emulator flags in [android-spike.md](android-spike.md) |
 
-AGP downloads a missing `platforms;android-<target_sdk>` or build-tools into the SDK if its licenses are accepted
-(`sdkmanager --licenses`).
+AGP downloads a missing `platforms;android-<target_sdk>` or build-tools into the SDK if its licenses are accepted (`sdkmanager --licenses`).
 
 The generated manifest sets `android:configChanges` on `ParallaxActivity` (as Flutter does), so rotation and other
 config changes reach `onConfigurationChanged` instead of recreating the Activity.
