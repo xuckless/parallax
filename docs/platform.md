@@ -47,7 +47,8 @@ The crate compiles on every target in the table. Upstream `gpui_platform` has no
 there, so [Cargo.toml](../crates/platform/Cargo.toml) depends on it only off Android, and on `parallax-android` only on
 Android. On wasm it runs
 single-threaded on stable Rust: the [workspace](../Cargo.toml) turns off `gpui_platform`'s default `multithreaded`
-feature, which needs nightly (AGENTS.md "Web threading").
+feature, which needs nightly (AGENTS.md "Web threading"). It turns on `wayland` and `x11`, which upstream leaves
+off: without them Linux finds no display server, starts headless and draws nothing, with no error.
 
 ## Adding a target or backend
 
