@@ -145,7 +145,7 @@ pub fn launch(cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         ..Default::default()
     };
-    let opened = cx.open_window(options, |window, cx| {
+    let opened = cx.open_window(options, |_, cx| {
         cx.new(|cx| Hello {
             colour: 0,
             // Prose: the keyboard may suggest, correct and capitalize (GPUI's default turns all of that off).
@@ -159,7 +159,6 @@ pub fn launch(cx: &mut App) {
                         input_action: TextInputAction::Done,
                         ..TextInputConfiguration::default()
                     },
-                    window,
                     cx,
                 )
             }),
@@ -173,7 +172,6 @@ pub fn launch(cx: &mut App) {
                         input_action: TextInputAction::Done,
                         ..TextInputConfiguration::default()
                     },
-                    window,
                     cx,
                 )
             }),

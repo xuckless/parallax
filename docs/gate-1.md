@@ -37,9 +37,10 @@ crash or ANR in logcat.
    [renderer.rs](../crates/android/src/renderer.rs) picks Vulkan; GL first draws correctly.
 2. **Fixed: composing kept after focus moves.** Compose (Korean ㅏ), tap Email: the prose field kept its underline;
    on refocus the IME got that range back and the next jamo replaced it. GPUI draws a tap's focus change inside the
-   tap, after the left field's handler is gone, so no platform call could end it. Now the field commits on blur (as
-   Flutter's `EditableText`) and a new client never gets a composing range (`Pending::commit`,
-   [android-text-input.md](android-text-input.md)). Rechecked on API 28 and 33 (Korean; Japanese kana on 33).
+   tap, after the left field's handler is gone, so no platform call could end it. Now GPUI ends it
+   ([patch 0010](core-patches.md)) and a new client never gets a composing range (`Pending::commit`,
+   [android-text-input.md](android-text-input.md)). Rechecked on API 28 (Korean, no app code) and 33 (Korean,
+   Japanese kana).
 3. **API 28 rotation.** After each rotation the old-size frame stays until the next input event, though
    `Action::Resize` requests a redraw ([host.rs](../crates/android/src/host.rs)).
 4. **Dimmed colours** on every level (above).
