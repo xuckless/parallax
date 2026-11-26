@@ -128,25 +128,25 @@ Full Android:
       locales are used).
 - [ ] Multi-window: one GPUI window per process, so in split-screen only the most recently started Activity draws;
       decide whether to support a window per Activity.
-- [ ] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
+- [x] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
       backend table.
-- [ ] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
+- [x] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
       Back button → `BackGestureEvent`.
 - [ ] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,
       `ImeSyncDeferringInsetsCallback` and the input parts of `TextInputPlugin`. On the same thread, the Rust side
       answers queries straight from GPUI's `InputHandler` (both use UTF-16 offsets); Flutter's editing state is kept for
       its batch-edit logic. Ledger rows list the parts left out.
-- [ ] Java test setup copied from Flutter's `test_runner`: Gradle, JDK 17, Robolectric 4.17, Mockito 5.20 (JVM, no device).
+- [x] Java test setup copied from Flutter's `test_runner`: Gradle, JDK 17, Robolectric 4.17, Mockito 5.20 (JVM, no device).
 - [ ] Port the matching Flutter Android tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`,
       `AndroidTouchProcessorTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) as tests of the Java port.
       Cases pinned below API 28 are dropped and listed in the ledger.
-- [ ] Fonts ([audit](docs/audits/android-fonts.md)): a small upstream patch so `CosmicTextSystem` takes our own font
+- [x] Fonts ([audit](docs/audits/android-fonts.md)): a small upstream patch so `CosmicTextSystem` takes our own font
       list; a `fonts.xml` / `font_fallback.xml` parser with table tests; the Android fallback table (per-language CJK,
       emoji); load fonts by path and prefer the CBDT `NotoColorEmojiLegacy.ttf` (swash can't draw COLRv1); pass the
       app locale over JNI. Fonts load on the main thread at startup; measure startup and move them off it only if it
       exceeds the budget.
 - [ ] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35.
-- [ ] Lifecycle: implement upstream's existing lifecycle, memory-warning, inset and back hooks for Android. Map
+- [x] Lifecycle: implement upstream's existing lifecycle, memory-warning, inset and back hooks for Android. Map
       `onDestroy` to an explicit choice (upstream has no terminate phase).
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge, fonts.xml parser.
 - [ ] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.

@@ -5,7 +5,7 @@ exclude = ["upstream", "build"]
 
 [workspace.package]
 authors = ["Syed Ali (xuckless)"]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/xuckless/parallax"
@@ -16,8 +16,8 @@ gpui = { package = "gpui-pre", version = "=0.3.14" }
 # `wayland` and `x11` are off by default upstream; without them Linux starts headless and draws nothing.
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["wayland", "x11"] }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.14" }
-parallax-android = { path = "crates/android", version = "0.1.1" }
-parallax-platform = { path = "crates/platform", version = "0.1.1" }
+parallax-android = { path = "crates/android", version = "0.1.2" }
+parallax-platform = { path = "crates/platform", version = "0.1.2" }
 thiserror = "2"
 
 [workspace.lints.clippy]
