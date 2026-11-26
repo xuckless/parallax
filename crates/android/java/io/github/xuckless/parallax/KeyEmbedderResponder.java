@@ -8,7 +8,8 @@
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
 // Parallax changes: package; key data goes to Rust through
-// ParallaxSurfaceView.nativeDispatchKeyData, which answers synchronously, instead of a
+// ParallaxSurfaceView.nativeDispatchKeyData, tagged with the view's Activity id (the constructor
+// takes it in place of the messenger), which answers synchronously, instead of a
 // BinaryMessenger on the flutter/keydata channel (so the null-reply warning and io.flutter.Log are
 // gone); sendKeyEvent also passes the event's isCanceled(), which key data has no field for;
 // androidx annotations dropped (not on Parallax's classpath).
@@ -48,7 +49,9 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
   }
 
   // Parallax: no messenger. On `handleEvent`, events are marshalled into byte buffers in the format
-  // specified by `KeyData.toBytes` and handed to Rust (see sendKeyEvent).
+  // specified by `KeyData.toBytes` and handed to Rust (see sendKeyEvent) with this Activity id, so
+  // Rust can drop keys from a view whose Activity does not own the window.
+  private final int activity;
   // The keys being pressed currently, mapped from physical keys to logical keys.
   private final HashMap<Long, Long> pressingRecords = new HashMap<>();
   // Map from logical key to toggling goals.
@@ -60,7 +63,8 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
   private final KeyboardManager.CharacterCombiner characterCombiner =
       new KeyboardManager.CharacterCombiner();
 
-  public KeyEmbedderResponder() {
+  public KeyEmbedderResponder(int activity) {
+    this.activity = activity;
     for (final TogglingGoal goal : KeyboardMap.getTogglingGoals()) {
       togglingGoals.put(goal.logicalKey, goal);
     }
@@ -406,7 +410,8 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
       KeyData data, boolean canceled, OnKeyEventHandledCallback onKeyEventHandledCallback) {
     // Parallax: GPUI runs on this (main) thread, so Rust's answer is the reply; Flutter's
     // BinaryReply decoded the same answer from a one-byte message.
-    final boolean handled = ParallaxSurfaceView.nativeDispatchKeyData(data.toBytes(), canceled);
+    final boolean handled =
+        ParallaxSurfaceView.nativeDispatchKeyData(activity, data.toBytes(), canceled);
     if (onKeyEventHandledCallback != null) {
       onKeyEventHandledCallback.onKeyEventHandled(handled);
     }

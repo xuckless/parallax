@@ -8,7 +8,8 @@
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
 // Parallax changes: package; the one responder is KeyEmbedderResponder (KeyChannelResponder and
-// its KeyEventChannel dropped); KeyboardChannel and ViewDelegate.getBinaryMessenger dropped; the
+// its KeyEventChannel dropped); KeyboardChannel dropped; ViewDelegate.getBinaryMessenger becomes
+// getActivityId (the responder tags key data with it); the
 // InputConnectionAdaptor.KeyboardDelegate interface waits for the text-input port; androidx
 // annotations and io.flutter.Log (→ android.util.Log) dropped (not on Parallax's classpath).
 // ParallaxSurfaceView is the ViewDelegate. Ledger: third_party/flutter/PORTED.md.
@@ -127,7 +128,7 @@ public class KeyboardManager {
         new Responder[] {
           // Parallax: key data goes to Rust (ParallaxSurfaceView.nativeDispatchKeyData), which
           // answers synchronously; the legacy KeyChannelResponder is dropped.
-          new KeyEmbedderResponder(),
+          new KeyEmbedderResponder(viewDelegate.getActivityId()),
         };
   }
 
@@ -168,6 +169,10 @@ public class KeyboardManager {
    * and the platform, and is typically implements by {@link FlutterView}.
    */
   public interface ViewDelegate {
+    // Parallax: in place of getBinaryMessenger, the id of the view's Activity, which tags the key
+    // data sent to Rust.
+    int getActivityId();
+
     /**
      * Send a {@link KeyEvent} that is not handled by the keyboard responders to the text input
      * system.

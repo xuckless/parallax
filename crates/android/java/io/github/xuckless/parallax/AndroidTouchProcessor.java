@@ -8,7 +8,8 @@
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
 // Parallax changes: package; the packet goes to Rust through ParallaxSurfaceView's
-// nativeDispatchPointerDataPacket instead of FlutterRenderer; androidx annotations and
+// nativeDispatchPointerDataPacket, tagged with the view's Activity id (the constructor takes it in
+// place of the FlutterRenderer); androidx annotations and
 // io.flutter.Build.API_LEVELS dropped (not on Parallax's classpath). Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
@@ -96,6 +97,10 @@ public class AndroidTouchProcessor {
 
   private final MotionEventTracker motionEventTracker;
 
+  // Parallax: the view's Activity id, in place of FlutterRenderer; Rust drops touches from a view
+  // whose Activity does not own the window.
+  private final int activity;
+
   private static final Matrix IDENTITY_TRANSFORM = new Matrix();
 
   private final boolean trackMotionEvents;
@@ -109,9 +114,11 @@ public class AndroidTouchProcessor {
    * Constructs an {@code AndroidTouchProcessor} that will send touch event data to Rust through
    * {@link ParallaxSurfaceView#nativeDispatchPointerDataPacket}.
    *
+   * @param activity The id of the Activity whose view this processor serves.
    * @param trackMotionEvents This is used to query motion events when platform views are rendered.
    */
-  public AndroidTouchProcessor(boolean trackMotionEvents) {
+  public AndroidTouchProcessor(int activity, boolean trackMotionEvents) {
+    this.activity = activity;
     this.motionEventTracker = MotionEventTracker.getInstance();
     this.trackMotionEvents = trackMotionEvents;
   }
@@ -201,7 +208,7 @@ public class AndroidTouchProcessor {
     }
 
     // Send the packet to Rust.
-    ParallaxSurfaceView.nativeDispatchPointerDataPacket(packet, packet.position());
+    ParallaxSurfaceView.nativeDispatchPointerDataPacket(activity, packet, packet.position());
 
     return true;
   }
@@ -240,7 +247,7 @@ public class AndroidTouchProcessor {
     if (packet.position() % (POINTER_DATA_FIELD_COUNT * BYTES_PER_FIELD) != 0) {
       throw new AssertionError("Packet position is not on field boundary.");
     }
-    ParallaxSurfaceView.nativeDispatchPointerDataPacket(packet, packet.position());
+    ParallaxSurfaceView.nativeDispatchPointerDataPacket(activity, packet, packet.position());
     return true;
   }
 

@@ -25,7 +25,7 @@ Background: [android-spike.md](android-spike.md).
   destroys it, device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
 - **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
   that configures the surface seeds the shared `GpuContext`, at startup and after device loss
-  ([android-lifecycle.md](android-lifecycle.md#device-loss)). Created on the main thread; the time is logged.
+  ([android-surface.md](android-surface.md#device-loss)). Created on the main thread; the time is logged.
 - **Lifecycle.** Activity callbacks, focus and trim-memory go through one state machine
   ([lifecycle.rs](../crates/android/src/lifecycle.rs)) to upstream's `on_app_lifecycle`, `on_memory_warning`, window
   activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).

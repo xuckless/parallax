@@ -60,7 +60,7 @@ fn natives() -> [NativeMethod; 9] {
         row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
-            "(Ljava/nio/ByteBuffer;I)V",
+            "(ILjava/nio/ByteBuffer;I)V",
             dispatch_pointer_data_packet as *mut c_void,
         ),
         row(
@@ -75,7 +75,7 @@ fn natives() -> [NativeMethod; 9] {
         ),
         row(
             "nativeDispatchKeyData",
-            "(Ljava/nio/ByteBuffer;Z)Z",
+            "(ILjava/nio/ByteBuffer;Z)Z",
             dispatch_key_data as *mut c_void,
         ),
     ]
@@ -153,13 +153,16 @@ fn with_host(f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
-/// [`with_host`] for an event from `activity`'s view: dropped when a newer Activity owns the window.
+/// [`with_host`] for an event from `activity`'s view: dropped unless that Activity owns the window
+/// ([`Lifecycle::accepts`], the one rule for surface, frame, inset, touch and key events).
 fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
     with_host(|host| {
-        if host.shell.lifecycle.get().accepts(ActivityId(activity)) {
+        if host.shell.lifecycle.borrow().accepts(ActivityId(activity)) {
             f(host)
         } else {
-            log::warn!("parallax: event from replaced Activity {activity} ignored");
+            log::warn!(
+                "parallax: event from Activity {activity}, which does not own the window, ignored"
+            );
         }
     });
 }
@@ -205,7 +208,8 @@ extern "system" fn surface_created(
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running(app);
                 // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
-                for &phase in host.shell.lifecycle.get().launch_phases() {
+                let phases = host.shell.lifecycle.borrow().launch_phases();
+                for &phase in phases {
                     host.shell
                         .callbacks
                         .app_lifecycle
@@ -243,18 +247,19 @@ extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jin
     });
 }
 
-/// `ParallaxActivity.onCreate`: the new Activity owns the window; Java tags its events with the returned id.
+/// `ParallaxActivity.onCreate`: a new live Activity, which owns the window once it starts; Java tags its events
+/// with the returned id.
 extern "system" fn activity_created(_env: JNIEnv, _class: JClass) -> jint {
     let mut activity = 0;
     with_host(|host| {
         host.shell.lifecycle(ActivityEvent::Create);
-        activity = host.shell.lifecycle.get().activity().0;
+        activity = host.shell.lifecycle.borrow().newest().map_or(0, |id| id.0);
     });
     activity
 }
 
 /// `ParallaxActivity`'s lifecycle, focus and memory callbacks: its id, an `EVENT_*` code and its value. The
-/// lifecycle itself drops events from a replaced Activity.
+/// lifecycle itself decides what a callback from a covered or destroyed Activity does.
 extern "system" fn activity_event(
     _env: JNIEnv,
     _class: JClass,
@@ -276,10 +281,11 @@ extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
 }
 
 /// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
-/// a direct `ByteBuffer`.
+/// a direct `ByteBuffer`, from `activity`'s view.
 extern "system" fn dispatch_pointer_data_packet(
     env: JNIEnv,
     _class: JClass,
+    activity: jint,
     buffer: JByteBuffer,
     position: jint,
 ) {
@@ -299,15 +305,16 @@ extern "system" fn dispatch_pointer_data_packet(
     // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
-    with_host(|host| host.shell.touch(packet));
+    with_owner(activity, |host| host.shell.touch(packet));
 }
 
-/// The ported `KeyEmbedderResponder` hands over one Flutter key data packet: the whole direct `ByteBuffer`, and
-/// the Android event's `isCanceled()` (Parallax's addition: key data has no field for it).
-/// Returns whether GPUI handled it; Java then redispatches unhandled keys to Android.
+/// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
+/// direct `ByteBuffer`, and the Android event's `isCanceled()` (Parallax's addition: key data has no field for it).
+/// Returns whether GPUI handled it; Java then redispatches unhandled keys (and a non-owner's) to Android.
 extern "system" fn dispatch_key_data(
     env: JNIEnv,
     _class: JClass,
+    activity: jint,
     packet: JByteBuffer,
     canceled: jboolean,
 ) -> jboolean {
@@ -328,7 +335,9 @@ extern "system" fn dispatch_key_data(
     // it until this call returns (KeyData.toBytes allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
     let mut handled = false;
-    with_host(|host| handled = host.shell.key(packet, canceled != JNI_FALSE));
+    with_owner(activity, |host| {
+        handled = host.shell.key(packet, canceled != JNI_FALSE)
+    });
     if handled { JNI_TRUE } else { JNI_FALSE }
 }
 
@@ -466,7 +475,7 @@ pub(crate) struct Callbacks {
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     surface: RefCell<Surface<NativeWindow>>,
-    pub(crate) lifecycle: Cell<Lifecycle>,
+    pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
@@ -480,7 +489,7 @@ impl Shell {
     fn new() -> Self {
         Self {
             surface: RefCell::new(Surface::None),
-            lifecycle: Cell::new(Lifecycle::LOADED),
+            lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),
@@ -607,25 +616,29 @@ impl Shell {
     /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: the window first, then the
     /// app's observers, in the order `gpui_ios` uses.
     fn lifecycle(&self, event: ActivityEvent) {
-        let before = self.lifecycle.get();
+        let before = self.lifecycle.replace(Lifecycle::Loaded);
+        let (was_active, was_visible) = (before.is_active(), before.visibility());
         let (next, effect) = before.next(event);
-        self.lifecycle.set(next);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
-        if before.is_active() != next.is_active() {
+        let (active, visibility) = (next.is_active(), next.visibility());
+        *self.lifecycle.borrow_mut() = next;
+        if was_active != active {
             self.callbacks
                 .active_status
-                .with(|callback| callback(next.is_active()));
+                .with(|callback| callback(active));
         }
-        if before.visibility() != next.visibility() {
+        if was_visible != visibility {
             self.callbacks
                 .visibility
-                .with(|callback| callback(next.visibility()));
+                .with(|callback| callback(visibility));
         }
         match effect {
-            Effect::Phase(phase) => {
-                self.callbacks
-                    .app_lifecycle
-                    .with(|callback| callback(phase));
+            Effect::Phases(phases) => {
+                for &phase in phases {
+                    self.callbacks
+                        .app_lifecycle
+                        .with(|callback| callback(phase));
+                }
             }
             Effect::MemoryWarning => {
                 self.callbacks.memory_warning.with(|callback| callback());

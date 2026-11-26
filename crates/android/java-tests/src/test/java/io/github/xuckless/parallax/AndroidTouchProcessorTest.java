@@ -8,7 +8,8 @@
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
 // Parallax changes: package; the mocked FlutterRenderer is ShadowParallaxSurfaceView.Renderer, fed by
-// the shadowed static native (the port's AndroidTouchProcessor takes no renderer);
+// the shadowed static native (the port's AndroidTouchProcessor takes an Activity id, 0 here, in
+// place of the renderer);
 // io.flutter.Build.API_LEVELS → Build.VERSION_CODES; scrollWheelAbove26 runs from API 28 (was 26), Parallax's
 // minimum, on every SDK up to 37 as in Flutter. Dropped: scrollWheelBelow26 (pins API 25, below
 // Parallax's API 28 minimum). Ledger: third_party/flutter/PORTED.md.
@@ -63,7 +64,7 @@ public class AndroidTouchProcessorTest {
   public void setUp() {
     MockitoAnnotations.openMocks(this);
     ShadowParallaxSurfaceView.renderer = mockRenderer;
-    touchProcessor = new AndroidTouchProcessor(false);
+    touchProcessor = new AndroidTouchProcessor(/* activity= */ 0, false);
   }
 
   private long readTimeStamp(ByteBuffer buffer) {

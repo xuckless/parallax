@@ -13,8 +13,9 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    each `MotionEvent` to [`AndroidTouchProcessor`](../crates/android/java/io/github/xuckless/parallax/AndroidTouchProcessor.java),
    Flutter's file nearly verbatim. It packs one record per pointer into a little-endian direct `ByteBuffer`, exactly as
    for Flutter's engine: 36 fields of 8 bytes, a synthesized remove after every touch up, batched moves for the other
-   pointers on `ACTION_POINTER_UP`. Only the last call changed: `renderer.dispatchPointerDataPacket` became the static
-   native `ParallaxSurfaceView.nativeDispatchPointerDataPacket(buffer, position)`.
+   pointers on `ACTION_POINTER_UP`. Only the sink changed: the constructor takes the view's Activity id in place of the renderer, and
+   `renderer.dispatchPointerDataPacket` became the static native `ParallaxSurfaceView.nativeDispatchPointerDataPacket(activity, buffer, position)`; touches from a view whose
+   Activity does not own the window are dropped ([android-lifecycle.md](android-lifecycle.md#several-activities)).
 2. **JNI.** The native is a row in `natives` in [host.rs](../crates/android/src/host.rs). It borrows the buffer's
    first `position` bytes for the length of the call (main thread; the buffer is fresh per event) and hands them to
    `Shell::touch`.

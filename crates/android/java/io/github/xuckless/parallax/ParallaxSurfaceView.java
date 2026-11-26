@@ -26,8 +26,9 @@ import java.nio.ByteBuffer;
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
-  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops events
-  // from a replaced Activity, whose callbacks can still arrive after its successor started.
+  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops
+  // events from a view whose Activity does not own the window (it is covered, or destroyed and its
+  // callbacks arrive late).
   // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
@@ -53,7 +54,8 @@ final class ParallaxSurfaceView extends SurfaceView
 
   // Flutter's pointer data packet (AndroidTouchProcessor): `position` bytes of a direct buffer,
   // read before the call returns. Named after FlutterJNI.nativeDispatchPointerDataPacket.
-  static native void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position);
+  static native void nativeDispatchPointerDataPacket(
+      int activity, ByteBuffer buffer, int position);
 
   // ParallaxActivity.onCreate: a new Activity owns the window; returns its id for every later event.
   // Declared here so one class holds every native JNI_OnLoad binds.
@@ -67,13 +69,12 @@ final class ParallaxSurfaceView extends SurfaceView
   // returns, and the event's isCanceled() (key data has no field for it: a cancelled back release
   // must not go back). Returns whether GPUI handled it: the reply Flutter's framework sends
   // asynchronously.
-  static native boolean nativeDispatchKeyData(ByteBuffer packet, boolean canceled);
+  static native boolean nativeDispatchKeyData(int activity, ByteBuffer packet, boolean canceled);
 
-  // As FlutterView: no platform views, so motion events are not tracked.
-  private final AndroidTouchProcessor touchProcessor =
-      new AndroidTouchProcessor(/* trackMotionEvents= */ false);
+  // Both tag what they send with `activity`, so they are built once it is set.
+  private final AndroidTouchProcessor touchProcessor;
 
-  private final KeyboardManager keyboardManager = new KeyboardManager(this);
+  private final KeyboardManager keyboardManager;
 
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
@@ -84,6 +85,9 @@ final class ParallaxSurfaceView extends SurfaceView
   ParallaxSurfaceView(Context context, int activity) {
     super(context);
     this.activity = activity;
+    // As FlutterView: no platform views, so motion events are not tracked.
+    touchProcessor = new AndroidTouchProcessor(activity, /* trackMotionEvents= */ false);
+    keyboardManager = new KeyboardManager(this);
     getHolder().addCallback(this);
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
@@ -167,6 +171,11 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public boolean onTextInputKeyEvent(KeyEvent keyEvent) {
     return false;
+  }
+
+  @Override
+  public int getActivityId() {
+    return activity;
   }
 
   @Override
