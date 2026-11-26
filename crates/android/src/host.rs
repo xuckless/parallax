@@ -22,7 +22,9 @@ use jni::{
 };
 
 use crate::{
-    Error, keys,
+    Error,
+    backend::Device,
+    keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     pointer,
     renderer::{self, NativeWindow},
@@ -260,10 +262,12 @@ extern "system" fn surface_created(
     };
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
-        host.shell.set_display(window.size(), density, refresh_rate);
+        let size = window.size();
+        host.shell.set_display(size, density, refresh_rate);
         host.shell.handle(SurfaceEvent::Created {
             window,
             activity: ActivityId(activity),
+            size,
         });
         // Read first, so the borrow ends before `follow_locales` runs GPUI.
         let loaded = match &*host.app.borrow() {
@@ -306,12 +310,9 @@ extern "system" fn surface_changed(
 ) {
     with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
-        host.shell.set_display(
-            size(DevicePixels(width), DevicePixels(height)),
-            density,
-            refresh_rate,
-        );
-        host.shell.handle(SurfaceEvent::Resized);
+        let size = size(DevicePixels(width), DevicePixels(height));
+        host.shell.set_display(size, density, refresh_rate);
+        host.shell.handle(SurfaceEvent::Resized { size });
     });
 }
 
@@ -650,6 +651,15 @@ pub(crate) struct Callbacks {
     pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
+/// Whether the renderer's current surface has shown a frame. Each new surface (attach, device recovery) starts
+/// `Pending`; the window's first successful draw on it logs "parallax: first frame drawn on a WxH … surface" and
+/// moves it to `Drawn`. scripts/android-smoke.sh greps that line to know a launch, rotation or resume really drew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FirstFrame {
+    Pending,
+    Drawn,
+}
+
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
@@ -658,6 +668,8 @@ pub(crate) struct Shell {
     pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
+    /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
+    device: Device,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
@@ -666,6 +678,8 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
+    /// A plain `Cell`: only the main thread draws and attaches surfaces.
+    pub(crate) first_frame: Cell<FirstFrame>,
 }
 
 impl Shell {
@@ -676,12 +690,14 @@ impl Shell {
             lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
+            device: renderer::device(),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
             pointers: RefCell::new(pointer::Pointers::default()),
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
+            first_frame: Cell::new(FirstFrame::Pending),
         }
     }
 
@@ -723,7 +739,7 @@ impl Shell {
             return Err(Error::OneWindow);
         }
         let window = self.current_window().ok_or(Error::NoSurface)?;
-        let renderer = renderer::create(&self.gpu, &window, self.metrics.get().size)?;
+        let renderer = renderer::create(&self.gpu, self.device, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
         *self.renderer.borrow_mut() = Some(renderer);
         Ok(atlas)
@@ -741,29 +757,39 @@ impl Shell {
         let size = self.metrics.get().size;
         match action {
             Action::Attach { previous } => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.current_window())
-                {
-                    // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow once,
-                    // and the window may be the same one (a resize).
-                    renderer.unconfigure_surface();
-                    let instance = self
-                        .gpu
-                        .borrow()
-                        .as_ref()
-                        .map(|context| context.instance.clone());
-                    let replaced = instance.ok_or(Error::NoBackend).and_then(|instance| {
-                        renderer
-                            .replace_surface(&window, renderer::surface_config(size), &instance)
-                            .map_err(|error| Error::Renderer(format!("{error:#}")))
-                    });
-                    if let Err(error) = replaced {
-                        log::error!("parallax: cannot attach the new surface: {error}");
+                let attached = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
+                    (Some(renderer), Some(window)) => {
+                        // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow
+                        // once, and the window may be the same one (a resize).
+                        renderer.unconfigure_surface();
+                        let instance = self
+                            .gpu
+                            .borrow()
+                            .as_ref()
+                            .map(|context| context.instance.clone());
+                        instance.ok_or(Error::NoBackend).and_then(|instance| {
+                            renderer
+                                .replace_surface(&window, renderer::surface_config(size), &instance)
+                                .map_err(|error| Error::Renderer(format!("{error:#}")))
+                        })
                     }
-                }
+                    // Before GPUI opens the window there is no renderer: it is created on this window then.
+                    (None, _) | (_, None) => Ok(()),
+                };
                 // Released only now: the renderer has dropped its surface on the previous window.
                 drop(previous);
-                self.resized();
+                match attached {
+                    Ok(()) => {
+                        self.first_frame.set(FirstFrame::Pending);
+                        self.resized();
+                    }
+                    Err(error) => {
+                        // The state machine rebuilds the renderer after the backoff. scripts/android-smoke.sh fails
+                        // on this line: keep its wording.
+                        log::error!("parallax: cannot attach the new surface: {error}");
+                        self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
+                    }
+                }
             }
             Action::Detach { window } => {
                 if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
@@ -775,18 +801,23 @@ impl Shell {
             Action::RecoverDevice => {
                 let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
                     (Some(renderer), Some(window)) => {
-                        renderer::recover(&self.gpu, renderer, &window, size)
+                        renderer::recover(&self.gpu, self.device, renderer, &window, size)
                     }
                     (None, _) | (_, None) => Err(Error::NoSurface),
                 };
                 match recovered {
                     Ok(()) => self.handle(SurfaceEvent::Recovered),
                     Err(error) => {
-                        // The state machine waits longer before the next try.
+                        // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
+                        // this line: keep its wording.
                         log::error!("parallax: GPU device recovery failed: {error}");
                         self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
                     }
                 }
+            }
+            Action::Redraw => {
+                self.first_frame.set(FirstFrame::Pending);
+                self.resized();
             }
             Action::Draw => {
                 self.callbacks

@@ -156,6 +156,15 @@ jobs:
       # `-gpu auto` picks lavapipe (Vulkan) on the GPU-less runner; on SwiftShader's Vulkan (`swiftshader_indirect`,
       # `swangle_indirect`) the renderer never finishes creating (docs/android-smoke.md#in-ci).
       EMULATOR_OPTIONS: -no-window -gpu auto -noaudio -no-boot-anim -camera-back none
+      # The emulator image, for both runner steps and the AVD cache key.
+      AVD_API_LEVEL: 35
+      AVD_TARGET: google_apis
+      AVD_ARCH: x86_64
+      AVD_PROFILE: pixel_7
+      # Part of the AVD cache key: the emulator runner's tag (keep it equal to the two `uses:` lines below, which
+      # cannot read env), and a number to bump by hand to throw away a bad cached AVD.
+      AVD_RUNNER: v2.38.0
+      AVD_CACHE_BUMP: 1
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
@@ -183,24 +192,24 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-35-google_apis-x86_64-pixel_7
+          key: avd-${{ env.AVD_API_LEVEL }}-${{ env.AVD_TARGET }}-${{ env.AVD_ARCH }}-${{ env.AVD_PROFILE }}-runner-${{ env.AVD_RUNNER }}-${{ env.AVD_CACHE_BUMP }}
       - if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_7
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
           force-avd-creation: false
           emulator-options: ${{ env.EMULATOR_OPTIONS }}
           disable-animations: false
           script: echo "AVD snapshot made for the cache"
       - uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_7
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
           force-avd-creation: false
           emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true

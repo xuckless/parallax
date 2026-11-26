@@ -30,9 +30,8 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    `replace_text_in_range`, or `replace_and_mark_text_in_range` when the new text is the composing range
    (`setComposingText`), then `unmark_text` / a mark / `set_selected_text_range` only where still different. Notices
    GPUI sends meanwhile are the edit's echo (`Origin::Java`) and dropped. Then `differs` decides whether Java must
-   take GPUI's state: when the app changed the edit (a filter, a moved caret) or a GPUI change was merged in. What
-   GPUI does not report (a reversed selection kept forward, no selection, no composing range) is not news, so the
-   IME is not restarted every keystroke.
+   take GPUI's state: when the app changed the edit (a filter, a moved caret) or a GPUI change was merged in.
+   What GPUI does not report (a reversed selection kept forward, no selection, no composing range) is not news.
 2. **GPUI → Java, at the frame's end and after each key.** `text_input_state_changed`, `set_text_input_configuration`,
    a new focused field (`FocusId`) and `show`/`hide_soft_keyboard` fold into one `Pending` (`Pending::next`, a row per
    notice). `nativeTextInputCalls` returns it as Flutter's `flutter/textinput` calls in JSON (`clearClient`,
@@ -41,7 +40,8 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    sends DEL as a key, then may `commitText` before vsync, and the mirror must already hold GPUI's deletion. Java
    runs the calls outside GPUI's draw, so `restartInput` → `onCreateInputConnection` re-enters Rust with GPUI free. A
    new client always gets a `setEditingState`, empty if the field is unreadable (logged once per focus), never with
-   a composing range (`Pending::commit` unmarks it; patch 0010 already ends it when focus leaves a field).
+   a composing range. Patch 0010 ends composition when focus leaves a field; `Pending::commit` is the backstop for a
+   new configuration on the same field mid-composition and for handlers that ignore `unmark_text`.
 3. **Race: merge, don't drop.** An IME edit made while a GPUI change is on its way is based on the old mirror.
    `merge(mirror, java, gpui)` takes Java's change as one span of the mirror and lands it where that span is in
    GPUI's state; an offset inside the span GPUI changed moves to its end (GPUI's change stays whole, Java's lands

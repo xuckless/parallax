@@ -1,10 +1,7 @@
 //! GPUI's `PlatformWindow` on Android: the app's one window, filling the Activity. State lives in the [`Shell`];
 //! this type answers GPUI from it. Stubs are marked "Not yet on Android" and listed in `docs/android.md`.
 
-use std::{
-    rc::Rc,
-    sync::{Arc, Once},
-};
+use std::{rc::Rc, sync::Arc};
 
 use futures::channel::oneshot;
 use gpui::{
@@ -16,14 +13,15 @@ use gpui::{
 };
 use raw_window_handle as rwh;
 
-use crate::{host::Shell, platform::AndroidDisplay};
+use crate::{
+    host::{FirstFrame, Shell},
+    platform::AndroidDisplay,
+};
 
 pub(crate) struct AndroidWindow {
     pub(crate) shell: Rc<Shell>,
     /// The renderer's atlas. GPUI keeps the one it got at open; device recovery refills this same atlas.
     pub(crate) atlas: Arc<dyn PlatformAtlas>,
-    /// Logs "first frame" once, after the first scene reaches the screen: scripts/android-smoke.sh waits for it.
-    pub(crate) first_frame: Once,
 }
 
 impl rwh::HasWindowHandle for AndroidWindow {
@@ -225,9 +223,21 @@ impl PlatformWindow for AndroidWindow {
     fn draw(&self, scene: &Scene) {
         if let Some(renderer) = self.shell.renderer.borrow_mut().as_mut() {
             // `false` means no surface or a lost device; the shell handles both on the next surface event or frame.
-            if renderer.draw(scene) {
-                self.first_frame
-                    .call_once(|| log::info!("parallax: first frame drawn"));
+            if renderer.draw(scene)
+                && self.shell.first_frame.replace(FirstFrame::Drawn) == FirstFrame::Pending
+            {
+                let size = self.shell.metrics.get().size;
+                let orientation = if size.width > size.height {
+                    "landscape"
+                } else {
+                    "portrait"
+                };
+                // scripts/android-smoke.sh waits for this line, orientation included: keep its wording.
+                log::info!(
+                    "parallax: first frame drawn on a {}x{} {orientation} surface",
+                    size.width.0,
+                    size.height.0
+                );
             }
         }
     }
