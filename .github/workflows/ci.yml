@@ -153,7 +153,9 @@ jobs:
     timeout-minutes: 60
     env:
       # One emulator for both runner steps below: the first creates and caches it, the second runs the smoke test.
-      EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+      # `-gpu auto` picks lavapipe (Vulkan) on the GPU-less runner; on SwiftShader's Vulkan (`swiftshader_indirect`,
+      # `swangle_indirect`) the renderer never finishes creating (docs/ci.md#android-smoke).
+      EMULATOR_OPTIONS: -no-window -gpu auto -noaudio -no-boot-anim -camera-back none
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install

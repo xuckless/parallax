@@ -45,8 +45,11 @@ A target that cannot build a crate gets an explicit `--exclude` with a comment i
 emulator and runs [android-smoke.sh](android-smoke.md) in it; the job adds JDK 21 (Gradle), names the newest NDK as
 `ANDROID_NDK_HOME` (the runner has several, [cli.md](cli.md#requirements)) and opens `/dev/kvm` to the runner user.
 The AVD with a booted snapshot is cached (`avd-35-google_apis-x86_64-pixel_7`); a cache miss boots it once to make
-the snapshot, and the smoke run starts from it with `-no-snapshot-save`. The emulator uses SwiftShader
-(`-gpu swiftshader_indirect`): runners have no GPU.
+the snapshot, and the smoke run starts from it with `-no-snapshot-save`.
+
+Runners have no GPU. `-gpu auto` picks lavapipe for Vulkan there (ANGLE on SwiftShader for GLES), and hello draws.
+Tried and dropped (2026-11-26): `swiftshader_indirect` and `swangle_indirect` give SwiftShader's Vulkan, on which
+renderer creation never returns and `am start -W` gives up; `guest` draws on llvmpipe but the first tap is not seen.
 
 It costs about TODO minutes (emulator boot plus a two-ABI APK build), so it runs where a merge is decided: pull
 requests, pushes to `main` and manual runs. Other branch pushes skip it; start it on a branch with
