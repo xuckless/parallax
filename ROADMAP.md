@@ -34,7 +34,7 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 |---|---|---|---|
 | 8 | 1 | Upstream: fork Zed to `xuckless/zed` with a `parallax` branch carrying our patches (rule 14), notes for the BSD-licence question and patch 0001 (upstreaming paused) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
 | 9 | 1 | Publish our GPUI fork as `parallax-gpui*` crates (patch rule 11) and move the Parallax crates onto it, dropping the local queue copy and fonts workaround · Core patches (rule 12): pointer device + synthesized tags, touch opt-out, keyboard type / secure / autofill · Back button: claim it again after typing (patch) · Emoji: Android rasterizes emoji glyphs via Canvas/Typeface (COLRv1 on Android 13+) · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
-| 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Runtime locale changes (follow per-app / system locale after start) · composing check with a second IME/language (Gboard opened no composing region in Wave 9) · emoji picker timing (100 new emoji ≈ 0.2 s in Wave 9; measure, move rasterizing off the hot path only if over budget) · patch tests in CI · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
+| 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Runtime locale changes (follow per-app / system locale after start) · composing check with a second IME/language (Gboard opened no composing region in Wave 9) · emoji picker timing (100 new emoji ≈ 0.2 s in Wave 9; measure, move rasterizing off the hot path only if over budget) · patch tests in CI · Android mouse/trackpad as a real mouse · per-touch device attribution (patch 0003) · back key's `pointer_source` · decide public touch opt-out for custom elements · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
 | 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
 | 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches on the fork with drafts in `drafts/upstream/`) · Android multi-window (decide a window per Activity) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
 | 13 | 3 | Confirm the macOS 27 touchscreen API · desktop touch patches `touch-windows`, `touch-linux` (Wayland + X11), `touch-macos` (numbered when they land) · synthetic touch injection for testing (Windows `InjectTouchInput`, Linux `uinput`) | repo builds |
@@ -121,6 +121,12 @@ Core patches (needed by Android from the start; iOS and web get them too):
 - [x] Per-element opt-out of touch → mouse emulation: build upstream's declared-but-unused `ClickEvent::Touch`.
 - [x] `TextInputConfiguration`: keyboard type, secure entry and autofill hint.
 - [ ] Run each patch's own GPUI tests in CI (the fork crates' tests don't build as shipped).
+- [ ] Per-touch device attribution (Wave 10): patch 0003 keeps one `touch_device`; key it by `TouchId`, since a pen and
+      a finger down together can mislabel each other.
+- [ ] Back key's `pointer_source` (Wave 10): a key-driven `BackGestureEvent` should report `None`; needs a source on
+      `BackGestureEvent` (iOS edge swipe stays a touch).
+- [ ] Touch opt-out for custom elements (Wave 10): `leave_touch_to_gestures` is `pub(crate)`, so a custom element can't
+      opt out of an ancestor's `on_touch`; decide whether to make it public.
 - [x] Fork `zed-industries/zed` (`xuckless/zed`, `parallax` branch). Filing is paused (AGENTS.md rule 14).
 
 Full Android:
@@ -129,6 +135,9 @@ Full Android:
       locales are used).
 - [ ] Android autofill (Wave 10): port `TextInputChannel.Configuration.Autofill` and emit GPUI's autofill hints (today
       the hint is not sent; [android-text-input.md](docs/android-text-input.md)).
+- [ ] Mouse and trackpad as a real mouse (Wave 10): route Mouse/Trackpad packets to MouseDown/MouseMove/MouseUp with
+      buttons and click counting, and wire `onGenericMotionEvent` for hover and wheel (today their clicks arrive as
+      synthesized taps).
 - [ ] Multi-window (after Gate 1, Wave 12): one GPUI window per process, so in split-screen only the most recently started Activity draws;
       decide whether to support a window per Activity.
 - [x] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
