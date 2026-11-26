@@ -11,14 +11,14 @@ use std::{
 
 use gpui::{
     App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
-    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, RequestFrameOptions, Size,
-    WindowInsets, WindowVisibility, point, px, size,
+    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
+    RequestFrameOptions, Size, WindowInsets, WindowVisibility, point, px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JByteBuffer, JClass, JObject, JString},
-    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint},
+    objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
+    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
 
 use crate::{
@@ -27,6 +27,7 @@ use crate::{
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
+    text_input::{self, Edit, EditingState, Origin, Pending},
 };
 
 /// The Java class whose static `native` methods [`natives`] binds.
@@ -34,7 +35,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 9] {
+fn natives() -> [NativeMethod; 12] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -56,7 +57,7 @@ fn natives() -> [NativeMethod; 9] {
             "(I)V",
             surface_destroyed as *mut c_void,
         ),
-        row("nativeFrame", "(I)V", frame as *mut c_void),
+        row("nativeFrame", "(I)Ljava/lang/String;", frame as *mut c_void),
         row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
@@ -77,6 +78,21 @@ fn natives() -> [NativeMethod; 9] {
             "nativeDispatchKeyData",
             "(ILjava/nio/ByteBuffer;Z)Z",
             dispatch_key_data as *mut c_void,
+        ),
+        row(
+            "nativeUpdateEditingState",
+            "(ILjava/lang/String;IIII)V",
+            update_editing_state as *mut c_void,
+        ),
+        row(
+            "nativePerformAction",
+            "(ILjava/lang/String;)V",
+            perform_action as *mut c_void,
+        ),
+        row(
+            "nativeBoundsForRange",
+            "(III[F)Z",
+            bounds_for_range as *mut c_void,
         ),
     ]
 }
@@ -291,8 +307,90 @@ extern "system" fn activity_event(
     }
 }
 
-extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
-    with_owner(activity, |host| host.shell.frame());
+/// Every vsync. Returns GPUI's text-input calls for `TextInputChannel.handleFrameworkCalls` (Flutter's JSON),
+/// or null: Java runs them after this returns, outside GPUI's draw.
+extern "system" fn frame(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
+    let mut calls = None;
+    with_owner(activity, |host| {
+        host.shell.frame();
+        calls = host.shell.text_input_calls();
+    });
+    match calls.map(|calls| env.new_string(calls)) {
+        Some(Ok(calls)) => calls.into_raw(),
+        Some(Err(error)) => {
+            log::error!("parallax: text input calls dropped: {error}");
+            std::ptr::null_mut()
+        }
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `TextInputChannel.updateEditingState`: Java's editing state after an IME edit (UTF-16 offsets, -1 for none).
+extern "system" fn update_editing_state(
+    mut env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    text: JString,
+    selection_start: jint,
+    selection_end: jint,
+    composing_start: jint,
+    composing_end: jint,
+) {
+    let text = match env.get_string(&text) {
+        Ok(text) => String::from(text),
+        Err(error) => {
+            log::error!("parallax: unreadable editing state: {error}");
+            return;
+        }
+    };
+    let state = EditingState::from_java(
+        text,
+        (selection_start, selection_end),
+        (composing_start, composing_end),
+    );
+    with_owner(activity, |host| host.shell.update_editing_state(&state));
+}
+
+/// `TextInputChannel`'s performAction family: the IME's editor action, by Flutter's name.
+extern "system" fn perform_action(
+    mut env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    action: JString,
+) {
+    let action = env
+        .get_string(&action)
+        .map(String::from)
+        .unwrap_or_else(|error| format!("unreadable ({error})"));
+    with_owner(activity, |host| host.shell.perform_action(&action));
+}
+
+/// `TextInputChannel.boundsForRange`: GPUI's bounds of a UTF-16 range in view pixels, into `ltrb`.
+extern "system" fn bounds_for_range(
+    env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    start: jint,
+    end: jint,
+    ltrb: JFloatArray,
+) -> jboolean {
+    let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
+        return JNI_FALSE;
+    };
+    let mut bounds = None;
+    with_owner(activity, |host| {
+        bounds = host.shell.bounds_for_range(start..end)
+    });
+    let Some(bounds) = bounds else {
+        return JNI_FALSE;
+    };
+    match env.set_float_array_region(&ltrb, 0, &bounds) {
+        Ok(()) => JNI_TRUE,
+        Err(error) => {
+            log::error!("parallax: cannot write the range bounds: {error}");
+            JNI_FALSE
+        }
+    }
 }
 
 /// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
@@ -498,6 +596,9 @@ pub(crate) struct Shell {
     pub(crate) callbacks: Callbacks,
     pub(crate) touches: RefCell<pointer::Touches>,
     pub(crate) keyboard: RefCell<keys::Keyboard>,
+    /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
+    pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
+    pub(crate) text_input: RefCell<text_input::Session>,
 }
 
 impl Shell {
@@ -511,6 +612,8 @@ impl Shell {
             callbacks: Callbacks::default(),
             touches: RefCell::new(pointer::Touches::default()),
             keyboard: RefCell::new(keys::Keyboard::default()),
+            input_handler: RefCell::new(None),
+            text_input: RefCell::new(text_input::Session::default()),
         }
     }
 
@@ -742,6 +845,93 @@ impl Shell {
         }
     }
 
+    /// Runs `call` on the focused field's handler, taken out so GPUI can re-enter the window; `None` without one.
+    fn with_input_handler<R>(
+        &self,
+        call: impl FnOnce(&mut PlatformInputHandler) -> R,
+    ) -> Option<R> {
+        let mut handler = self.input_handler.borrow_mut().take()?;
+        let result = call(&mut handler);
+        self.input_handler.borrow_mut().get_or_insert(handler);
+        Some(result)
+    }
+
+    /// The pending text-input calls for Java, as Flutter's JSON; empties them.
+    fn text_input_calls(&self) -> Option<String> {
+        let pending = std::mem::take(&mut self.text_input.borrow_mut().pending);
+        if pending == Pending::default() {
+            return None;
+        }
+        let state = pending
+            .sync
+            .then(|| self.with_input_handler(read_state).flatten())
+            .flatten();
+        let calls = pending.calls(&self.text_input.borrow().configuration, state.as_ref());
+        log::debug!("parallax: text input {pending:?} → {calls:?}");
+        calls
+    }
+
+    /// Java's editing state after an IME edit → GPUI, synchronously. Stale while Java has not seen GPUI's
+    /// latest change: then GPUI wins and Java gets GPUI's state at the end of the frame.
+    fn update_editing_state(&self, java: &EditingState) {
+        if self.text_input.borrow().pending.behind() {
+            log::debug!("parallax: IME edit on a stale state dropped: {java:?}");
+            return;
+        }
+        self.with_input_handler(|handler| {
+            let Some(gpui) = read_state(handler) else {
+                return;
+            };
+            let edits = text_input::edits(&gpui, java);
+            log::debug!("parallax: IME {java:?} over {gpui:?} → {edits:?}");
+            self.text_input.borrow_mut().origin = Origin::Java;
+            for edit in edits {
+                match edit {
+                    Edit::Replace { range, text } => {
+                        handler.replace_text_in_range(Some(range), &text)
+                    }
+                    Edit::Mark {
+                        range,
+                        text,
+                        selected,
+                    } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
+                    Edit::Unmark => handler.unmark_text(),
+                    Edit::Select(range) => handler.set_selected_text_range(range),
+                }
+            }
+            self.text_input.borrow_mut().origin = Origin::Gpui;
+            // The app may refuse or change the edit (a filter, a length limit): Java must take GPUI's state.
+            if read_state(handler).as_ref() != Some(java) {
+                self.text_input
+                    .borrow_mut()
+                    .notice(text_input::Notice::Changed);
+            }
+        });
+    }
+
+    /// The IME's editor action: GPUI gets Enter, as a hardware key (see [`keys::Keyboard::press`]).
+    fn perform_action(&self, action: &str) {
+        log::debug!("parallax: IME action {action}");
+        let inputs = self.keyboard.borrow().press("enter");
+        for input in inputs {
+            self.callbacks.input.with(|callback| callback(input));
+        }
+    }
+
+    /// GPUI's bounds of a UTF-16 range as `[left, top, right, bottom]` in view pixels.
+    fn bounds_for_range(&self, range: std::ops::Range<usize>) -> Option<[f32; 4]> {
+        let bounds = self
+            .with_input_handler(|handler| handler.bounds_for_range(range))
+            .flatten()?;
+        let density = self.metrics.get().density;
+        Some([
+            f32::from(bounds.left()) * density,
+            f32::from(bounds.top()) * density,
+            f32::from(bounds.right()) * density,
+            f32::from(bounds.bottom()) * density,
+        ])
+    }
+
     /// Every vsync (Choreographer): GPUI draws if anything changed, or device recovery moves on.
     fn frame(&self) {
         let device_lost = self
@@ -754,4 +944,25 @@ impl Shell {
             device_lost,
         });
     }
+}
+
+/// The focused field's whole editing state, in UTF-16. Needs `text_length_utf16` (as UIKit does); the editable
+/// range is not honoured yet: Java mirrors the whole document.
+fn read_state(handler: &mut PlatformInputHandler) -> Option<EditingState> {
+    let length = handler.text_length_utf16()?;
+    let text = handler.text_for_range(0..length, &mut None)?;
+    let selection = handler
+        .selected_text_range(false)
+        .map(|selection| match selection.reversed {
+            true => (selection.range.end, selection.range.start),
+            false => (selection.range.start, selection.range.end),
+        });
+    let composing = handler
+        .marked_text_range()
+        .filter(|range| !range.is_empty());
+    Some(EditingState {
+        text,
+        selection,
+        composing,
+    })
 }
