@@ -938,7 +938,18 @@ impl Shell {
     fn text_input_calls(&self) -> Option<String> {
         let pending = self.text_input.borrow_mut().take()?;
         let state = if pending.sends_state() {
-            self.with_input_handler(read_state).flatten()
+            self.with_input_handler(|handler| {
+                let state = read_state(handler)?;
+                match pending.commit(&state) {
+                    Some(edit) => {
+                        log::debug!("parallax: composition committed for a new client");
+                        apply(handler, edit);
+                        read_state(handler)
+                    }
+                    None => Some(state),
+                }
+            })
+            .flatten()
         } else {
             None
         };
@@ -989,18 +1000,7 @@ impl Shell {
                 edits.len()
             );
             for edit in edits {
-                match edit {
-                    Edit::Replace { range, text } => {
-                        handler.replace_text_in_range(Some(range), &text)
-                    }
-                    Edit::Mark {
-                        range,
-                        text,
-                        selected,
-                    } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
-                    Edit::Unmark => handler.unmark_text(),
-                    Edit::Select(range) => handler.set_selected_text_range(range),
-                }
+                apply(handler, edit);
             }
             // The app may refuse or change the edit (a filter, a length limit): the session decides whether Java
             // must take GPUI's state.
@@ -1042,6 +1042,20 @@ impl Shell {
             at: Instant::now(),
             device_lost,
         });
+    }
+}
+
+/// One [`Edit`] as GPUI's `InputHandler` call.
+fn apply(handler: &mut PlatformInputHandler, edit: Edit) {
+    match edit {
+        Edit::Replace { range, text } => handler.replace_text_in_range(Some(range), &text),
+        Edit::Mark {
+            range,
+            text,
+            selected,
+        } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
+        Edit::Unmark => handler.unmark_text(),
+        Edit::Select(range) => handler.set_selected_text_range(range),
     }
 }
 

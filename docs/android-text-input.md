@@ -40,7 +40,10 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    `nativeFrame` and right after `KeyboardManager` handled a key event (hardware or the IME's `sendKeyEvent`): Gboard
    sends DEL as a key, then may `commitText` before vsync, and the mirror must already hold GPUI's deletion. Java
    runs the calls outside GPUI's draw, so `restartInput` → `onCreateInputConnection` re-enters Rust with GPUI free. A
-   new client always gets a `setEditingState`, empty if the field is unreadable (logged once per focus).
+   new client always gets a `setEditingState`, empty if the field is unreadable (logged once per focus), and never
+   a composing range: `Pending::commit` unmarks GPUI's marked text first, or the new IME session's next key would
+   replace text it never composed. A field commits its own composition on blur, as Flutter's `EditableText` does
+   ([examples.md](examples.md)): GPUI draws a tap's focus change inside the tap, when the left field is out of reach.
 3. **Race: merge, don't drop.** An IME edit made while a GPUI change is on its way is based on the old mirror.
    `merge(mirror, java, gpui)` takes Java's change as one span of the mirror and lands it where that span is in
    GPUI's state; an offset inside the span GPUI changed moves to its end (GPUI's change stays whole, Java's lands

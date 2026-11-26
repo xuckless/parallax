@@ -20,7 +20,8 @@ Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the ap
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local: upstream GPUI has no text field
 outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one
 `EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes. On Android it drives the IME
-([android-text-input.md](android-text-input.md)).
+([android-text-input.md](android-text-input.md)). On blur it commits its composition (Flutter's `EditableText` does
+the same), so no underline stays behind; GPUI ignores a `notify` inside its focus listeners, so the redraw is deferred.
 
 What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade.
 

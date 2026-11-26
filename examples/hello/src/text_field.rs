@@ -7,7 +7,7 @@ use std::ops::Range;
 use parallax::gpui::{
     App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     FocusHandle, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, TextInputConfiguration, TextRun,
+    Pixels, Point, ShapedLine, SharedString, Style, Subscription, TextInputConfiguration, TextRun,
     UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla, point, prelude::*, px,
     relative, rgb, rgba, size,
 };
@@ -48,16 +48,27 @@ pub struct TextField {
     marked: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Commits the composition when the field loses focus.
+    _blur: Subscription,
 }
 
 impl TextField {
     pub fn new(
         placeholder: &str,
         configuration: TextInputConfiguration,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_handle = cx.focus_handle();
+        // As Flutter's `EditableText` on blur: an IME composition left behind would stay underlined, and the
+        // keyboard's next session would replace it. Focus listeners run inside GPUI's draw, which ignores a
+        // `notify` there, so the redraw waits until the draw is done.
+        let blur = cx.on_blur(&focus_handle, window, |field, window, cx| {
+            field.marked = None;
+            cx.defer_in(window, |_, _, cx| cx.notify());
+        });
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             content: String::new(),
             placeholder: placeholder.to_string().into(),
             configuration,
@@ -66,6 +77,7 @@ impl TextField {
             marked: None,
             last_layout: None,
             last_bounds: None,
+            _blur: blur,
         }
     }
 
