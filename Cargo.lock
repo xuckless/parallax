@@ -576,6 +576,13 @@ dependencies = [
 [[package]]
 name = "cargo-parallax"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.2.3+spec-1.1.0",
+]
 
 [[package]]
 name = "cbc"
