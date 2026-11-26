@@ -9,14 +9,18 @@ scripts/apply-patches.sh
 scripts/android-smoke.sh [serial]   # default: the only device in `adb devices`
 ```
 
-Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It clears
-logcat, builds `cargo-parallax`, then runs the `steps` table in order. It prints each step's name and exits 0 after
-`all N steps passed`; any failure prints `FAIL: <step>: <why>` and the last app lines of logcat, and exits 1.
+Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
+system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
+off in portrait, then runs the `steps` table in order. It prints each step's name and exits 0 after
+`all N steps passed` and the renderer line (which GPU drew); any failure prints `FAIL: <step>: <why>` and the last
+app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`failure.png`), stay in
+`target/android-smoke/`; CI uploads that folder as the `android-smoke` artifact when the job fails.
 
 ## Steps
 
-Each row is `name | command | regex | seconds`: run the command, then wait for a **new** logcat line matching the
-regex. A crash, a native signal or an ANR for the app fails the current step at once.
+Each row is `name | command | regex | seconds`: run the command, then poll logcat once a second (`adb logcat -d`;
+a streaming `adb logcat` stalled for good on a CI runner) for a line logged after the command started that matches
+the regex. A crash, a native signal or an ANR for the app fails the current step at once.
 
 | Step | Does | Waits for |
 |---|---|---|
@@ -40,9 +44,20 @@ taps the middle of the topmost band of rows where at least a quarter of the pixe
 colour scaled by 0.5–1.1, because the emulator shows hello's colours dimmed (about ×0.88), and retries for 10 s
 while a splash screen, the keyboard or a rotation settles. Status bar icons and glyphs never fill a quarter of a row.
 
+## In CI
+
+The [`android-smoke` job](../.github/workflows/ci.yml) runs the script inside
+[reactivecircus/android-emulator-runner](https://github.com/ReactiveCircus/android-emulator-runner) on ubuntu with
+KVM opened to the runner user, JDK 21 for Gradle, and the newest NDK named as `ANDROID_NDK_HOME` (the runner has
+several, [cli.md](cli.md#requirements)). The AVD and a booted snapshot are cached; a cache miss boots once to make them.
+
+Runners have no GPU. `-gpu auto` gives lavapipe for Vulkan (ANGLE on SwiftShader for GLES), and hello draws on it.
+With `swiftshader_indirect` or `swangle_indirect` the app gets SwiftShader's Vulkan, where creating the renderer
+never returned and `am start -W` gave up (2026-11-26).
+
 ## Limits
 
-- It leaves auto-rotate off on the device (`accelerometer_rotation 0`, portrait).
+- It leaves the device with auto-rotate off (portrait) and error dialogs hidden (`hide_error_dialogs 1`).
 - One emulator image in CI (API 35, `google_apis`, Pixel 7 profile). The API 28/33/35 Gboard matrix of
   [ROADMAP Gate 1](../ROADMAP.md) stays a local check.
 - `input text` sends key events, not IME commits: composition and autocorrect are not covered here
