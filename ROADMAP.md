@@ -124,6 +124,10 @@ Core patches (needed by Android from the start; iOS and web get them too):
 
 Full Android:
 
+- [ ] Runtime locale changes: follow per-app / system locale changes after start (today only the first surface's
+      locales are used).
+- [ ] Multi-window: one GPUI window per process, so in split-screen only the most recently started Activity draws;
+      decide whether to support a window per Activity.
 - [ ] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
       backend table.
 - [ ] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
