@@ -4,7 +4,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased] (0.1.3)
+## [0.1.3] - 2026-11-26
 
 Wave 9: our GPUI fork, core patches and Android text input. Built on `gpui-pre` 0.3.14 plus Parallax's patches.
 Verified on the Android emulator (no real-device testing yet).
@@ -21,7 +21,7 @@ Verified on the Android emulator (no real-device testing yet).
 - `TextInputConfiguration`: `keyboard_type`, `secure` and an autofill hint (Android sends keyboard type and secure;
   autofill is not sent yet).
 - `parallax-android`: soft-keyboard text input through Flutter's ported `InputConnectionAdaptor` and `TextInputPlugin`
-  (checked with Gboard on the emulator).
+  (checked with Gboard on the API 35 emulator, including autocorrect and suggestion picks).
 - `parallax-android`: colour emoji drawn by Android itself, so every Android version draws its own (COLRv1 included).
 
 ### Fixed
