@@ -9,6 +9,7 @@ gesture arena, simplified):
   between frames. It never reaches the gesture recognizer: no mouse press, click, scroll or long press.
 - Elements with tap, press, drag or scroll handlers leave it to the recognizer (`TouchRoute::Gestures`), as does
   nobody deciding. So a button inside an `on_touch` canvas still clicks, and a scroll container inside it scrolls.
+  Custom elements join the same way: `Window::leave_touch_to_gestures(touch)` (public) from a `TouchEvent` listener.
 The started touch is hit-tested at its position without moving the window's mouse position for good. After a claimed
 touch ends, the window draws if dirty, as it already does after a tap, so the platform's release handler (web: virtual
 keyboard) sees input handlers that match a focus change the listener made.
@@ -27,15 +28,15 @@ custom gestures need raw touches without a stray click or scroll.
 Depends on: 0003 (`Window::pointer_source`; `PointerDevice` in tests).
 
 Test: `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs): one row per element tree and gesture (tap,
-pan, mouse click; canvas alone, button inside a canvas, canvas inside a canvas, scroller inside a canvas, a thumb that
-follows the finger), also checking the post-release draw and the mouse position.
+pan, mouse click; canvas alone, button inside a canvas, canvas inside a canvas, scroller inside a canvas, custom
+element inside a canvas, a thumb that follows the finger), also checking the post-release draw and the mouse position.
 
-Size: ~400 added lines, ~230 of them the test table and its fixture; the code is ~170.
+Size: ~440 added lines, ~260 of them the test table and its fixture; the code is ~180.
 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
-index f0790e6..ec05c34 100644
+index f0790e6..eb24700 100644
 --- a/gpui-pre/src/elements/div.rs
 +++ b/gpui-pre/src/elements/div.rs
 @@ -23,8 +23,9 @@ use crate::{
@@ -198,7 +199,7 @@ index f0790e6..ec05c34 100644
  
                                  match btn {
                                      MouseButton::Left => {
-@@ -5867,4 +5947,230 @@ mod tests {
+@@ -5867,4 +5947,262 @@ mod tests {
          assert_eq!(bounds("cell-1").origin.x, px(100.));
          assert_eq!(bounds("cell-2").origin.x, px(300.));
      }
@@ -218,6 +219,9 @@ index f0790e6..ec05c34 100644
 +        Follow,
 +        Tap,
 +        Scroll,
++        /// A custom element that handles taps with mouse listeners and leaves its touches to
++        /// the recognizer with `Window::leave_touch_to_gestures`.
++        Custom,
 +    }
 +
 +    /// A 50x50 element `name` whose handlers log what reaches them. Release handlers refresh
@@ -251,6 +255,29 @@ index f0790e6..ec05c34 100644
 +                }),
 +                Handler::Scroll => element
 +                    .on_scroll(move |_, _, _| seen.borrow_mut().push(format!("{name} scroll"))),
++                Handler::Custom => element.child(
++                    canvas(
++                        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
++                        move |_, hitbox, window, _| {
++                            let touched = hitbox.clone();
++                            window.on_mouse_event(move |event: &TouchEvent, phase, window, _| {
++                                if phase == DispatchPhase::Bubble
++                                    && event.phase == TouchPhase::Started
++                                    && touched.is_hovered(window)
++                                {
++                                    window.leave_touch_to_gestures(event.id);
++                                }
++                            });
++                            window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _| {
++                                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
++                                    seen.borrow_mut().push(format!("{name} release"));
++                                    window.refresh();
++                                }
++                            });
++                        },
++                    )
++                    .size_full(),
++                ),
 +            }
 +        })
 +    }
@@ -268,7 +295,7 @@ index f0790e6..ec05c34 100644
 +
 +    #[crate::test]
 +    fn touch_listeners_opt_an_element_out_of_touch_to_mouse(cx: &mut TestAppContext) {
-+        use Handler::{Follow, Scroll, Tap, Touch};
++        use Handler::{Custom, Follow, Scroll, Tap, Touch};
 +        let touch = |phase, x: f32| {
 +            TouchEvent {
 +                id: TouchId(1),
@@ -395,6 +422,12 @@ index f0790e6..ec05c34 100644
 +                &["inner Started", "inner Ended", "mouse at 0"],
 +            ),
 +            (
++                "tap a custom element inside a canvas",
++                |log| canvas_with(log, logged(log, "custom", &[Custom])),
++                tap(10.),
++                &["custom release", "mouse at 10"],
++            ),
++            (
 +                "pan a scroller inside a canvas",
 +                |log| canvas_with(log, logged(log, "list", &[Scroll])),
 +                pan(),
@@ -442,22 +475,22 @@ index 7863032..ff33d63 100644
  /// A mouse down event from the platform
  #[derive(Clone, Debug, Default)]
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index c192b6f..428349e 100644
+index 51bea70..e0c440b 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -28,7 +28,7 @@ use crate::{
+@@ -30,7 +30,7 @@ use crate::{
+ use crate::gestures::{
+     BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
  };
- 
- use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 -use crate::interactive::{PointerDevice, PointerSource, TouchEvent};
 +use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
  use derive_more::{Deref, DerefMut};
 @@ -1307,6 +1307,8 @@ pub struct Window {
+     touch_prediction_enabled: bool,
+     /// `Some` only while a pointer event is being dispatched.
      pointer_source: Option<PointerSource>,
-     /// The device of the latest touch, for the events recognized from it.
-     touch_device: PointerDevice,
 +    /// Where each touch in progress goes, decided when it started.
 +    touch_routes: FxHashMap<TouchId, TouchRoute>,
      long_press_timer: Option<Task<()>>,
@@ -482,17 +515,17 @@ index c192b6f..428349e 100644
 +}
 +
  /// The pointer behind each platform input: one arm per variant, so a new
- /// variant must pick its row. Keys carry no pointer.
- fn pointer_source(event: &PlatformInput, touch_device: PointerDevice) -> Option<PointerSource> {
-@@ -2527,6 +2543,7 @@ impl Window {
+ /// variant must pick its row. Keys, and a back gesture driven by a key,
+ /// carry no pointer. Gestures the core recognizes from touches are not
+@@ -2531,6 +2547,7 @@ impl Window {
+             ),
              touch_prediction_enabled: true,
              pointer_source: None,
-             touch_device: PointerDevice::Touch,
 +            touch_routes: FxHashMap::default(),
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
-@@ -3830,6 +3847,38 @@ impl Window {
+@@ -3834,6 +3851,41 @@ impl Window {
          self.captured_hitbox
      }
  
@@ -514,10 +547,13 @@ index c192b6f..428349e 100644
 +        }
 +    }
 +
-+    /// Leaves a starting touch to the gesture recognizer, unless a deeper
-+    /// element decided first: elements with tap or scroll handlers call this,
-+    /// so an ancestor's `on_touch` cannot take their touches.
-+    pub(crate) fn leave_touch_to_gestures(&mut self, touch: TouchId) {
++    /// Leaves a touch to the gesture recognizer (taps, pans, long presses)
++    /// while the touch's [`TouchPhase::Started`] is dispatched, unless a deeper
++    /// element decided first. Call it from a `TouchEvent` listener of a custom
++    /// element that handles taps or scrolls itself, when the touch starts over
++    /// it: an ancestor's `on_touch` then cannot take the touch, as for a div
++    /// with `on_click` or `on_scroll` (which calls this for you).
++    pub fn leave_touch_to_gestures(&mut self, touch: TouchId) {
 +        self.decide_touch(touch, TouchRoute::Gestures);
 +    }
 +
@@ -531,7 +567,7 @@ index c192b6f..428349e 100644
      /// Captures the current long press for the given entity.
      ///
      /// The capture is released when the gesture ends or is cancelled, or when
-@@ -6382,6 +6431,30 @@ impl Window {
+@@ -6380,6 +6432,30 @@ impl Window {
      /// dispatches whatever it resolves (scroll steps, synthesized taps)
      /// through the ordinary mouse-event path.
      fn dispatch_touch_event(&mut self, event: &TouchEvent, cx: &mut App) {
@@ -562,7 +598,7 @@ index c192b6f..428349e 100644
          let mut event = event.clone();
          if !self.touch_prediction_enabled {
              event.predicted_position = None;
-@@ -6407,20 +6480,26 @@ impl Window {
+@@ -6406,20 +6482,26 @@ impl Window {
          } else if self.touch_gestures.pending_long_press().is_none() {
              self.long_press_timer.take();
          }
@@ -597,4 +633,4 @@ index c192b6f..428349e 100644
 -        }
      }
  
-     fn dispatch_recognized_touch_gesture(&mut self, gesture: RecognizedTouchGesture, cx: &mut App) {
+     /// `device` is that of the touch the gesture was recognized from, so a pen

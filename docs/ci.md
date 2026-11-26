@@ -21,6 +21,9 @@ cancels the older run.
 | android | ubuntu-latest | `cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings`, package of the published libraries |
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
 
+Next to the six, the `patch-tests` job (ubuntu-latest) runs [`scripts/patch-test.sh`](../scripts/patch-test.sh):
+GPUI's own lib tests on the patched fork crate, every patch's tests among them ([patch-tests.md](patch-tests.md)).
+
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
 (a subset of Zed's `script/linux`).
 
@@ -49,6 +52,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/java-test.sh
+scripts/patch-test.sh
 cargo package -p cargo-parallax
 scripts/publish-fork.sh --dry-run
 scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax

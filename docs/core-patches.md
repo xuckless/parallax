@@ -18,17 +18,19 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   `window.rs`, with one arm per `PlatformInput` variant:
   - backend mouse, scroll, pinch and file-drop input: `Mouse`, not synthesized;
   - `Touch`: its own `device`, not synthesized;
-  - long press, touch drag and back gesture: the latest touch's device, synthesized.
-  Taps, pans and long presses that the core recognizer builds are the latest touch's device, synthesized, including
-  ones fired later by timers (long press, momentum). The value is saved and restored around each dispatch.
-- **How backends set it:** they set only `TouchEvent::device`. Mouse input needs nothing.
+  - back gesture by its `BackGestureSource`: `EdgeSwipe` is `Touch`, synthesized; `Key` is `None`, like a key;
+  - the platform's long press and touch drag (no backend sends them; they name no touch): `Touch`, synthesized.
+  Taps, pans and long presses that the core recognizer builds carry the device of the touch they come from,
+  synthesized, including ones fired later by timers (long press, momentum): the recognizer's per-touch state records
+  it, so a pen and a finger down together each label their own. The value is saved and restored around each dispatch.
+- **How backends set it:** they set `TouchEvent::device` and `BackGestureEvent::source`. Mouse input needs nothing.
   - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
-    is `Mouse`.
+    is `Mouse`. Its edge swipe is `EdgeSwipe`; Android's Back key is `Key` ([android-keys.md](android-keys.md#back)).
   - Web touches are `Touch`.
   - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
     are `Pen`, mouse and trackpad are `Mouse`.
-  - Later patches that build a `TouchEvent` literal must set `device` (0006's test does).
+  - Later patches that build a `TouchEvent` or `BackGestureEvent` literal must set the new field (0006's test does).
 - **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
   `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
   which means ~95 struct literals across every backend. That is why 0003 is a per-dispatch query, not a field.
@@ -46,7 +48,9 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 - **Mechanism:** `TouchEvent` is a `MouseEvent` now. One `TouchRoute` per touch id: `Deciding` during `Started`
   (first decision wins; bubble order visits the frontmost element first), then `Gestures` or
   `Claimed(GlobalElementId)`. Later phases of a claimed touch reach the owner by `Window::touch_owner`, not by hit
-  test. Custom elements claim with `Window::claim_touch` from a `TouchEvent` listener. The window's mouse position
+  test. Custom elements decide from a `TouchEvent` listener: `Window::claim_touch` to own the touch, or
+  `Window::leave_touch_to_gestures` when they handle taps or scrolls themselves (as divs do), so an ancestor's
+  `on_touch` cannot take it. The window's mouse position
   does not move. After a claimed touch ends the window draws if dirty, as after a tap, so the web keyboard opens for
   a field focused in an `Ended` handler.
 - **Taps click as touches:** div's `on_click` now receives the declared `ClickEvent::Touch(TouchClickEvent)` when the
@@ -72,8 +76,4 @@ Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_devic
 (window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
 gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs).
 
-The packaged crate can't run its own lib tests as shipped: `svg_renderer.rs` includes two fonts from Zed's
-`assets/`, and `style.rs` tests use `util_macros`, which is not vendored. To run them, copy `build/parallax-gpui/`,
-add any two `.ttf` files at the font paths, drop the `#[perf]` lines, then run
-`cargo test -p parallax-gpui --features test-support --lib` (the three `svg_renderer` font tests fail on stand-in
-fonts).
+Run them with [`scripts/patch-test.sh`](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)); CI does too.

@@ -41,10 +41,7 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 
 - **Mouse buttons as a mouse.** Every kind (finger, stylus, eraser, mouse button) still becomes a `TouchEvent`;
   `DEVICE_KINDS` only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)). So a mouse
-  click arrives as a synthesized tap (`ClickEvent::Touch`), and `pointer_source()` is window-wide per latest touch, so
-  a pen and a finger down together can mislabel each other's gestures.
-- **Back key source.** Android's Back key arrives as a `BackGestureEvent`, which patch 0003's table tags as the latest
-  touch's device, synthesized.
+  click arrives as a synthesized tap (`ClickEvent::Touch`) whose `pointer_source()` says `Mouse`.
 - **Mouse hover, wheel and trackpad.** `AndroidTouchProcessor.onGenericMotionEvent` is ported but the view does not
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported

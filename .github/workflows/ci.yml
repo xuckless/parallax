@@ -121,3 +121,18 @@ jobs:
           key: robolectric-${{ hashFiles('crates/android/java-tests/build.gradle') }}
       - if: matrix.target == 'linux'
         run: scripts/java-test.sh
+
+  # GPUI's own lib tests on the patched fork crate parallax-gpui, every patch's tests among them; the build jobs never
+  # compile them (docs/patch-tests.md). Stand-in fonts come from fonts-dejavu-core.
+  patch-tests:
+    name: patch tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: patch-tests
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core
+      - run: scripts/apply-patches.sh
+      - run: scripts/patch-test.sh
