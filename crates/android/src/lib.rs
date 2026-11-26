@@ -105,8 +105,6 @@ pub enum Error {
     },
     #[error("no system font: the font list names no font file that is on disk")]
     NoSystemFont,
-    #[error("cannot add the system fonts: {0}")]
-    AddFonts(String),
     #[error("no readable font list (tried {0:?})")]
     NoFontList(&'static [&'static str]),
     #[error(
