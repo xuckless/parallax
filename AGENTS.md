@@ -116,6 +116,12 @@ third_party/
     crate must build against unpatched `gpui-pre`. When code needs a patch, the published crate carries a small local
     copy or workaround (credited, with a comment naming the patch) until Zed merges it; then the copy is deleted.
     Patches stay for filing upstream and for local work.
+12. **Core-type changes ship as a side-channel.** When a patch changes GPUI's own types (pointer device tags, touch
+    opt-out, keyboard type), published crates get the feature through Parallax API on stock GPUI (e.g. `parallax-ext`
+    element methods, a per-window query from the backend). Once Zed merges the patch, the side-channel becomes a thin
+    wrapper over upstream's API.
+13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `docs/upstream-drafts/`
+    and shown to the owner before they are opened.
 
 ## Coding style: Caveman Code
 
@@ -178,4 +184,11 @@ Hard rules:
 - Before finishing a change: `cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
 - New targets get a CI row (see ROADMAP Phase 0) in the same change.
 - Commits: one concern each, imperative subject line.
+- **Waves.** Work runs in waves of up to 5 parallel agents, each in its own git worktree (and its own emulator port).
+  Every wave gets two independent reviews before merge: a Caveman Code review and a correctness review; their fixes
+  land before the merge.
+- **Releases.** Every wave that changes what an app can see ships the next 0.1.x (dry-run, CI green, changelog,
+  publish, tag). Internal-only waves (audits, CI, docs) don't.
+- **iOS simulator.** Waves that change iOS code run `examples/hello` on the iOS simulator on the owner's Mac, all files
+  under `/Users/Shared/parallax/`. Other waves rely on CI's iOS build.
 - When upstream behaviour surprises you, write it down in `ROADMAP.md` under "Upstream notes" with the upstream commit.

@@ -24,6 +24,34 @@ no fixed schedule and no planned last number.
 - Every release: CI green on all six targets, `NOTICE` and `third_party/flutter/PORTED.md` current, crate license
   fields right, no GPL editor code, a `CHANGELOG.md` entry.
 
+## Wave plan to the end of v0.1.x
+
+Waves batch the phase tasks below for parallel agents (up to 5 per wave, see `AGENTS.md` Workflow). Every wave ends
+with a Caveman review and a correctness review, then merge; a wave that changes what apps see ships the next 0.1.x.
+Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
+
+| Wave | Phase | Parallel work | Ships |
+|---|---|---|---|
+| 8 | 1 | Upstream: fork Zed, draft the BSD-licence question and the PR for patch 0001 (shown to the owner first) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
+| 9 | 1 | Side-channel in `parallax-ext` (rule 12): input kind (keyboard type, secure, autofill), touch opt-out, pointer device query; the matching core patches drafted for Zed · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
+| 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
+| 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
+| 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches drafted for Zed) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
+| 13 | 3 | Confirm the macOS 27 touchscreen API · desktop touch patches 0002 Windows, 0003 Linux (Wayland + X11), 0004 macOS · synthetic touch injection for testing (Windows `InjectTouchInput`, Linux `uinput`) | repo builds |
+| 14 | 3 | Desktop traces replayed against phone and browser traces · file the touch patches with Zed (drafts first) | 0.1.7 = **Gate 3** |
+| 15 | 4 | iOS: the 39 `UITextInput` cases as tables + fixes, hardware keyboard, keyboard inset (iOS simulator) · web: `ime_mirror` cases, lifecycle, keyboard inset | 0.1.8 |
+| 16 | 4 | Selection: native `UITextInteraction` on iOS, Flutter's selection behaviour on Android and touch desktops · remaining lifecycle and safe-area gaps · `parallax-ext` friction items | 0.1.9 = **Gate 4** |
+| 17 | 5 | `cargo parallax run ios` (Xcode project, iOS simulator) · `cargo parallax run web` · `cargo parallax build android --release` (signing + App Bundle) | 0.1.10 |
+| 18 | 5 | Getting-started docs per target, the behaviour table and touch → mouse docs, example polish, a last full review | 0.1.11 = **Gate 5**, closes v0.1.x |
+
+Known limits of this plan:
+
+- **Backend patches can't reach crates.io until Zed merges them** (rule 11). That covers desktop touch (Waves 13–14) and
+  iOS text-input fixes (Wave 15). Repo builds get them at once; published crates get them when Zed merges, or once the
+  iOS limit moves iOS text input into its own crate. Gates 3 and 4 are checked on repo builds.
+- **Hardware:** the owner has no real phones and possibly no touchscreen laptop. Gates are checked on emulators,
+  simulators and synthetic touch injection until hardware is available.
+
 ## Phase 0: Foundation, gap audit and Flutter oracle
 
 - [x] Vendor the pinned `gpui-pre-*` crates (`gpui-pre`, `gpui-pre-ios`, `gpui-pre-web`, `gpui-pre-wgpu`, the desktop
