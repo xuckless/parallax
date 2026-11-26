@@ -37,7 +37,7 @@ diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
 index 77aaa7b..6e31dd7 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -10184,6 +10184,57 @@ mod tests {
+@@ -10184,6 +10184,62 @@ mod tests {
          assert_eq!(claims.borrow().as_slice(), ["inner", "outer"]);
      }
  
@@ -60,7 +60,12 @@ index 77aaa7b..6e31dd7 100644
 +        .to_platform_input();
 +        let rows = [
 +            ("after a key press", key_down.clone(), 10., Some("inner")),
-+            ("after a key press, outer", key_down.clone(), 80., Some("outer")),
++            (
++                "after a key press, outer",
++                key_down.clone(),
++                80.,
++                Some("outer"),
++            ),
 +            ("after a key press, unclaimed", key_down, 150., None),
 +            ("after a touch", touch.clone(), 10., Some("inner")),
 +            ("after a touch, unclaimed", touch, 150., None),

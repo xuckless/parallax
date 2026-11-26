@@ -180,7 +180,7 @@ index 6e31dd7..ece537e 100644
                              }
                              .to_platform_input(),
                              cx,
-@@ -10223,6 +10228,7 @@ mod tests {
+@@ -10228,6 +10233,7 @@ mod tests {
                                  phase: BackGesturePhase::Started,
                                  start_position: point(px(x), px(10.)),
                                  progress: 0.,
@@ -188,7 +188,7 @@ index 6e31dd7..ece537e 100644
                              }
                              .to_platform_input(),
                              cx,
-@@ -10343,6 +10349,15 @@ mod tests {
+@@ -10348,6 +10354,15 @@ mod tests {
                  touch(TouchPhase::Ended, 10., device),
              ]
          };
@@ -204,7 +204,7 @@ index 6e31dd7..ece537e 100644
          let source = |device, synthesized| {
              Some(PointerSource {
                  device,
-@@ -10451,16 +10466,14 @@ mod tests {
+@@ -10456,16 +10471,14 @@ mod tests {
              ),
              (
                  "edge swipe back",
