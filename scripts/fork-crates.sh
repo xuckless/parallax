@@ -55,23 +55,29 @@ for dir in "$in"/gpui-pre*/; do
     # what links the crates locally and orders `cargo package --workspace`). Every other line passes through.
     awk -v fork="$fork" -v version="$version" -v upstream_version="$upstream_version" \
         -v description="Parallax's build of GPUI $zed_crate: upstream gpui-pre $upstream_version (Zed ${zed_rev:0:7}) + Parallax patches" '
-        function flush(   i, gpui_dep, line) {
+        BEGIN {
+            # [package] keys we set (key → value); to change another key, add a row.
+            package["name"] = fork
+            package["version"] = version
+            package["description"] = description
+            package["repository"] = "https://github.com/xuckless/parallax"
+            package["readme"] = "README.md"
+        }
+        function flush(   i, gpui_dep, line, key) {
             gpui_dep = 0
             for (i = 1; i <= n; i++) if (lines[i] ~ /^package = "gpui-pre(-[a-z-]+)?"$/) gpui_dep = 1
             for (i = 1; i <= n; i++) {
                 line = lines[i]
-                if (gpui_dep && line == "version = \"=" upstream_version "\"") line = "version = \"=" version "\""
+                key = line
+                sub(/ = .*/, "", key)
+                if (table == "[package]" && key in package) line = key " = \"" package[key] "\""
+                else if (gpui_dep && line == "version = \"=" upstream_version "\"") line = "version = \"=" version "\""
                 else if (gpui_dep && line ~ /^package = /) {
                     sub(/"gpui-pre/, "\"parallax-gpui", line)
                     dep = line
                     gsub(/^package = "|"$/, "", dep)
                     line = line "\npath = \"../" dep "\""
                 }
-                else if (table == "[package]" && line ~ /^name = /) line = "name = \"" fork "\""
-                else if (table == "[package]" && line ~ /^version = /) line = "version = \"" version "\""
-                else if (table == "[package]" && line ~ /^description = /) line = "description = \"" description "\""
-                else if (table == "[package]" && line ~ /^repository = /) line = "repository = \"https://github.com/xuckless/parallax\""
-                else if (table == "[package]" && line ~ /^readme = /) line = "readme = \"README.md\""
                 print line
             }
             n = 0
