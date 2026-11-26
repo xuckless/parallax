@@ -64,7 +64,8 @@ fields from `TextInputConfiguration` in `set_text_input_configuration`.
 | `autofill` | `Option<AutofillHint>` | `Username`, `Password`, `NewPassword`, `OneTimeCode`, `Email`, `Phone`, `Name`, `PostalAddress`, `PostalCode`, `CreditCardNumber` |
 
 Each `AutofillHint` maps to an HTML `autocomplete` token, an Android `AUTOFILL_HINT_*` and an iOS
-`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)). iOS and web don't read them yet.
+`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)),
+autofill included ([android-autofill.md](android-autofill.md)). iOS and web don't read them yet.
 
 ## Tests
 

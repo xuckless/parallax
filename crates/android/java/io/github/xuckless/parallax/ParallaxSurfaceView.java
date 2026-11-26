@@ -5,6 +5,7 @@ package io.github.xuckless.parallax;
 import android.content.Context;
 import android.graphics.Insets;
 import android.os.Build;
+import android.util.SparseArray;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
 import android.view.KeyEvent;
@@ -12,7 +13,10 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
+import android.view.ViewStructure;
 import android.view.WindowInsets;
+import android.view.autofill.AutofillValue;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import java.nio.ByteBuffer;
@@ -134,6 +138,9 @@ final class ParallaxSurfaceView extends SurfaceView
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
     setFocusableInTouchMode(true);
+    // As FlutterView: the autofill service asks this view for its fields (TextInputPlugin's virtual
+    // structure).
+    setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_YES);
   }
 
   void startFrames() {
@@ -229,6 +236,20 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
     return textInputPlugin.createInputConnection(this, keyboardManager, outAttrs);
+  }
+
+  // As FlutterView: the focused field, if it has an autofill hint, as a virtual child.
+  @Override
+  public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+    super.onProvideAutofillVirtualStructure(structure, flags);
+    textInputPlugin.onProvideAutofillVirtualStructure(structure, flags);
+  }
+
+  // As FlutterView: values the user picked from the autofill service. The focused field's value
+  // goes to GPUI as an IME edit would (TextInputPlugin.autofill → nativeUpdateEditingState).
+  @Override
+  public void autofill(SparseArray<AutofillValue> values) {
+    textInputPlugin.autofill(values);
   }
 
   // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's

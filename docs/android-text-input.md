@@ -61,14 +61,15 @@ action), as in Flutter. The IME's `sendKeyEvent` goes back through `KeyboardMana
 `capitalization`, `action`, `input_type` (`KeyboardType` and `secure` → `TextInputType`; Search is `webSearch`) by
 exhaustive matches: a new patch 0005 variant needs an arm. `secure` is `obscureText`, personalized learning off.
 Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends `"password": true`; with no
-phone password on Android, a secure Phone is a number password.
+phone password on Android, a secure Phone is a number password. `autofill` adds Flutter's `Configuration.Autofill`
+and two calls around the new client ([android-autofill.md](android-autofill.md)).
 
 ## Limits
 
 - Java mirrors the whole document; `text_input_editable_range` is not used. A handler without `text_length_utf16`
   is asked for `text_for_range(0..usize::MAX)`.
-- No autofill (GPUI's autofill hint is not sent; [ROADMAP.md](../ROADMAP.md)), deltas, private commands or
-  `commitContent` (images) yet; see the ledger rows.
+- No deltas, private commands or `commitContent` (images) yet; see the ledger rows. Autofill's own limits:
+  [android-autofill.md](android-autofill.md#not-yet).
 
 ## Check it
 

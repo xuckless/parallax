@@ -890,7 +890,17 @@ impl Shell {
             "parallax: text input {pending:?}, state: {}",
             state.as_ref().map_or("none".to_string(), describe)
         );
-        let calls = self.text_input.borrow_mut().send(pending, state)?;
+        // A new client's text bounds, for autofill's rect: the caret when the field is empty.
+        let bounds = if pending.sets_client() {
+            let length = state
+                .as_ref()
+                .map_or(0, |state| state.text.encode_utf16().count());
+            self.with_input_handler(|handler| handler.bounds_for_range(0..length))
+                .flatten()
+        } else {
+            None
+        };
+        let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
         Some(calls.to_string())
     }
 
