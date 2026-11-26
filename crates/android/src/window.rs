@@ -1,7 +1,10 @@
 //! GPUI's `PlatformWindow` on Android: the app's one window, filling the Activity. State lives in the [`Shell`];
 //! this type answers GPUI from it. Stubs are marked "Not yet on Android" and listed in `docs/android.md`.
 
-use std::{rc::Rc, sync::Arc};
+use std::{
+    rc::Rc,
+    sync::{Arc, Once},
+};
 
 use futures::channel::oneshot;
 use gpui::{
@@ -19,6 +22,8 @@ pub(crate) struct AndroidWindow {
     pub(crate) shell: Rc<Shell>,
     /// The renderer's atlas. GPUI keeps the one it got at open; device recovery refills this same atlas.
     pub(crate) atlas: Arc<dyn PlatformAtlas>,
+    /// Logs "first frame" once, after the first scene reaches the screen: scripts/android-smoke.sh waits for it.
+    pub(crate) first_frame: Once,
 }
 
 impl rwh::HasWindowHandle for AndroidWindow {
@@ -220,7 +225,10 @@ impl PlatformWindow for AndroidWindow {
     fn draw(&self, scene: &Scene) {
         if let Some(renderer) = self.shell.renderer.borrow_mut().as_mut() {
             // `false` means no surface or a lost device; the shell handles both on the next surface event or frame.
-            renderer.draw(scene);
+            if renderer.draw(scene) {
+                self.first_frame
+                    .call_once(|| log::info!("parallax: first frame drawn"));
+            }
         }
     }
 

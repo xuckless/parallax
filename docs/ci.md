@@ -1,7 +1,7 @@
 # CI
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
-one job per target, no feature variants, plus one job each for the Java tests and the patch tests. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+one job per target, no feature variants, plus one job each for the Java tests, the patch tests and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -9,8 +9,9 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-All eight jobs run on every push, every pull request and on manual `workflow_dispatch`. A newer push to the same ref
-cancels the older run.
+Eight jobs run on every push, every pull request and on manual `workflow_dispatch`; `android-smoke` runs on pushes to
+`main`, pull requests and `workflow_dispatch` only ([why](#android-smoke)). A newer push to the same ref cancels the
+older run.
 
 | Target | Runner | Runs |
 |---|---|---|
@@ -22,6 +23,7 @@ cancels the older run.
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
 | java-tests | ubuntu-latest | [`scripts/java-test.sh`](android-tests.md) on JDK 21 and the runner's Android SDK; Gradle and Robolectric jars cached. Its own job (`java-tests`, not a matrix row): no Rust, no `build/` |
 | patch-tests | ubuntu-latest | [`scripts/patch-test.sh`](../scripts/patch-test.sh): GPUI's own lib tests on the patched fork crate, every patch's tests among them ([patch-tests.md](patch-tests.md)). Its own job, not a matrix row |
+| android-smoke | ubuntu-latest + KVM | [`scripts/android-smoke.sh`](android-smoke.md) on an API 35 `google_apis` x86_64 emulator (Pixel 7 profile). Its own job, not a matrix row |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
 (a subset of Zed's `script/linux`).
@@ -36,6 +38,12 @@ Both check the whole workspace, nothing excluded.
   default `multithreaded` feature, whose `wasm_thread` needs nightly.
 
 A target that cannot build a crate gets an explicit `--exclude` with a comment in `ci.yml`, never `continue-on-error`.
+
+## android-smoke
+
+It boots an emulator and builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs where a merge is
+decided: pull requests, pushes to `main` and manual runs. Other branch pushes skip it; start it on a branch with
+`gh workflow run ci.yml --ref <branch>`. Emulator setup, GPU mode and caching: [android-smoke.md](android-smoke.md#in-ci).
 
 ## Published crates
 
@@ -52,6 +60,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/java-test.sh
 scripts/patch-test.sh
+scripts/android-smoke.sh            # with one emulator or device running
 cargo package -p cargo-parallax
 scripts/publish-fork.sh --dry-run
 scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax
