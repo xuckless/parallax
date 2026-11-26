@@ -22,12 +22,12 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 3. **Decoder.** [pointer.rs](../crates/android/src/pointer.rs) reads the packet with Flutter's own layout: the
    `Field` enum lists `PointerData` from Flutter's `pointer_data.h` in order, so a field's offset is its position.
    `PointerChange` and `PointerDeviceKind` values come from two tables indexed by Flutter's numbers
-   (`POINTER_CHANGES`, `DEVICE_KINDS`). A packet that is not whole records, or carries an unknown change or kind, is
+   (`CHANGES`, `DEVICE_KINDS`). A packet that is not whole records, or carries an unknown change or kind, is
    rejected whole with a typed `Error` and logged. The signal kind (`SIGNAL_KINDS`) is read too: a wheel turn.
 4. **TouchEvent.** Each `DEVICE_KINDS` row names a route: finger and unknown → `TouchEvent { device: Touch }`,
    stylus and eraser → `Pen`, mouse and trackpad → mouse and scroll events ([android-mouse.md](android-mouse.md)).
    `Pointers` maps Flutter's `device` (Android pointer id and tool type) to a fresh upstream `TouchId` per touch,
-   since GPUI ids must never be reused and Android's are. The `TOUCH_PHASES` table says what each change becomes:
+   since GPUI ids must never be reused and Android's are. The touch column of `CHANGES` says what each change becomes:
    down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove and a pen's hover send nothing.
    Positions are divided by the display density (logical pixels); pressure becomes `force` when the device reports a
    range. A move or up for a pointer that never went down is dropped.
@@ -47,7 +47,7 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 - **Flutter changes the packet** (`scripts/flutter-diff.sh` shows a diff for `pointer_data.h` or
   `AndroidTouchProcessor.java`): port the Java change, then edit `Field` or the value tables in `pointer.rs` in
   Flutter's order. The decoder test rows build records from the same `Field` enum.
-- **Route a change elsewhere** (e.g. a pen's hover → mouse move): change its row in `TOUCH_PHASES` and add a test row.
+- **Route a change elsewhere** (e.g. a pen's hover → mouse move): change its row in `CHANGES` and add a test row.
 - **Check on the emulator:** `adb shell input tap` and `adb shell input swipe`; `Shell::pointer` logs each
   event with `log::debug!`, below the `Info` level `on_load` sets, so raise that locally to see them.
 - Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests::touches`) and

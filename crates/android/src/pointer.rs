@@ -104,33 +104,19 @@ pub(crate) enum PointerSignalKind {
     Unknown,
 }
 
-/// Packet value → change, indexed by Flutter's value. To follow Flutter: append new values in its order.
-const POINTER_CHANGES: [PointerChange; 10] = [
-    PointerChange::Cancel,
-    PointerChange::Add,
-    PointerChange::Remove,
-    PointerChange::Hover,
-    PointerChange::Down,
-    PointerChange::Move,
-    PointerChange::Up,
-    PointerChange::PanZoomStart,
-    PointerChange::PanZoomUpdate,
-    PointerChange::PanZoomEnd,
-];
-
 /// Where a device kind's records go.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Route {
     /// GPUI `TouchEvent`s tagged with this device; upstream's recognizer turns taps into clicks.
     Touch(PointerDevice),
-    /// GPUI mouse and scroll events (`MOUSE_ACTIONS`), as on desktop: clicks are `ClickEvent::Mouse`.
+    /// GPUI mouse and scroll events (`CHANGES`' mouse column), as on desktop: clicks are `ClickEvent::Mouse`.
     Mouse,
 }
 
-/// Packet value → Flutter's device kind and where its records go, indexed by Flutter's value. An inverted stylus is
-/// the eraser end of a pen; a trackpad (Flutter's kind for a pan/zoom) is an indirect pointer like a mouse; an
-/// unknown device is taken for a finger. To follow Flutter: append new values in its order; to reroute a kind,
-/// change its row.
+/// Packet value → Flutter's device kind and where its records go, indexed by Flutter's value; column 0 names that
+/// value and is not read. An inverted stylus is the eraser end of a pen; a trackpad (Flutter's kind for a pan/zoom)
+/// is an indirect pointer like a mouse; an unknown device is taken for a finger. To follow Flutter: append new values
+/// in its order; to reroute a kind, change its row.
 const DEVICE_KINDS: [(PointerDeviceKind, Route); 6] = [
     (PointerDeviceKind::Touch, Route::Touch(PointerDevice::Touch)),
     (PointerDeviceKind::Mouse, Route::Mouse),
@@ -146,10 +132,10 @@ const DEVICE_KINDS: [(PointerDeviceKind, Route); 6] = [
     ),
 ];
 
-/// Packet value → Flutter's signal kind and the mouse action it forces, indexed by Flutter's value. A signal with
-/// an action wins over the record's device and change: Android sends a wheel turn (`ACTION_SCROLL`) as a hover with
-/// the scroll signal, from whatever tool. Android sends no other signal. To follow Flutter: append new values in its
-/// order.
+/// Packet value → Flutter's signal kind and the mouse action it forces, indexed by Flutter's value; column 0 names
+/// that value and is not read. A signal with an action wins over the record's device and change: Android sends a
+/// wheel turn (`ACTION_SCROLL`) as a hover with the scroll signal, from whatever tool. Android sends no other
+/// signal. To follow Flutter: append new values in its order.
 const SIGNAL_KINDS: [(PointerSignalKind, Option<MouseAction>); 5] = [
     (PointerSignalKind::None, None),
     (PointerSignalKind::Scroll, Some(MouseAction::Wheel)),
@@ -158,32 +144,18 @@ const SIGNAL_KINDS: [(PointerSignalKind, Option<MouseAction>); 5] = [
     (PointerSignalKind::Unknown, None),
 ];
 
-/// What a touch or pen gets for each change; `None` sends nothing. Add and remove are Flutter's own bookkeeping (a
-/// remove follows every touch up). A pen's hover has no `TouchEvent` meaning, and pan/zoom comes only from a
-/// trackpad. To route a change somewhere else, change its row.
-const TOUCH_PHASES: [(PointerChange, Option<TouchPhase>); 10] = [
-    (PointerChange::Cancel, Some(TouchPhase::Cancelled)),
-    (PointerChange::Add, None),
-    (PointerChange::Remove, None),
-    (PointerChange::Hover, None),
-    (PointerChange::Down, Some(TouchPhase::Started)),
-    (PointerChange::Move, Some(TouchPhase::Moved)),
-    (PointerChange::Up, Some(TouchPhase::Ended)),
-    (PointerChange::PanZoomStart, None),
-    (PointerChange::PanZoomUpdate, None),
-    (PointerChange::PanZoomEnd, None),
-];
-
 /// What a mouse or trackpad record becomes in GPUI.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum MouseAction {
-    /// `MouseDown` for the newly pressed button, with its click count.
+    /// The record's buttons are now held: `MouseUp` / `MouseDown` for each one that changed. No button reported
+    /// (some injected events) holds the primary until the release.
     Press,
-    /// `MouseMove`, with the held button if any (a hover has none).
+    /// Any button change as for a press, then `MouseMove` with the first held button (a hover has none).
     Move,
-    /// `MouseUp` for the released button.
+    /// `MouseUp` for every held button.
     Release,
-    /// `MouseExited`: Android took the gesture (cancel). GPUI has no mouse cancel, and a release would click.
+    /// `MouseExited`, holding nothing: Android took the gesture (cancel). GPUI has no mouse cancel, and a release
+    /// would click.
     Leave,
     /// A `ScrollEvent` from a wheel, in Android's own scroll pixels (`ViewConfiguration`'s scroll factor).
     Wheel,
@@ -192,27 +164,49 @@ pub(crate) enum MouseAction {
     Nothing,
 }
 
-/// What a mouse or trackpad gets for each change. A hover is a move with no button held (Android's hover moves come
-/// through `onGenericMotionEvent`; hover enter and exit are not sent). To route a change somewhere else, change its
-/// row.
-const MOUSE_ACTIONS: [(PointerChange, MouseAction); 10] = [
-    (PointerChange::Cancel, MouseAction::Leave),
-    (PointerChange::Add, MouseAction::Nothing),
-    (PointerChange::Remove, MouseAction::Nothing),
-    (PointerChange::Hover, MouseAction::Move),
-    (PointerChange::Down, MouseAction::Press),
-    (PointerChange::Move, MouseAction::Move),
-    (PointerChange::Up, MouseAction::Release),
+/// Packet value → Flutter's change, what a touch or pen gets (`None` sends nothing) and what a mouse or trackpad
+/// gets, indexed by Flutter's value; column 0 names that value and is not read. Add and remove are Flutter's own
+/// bookkeeping (a remove follows every touch up). A pen's hover has no `TouchEvent` meaning, and pan/zoom comes only
+/// from a trackpad. A mouse hover is a move with no button held (Android's hover moves come through
+/// `onGenericMotionEvent`; hover enter and exit are not sent). To follow Flutter: append new values in its order; to
+/// route a change somewhere else, change its row.
+const CHANGES: [(PointerChange, Option<TouchPhase>, MouseAction); 10] = [
+    (
+        PointerChange::Cancel,
+        Some(TouchPhase::Cancelled),
+        MouseAction::Leave,
+    ),
+    (PointerChange::Add, None, MouseAction::Nothing),
+    (PointerChange::Remove, None, MouseAction::Nothing),
+    (PointerChange::Hover, None, MouseAction::Move),
+    (
+        PointerChange::Down,
+        Some(TouchPhase::Started),
+        MouseAction::Press,
+    ),
+    (
+        PointerChange::Move,
+        Some(TouchPhase::Moved),
+        MouseAction::Move,
+    ),
+    (
+        PointerChange::Up,
+        Some(TouchPhase::Ended),
+        MouseAction::Release,
+    ),
     (
         PointerChange::PanZoomStart,
+        None,
         MouseAction::Pan(TouchPhase::Started),
     ),
     (
         PointerChange::PanZoomUpdate,
+        None,
         MouseAction::Pan(TouchPhase::Moved),
     ),
     (
         PointerChange::PanZoomEnd,
+        None,
         MouseAction::Pan(TouchPhase::Ended),
     ),
 ];
@@ -220,31 +214,27 @@ const MOUSE_ACTIONS: [(PointerChange, MouseAction); 10] = [
 /// Flutter's button bits (`kPrimaryButton`, `kSecondaryButton`, ... in `events.dart`; AndroidTouchProcessor masks
 /// Android's `MotionEvent.BUTTON_*` to these five) → GPUI's button, in priority order. To add a button: a row.
 const BUTTONS: [(i64, MouseButton); 5] = [
-    (1, MouseButton::Left),
+    (PRIMARY_BUTTON, MouseButton::Left),
     (2, MouseButton::Right),
     (4, MouseButton::Middle),
     (8, MouseButton::Navigate(NavigationDirection::Back)),
     (16, MouseButton::Navigate(NavigationDirection::Forward)),
 ];
-
-/// The first button in `bits`, in `BUTTONS` order.
-fn button(bits: i64) -> Option<MouseButton> {
-    BUTTONS
-        .iter()
-        .find(|(bit, _)| bits & bit != 0)
-        .map(|(_, button)| *button)
-}
+const PRIMARY_BUTTON: i64 = 1;
 
 /// A press of the same button is the next click within Android's double-tap timeout
 /// (`ViewConfiguration.getDoubleTapTimeout`) and gpui_web's 5-pixel radius (Android's double-tap slop is sized for
 /// fingers). Microseconds, as the packet's time stamps; logical pixels.
 const DOUBLE_CLICK_MICROS: i64 = 300_000;
-const DOUBLE_CLICK_SLOP: f32 = 5.0;
+const DOUBLE_CLICK_SLOP: f64 = 5.0;
 
 /// The fields of one record that GPUI uses; Flutter's names. Positions are physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PointerData {
-    pub(crate) change: PointerChange,
+    /// Flutter's `change`, as what a touch gets (`CHANGES`).
+    pub(crate) touch: Option<TouchPhase>,
+    /// Flutter's `change`, as what a mouse gets (`CHANGES`).
+    pub(crate) mouse: MouseAction,
     /// Flutter's `kind`, as where it goes (`DEVICE_KINDS`).
     pub(crate) route: Route,
     /// Flutter's `signal_kind`, as the action it forces (`SIGNAL_KINDS`).
@@ -281,10 +271,12 @@ pub(crate) fn decode(packet: &[u8]) -> Result<Vec<PointerData>, Error> {
             let double = |field: Field| f64::from_le_bytes(fields[field as usize]);
             // A Flutter enum value as an index into its table.
             let index = |field: Field| usize::try_from(long(field)).ok();
+            let (_, touch, mouse) = index(Field::Change)
+                .and_then(|index| CHANGES.get(index))
+                .ok_or(Error::PointerChange(long(Field::Change)))?;
             Ok(PointerData {
-                change: index(Field::Change)
-                    .and_then(|index| POINTER_CHANGES.get(index).copied())
-                    .ok_or(Error::PointerChange(long(Field::Change)))?,
+                touch: *touch,
+                mouse: *mouse,
                 route: index(Field::Kind)
                     .and_then(|index| DEVICE_KINDS.get(index))
                     .map(|(_, route)| *route)
@@ -317,15 +309,100 @@ struct Press {
     click_count: usize,
 }
 
+/// The mouse buttons held, as the last press, move, release or cancel left them. Android sends a down only for the
+/// first button and an up only for the last, so a chord shows only as changed bits in the records between.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Held {
+    /// Flutter's button bits; 0 holds nothing.
+    Bits(i64),
+    /// The press reported no button (some injected events, whose moves report none either): the primary is held
+    /// until the release or cancel, whatever the records between say.
+    Unreported,
+}
+
+impl Held {
+    fn bits(self) -> i64 {
+        match self {
+            Held::Bits(bits) => bits,
+            Held::Unreported => PRIMARY_BUTTON,
+        }
+    }
+}
+
 /// The mouse (one cursor, however many mice) and trackpad, as the last records left them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Mouse {
-    /// Flutter's button bits held, as the last record said.
-    buttons: i64,
-    /// `None` before the first press.
+    held: Held,
+    /// `None` before the first press and after a cancel.
     last_press: Option<Press>,
     /// The trackpad pan in progress: its offset at the last record, in logical pixels. `None` between pans.
     pan: Option<Point<Pixels>>,
+}
+
+impl Default for Mouse {
+    fn default() -> Self {
+        Mouse {
+            held: Held::Bits(0),
+            last_press: None,
+            pan: None,
+        }
+    }
+}
+
+impl Mouse {
+    /// Holds `next`: a `MouseUp` for each button that went and a `MouseDown` (with its click count) for each new
+    /// one, in `BUTTONS` order.
+    fn hold(
+        &mut self,
+        next: Held,
+        time_stamp: i64,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+    ) -> Vec<PlatformInput> {
+        let (was, now) = (self.held.bits(), next.bits());
+        self.held = next;
+        let mut inputs = Vec::new();
+        for (bit, button) in BUTTONS {
+            match (was & bit != 0, now & bit != 0) {
+                (true, false) => inputs.push(PlatformInput::MouseUp(MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: self
+                        .last_press
+                        .filter(|press| press.button == button)
+                        .map_or(1, |press| press.click_count),
+                })),
+                (false, true) => {
+                    let click_count = match self.last_press {
+                        Some(last)
+                            if last.button == button
+                                && time_stamp - last.time_stamp <= DOUBLE_CLICK_MICROS
+                                && (last.position - position).magnitude() <= DOUBLE_CLICK_SLOP =>
+                        {
+                            last.click_count + 1
+                        }
+                        Some(_) | None => 1,
+                    };
+                    self.last_press = Some(Press {
+                        button,
+                        time_stamp,
+                        position,
+                        click_count,
+                    });
+                    inputs.push(PlatformInput::MouseDown(MouseDownEvent {
+                        button,
+                        position,
+                        modifiers,
+                        click_count,
+                        first_mouse: false,
+                    }));
+                }
+                (true, true) | (false, false) => {}
+            }
+        }
+        inputs
+    }
 }
 
 /// The pointers in progress. Touches: Flutter's `device` → GPUI's [`TouchId`]; GPUI ids are never reused, Android's
@@ -356,27 +433,21 @@ impl Pointers {
         };
         packet
             .iter()
-            .filter_map(|data| {
+            .flat_map(|data| {
                 let position = logical(Point::new(data.physical_x, data.physical_y));
-                let mouse_action = |change: PointerChange| {
-                    MOUSE_ACTIONS
-                        .iter()
-                        .find(|(row, _)| *row == change)
-                        .map_or(MouseAction::Nothing, |(_, action)| *action)
-                };
-                let input = match (data.signal, data.route) {
+                let inputs = match (data.signal, data.route) {
                     (Some(action), _) => self.mouse(action, data, position, logical, modifiers),
-                    (None, Route::Mouse) => self.mouse(
-                        mouse_action(data.change),
-                        data,
-                        position,
-                        logical,
-                        modifiers,
-                    ),
-                    (None, Route::Touch(device)) => self.touch(data, device, position),
-                }?;
-                self.last_position = position;
-                Some(input)
+                    (None, Route::Mouse) => {
+                        self.mouse(data.mouse, data, position, logical, modifiers)
+                    }
+                    (None, Route::Touch(device)) => {
+                        self.touch(data, device, position).into_iter().collect()
+                    }
+                };
+                if !inputs.is_empty() {
+                    self.last_position = position;
+                }
+                inputs
             })
             .collect()
     }
@@ -387,10 +458,7 @@ impl Pointers {
         device: PointerDevice,
         position: Point<Pixels>,
     ) -> Option<PlatformInput> {
-        let phase = TOUCH_PHASES
-            .iter()
-            .find(|(change, _)| *change == data.change)
-            .and_then(|(_, phase)| *phase)?;
+        let phase = data.touch?;
         let id = match phase {
             TouchPhase::Started => {
                 let id = TouchId(self.next_touch);
@@ -414,7 +482,8 @@ impl Pointers {
         }))
     }
 
-    /// One mouse or trackpad record; `logical` converts the record's physical pixels.
+    /// One mouse or trackpad record; `logical` converts the record's physical pixels. Only press, move, release
+    /// and cancel change the held buttons: a wheel's or pan's record says nothing about them.
     fn mouse(
         &mut self,
         action: MouseAction,
@@ -422,69 +491,54 @@ impl Pointers {
         position: Point<Pixels>,
         logical: impl Fn(Point<f64>) -> Point<Pixels>,
         modifiers: Modifiers,
-    ) -> Option<PlatformInput> {
+    ) -> Vec<PlatformInput> {
         let mouse = &mut self.mouse;
-        let held = std::mem::replace(&mut mouse.buttons, data.buttons);
-        Some(match action {
+        let reported = Held::Bits(data.buttons);
+        match action {
             MouseAction::Press => {
-                // A press reporting no new button (some injected events) is the primary one: GPUI needs a button.
-                let button = button(data.buttons & !held).unwrap_or(MouseButton::Left);
-                let click_count = match mouse.last_press {
-                    Some(last)
-                        if last.button == button
-                            && data.time_stamp - last.time_stamp <= DOUBLE_CLICK_MICROS
-                            && distance(last.position, position) <= DOUBLE_CLICK_SLOP =>
-                    {
-                        last.click_count + 1
-                    }
-                    Some(_) | None => 1,
+                let next = match data.buttons {
+                    0 => Held::Unreported,
+                    _ => reported,
                 };
-                mouse.last_press = Some(Press {
-                    button,
-                    time_stamp: data.time_stamp,
-                    position,
-                    click_count,
-                });
-                PlatformInput::MouseDown(MouseDownEvent {
-                    button,
-                    position,
-                    modifiers,
-                    click_count,
-                    first_mouse: false,
-                })
+                mouse.hold(next, data.time_stamp, position, modifiers)
             }
-            MouseAction::Move => PlatformInput::MouseMove(MouseMoveEvent {
-                position,
-                pressed_button: button(data.buttons),
-                modifiers,
-            }),
-            MouseAction::Release => PlatformInput::MouseUp(MouseUpEvent {
-                // Android's up carries the buttons still held, usually none: the released one is the one that went.
-                button: button(held & !data.buttons)
-                    .or_else(|| button(held))
-                    .unwrap_or(MouseButton::Left),
-                position,
-                modifiers,
-                click_count: mouse.last_press.map_or(1, |press| press.click_count),
-            }),
+            MouseAction::Move => {
+                let next = match mouse.held {
+                    Held::Unreported => Held::Unreported,
+                    Held::Bits(_) => reported,
+                };
+                let mut inputs = mouse.hold(next, data.time_stamp, position, modifiers);
+                inputs.push(PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: BUTTONS
+                        .iter()
+                        .find(|(bit, _)| next.bits() & bit != 0)
+                        .map(|(_, button)| *button),
+                    modifiers,
+                }));
+                inputs
+            }
+            // Android's up comes with the last button, which it may still report held.
+            MouseAction::Release => mouse.hold(Held::Bits(0), data.time_stamp, position, modifiers),
             MouseAction::Leave => {
-                mouse.buttons = 0;
-                PlatformInput::MouseExited(MouseExitEvent {
+                mouse.held = Held::Bits(0);
+                mouse.last_press = None;
+                vec![PlatformInput::MouseExited(MouseExitEvent {
                     position,
                     pressed_button: None,
                     modifiers,
-                })
+                })]
             }
             // Flutter's delta is how far to scroll; GPUI's is how far the content moves (gpui_web negates the DOM's).
             MouseAction::Wheel => {
                 let scroll = logical(data.scroll_delta);
-                PlatformInput::Scroll(ScrollEvent {
+                vec![PlatformInput::Scroll(ScrollEvent {
                     position,
                     delta: ScrollDelta::Pixels(point(-scroll.x, -scroll.y)),
                     modifiers,
                     touch_phase: TouchPhase::Moved,
                     source: ScrollSource::Pointer,
-                })
+                })]
             }
             // The content follows the fingers, as in a touch pan; `position` is where the pan started.
             MouseAction::Pan(phase) => {
@@ -494,21 +548,17 @@ impl Pointers {
                     TouchPhase::Started | TouchPhase::Moved => Some(pan),
                     TouchPhase::Ended | TouchPhase::Cancelled => None,
                 };
-                PlatformInput::Scroll(ScrollEvent {
+                vec![PlatformInput::Scroll(ScrollEvent {
                     position,
                     delta: ScrollDelta::Pixels(point(pan.x - last.x, pan.y - last.y)),
                     modifiers,
                     touch_phase: phase,
                     source: ScrollSource::Pointer,
-                })
+                })]
             }
-            MouseAction::Nothing => return None,
-        })
+            MouseAction::Nothing => vec![],
+        }
     }
-}
-
-fn distance(a: Point<Pixels>, b: Point<Pixels>) -> f32 {
-    f32::from(a.x - b.x).hypot(f32::from(a.y - b.y))
 }
 
 #[cfg(test)]
@@ -698,6 +748,33 @@ mod tests {
                 Ok(vec![]),
             ),
             (
+                "up_without_down_dropped",
+                vec![record(UP, TOUCH, FINGER_0, 20., 40.)],
+                Ok(vec![]),
+            ),
+            (
+                "cancel_without_down_dropped",
+                vec![record(CANCEL, TOUCH, FINGER_0, 20., 40.)],
+                Ok(vec![]),
+            ),
+            (
+                // A mouse press is not a touch: the finger's move has no touch to move.
+                "finger_move_during_a_mouse_press_dropped",
+                vec![
+                    with(
+                        record(DOWN, MOUSE, MOUSE_0, 20., 40.),
+                        &[(Field::Buttons, 1i64.to_le_bytes())],
+                    ),
+                    record(MOVE, TOUCH, FINGER_0, 20., 40.),
+                ],
+                Ok(vec![]),
+            ),
+            (
+                "unknown_device_is_a_finger",
+                vec![record(DOWN, UNKNOWN, FINGER_0, 20., 40.)],
+                Ok(vec!["touch 0 Started (10, 20)"]),
+            ),
+            (
                 "pen_hover_ignored",
                 vec![record(HOVER, STYLUS, 2, 20., 40.)],
                 Ok(vec![]),
@@ -842,6 +919,82 @@ mod tests {
                 vec!["down Left x1 (10, 20)"],
             ),
             (
+                // Their moves report no button either: still a drag.
+                "unreported_press_drags_with_the_primary",
+                vec![at(DOWN, 0, 20., 0), at(MOVE, 20, 30., 0)],
+                vec!["move Some(Left) (15, 20)"],
+            ),
+            (
+                "unreported_press_releases_the_primary",
+                vec![
+                    at(DOWN, 0, 20., 0),
+                    at(MOVE, 20, 30., 0),
+                    at(UP, 50, 30., 0),
+                ],
+                vec!["up Left x1 (15, 20)"],
+            ),
+            (
+                "release_without_press_sends_nothing",
+                vec![at(UP, 0, 20., 0)],
+                vec![],
+            ),
+            (
+                // Android's up may still report the last button held.
+                "release_still_reporting_the_button",
+                vec![at(DOWN, 0, 20., 1), at(UP, 50, 20., 1)],
+                vec!["up Left x1 (10, 20)"],
+            ),
+            (
+                // Android sends no down for a second button: only a move with its bit.
+                "chord_press_right_while_left_held",
+                vec![at(DOWN, 0, 20., 1), at(MOVE, 10, 20., 3)],
+                vec!["down Right x1 (10, 20)", "move Some(Left) (10, 20)"],
+            ),
+            (
+                "chord_release_right_while_left_held",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    at(MOVE, 10, 20., 3),
+                    at(MOVE, 20, 20., 1),
+                ],
+                vec!["up Right x1 (10, 20)", "move Some(Left) (10, 20)"],
+            ),
+            (
+                "chord_release_left_first",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    at(MOVE, 10, 20., 3),
+                    at(MOVE, 20, 20., 2),
+                ],
+                vec!["up Left x1 (10, 20)", "move Some(Right) (10, 20)"],
+            ),
+            (
+                // The up comes with the last button held, not the first pressed.
+                "chord_released_left_first_up_names_right",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    at(MOVE, 10, 20., 3),
+                    at(MOVE, 20, 20., 2),
+                    at(UP, 30, 20., 0),
+                ],
+                vec!["up Right x1 (10, 20)"],
+            ),
+            (
+                "chord_from_right_press_left",
+                vec![at(DOWN, 0, 20., 2), at(MOVE, 10, 20., 3)],
+                vec!["down Left x1 (10, 20)", "move Some(Left) (10, 20)"],
+            ),
+            (
+                "chord_from_right_up_names_left",
+                vec![
+                    at(DOWN, 0, 20., 2),
+                    at(MOVE, 10, 20., 3),
+                    at(MOVE, 20, 20., 1),
+                    at(UP, 30, 20., 0),
+                ],
+                vec!["up Left x1 (10, 20)"],
+            ),
+            (
                 "second_press_soon_is_a_double_click",
                 vec![
                     at(DOWN, 0, 20., 1),
@@ -903,6 +1056,44 @@ mod tests {
                 vec![at(DOWN, 0, 20., 1), at(CANCEL, 50, 20., 1)],
                 vec!["exit (10, 20)"],
             ),
+            (
+                "cancel_then_release_sends_nothing",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    at(CANCEL, 50, 20., 1),
+                    at(UP, 60, 20., 0),
+                ],
+                vec![],
+            ),
+            (
+                // The cancelled press was no click, so the next is not a double click.
+                "cancel_then_press_counts_one",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    at(CANCEL, 50, 20., 1),
+                    at(DOWN, 100, 20., 1),
+                ],
+                vec!["down Left x1 (10, 20)"],
+            ),
+            (
+                // A wheel record reports no buttons; the held one stays held.
+                "wheel_while_held_keeps_the_button",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    wheel(MOUSE, 0., 128.),
+                    at(MOVE, 20, 30., 1),
+                ],
+                vec!["move Some(Left) (15, 20)"],
+            ),
+            (
+                "wheel_from_a_finger_while_held_then_release",
+                vec![
+                    at(DOWN, 0, 20., 1),
+                    wheel(TOUCH, 0., 128.),
+                    at(UP, 50, 20., 0),
+                ],
+                vec!["up Left x1 (10, 20)"],
+            ),
             ("add_sends_nothing", vec![at(ADD, 0, 20., 0)], vec![]),
             ("remove_sends_nothing", vec![at(REMOVE, 0, 20., 0)], vec![]),
             (
@@ -957,9 +1148,22 @@ mod tests {
                 vec!["scroll Moved (0, 4) (10, 20)"],
             ),
             (
-                "mouse_move_is_not_a_touch",
-                vec![at(DOWN, 0, 20., 1), record(MOVE, TOUCH, FINGER_0, 20., 40.)],
-                vec![],
+                "pan_update_without_start_moves_from_zero",
+                vec![pan(PAN_ZOOM_UPDATE, 0., 20.)],
+                vec!["scroll Moved (0, 10) (10, 20)"],
+            ),
+            (
+                "pan_end_without_start_ends",
+                vec![pan(PAN_ZOOM_END, 0., 0.)],
+                vec!["scroll Ended (0, 0) (10, 20)"],
+            ),
+            (
+                "trackpad_press_is_a_mouse_down",
+                vec![with(
+                    record(DOWN, TRACKPAD, MOUSE_0, 20., 40.),
+                    &[(Field::Buttons, 1i64.to_le_bytes())],
+                )],
+                vec!["down Left x1 (10, 20)"],
             ),
         ];
         for (name, packets, expected) in cases {
@@ -970,32 +1174,6 @@ mod tests {
                 "{name}"
             );
         }
-    }
-
-    #[test]
-    fn devices() -> Result<(), Error> {
-        // (row name, Flutter device kind, expected route).
-        let cases = [
-            ("finger", TOUCH, Route::Touch(PointerDevice::Touch)),
-            ("mouse", MOUSE, Route::Mouse),
-            ("stylus", STYLUS, Route::Touch(PointerDevice::Pen)),
-            (
-                "inverted_stylus",
-                INVERTED_STYLUS,
-                Route::Touch(PointerDevice::Pen),
-            ),
-            ("trackpad", TRACKPAD, Route::Mouse),
-            ("unknown", UNKNOWN, Route::Touch(PointerDevice::Touch)),
-        ];
-        for (name, kind, route) in cases {
-            let data = decode(&record(DOWN, kind, 2, 0., 0.))?;
-            assert_eq!(
-                data.iter().map(|data| data.route).collect::<Vec<_>>(),
-                [route],
-                "{name}"
-            );
-        }
-        Ok(())
     }
 
     #[test]
@@ -1033,10 +1211,11 @@ mod tests {
         for (name, packet, touch, position) in cases {
             let mut pointers = Pointers::default();
             let inputs = pointers.events(&decode(&packet)?, 2.0, Modifiers::default());
-            let got = inputs.first().and_then(|input| match input {
-                PlatformInput::Touch(event) => Some((event.device, event.force)),
-                _ => None,
-            });
+            let got = if let Some(PlatformInput::Touch(event)) = inputs.first() {
+                Some((event.device, event.force))
+            } else {
+                None
+            };
             assert_eq!(got, touch, "{name}");
             assert_eq!(pointers.last_position, position, "{name}");
         }

@@ -385,37 +385,52 @@ impl Pending {
     /// order: clear or set the client, then the editing state, then the keyboard. `None` when there is nothing to
     /// send. A new client with autofill (a hint, and GPUI has named the `field`) also gets the field's `bounds`
     /// right after `setClient` and `requestAutofill` last, as Flutter's `EditableText` attaches: Java's
-    /// `notifyViewEntered` needs the rect.
+    /// `notifyViewEntered` needs the rect. The same client gets the bounds again when they moved from the rect Java
+    /// has (`sent`; the field scrolled or resized under the keyboard), as `EditableText` re-sends them on layout.
+    /// Also the rect these calls send.
     fn calls(
         &self,
         configuration: &TextInputConfiguration,
         field: Option<FocusId>,
         bounds: Option<Bounds<Pixels>>,
+        sent: Option<Bounds<Pixels>>,
         state: Option<&EditingState>,
-    ) -> Option<Value> {
-        let autofill = match self.client {
+    ) -> (Option<Value>, Option<Bounds<Pixels>>) {
+        let (client, rect, request) = match self.client {
             Client::Set => {
-                state.and_then(|state| autofill_json(configuration.autofill, field, state))
+                let autofill =
+                    state.and_then(|state| autofill_json(configuration.autofill, field, state));
+                let rect = autofill.as_ref().map(|_| bounds.unwrap_or_default());
+                let request = autofill
+                    .as_ref()
+                    .map(|_| json!({"method": "TextInput.requestAutofill"}));
+                let client = json!({
+                    "method": "TextInput.setClient",
+                    "args": [0, configuration_json(configuration, autofill)],
+                });
+                (Some(client), rect, request)
             }
-            Client::Keep { .. } | Client::Clear => None,
+            Client::Keep { .. } => (
+                None,
+                sent.and(bounds).filter(|bounds| Some(*bounds) != sent),
+                None,
+            ),
+            Client::Clear => (Some(json!({"method": "TextInput.clearClient"})), None, None),
         };
-        let client = match self.client {
-            Client::Keep { .. } => None,
-            Client::Set => Some(json!({
-                "method": "TextInput.setClient",
-                "args": [0, configuration_json(configuration, autofill.clone())],
-            })),
-            Client::Clear => Some(json!({"method": "TextInput.clearClient"})),
-        };
-        let size = autofill.as_ref().map(|_| {
+        // The size and a column-major 4x4 translation to the origin, in logical pixels (the view fills the
+        // window); Java turns them into the autofill rect. At least `MIN_AUTOFILL_WIDTH` wide: an empty field's
+        // bounds are its 0-wide caret, an empty `Rect` to Android.
+        let size = rect.map(|rect| {
+            let (x, y) = (f32::from(rect.origin.x), f32::from(rect.origin.y));
             json!({
                 "method": "TextInput.setEditableSizeAndTransform",
-                "args": size_and_transform(bounds.unwrap_or_default()),
+                "args": {
+                    "width": f32::from(rect.size.width).max(MIN_AUTOFILL_WIDTH),
+                    "height": f32::from(rect.size.height),
+                    "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, 0.0, 1.0],
+                },
             })
         });
-        let request = autofill
-            .as_ref()
-            .map(|_| json!({"method": "TextInput.requestAutofill"}));
         let sync = state
             .map(|state| json!({"method": "TextInput.setEditingState", "args": state.to_json()}));
         let keyboard = match self.keyboard {
@@ -427,9 +442,12 @@ impl Pending {
             .into_iter()
             .flatten()
             .collect();
-        (!calls.is_empty()).then_some(Value::Array(calls))
+        ((!calls.is_empty()).then_some(Value::Array(calls)), rect)
     }
 }
+
+/// The narrowest autofill rect, in logical pixels: Android treats a 0-wide `Rect` as empty.
+const MIN_AUTOFILL_WIDTH: f32 = 1.0;
 
 /// Who is editing GPUI's text right now.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -461,6 +479,9 @@ pub(crate) struct Session {
     /// Java's mirror (`ListenableEditingState`) as Rust last knew it: the state it was sent, or the state it sent.
     /// Java's next edit is made on it ([`merge`]). `None` without a client.
     mirror: Option<EditingState>,
+    /// The field's bounds as Java's autofill rect has them (`setEditableSizeAndTransform`). `None` while the client
+    /// has no autofill.
+    rect: Option<Bounds<Pixels>>,
 }
 
 impl Session {
@@ -536,16 +557,27 @@ impl Session {
         };
     }
 
-    /// The calls to send now, emptied; `None` when there are none. The shell then reads GPUI's state if they carry
-    /// it ([`Pending::sends_state`]), with the session free (GPUI may re-enter the window), and calls [`Self::send`].
+    /// The calls to send now, emptied; `None` when there are none and no autofill rect can have moved. The shell then
+    /// reads GPUI's state if they carry it ([`Pending::sends_state`]) and the field's bounds if they need them
+    /// ([`Self::reads_bounds`]), with the session free (GPUI may re-enter the window), and calls [`Self::send`].
     pub(crate) fn take(&mut self) -> Option<Pending> {
         let pending = std::mem::take(&mut self.pending);
-        (pending != Pending::default()).then_some(pending)
+        (pending != Pending::default() || self.rect.is_some()).then_some(pending)
+    }
+
+    /// Whether [`Self::send`] needs the field's text bounds: for a new client with an autofill hint, and every
+    /// frame for a client with an autofill rect, which follows the field when it scrolls or resizes.
+    pub(crate) fn reads_bounds(&self, pending: &Pending) -> bool {
+        match pending.client {
+            Client::Set => self.configuration.autofill.is_some(),
+            Client::Keep { .. } => self.rect.is_some(),
+            Client::Clear => false,
+        }
     }
 
     /// `pending` as Flutter's calls, with GPUI's `state` where they carry it (empty for a new client when the field
-    /// is unreadable: Java still needs a state to restart the IME) and the field's text `bounds` for autofill (read
-    /// for a new client). Java's mirror becomes what is sent.
+    /// is unreadable: Java still needs a state to restart the IME) and the field's text `bounds` for autofill
+    /// ([`Self::reads_bounds`]). Java's mirror and autofill rect become what is sent.
     pub(crate) fn send(
         &mut self,
         pending: Pending,
@@ -561,7 +593,18 @@ impl Session {
             Field::Focused(id) => id,
             Field::Blurred => None,
         };
-        let calls = pending.calls(&self.configuration, field, bounds, state.as_ref());
+        let (calls, rect) = pending.calls(
+            &self.configuration,
+            field,
+            bounds,
+            self.rect,
+            state.as_ref(),
+        );
+        self.rect = match pending.client {
+            Client::Set => rect,
+            Client::Keep { .. } => rect.or(self.rect),
+            Client::Clear => None,
+        };
         match (pending.client, state) {
             (Client::Clear, _) => self.mirror = None,
             (Client::Set | Client::Keep { .. }, Some(state)) => self.mirror = Some(state),
@@ -690,24 +733,13 @@ fn autofill_json(
     }))
 }
 
-/// Flutter's `setEditableSizeAndTransform` arguments for the field's `bounds` (logical pixels; the view fills the
-/// window): its size and a column-major 4x4 translation to its origin. Java turns them into the autofill rect.
-fn size_and_transform(bounds: Bounds<Pixels>) -> Value {
-    let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-    json!({
-        "width": f32::from(bounds.size.width),
-        "height": f32::from(bounds.size.height),
-        "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, 0.0, 1.0],
-    })
-}
-
 /// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration, with the field's
-/// `autofill` ([`autofill_json`]) when it has one. A secure field is `obscureText` with personalized learning off,
-/// as the patch 0005 docs promise (kept out of dictionaries). A type with a variation of its own
+/// `autofill` ([`autofill_json`]), `null` without one. A secure field is `obscureText` with personalized learning
+/// off, as the patch 0005 docs promise (kept out of dictionaries). A type with a variation of its own
 /// ([`has_own_variation`]) always enables suggestions, Flutter's default: Flutter turns them off with the
 /// visible-password variation, which would replace that type's keyboard (and GPUI's default is off).
 fn configuration_json(configuration: &TextInputConfiguration, autofill: Option<Value>) -> Value {
-    let mut out = json!({
+    json!({
         "inputType": input_type(configuration.keyboard_type, configuration.secure),
         "obscureText": configuration.secure,
         "autocorrect": configuration.autocorrect,
@@ -715,11 +747,8 @@ fn configuration_json(configuration: &TextInputConfiguration, autofill: Option<V
         "enableIMEPersonalizedLearning": !configuration.secure,
         "textCapitalization": capitalization(configuration.autocapitalize),
         "inputAction": action(configuration.input_action),
-    });
-    if let (Some(autofill), Value::Object(fields)) = (autofill, &mut out) {
-        fields.insert("autofill".to_string(), autofill);
-    }
-    out
+        "autofill": autofill,
+    })
 }
 
 #[cfg(test)]
@@ -1651,7 +1680,7 @@ mod tests {
                     r#"[{"method":"TextInput.setClient","args":[0,{"inputType":{"name":"TextInputType.text"},"#,
                     r#""obscureText":false,"autocorrect":false,"enableSuggestions":false,"#,
                     r#""enableIMEPersonalizedLearning":true,"textCapitalization":"TextCapitalization.none","#,
-                    r#""inputAction":"TextInputAction.unspecified"}]},"#,
+                    r#""inputAction":"TextInputAction.unspecified","autofill":null}]},"#,
                     r#"{"method":"TextInput.setEditingState","args":{"text":"","selectionBase":-1,"#,
                     r#""selectionExtent":-1,"composingBase":-1,"composingExtent":-1}}]"#
                 )),
@@ -1701,7 +1730,7 @@ mod tests {
             r#"[{"method":"TextInput.setClient","args":[0,{"inputType":{"name":"TextInputType.text"},"#,
             r#""obscureText":false,"autocorrect":true,"enableSuggestions":true,"#,
             r#""enableIMEPersonalizedLearning":true,"textCapitalization":"TextCapitalization.sentences","#,
-            r#""inputAction":"TextInputAction.send"}]},"#,
+            r#""inputAction":"TextInputAction.send","autofill":null}]},"#,
             r#"{"method":"TextInput.setEditingState","args":{"text":"a\"😀\u000a","selectionBase":4,"#,
             r#""selectionExtent":4,"composingBase":1,"composingExtent":4}},"#,
             r#"{"method":"TextInput.show"}]"#
@@ -1709,12 +1738,13 @@ mod tests {
         assert_eq!(
             EMPTY
                 .next(Notice::Focused)
-                .calls(&configuration, None, None, Some(&gpui)),
+                .calls(&configuration, None, None, None, Some(&gpui))
+                .0,
             json(want),
             "focus: client, state, show"
         );
         assert_eq!(
-            EMPTY.calls(&configuration, None, None, None),
+            EMPTY.calls(&configuration, None, None, None, None).0,
             None,
             "nothing"
         );
@@ -1764,13 +1794,13 @@ mod tests {
                 ],
             ),
             (
-                "no bounds: an empty rect at the origin",
+                "no bounds: a 1-wide rect at the origin",
                 Some(AutofillHint::Email),
                 Some(a),
                 None,
                 vec![
                     set_client(Some(autofill)),
-                    size(0., 0., 0., 0.),
+                    size(0., 0., 1., 0.),
                     sync.clone(),
                     show.clone(),
                     json!({"method": "TextInput.requestAutofill"}),
@@ -1804,7 +1834,8 @@ mod tests {
             assert_eq!(
                 EMPTY
                     .next(Notice::Focused)
-                    .calls(&configuration, field, bounds, Some(&gpui)),
+                    .calls(&configuration, field, bounds, None, Some(&gpui))
+                    .0,
                 Some(Value::Array(want)),
                 "{name}"
             );
@@ -1816,13 +1847,166 @@ mod tests {
             },
             Some(a),
             Some(bounds),
+            Some(bounds),
             Some(&gpui),
         );
         assert_eq!(
             update,
-            Some(json!([{"method": "TextInput.setEditingState", "args": gpui.to_json()}])),
-            "same client: only the state"
+            (
+                Some(json!([{"method": "TextInput.setEditingState", "args": gpui.to_json()}])),
+                None
+            ),
+            "same client, same rect: only the state"
         );
+    }
+
+    #[test]
+    fn session_autofill_rect() {
+        // (name, hint, the rect Java has, pending, the field's bounds) → whether they are read, the
+        // setEditableSizeAndTransform args sent, the rect Java has after.
+        let at = |x: f32, width: f32| {
+            Bounds::new(
+                gpui::point(gpui::px(x), gpui::px(40.)),
+                gpui::size(gpui::px(width), gpui::px(24.)),
+            )
+        };
+        let args = |x: f32, width: f32| {
+            json!({"width": width, "height": 24.0,
+                "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, 40.0, 0.0, 1.0]})
+        };
+        let (field, scrolled, empty) = (at(16., 200.), at(8., 200.), at(16., 0.));
+        let email = Some(AutofillHint::Email);
+        let keep = EMPTY.next(Notice::Changed);
+        type Row = (
+            &'static str,
+            Option<AutofillHint>,
+            Option<Bounds<Pixels>>,
+            Pending,
+            Option<Bounds<Pixels>>,
+            bool,
+            Option<Value>,
+            Option<Bounds<Pixels>>,
+        );
+        let rows: [Row; 9] = [
+            (
+                "new client, hint: rect sent",
+                email,
+                None,
+                EMPTY.next(Notice::Focused),
+                Some(field),
+                true,
+                Some(args(16., 200.)),
+                Some(field),
+            ),
+            (
+                "new client, no hint: bounds not read",
+                None,
+                None,
+                EMPTY.next(Notice::Focused),
+                Some(field),
+                false,
+                None,
+                None,
+            ),
+            (
+                "empty field: its caret, at least 1 wide",
+                email,
+                None,
+                EMPTY.next(Notice::Focused),
+                Some(empty),
+                true,
+                Some(args(16., 1.)),
+                Some(empty),
+            ),
+            (
+                "same client, field scrolled: rect sent again",
+                email,
+                Some(field),
+                EMPTY,
+                Some(scrolled),
+                true,
+                Some(args(8., 200.)),
+                Some(scrolled),
+            ),
+            (
+                "same client syncing, field scrolled: rect sent again",
+                email,
+                Some(field),
+                keep,
+                Some(scrolled),
+                true,
+                Some(args(8., 200.)),
+                Some(scrolled),
+            ),
+            (
+                "same client, field still: nothing",
+                email,
+                Some(field),
+                EMPTY,
+                Some(field),
+                true,
+                None,
+                Some(field),
+            ),
+            (
+                "same client, no handler: rect kept",
+                email,
+                Some(field),
+                EMPTY,
+                None,
+                true,
+                None,
+                Some(field),
+            ),
+            (
+                "same client without autofill: bounds not read",
+                None,
+                None,
+                keep,
+                Some(field),
+                false,
+                None,
+                None,
+            ),
+            (
+                "blur: rect dropped",
+                email,
+                Some(field),
+                EMPTY.next(Notice::Blurred),
+                Some(field),
+                false,
+                None,
+                None,
+            ),
+        ];
+        for (name, hint, rect, pending, bounds, want_read, want_args, want_rect) in rows {
+            let mut session = Session {
+                field: Field::Focused(Some(focus_id(1))),
+                configuration: TextInputConfiguration {
+                    autofill: hint,
+                    ..TextInputConfiguration::default()
+                },
+                pending,
+                rect,
+                ..Session::default()
+            };
+            let mut read = false;
+            let calls = session.take().and_then(|pending| {
+                // As the shell: the bounds only when asked for.
+                read = session.reads_bounds(&pending);
+                let bounds = bounds.filter(|_| read);
+                session.send(pending, Some(EditingState::default()), bounds)
+            });
+            let sent = calls.as_ref().and_then(|calls| {
+                calls.as_array()?.iter().find_map(|call| {
+                    (call["method"] == "TextInput.setEditableSizeAndTransform")
+                        .then(|| call["args"].clone())
+                })
+            });
+            assert_eq!(read, want_read, "{name}: read");
+            assert_eq!(sent, want_args, "{name}: sent");
+            assert_eq!(session.rect, want_rect, "{name}: rect");
+        }
     }
 
     #[test]
@@ -2005,42 +2189,42 @@ mod tests {
             (
                 Autocapitalize::None,
                 TextInputAction::Unspecified,
-                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.unspecified"}"#,
+                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.unspecified","autofill":null}"#,
             ),
             (
                 Autocapitalize::Words,
                 TextInputAction::Enter,
-                r#""textCapitalization":"TextCapitalization.words","inputAction":"TextInputAction.newline"}"#,
+                r#""textCapitalization":"TextCapitalization.words","inputAction":"TextInputAction.newline","autofill":null}"#,
             ),
             (
                 Autocapitalize::Sentences,
                 TextInputAction::Done,
-                r#""textCapitalization":"TextCapitalization.sentences","inputAction":"TextInputAction.done"}"#,
+                r#""textCapitalization":"TextCapitalization.sentences","inputAction":"TextInputAction.done","autofill":null}"#,
             ),
             (
                 Autocapitalize::Characters,
                 TextInputAction::Go,
-                r#""textCapitalization":"TextCapitalization.characters","inputAction":"TextInputAction.go"}"#,
+                r#""textCapitalization":"TextCapitalization.characters","inputAction":"TextInputAction.go","autofill":null}"#,
             ),
             (
                 Autocapitalize::None,
                 TextInputAction::Next,
-                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.next"}"#,
+                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.next","autofill":null}"#,
             ),
             (
                 Autocapitalize::None,
                 TextInputAction::Previous,
-                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.previous"}"#,
+                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.previous","autofill":null}"#,
             ),
             (
                 Autocapitalize::None,
                 TextInputAction::Search,
-                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.search"}"#,
+                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.search","autofill":null}"#,
             ),
             (
                 Autocapitalize::None,
                 TextInputAction::Send,
-                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.send"}"#,
+                r#""textCapitalization":"TextCapitalization.none","inputAction":"TextInputAction.send","autofill":null}"#,
             ),
         ];
         for (autocapitalize, input_action, tail) in rows {

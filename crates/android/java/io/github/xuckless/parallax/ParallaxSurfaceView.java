@@ -27,9 +27,10 @@ import java.nio.ByteBuffer;
  * to Rust (parallax-android, crates/android/src/host.rs); everything runs on the main thread.
  *
  * <p>Touch and mouse: onTouchEvent and onGenericMotionEvent → the ported AndroidTouchProcessor →
- * nativeDispatchPointerDataPacket (see docs/android-touch.md, docs/android-mouse.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
- * nativeDispatchKeyData (see docs/android-keys.md). Text input: the ported TextInputPlugin, synced
- * with GPUI over the natives below (see docs/android-text-input.md).
+ * nativeDispatchPointerDataPacket (see docs/android-touch.md, docs/android-mouse.md). Keys:
+ * dispatchKeyEvent → the ported KeyboardManager → nativeDispatchKeyData (see docs/android-keys.md).
+ * Text input: the ported TextInputPlugin, synced with GPUI over the natives below (see
+ * docs/android-text-input.md).
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
@@ -214,7 +215,7 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public boolean onGenericMotionEvent(MotionEvent event) {
     boolean handled = touchProcessor.onGenericMotionEvent(event, getContext());
-    return handled ? true : super.onGenericMotionEvent(event);
+    return handled || super.onGenericMotionEvent(event);
   }
 
   // The app's only view takes focus as soon as it is in the window: without it, key events stop at
