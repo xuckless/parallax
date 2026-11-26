@@ -117,8 +117,9 @@ for row in "${steps[@]}"; do
   from=$(($(wc -l <"$log") + 1))
   eval "$command" || fail "$name: command failed: $command"
   deadline=$((SECONDS + timeout))
-  until tail -n "+$from" "$log" | grep -Eq -- "$pattern"; do
-    if tail -n "+$from" "$log" | grep -Eq -- "$crashed"; then fail "$name: the app crashed or stopped responding"; fi
+  # Not `tail | grep -q`: grep stops at the first match, tail dies of SIGPIPE, and pipefail calls that a miss.
+  until grep -Eq -- "$pattern" <(tail -n "+$from" "$log"); do
+    if grep -Eq -- "$crashed" <(tail -n "+$from" "$log"); then fail "$name: the app crashed or stopped responding"; fi
     ((SECONDS < deadline)) || fail "$name: no logcat line matching /$pattern/ within ${timeout}s"
     sleep 1
   done
