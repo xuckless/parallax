@@ -23,3 +23,7 @@ Apache License 2.0 (license text inside the jar, META-INF/LICENSE). Copyright Gr
 
 assets/brand/ holds the Parallax brand mark, copyright Syed Ali (xuckless), the owner's own brand
 and not under the Apache License 2.0; see assets/brand/README.md.
+
+examples/hello/fonts/ holds Noto Sans and Noto Sans Arabic (copied from the cosmic-text crate),
+licensed under the SIL Open Font License 1.1 (examples/hello/fonts/OFL.txt).
+Copyright 2015-2021 Google LLC. The hello example is not published.

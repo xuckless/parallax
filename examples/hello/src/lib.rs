@@ -190,13 +190,29 @@ pub fn launch(cx: &mut App) {
 
 parallax::android_main!(launch);
 
+/// Fonts the web build embeds: a browser gives GPUI no system fonts, and with none loaded the first text draw
+/// panics. Noto Sans is in GPUI's fallback stack for `.SystemUIFont`; Noto Sans Arabic covers `SCRIPTS`' Arabic.
+/// Emoji are drawn by the browser (gpui_web's Canvas fallback); CJK is not embedded (a CJK font is many MB), so
+/// 你好 · こんにちは · 直骨 show as missing glyphs on the web. Add a row to add a font (OFL, see fonts/OFL.txt).
+#[cfg(target_family = "wasm")]
+const WEB_FONTS: [&[u8]; 2] = [
+    include_bytes!("../fonts/NotoSans-Regular.ttf"),
+    include_bytes!("../fonts/NotoSansArabic.ttf"),
+];
+
 /// Web entry point: wasm-bindgen runs it when the module loads.
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
     parallax::parallax_platform::web_init();
     match parallax::parallax_platform::current_platform(false) {
-        Ok(platform) => parallax::gpui::Application::with_platform(platform).run(launch),
+        Ok(platform) => parallax::gpui::Application::with_platform(platform).run(|cx| {
+            let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
+            match cx.text_system().add_fonts(fonts) {
+                Ok(()) => launch(cx),
+                Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),
+            }
+        }),
         Err(error) => log::error!("no web platform: {error}"),
     }
 }

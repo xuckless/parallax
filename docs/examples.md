@@ -52,7 +52,9 @@ wasm-pack build examples/hello --target web --no-typescript --no-pack --dev
 python3 -m http.server 8765 --directory examples/hello
 ```
 
-Open <http://127.0.0.1:8765/>. `pkg/` is git-ignored. gpui_web tries WebGPU, then falls back to WebGL2; the console
+Open <http://127.0.0.1:8765/>. `pkg/` is git-ignored. A browser gives GPUI no system fonts, so `start` loads
+`WEB_FONTS` ([fonts/](../examples/hello/fonts/), OFL) first: Noto Sans and Noto Sans Arabic. Emoji come from the
+browser (gpui_web's Canvas fallback); CJK is not embedded (too large), so `SCRIPTS`' CJK shows missing glyphs. gpui_web tries WebGPU, then falls back to WebGL2; the console
 shows which (`Browser graphics initialized successfully with …`) and `hello: box colour …` on each click or tap.
 Drop `--dev` for an optimised build (wasm-pack then also fetches `wasm-opt`).
 
