@@ -32,7 +32,7 @@ no fixed schedule and no planned last number.
 - [x] `scripts/apply-patches.sh`: pristine `upstream/` + `patches/` → `build/gpui-patched/`. Deterministic, idempotent, fails loudly.
 - [x] Wire `[patch]` in the root `Cargo.toml` to `build/gpui-patched/`.
 - [ ] `scripts/sync-upstream.sh`: bump to the latest `gpui-pre` snapshot, re-vendor, re-apply patches, list the ones that no longer apply.
-- [ ] Flutter stable tag `3.50.1` pinned in `third_party/flutter/PORTED.md`. `scripts/flutter-diff.sh`: for every ledger row,
+- [x] Flutter stable tag `3.50.1` pinned in `third_party/flutter/PORTED.md`. `scripts/flutter-diff.sh`: for every ledger row,
       show the Flutter source diff between the pinned tag and a newer stable tag.
 - [ ] `scripts/patch-paths.sh`: translate a patch between the vendored `gpui-pre` layout and Zed's `crates/gpui*` layout,
       so one patch applies to both.
@@ -181,4 +181,5 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-25 | zed `8aeb64f7` | No touch input on `gpui_windows`, `gpui_linux` or `gpui_macos`. No Android backend. |
 | 2026-11-25 | flutter 3.50.1 | Pinned stable tag (stable branch `ae9b586f34`, 2026-11-19). Ported files exist unchanged at this tag. |
 | 2026-11-25 | flutter `322dfd0771` (master) | BSD-3-Clause. Android text input: `TextInputPlugin.java` 36 KB, `InputConnectionAdaptor.java` 21 KB. iOS: `FlutterTextInputPlugin.mm` 141 KB + 207 KB of tests. Web: `text_editing.dart` 113 KB. |
+| 2026-11-25 | flutter GitHub releases | `releases/latest` returns `3.19.0-0.1.pre` (a 2024 beta not marked pre-release). Find stable tags from the tag list, highest plain `X.Y.Z`. |
 | 2026-11-25 | accesskit | `accesskit_android` 0.9.1 exists (permissive: Apache, MIT, Chromium-derived BSD). Use it, don't port Flutter's `AccessibilityBridge`. |
