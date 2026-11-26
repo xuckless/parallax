@@ -48,7 +48,9 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 - **Mechanism:** `TouchEvent` is a `MouseEvent` now. One `TouchRoute` per touch id: `Deciding` during `Started`
   (first decision wins; bubble order visits the frontmost element first), then `Gestures` or
   `Claimed(GlobalElementId)`. Later phases of a claimed touch reach the owner by `Window::touch_owner`, not by hit
-  test. Custom elements claim with `Window::claim_touch` from a `TouchEvent` listener. The window's mouse position
+  test. Custom elements decide from a `TouchEvent` listener: `Window::claim_touch` to own the touch, or
+  `Window::leave_touch_to_gestures` when they handle taps or scrolls themselves (as divs do), so an ancestor's
+  `on_touch` cannot take it. The window's mouse position
   does not move. After a claimed touch ends the window draws if dirty, as after a tap, so the web keyboard opens for
   a field focused in an `Ended` handler.
 - **Taps click as touches:** div's `on_click` now receives the declared `ClickEvent::Touch(TouchClickEvent)` when the
