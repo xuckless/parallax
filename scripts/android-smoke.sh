@@ -99,6 +99,7 @@ fail() {
 }
 
 on_device logcat -b all -c
+: >"$log"  # exists before the first step reads it, however late logcat starts
 "$adb" -s "$serial" logcat -b main,system,crash -v time >"$log" &
 logcat_pid=$!
 
@@ -118,3 +119,4 @@ done
 grep -Eq -- "$crashed" "$log" && fail "the app crashed or stopped responding"
 [[ -n $(on_device pidof "$app") ]] || fail "the app is no longer running"
 echo "android-smoke: all ${#steps[@]} steps passed on $serial"
+grep -m 1 "renderer created" "$log" || true  # which GPU drew, for comparing runs
