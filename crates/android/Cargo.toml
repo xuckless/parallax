@@ -3,7 +3,7 @@ name = "parallax-android"
 description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu (Vulkan, GL fallback), IME, AccessKit."
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0 AND BSD-3-Clause"
 publish.workspace = true
 
 [lints]
@@ -23,3 +23,8 @@ ndk-sys = "0.6"
 raw-window-handle = "0.6"
 thiserror.workspace = true
 uuid = "1"
+
+# The pure modules (surface state machine, pointer packet decoder) are tested on the host.
+[dev-dependencies]
+gpui.workspace = true
+thiserror.workspace = true

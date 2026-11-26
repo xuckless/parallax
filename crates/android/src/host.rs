@@ -16,12 +16,12 @@ use gpui::{
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JClass, JObject},
+    objects::{JByteBuffer, JClass, JObject},
     sys::{JNI_ERR, JNI_VERSION_1_6, jfloat, jint},
 };
 
 use crate::{
-    Error,
+    Error, pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
 };
@@ -31,7 +31,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 5] {
+fn natives() -> [NativeMethod; 6] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -55,6 +55,11 @@ fn natives() -> [NativeMethod; 5] {
         ),
         row("nativeFrame", "()V", frame as *mut c_void),
         row("nativeInsets", "(IIIIIIII)V", insets as *mut c_void),
+        row(
+            "nativeDispatchPointerDataPacket",
+            "(Ljava/nio/ByteBuffer;I)V",
+            dispatch_pointer_data_packet as *mut c_void,
+        ),
     ]
 }
 
@@ -191,8 +196,32 @@ extern "system" fn frame(_env: JNIEnv, _class: JClass) {
     with_host(|host| host.shell.frame());
 }
 
-// Touch goes here in Wave 6: a `nativeTouch` row in `natives`, fed by the ported AndroidTouchProcessor,
-// delivered through `Callbacks::input`.
+/// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
+/// a direct `ByteBuffer`.
+extern "system" fn dispatch_pointer_data_packet(
+    env: JNIEnv,
+    _class: JClass,
+    buffer: JByteBuffer,
+    position: jint,
+) {
+    let address = env.get_direct_buffer_address(&buffer);
+    let capacity = env.get_direct_buffer_capacity(&buffer);
+    let (address, length) = match (address, capacity, usize::try_from(position)) {
+        (Ok(address), Ok(capacity), Ok(length)) if length <= capacity => (address, length),
+        (address, capacity, _) => {
+            log::error!(
+                "parallax: unreadable pointer data packet: position {position}, capacity {capacity:?}, \
+                 address {:?}",
+                address.map(|_| ())
+            );
+            return;
+        }
+    };
+    // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
+    // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
+    let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
+    with_host(|host| host.shell.touch(packet));
+}
 
 #[allow(
     clippy::too_many_arguments,
@@ -312,7 +341,7 @@ impl<F: ?Sized> Default for Slot<F> {
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// The touch seam: Wave 6 delivers `PlatformInput::Touch` here.
+    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]).
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
@@ -326,6 +355,7 @@ pub(crate) struct Shell {
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
+    pub(crate) touches: RefCell<pointer::Touches>,
 }
 
 impl Shell {
@@ -336,6 +366,7 @@ impl Shell {
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
+            touches: RefCell::new(pointer::Touches::default()),
         }
     }
 
@@ -456,6 +487,26 @@ impl Shell {
                 ..Default::default()
             })
         });
+    }
+
+    /// One pointer data packet → GPUI touch events, dispatched in packet order. Upstream turns a tap into a click.
+    fn touch(&self, packet: &[u8]) {
+        let events = match pointer::decode(packet) {
+            Ok(data) => self
+                .touches
+                .borrow_mut()
+                .events(&data, self.metrics.get().density),
+            Err(error) => {
+                log::error!("parallax: touch dropped: {error}");
+                return;
+            }
+        };
+        for event in events {
+            log::debug!("parallax: {event:?}");
+            self.callbacks.input.with(|callback| {
+                callback(PlatformInput::Touch(event));
+            });
+        }
     }
 
     /// Every vsync (Choreographer): lets GPUI draw if anything changed.

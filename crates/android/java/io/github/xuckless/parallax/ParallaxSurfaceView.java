@@ -7,16 +7,19 @@ import android.graphics.Insets;
 import android.os.Build;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.WindowInsets;
+import java.nio.ByteBuffer;
 
 /**
  * The surface GPUI draws into. Forwards the surface lifecycle, vsync frames and system-bar insets
  * to Rust (parallax-android, crates/android/src/host.rs); everything runs on the main thread.
  *
- * <p>Touch arrives in Wave 6: onTouchEvent → the ported AndroidTouchProcessor → a nativeTouch call.
+ * <p>Touch: onTouchEvent → the ported AndroidTouchProcessor → nativeDispatchPointerDataPacket (see
+ * docs/android-touch.md).
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback {
@@ -38,6 +41,14 @@ final class ParallaxSurfaceView extends SurfaceView
       int imeTop,
       int imeRight,
       int imeBottom);
+
+  // Flutter's pointer data packet (AndroidTouchProcessor): `position` bytes of a direct buffer,
+  // read before the call returns. Named after FlutterJNI.nativeDispatchPointerDataPacket.
+  static native void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position);
+
+  // As FlutterView: no platform views, so motion events are not tracked.
+  private final AndroidTouchProcessor touchProcessor =
+      new AndroidTouchProcessor(/* trackMotionEvents= */ false);
 
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
@@ -81,6 +92,11 @@ final class ParallaxSurfaceView extends SurfaceView
   public void surfaceDestroyed(SurfaceHolder holder) {
     // Rust releases its ANativeWindow before this returns, as Android requires.
     nativeSurfaceDestroyed();
+  }
+
+  @Override
+  public boolean onTouchEvent(MotionEvent event) {
+    return touchProcessor.onTouchEvent(event);
   }
 
   @Override
