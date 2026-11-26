@@ -205,3 +205,9 @@ jobs:
           emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true
           script: scripts/android-smoke.sh
+      # The run's logcat and the screen at the failing step.
+      - if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: android-smoke
+          path: target/android-smoke/

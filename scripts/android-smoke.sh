@@ -21,14 +21,13 @@ if [[ -z $serial ]]; then
   serial=$devices
 fi
 
-work=$(mktemp -d)
-log=$work/logcat.txt
+# The run's logcat, and the screen when a step fails; kept after the run (CI uploads it on failure).
+out=$repo/target/android-smoke
+log=$out/logcat.txt
+mkdir -p "$out"
+rm -f "$out/failure.png"
 logcat_pid=
-cleanup() {
-  [[ -n $logcat_pid ]] && kill "$logcat_pid" 2>/dev/null
-  rm -rf "$work"
-}
-trap cleanup EXIT
+trap '[[ -n $logcat_pid ]] && kill "$logcat_pid" 2>/dev/null' EXIT
 
 on_device() { "$adb" -s "$serial" shell "$@"; }
 
@@ -95,6 +94,8 @@ fail() {
   echo "android-smoke: FAIL: $*" >&2
   echo "android-smoke: last app and crash lines from logcat:" >&2
   grep -E "parallax|AndroidRuntime|DEBUG|ActivityManager|$app" "$log" | tail -n 60 >&2 || true
+  "$adb" -s "$serial" exec-out screencap -p >"$out/failure.png" || true
+  echo "android-smoke: full logcat and the screen: $out/" >&2
   exit 1
 }
 
