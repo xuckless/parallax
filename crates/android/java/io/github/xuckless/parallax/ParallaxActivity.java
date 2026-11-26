@@ -29,7 +29,6 @@ public class ParallaxActivity extends Activity {
   private static final int EVENT_DESTROY = 4;
   private static final int EVENT_FOCUS = 5;
   private static final int EVENT_TRIM_MEMORY = 6;
-  private static final int EVENT_LOW_MEMORY = 7;
 
   private ParallaxSurfaceView view;
 
@@ -87,12 +86,6 @@ public class ParallaxActivity extends Activity {
   public void onTrimMemory(int level) {
     super.onTrimMemory(level);
     ParallaxSurfaceView.nativeActivityEvent(EVENT_TRIM_MEMORY, level);
-  }
-
-  @Override
-  public void onLowMemory() {
-    super.onLowMemory();
-    ParallaxSurfaceView.nativeActivityEvent(EVENT_LOW_MEMORY, 0);
   }
 
   // The manifest declares configChanges, so rotation and density changes arrive here instead of

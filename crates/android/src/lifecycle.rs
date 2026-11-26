@@ -29,10 +29,8 @@ pub enum ActivityEvent {
     Destroy,
     /// `onWindowFocusChanged(hasFocus)`.
     Focus(bool),
-    /// `onTrimMemory(level)`.
+    /// `onTrimMemory(level)`. `onLowMemory` is not forwarded: Flutter ignores it too.
     TrimMemory(i32),
-    /// `onLowMemory()`.
-    LowMemory,
 }
 
 /// What the shell does after a transition. Window activity and visibility follow from the state itself
@@ -49,9 +47,10 @@ pub enum Effect {
     Reject { why: &'static str },
 }
 
-/// `ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW`. Levels at or above it warn, as Flutter's
-/// `FlutterActivityAndFragmentDelegate.onTrimMemory` does (it includes `UI_HIDDEN` and the background levels;
-/// Flutter also waits for its first frame, to keep a GC off startup; GPUI has no GC, so that part is dropped).
+/// `ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW`. Levels at or above it warn, the rule of Flutter 3.50.1's
+/// `FlutterActivityAndFragmentDelegate.onTrimMemory` (`level >= TRIM_MEMORY_RUNNING_LOW`), so `UI_HIDDEN` (every
+/// Home press) and the background levels warn too; the `trim_levels` test has a row per level. Flutter also skips
+/// warnings before its first frame; here GPUI has no observers before launch, and launch is one vsync before it.
 const TRIM_MEMORY_RUNNING_LOW: i32 = 10;
 
 /// `ParallaxActivity`'s event codes (its `EVENT_*` constants) → events; `value` is the focus flag or trim level.
@@ -66,7 +65,6 @@ impl ActivityEvent {
             4 => Some(Self::Destroy),
             5 => Some(Self::Focus(value != 0)),
             6 => Some(Self::TrimMemory(value)),
-            7 => Some(Self::LowMemory),
             _ => None,
         }
     }
@@ -87,7 +85,6 @@ impl Lifecycle {
                 (state, MemoryWarning)
             }
             (state, E::TrimMemory(_)) => (state, Nothing),
-            (state, E::LowMemory) => (state, MemoryWarning),
             (S::Created { focused }, E::Start) => (S::Started { focused }, Phase(P::Foreground)),
             // A new Activity in the same process: its window has not been focused yet.
             (S::Disconnected, E::Start) => (S::Started { focused: false }, Phase(P::Foreground)),
@@ -158,6 +155,31 @@ mod tests {
     use Effect::{MemoryWarning, Nothing, Phase, Reject};
     use Lifecycle::Disconnected as D;
 
+    #[test]
+    fn trim_levels() {
+        // (ComponentCallbacks2 level name, value, warns?) as Flutter 3.50.1 decides: level >= RUNNING_LOW.
+        // The state does not matter for memory; every state is checked against every level.
+        let levels = [
+            ("RUNNING_MODERATE", 5, false),
+            ("RUNNING_LOW", 10, true),
+            ("RUNNING_CRITICAL", 15, true),
+            ("UI_HIDDEN", 20, true),
+            ("BACKGROUND", 40, true),
+            ("MODERATE", 60, true),
+            ("COMPLETE", 80, true),
+        ];
+        for state in [c(false), s(true), r(true), D] {
+            for (name, level, warns) in levels {
+                let effect = if warns { MemoryWarning } else { Nothing };
+                assert_eq!(
+                    state.next(E::TrimMemory(level)),
+                    (state, effect),
+                    "{name} in {state:?}"
+                );
+            }
+        }
+    }
+
     const fn c(focused: bool) -> Lifecycle {
         Lifecycle::Created { focused }
     }
@@ -177,7 +199,7 @@ mod tests {
         // included; c/s/r are Created/Started/Resumed with the focus flag, D is Disconnected. Kept one row per
         // line (rustfmt::skip) so the table reads as a table.
         #[rustfmt::skip]
-        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 47] = [
+        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 43] = [
             ("created_start_foregrounds", c(false), E::Start, s(false), Phase(P::Foreground)),
             ("created_start_keeps_early_focus", c(true), E::Start, s(true), Phase(P::Foreground)),
             ("created_resume_rejected", c(false), E::Resume, c(false), no("resume before start")),
@@ -189,7 +211,6 @@ mod tests {
             ("created_trim_running_low_warns", c(false), E::TrimMemory(10), c(false), MemoryWarning),
             ("created_trim_complete_warns", c(false), E::TrimMemory(80), c(false), MemoryWarning),
             ("created_trim_below_running_low_quiet", c(true), E::TrimMemory(9), c(true), Nothing),
-            ("created_low_memory_warns", c(false), E::LowMemory, c(false), MemoryWarning),
             ("started_start_rejected", s(false), E::Start, s(false), no("start while started")),
             ("started_resume_unfocused_waits", s(false), E::Resume, r(false), Nothing),
             ("started_resume_focused_activates", s(true), E::Resume, r(true), Phase(P::Active)),
@@ -201,7 +222,6 @@ mod tests {
             ("started_unfocus_quiet", s(true), E::Focus(false), s(false), Nothing),
             ("started_trim_ui_hidden_warns", s(true), E::TrimMemory(20), s(true), MemoryWarning),
             ("started_trim_moderate_quiet", s(true), E::TrimMemory(5), s(true), Nothing),
-            ("started_low_memory_warns", s(true), E::LowMemory, s(true), MemoryWarning),
             ("resumed_start_rejected", r(true), E::Start, r(true), no("start while started")),
             ("resumed_resume_rejected", r(true), E::Resume, r(true), no("resume while resumed")),
             ("resumed_focused_pause_deactivates", r(true), E::Pause, s(true), Phase(P::Inactive)),
@@ -214,7 +234,6 @@ mod tests {
             ("resumed_unfocus_again_quiet", r(false), E::Focus(false), r(false), Nothing),
             ("resumed_trim_running_low_warns", r(true), E::TrimMemory(10), r(true), MemoryWarning),
             ("resumed_trim_moderate_quiet", r(true), E::TrimMemory(5), r(true), Nothing),
-            ("resumed_low_memory_warns", r(true), E::LowMemory, r(true), MemoryWarning),
             ("disconnected_start_reconnects", D, E::Start, s(false), Phase(P::Foreground)),
             ("disconnected_resume_rejected", D, E::Resume, D, no("resume before start")),
             ("disconnected_pause_rejected", D, E::Pause, D, no("pause while not resumed")),
@@ -224,7 +243,6 @@ mod tests {
             ("disconnected_unfocus_rejected", D, E::Focus(false), D, no("focus without an Activity")),
             ("disconnected_trim_warns", D, E::TrimMemory(80), D, MemoryWarning),
             ("disconnected_trim_quiet", D, E::TrimMemory(5), D, Nothing),
-            ("disconnected_low_memory_warns", D, E::LowMemory, D, MemoryWarning),
         ];
         for (name, state, event, expected_state, expected_effect) in cases {
             assert_eq!(
@@ -262,7 +280,7 @@ mod tests {
     fn java_codes() {
         // (row name, code, value, event). Codes must match ParallaxActivity's EVENT_* constants.
         #[rustfmt::skip]
-        let cases: [(&str, i32, i32, Option<ActivityEvent>); 10] = [
+        let cases: [(&str, i32, i32, Option<ActivityEvent>); 9] = [
             ("start", 0, 0, Some(E::Start)),
             ("resume", 1, 0, Some(E::Resume)),
             ("pause", 2, 0, Some(E::Pause)),
@@ -271,8 +289,7 @@ mod tests {
             ("focus", 5, 1, Some(E::Focus(true))),
             ("unfocus", 5, 0, Some(E::Focus(false))),
             ("trim_memory", 6, 15, Some(E::TrimMemory(15))),
-            ("low_memory", 7, 0, Some(E::LowMemory)),
-            ("unknown", 8, 0, None),
+            ("unknown", 7, 0, None),
         ];
         for (name, code, value, event) in cases {
             assert_eq!(ActivityEvent::from_java(code, value), event, "{name}");

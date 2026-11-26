@@ -7,7 +7,7 @@ how the renderer survives GPU device loss. The backend around it: [android.md](a
 ## The path
 
 1. **Java.** [`ParallaxActivity`](../crates/android/java/io/github/xuckless/parallax/ParallaxActivity.java) forwards
-   `onStart`, `onResume`, `onPause`, `onStop`, `onDestroy`, `onWindowFocusChanged`, `onTrimMemory` and `onLowMemory`
+   `onStart`, `onResume`, `onPause`, `onStop`, `onDestroy`, `onWindowFocusChanged` and `onTrimMemory`
    as one native, `ParallaxSurfaceView.nativeActivityEvent(code, value)` (a row in `natives` in
    [host.rs](../crates/android/src/host.rs)). `value` is the focus flag or the trim level.
 2. **State machine.** [lifecycle.rs](../crates/android/src/lifecycle.rs): `Lifecycle::{Created, Started, Resumed}`
@@ -27,13 +27,13 @@ how the renderer survives GPU device loss. The backend around it: [android.md](a
 | `onPause` | `Started` | `Inactive` if it was focused | inactive |
 | `onStop` | `Created` | `Background` | hidden |
 | `onDestroy` | `Disconnected` | `Disconnected` | (already hidden) |
-| `onTrimMemory(level ≥ RUNNING_LOW)`, `onLowMemory` | unchanged | memory warning | |
+| `onTrimMemory(level ≥ RUNNING_LOW)` | unchanged | memory warning | |
 
 - **Active needs focus**, as in Flutter's `LifecycleChannel`: the notification shade or a system dialog takes focus
   without `onPause`, and that is upstream's `Inactive` ("visible but not receiving input"). Upstream's own table
   maps `Active` to `onResume` alone; on a phone the two differ only while something covers the app.
-- **Trim levels** warn from `TRIM_MEMORY_RUNNING_LOW` (10) up, Flutter's threshold. That includes `UI_HIDDEN` (20),
-  sent on every Home press.
+- **Trim levels** warn from `TRIM_MEMORY_RUNNING_LOW` (10) up, Flutter 3.50.1's rule exactly, so `UI_HIDDEN`
+  (20, every Home press) warns too, and `onLowMemory` is not forwarded, as in Flutter.
 - **Launch.** GPUI starts on the first surface, after `onStart` and usually `onResume`; right after launch the shell
   replays `launch_phases()` (`Foreground`, then `Active` if resumed and focused), as iOS reports them after its scene
   connects.
