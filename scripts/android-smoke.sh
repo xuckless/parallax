@@ -26,10 +26,15 @@ out=$repo/target/android-smoke
 log=$out/logcat.txt
 mkdir -p "$out"
 rm -f "$out/failure.png"
-logcat_pid=
-trap '[[ -n $logcat_pid ]] && kill "$logcat_pid" 2>/dev/null' EXIT
 
 on_device() { "$adb" -s "$serial" shell "$@"; }
+
+# Logcat is polled, never streamed: a streaming `adb logcat` stalled for good on a CI runner. A mark is the time of
+# the newest line ("MM-DD hh:mm:ss.mmm"); log_since prints only lines logged after it.
+log_mark() { on_device logcat -d -t 1 -v time | tail -n 1 | cut -c1-18; }
+log_since() {
+  on_device logcat -d -b main,system,crash -v time -T "\"$1\"" | awk -v mark="$1" 'substr($0, 1, 18) > mark'
+}
 
 # Taps the centre of the topmost horizontal band of the screen painted in colour $1 (RGB hex): the band is the rows
 # where at least a quarter of the sampled pixels match, so status bar icons and glyphs never count. A pixel matches
@@ -91,6 +96,7 @@ steps=(
 crashed="FATAL EXCEPTION|Fatal signal|ANR in $app|Process $app .* has died"
 
 fail() {
+  log_since "$start" >"$log" || true
   echo "android-smoke: FAIL: $*" >&2
   echo "android-smoke: last app and crash lines from logcat:" >&2
   grep -E "parallax|AndroidRuntime|DEBUG|ActivityManager|$app" "$log" | tail -n 60 >&2 || true
@@ -106,25 +112,22 @@ on_device settings put global hide_error_dialogs 1
 # rotation as user_rotation a moment later, which would undo a user_rotation written right after it.
 on_device settings put system accelerometer_rotation 0
 on_device settings put system user_rotation 0
-on_device logcat -b all -c
-: >"$log"  # exists before the first step reads it, however late logcat starts
-"$adb" -s "$serial" logcat -b main,system,crash -v time >"$log" &
-logcat_pid=$!
+start=$(log_mark)
 
 for row in "${steps[@]}"; do
   IFS='|' read -r name command pattern timeout <<<"$row"
   echo "android-smoke: $name"
-  from=$(($(wc -l <"$log") + 1))
+  since=$(log_mark)
   eval "$command" || fail "$name: command failed: $command"
   deadline=$((SECONDS + timeout))
-  # Not `tail | grep -q`: grep stops at the first match, tail dies of SIGPIPE, and pipefail calls that a miss.
-  until grep -Eq -- "$pattern" <(tail -n "+$from" "$log"); do
-    if grep -Eq -- "$crashed" <(tail -n "+$from" "$log"); then fail "$name: the app crashed or stopped responding"; fi
+  until log_since "$since" >"$log" && grep -Eq -- "$pattern" "$log"; do
+    if grep -Eq -- "$crashed" "$log"; then fail "$name: the app crashed or stopped responding"; fi
     ((SECONDS < deadline)) || fail "$name: no logcat line matching /$pattern/ within ${timeout}s"
     sleep 1
   done
 done
 
+log_since "$start" >"$log"
 grep -Eq -- "$crashed" "$log" && fail "the app crashed or stopped responding"
 [[ -n $(on_device pidof "$app") ]] || fail "the app is no longer running"
 echo "android-smoke: all ${#steps[@]} steps passed on $serial"
