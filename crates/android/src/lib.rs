@@ -105,6 +105,13 @@ pub enum Error {
     },
     #[error("no system font: the font list names no font file that is on disk")]
     NoSystemFont,
+    /// Kept so 0.1.x stays semver-compatible; removed when the enum turns `#[non_exhaustive]` on the next breaking line.
+    #[deprecated(
+        since = "0.1.3",
+        note = "never constructed: fonts no longer go through add_fonts (patch 0002)"
+    )]
+    #[error("cannot add the system fonts: {0}")]
+    AddFonts(String),
     #[error("no readable font list (tried {0:?})")]
     NoFontList(&'static [&'static str]),
     #[error(
