@@ -41,8 +41,6 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported
   [`MotionEventTracker`](../crates/android/java/io/github/xuckless/parallax/MotionEventTracker.java) is unused.
-- **Java tests.** Flutter's `AndroidTouchProcessorTest` needs Robolectric (a later Phase 1 task). It mocks the
-  renderer; here the seam is the static native, which a Robolectric shadow of `ParallaxSurfaceView` can capture.
 
 ## Changing it
 
@@ -52,4 +50,5 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 - **Route a change elsewhere** (e.g. hover → mouse move): change its row in `TOUCH_PHASES` and add a decoder row.
 - **Check on the emulator:** `adb shell input tap` and `adb shell input swipe`; `Shell::touch` logs each
   `TouchEvent` with `log::debug!`, below the `Info` level `on_load` sets, so raise that locally to see them.
-- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests`).
+- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests`) and
+  `scripts/java-test.sh` (Flutter's `AndroidTouchProcessorTest` on Robolectric, [android-tests.md](android-tests.md)).
