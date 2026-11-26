@@ -72,8 +72,8 @@ To extend it, at a sync that vendors a new `gpui-pre-*` crate: read its `zed-cra
 
 crates.io packages can't carry `patches/`, so every published crate builds on stock `gpui-pre`
 ([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 11). A crate whose code needs a patch carries a local
-copy until Zed merges it.
-One row per patch a published crate works around; delete the copy with the patch.
+copy until Zed merges it. CI's `cargo package` step proves the packages build without `[patch]`
+([ci.md](ci.md#published-crates-build-on-stock-upstream)). One row per patch a published crate works around; delete the copy with the patch.
 
 | Patch | Published crate | Local copy |
 |---|---|---|
