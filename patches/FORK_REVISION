@@ -2,5 +2,5 @@
 # content: sha256 of upstream/UPSTREAM + patches/*.patch that revision is built from; fork-crates.sh fails if it
 # drifts. Change both only with scripts/fork-version.sh (bump / reset), which also repins Cargo.toml.
 # See docs/gpui-fork-crates.md.
-revision = 5
-content = 8641fde290dc4dc5f8236eb5cd25dfb5c27d3c503866028984d897f8982fad51
+revision = 6
+content = 08bffb4b20d87eea13ec2545a1151e7a9dd114fbfb755a249282a4d8fdb3fef2

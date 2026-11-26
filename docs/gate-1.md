@@ -14,7 +14,7 @@ and 35, with Gboard. Last run: 2026-11-26 on `wave-10` (10e6361). **Not passed**
 | 3. English composing region | pass, underlined | pass, underlined | Gboard opens none (Messages alike) |
 | 3. Japanese romaji → kana → kanji → commit | pass | pass | pass |
 | 3. Korean jamo → syllables | pass | pass | pass |
-| 3. Composing left on focus change | **fail** | **fail** | not reproduced (1 try) |
+| 3. Composing left on focus change | pass (fixed, `wave-10-fix-composing`; Korean) | pass (fixed; Korean, Japanese kana; logcat, Vulkan garbled) | not reproduced (1 try) |
 | 4. Tap moves caret; Gboard space-swipe | pass | pass | pass |
 | 4. Gboard arrows, home/end, copy/paste | not run | not run | pass |
 | 4. Gboard select mode (shift + arrows) | **fail** | **fail** | **fail** |
@@ -36,9 +36,12 @@ crash or ANR in logcat.
 
 1. ~~**API 33 Vulkan.**~~ Fixed: emulators try GL first ([backend.rs](../crates/android/src/backend.rs)); cold start
    and relaunch draw on API 33.
-2. **Composing kept after focus moves.** Compose (Korean ㅏ), tap Email: the prose field keeps its underline; on
-   refocus the IME gets that range back and the next jamo replaces it (typed text lost). No `finishComposingText`
-   reaches GPUI before the new client; see the sync protocol in [android-text-input.md](android-text-input.md).
+2. ~~**Composing kept after focus moves.**~~ Fixed: compose (Korean ㅏ), tap Email: the prose field kept its
+   underline; on refocus the IME got that range back and the next jamo replaced it. GPUI draws a tap's focus change
+   inside the tap, after the left field's handler is gone, so no platform call could end it. Now GPUI ends it
+   ([patch 0010](core-patches.md)) and a new client never gets a composing range (`Pending::commit`,
+   [android-text-input.md](android-text-input.md)). Rechecked on API 28 (Korean, no app code) and 33 (Korean,
+   Japanese kana).
 3. ~~**API 28 rotation.**~~ Fixed: a resize makes a new surface ([android-surface.md](android-surface.md#resize));
    wgpu's GL kept the EGL surface, whose next buffer had the old size, and API 28 drops such a buffer.
 4. ~~**Dimmed colours.**~~ Fixed: Android's default focus highlight is off (above).

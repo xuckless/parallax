@@ -372,6 +372,17 @@ impl Pending {
         }
     }
 
+    /// The call that commits GPUI's composition (`state`'s composing range) before the calls carry the state. A new
+    /// client is a new IME session and starts with no composing range, as Flutter's `EditableText` clears it on blur:
+    /// the IME's next keystroke would replace a range it never composed (a field left mid-composition keeps its
+    /// marked text unless it commits it on blur). The same client keeps the IME's own composition.
+    pub(crate) fn commit(&self, state: &EditingState) -> Option<Edit> {
+        match (self.client, &state.composing) {
+            (Client::Set, Some(_)) => Some(Edit::Unmark),
+            (Client::Set, None) | (Client::Keep { .. } | Client::Clear, _) => None,
+        }
+    }
+
     /// Whether an IME edit now is for the client Java has: not while a new client or none is on its way (the edit
     /// belongs to the field GPUI left).
     fn takes_java_edit(&self) -> bool {
@@ -1638,6 +1649,61 @@ mod tests {
             assert_eq!(session.mirror, want_mirror, "{name}: mirror");
             assert_eq!(session.origin, Origin::Gpui, "{name}: origin");
             assert_eq!(session.pending, want_pending, "{name}: pending");
+        }
+    }
+
+    #[test]
+    fn pending_commits() {
+        // (name, notices, GPUI's state) → the call that commits its composition before the state goes to Java.
+        // A field focused again after it was left mid-composition (blur, or a switch to another field) is a new
+        // client with marked text.
+        let composing = state("가ㅏ", (2, 2), (1, 2));
+        let plain = state("가", (1, 1), (-1, -1));
+        type Row = (&'static str, &'static [Notice], EditingState, Option<Edit>);
+        let rows: [Row; 7] = [
+            (
+                "field focused again, composing: commit",
+                &[Notice::Focused],
+                composing.clone(),
+                Some(Edit::Unmark),
+            ),
+            (
+                "another field focused, composing: commit",
+                &[Notice::Blurred, Notice::Focused],
+                composing.clone(),
+                Some(Edit::Unmark),
+            ),
+            (
+                "new configuration restarts the IME, composing: commit",
+                &[Notice::Configured],
+                composing.clone(),
+                Some(Edit::Unmark),
+            ),
+            (
+                "new client, no composing: nothing",
+                &[Notice::Focused],
+                plain,
+                None,
+            ),
+            (
+                "same client, the IME's composition: kept",
+                &[Notice::Changed],
+                composing.clone(),
+                None,
+            ),
+            ("nothing pending: kept", &[], composing.clone(), None),
+            (
+                "blurred, no client: nothing",
+                &[Notice::Blurred],
+                composing,
+                None,
+            ),
+        ];
+        for (name, notices, gpui, want) in rows {
+            let pending = notices
+                .iter()
+                .fold(EMPTY, |pending, &notice| pending.next(notice));
+            assert_eq!(pending.commit(&gpui), want, "{name}");
         }
     }
 
