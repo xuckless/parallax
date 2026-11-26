@@ -17,6 +17,7 @@ die() { echo "fork-crates: $*" >&2; exit 1; }
 # The one naming rule: gpui-pre → parallax-gpui, gpui-pre-<x> → parallax-gpui-<x>.
 fork_name() { echo "parallax-gpui${1#gpui-pre}"; }
 
+fork_check
 upstream_version="$(fork_upstream_version)"
 version="$(fork_version)"
 zed_rev="$(sed -n 's/^Zed commit: *\([0-9a-f]\{40\}\).*/\1/p' upstream/UPSTREAM)"

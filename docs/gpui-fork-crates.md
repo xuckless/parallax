@@ -24,6 +24,8 @@ metadata (`+parallax.1`) can't be used, crates.io rejects versions that differ o
 - **New upstream version:** [`sync-upstream.sh`](../scripts/sync-upstream.sh) runs `fork-version.sh reset` (revision 1).
 - **Patches changed between syncs:** `scripts/fork-version.sh bump` raises the revision and rewrites the three
   `parallax-gpui*` pins in [`Cargo.toml`](../Cargo.toml). `fork-crates.sh` refuses to run while pins and revision disagree.
+- **Content drift:** `FORK_REVISION` also records a sha256 of `upstream/UPSTREAM` + the sorted patches. Change either
+  without a bump and `fork-crates.sh` fails, so a published version never gets new content. `bump` records the hash.
 - **A patch upstream fixed:** delete it at the next sync ([upstream.md](upstream.md#when-a-patch-stops-applying)).
 
 ## Generate

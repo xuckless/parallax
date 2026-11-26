@@ -99,9 +99,12 @@ rm -rf upstream
 mv "$scratch/upstream" upstream
 echo "replaced upstream/"
 
-# A new upstream version starts the fork's patch revision over; re-vendoring the same version keeps it.
+# A new upstream version starts the fork's patch revision over; re-vendoring the same version keeps it unless the
+# content (UPSTREAM, patches) changed, which needs a new revision.
 if [[ "$old_version" != "$version" ]]; then
     fork_set_revision 1
+elif [[ $(fork_recorded_hash) != "$(fork_content_hash)" ]]; then
+    fork_set_revision $(( $(fork_revision) + 1 ))
 else
     fork_set_revision "$(fork_revision)"
 fi
