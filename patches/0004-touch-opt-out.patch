@@ -442,22 +442,22 @@ index 7863032..ff33d63 100644
  /// A mouse down event from the platform
  #[derive(Clone, Debug, Default)]
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index c192b6f..428349e 100644
+index 51bea70..90112b8 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -28,7 +28,7 @@ use crate::{
+@@ -30,7 +30,7 @@ use crate::{
+ use crate::gestures::{
+     BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
  };
- 
- use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
 -use crate::interactive::{PointerDevice, PointerSource, TouchEvent};
 +use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
  use derive_more::{Deref, DerefMut};
 @@ -1307,6 +1307,8 @@ pub struct Window {
+     touch_prediction_enabled: bool,
+     /// `Some` only while a pointer event is being dispatched.
      pointer_source: Option<PointerSource>,
-     /// The device of the latest touch, for the events recognized from it.
-     touch_device: PointerDevice,
 +    /// Where each touch in progress goes, decided when it started.
 +    touch_routes: FxHashMap<TouchId, TouchRoute>,
      long_press_timer: Option<Task<()>>,
@@ -482,17 +482,17 @@ index c192b6f..428349e 100644
 +}
 +
  /// The pointer behind each platform input: one arm per variant, so a new
- /// variant must pick its row. Keys carry no pointer.
- fn pointer_source(event: &PlatformInput, touch_device: PointerDevice) -> Option<PointerSource> {
-@@ -2527,6 +2543,7 @@ impl Window {
+ /// variant must pick its row. Keys, and a back gesture driven by a key,
+ /// carry no pointer. Gestures the core recognizes from touches are not
+@@ -2531,6 +2547,7 @@ impl Window {
+             ),
              touch_prediction_enabled: true,
              pointer_source: None,
-             touch_device: PointerDevice::Touch,
 +            touch_routes: FxHashMap::default(),
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
-@@ -3830,6 +3847,38 @@ impl Window {
+@@ -3834,6 +3851,38 @@ impl Window {
          self.captured_hitbox
      }
  
@@ -531,7 +531,7 @@ index c192b6f..428349e 100644
      /// Captures the current long press for the given entity.
      ///
      /// The capture is released when the gesture ends or is cancelled, or when
-@@ -6382,6 +6431,30 @@ impl Window {
+@@ -6380,6 +6429,30 @@ impl Window {
      /// dispatches whatever it resolves (scroll steps, synthesized taps)
      /// through the ordinary mouse-event path.
      fn dispatch_touch_event(&mut self, event: &TouchEvent, cx: &mut App) {
@@ -562,7 +562,7 @@ index c192b6f..428349e 100644
          let mut event = event.clone();
          if !self.touch_prediction_enabled {
              event.predicted_position = None;
-@@ -6407,20 +6480,26 @@ impl Window {
+@@ -6406,20 +6479,26 @@ impl Window {
          } else if self.touch_gestures.pending_long_press().is_none() {
              self.long_press_timer.take();
          }
@@ -597,4 +597,4 @@ index c192b6f..428349e 100644
 -        }
      }
  
-     fn dispatch_recognized_touch_gesture(&mut self, gesture: RecognizedTouchGesture, cx: &mut App) {
+     /// `device` is that of the touch the gesture was recognized from, so a pen
