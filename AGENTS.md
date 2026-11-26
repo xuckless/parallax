@@ -89,6 +89,8 @@ crates/
   ext/         parallax-ext: extension traits on GPUI elements
   cli/         cargo-parallax: build/run on iOS, Android, web
 examples/      one app, built for every target
+docs/          how the code works: one lean file per topic, indexed in docs/README.md
+scripts/       upstream, patch and Flutter tooling (see docs/)
 third_party/
   flutter/     Flutter's LICENSE and PORTED.md (ledger of every ported file + pinned commit)
 ```
@@ -148,6 +150,17 @@ Hard rules:
 - No throwaway tests. Every test stays in the suite and checks a requirement.
 - Platform code is verified by running `examples/` on a simulator, emulator or browser. Before a release, on real devices.
 - Never write a test that locks in a bug. Fix the code.
+
+## Docs
+
+`docs/` explains how Parallax's code works. `AGENTS.md` holds the rules, `ROADMAP.md` the plan; docs link to them, never repeat them.
+
+- **One topic per file, lean.** Aim under 80 lines. Split a file before it grows past that.
+- **Hyperlink everything.** Link the code it describes (`[apply-patches.sh](../scripts/apply-patches.sh)`), the other
+  docs it relies on, and upstream sources. Every doc is listed in [`docs/README.md`](docs/README.md).
+- **Say why and how to use it.** What a script or table does, how to run or extend it, what it must never do.
+  Don't narrate the code line by line.
+- **Docs change with the code.** A change that alters behaviour, a script, a table or a command updates its doc in the same commit.
 
 ## Workflow
 
