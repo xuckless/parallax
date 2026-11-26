@@ -53,5 +53,14 @@ scripts/publish-fork.sh --published                             # 0 all on crate
   then retries. crates.io lets few **new** crate names through at once, then about one per 10 minutes: the first
   publish of all 22 names takes about 3 hours. Later versions of existing names go fast.
 
-Then bump Parallax: CI packages the Parallax crates once their pinned fork version is on crates.io
-([ci.md](ci.md#published-crates)), and the next Parallax release ships on it.
+## CI
+
+[ci.yml](../.github/workflows/ci.yml) ([ci.md](ci.md)) checks both halves:
+
+- **Fork crates package:** `publish-fork.sh --dry-run` on Linux. Every job also builds the Parallax workspace on the
+  same crates through the `[patch.crates-io]` rows.
+- **Parallax crates package:** `cargo package` builds each tarball without the workspace `[patch]`, so it resolves
+  `parallax-gpui*` from crates.io. It runs when `--published` exits 0; exit 1 (not yet) warns on pull requests and
+  fails on `main` and `v*` tags; exit 2 (error) always fails. The list is `PUBLISHED_LIBS` in `ci.yml`.
+
+So publish the fork crates first, then land the pin bump or Parallax release that needs them.

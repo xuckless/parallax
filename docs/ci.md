@@ -37,16 +37,9 @@ A target that cannot build a crate gets an explicit `--exclude` with a comment i
 
 ## Published crates
 
-Two checks, because Parallax crates depend on our [fork crates](gpui-fork-crates.md) (AGENTS.md patch rule 11):
-
-- **Fork crates package.** `scripts/publish-fork.sh --dry-run` (Linux) runs `cargo package --workspace` on
-  `build/parallax-gpui/`: each fork crate is built from its tarball against its just-packaged siblings.
-  Every job also builds the whole Parallax workspace on those same crates, through the `[patch.crates-io]` rows.
-- **Parallax crates package.** `cargo package` builds each tarball without the workspace `[patch]`, so it resolves
-  `parallax-gpui*` from crates.io. It runs only when `scripts/publish-fork.sh --published` finds the pinned version
-  there (exit 1 = not yet: a warning on PRs, a failure on main and `v*` tags; exit 2 = error, fails). So publish the fork crates first ([gpui-fork-crates.md](gpui-fork-crates.md#publishing)),
-  then land the pin bump or release on them. List: `PUBLISHED_LIBS` in `ci.yml`, packaged per row's `package_target`;
-  `cargo-parallax` (no GPUI) is packaged on Linux every run.
+Linux runs `scripts/publish-fork.sh --dry-run` (the fork crates package), and rows with a `package_target` package
+`PUBLISHED_LIBS` once their fork version is on crates.io; `cargo-parallax` is packaged on Linux every run. What
+each check proves and the publish-first order: [gpui-fork-crates.md](gpui-fork-crates.md#ci).
 
 ## Run the same checks locally
 
