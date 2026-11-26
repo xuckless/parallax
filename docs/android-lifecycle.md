@@ -1,6 +1,7 @@
 # Android lifecycle
 
-How Activity callbacks reach GPUI's existing lifecycle hooks in [`parallax-android`](../crates/android/src/lib.rs). The backend around it: [android.md](android.md). Rules: [AGENTS.md](../AGENTS.md)
+How Activity callbacks reach GPUI's existing lifecycle hooks in [`parallax-android`](../crates/android/src/lib.rs), and
+how the renderer survives GPU device loss. The backend around it: [android.md](android.md). Rules: [AGENTS.md](../AGENTS.md)
 (Explicit state, Tests). Why upstream already has these hooks: [gap audit](audits/gap-audit.md) (Lifecycle API).
 
 ## The path
@@ -44,3 +45,18 @@ How Activity callbacks reach GPUI's existing lifecycle hooks in [`parallax-andro
 
 To add a callback: an `EVENT_*` constant in `ParallaxActivity`, a row in `ActivityEvent::from_java`, the variant, and
 the arms the compiler then asks for in `Lifecycle::next`, each with a test row.
+
+## Device loss
+
+Each vsync, `Shell::frame` asks the renderer whether its device is lost; the surface state machine
+([surface.rs](../crates/android/src/surface.rs)) turns that into `RecoverDevice`, and
+[`renderer::recover`](../crates/android/src/renderer.rs) rebuilds it:
+
+1. `WgpuRenderer::destroy` drops the surface and the renderer's hold on the lost device.
+2. `seed` replaces the lost shared `GpuContext` with one from the first backend in `BACKENDS` that can drive the
+   surface: the same table, in the same order, as at startup.
+3. Upstream's `WgpuRenderer::recover` finds a live context, so it adopts ours instead of picking a backend itself, and
+   refills the same atlas GPUI holds.
+
+On failure the renderer still reports its device lost and the next frame tries again. No patch is needed: stock
+`gpui-pre` exposes `destroy`, `recover` and `WgpuContext::device_lost` (AGENTS.md, patch rule 11).

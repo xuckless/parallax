@@ -489,7 +489,7 @@ impl Shell {
             Action::RecoverDevice => {
                 if let (Some(renderer), Some(window)) =
                     (self.renderer.borrow_mut().as_mut(), self.ready_window())
-                    && let Err(error) = renderer.recover(&window)
+                    && let Err(error) = renderer::recover(&self.gpu, renderer, &window, size)
                 {
                     // The next frame sees the device still lost and tries again.
                     log::error!("parallax: GPU device recovery failed: {error:#}");
