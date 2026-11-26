@@ -2,7 +2,8 @@
 
 Every core patch ships table-driven tests inside GPUI's own sources ([core-patches.md](core-patches.md#tests),
 0006's in `window.rs`). They run as part of GPUI's lib tests on the patched fork crate `parallax-gpui`, which
-`cargo test --workspace` never builds: Parallax's workspace only depends on it.
+`cargo test --workspace` never builds: Parallax's workspace only depends on it. They run on the host, so the iOS
+and web parts of a patch are only compile-checked, by those targets' builds in [ci.yml](../.github/workflows/ci.yml).
 
 ## Run them
 
@@ -11,6 +12,8 @@ scripts/apply-patches.sh
 scripts/patch-test.sh                  # all of parallax-gpui's lib tests
 scripts/patch-test.sh pointer_source   # libtest filters and flags pass through
 ```
+
+It needs GNU sed (`sed -i`; on macOS, `gsed` as `sed`).
 
 [`patch-test.sh`](../scripts/patch-test.sh) copies [`build/parallax-gpui/`](gpui-fork-crates.md#generate) to
 `build/patch-tests/` (generated, git-ignored, rebuilt every run) and runs
@@ -21,13 +24,15 @@ plus two test-only changes the crate needs because it can't run its own tests as
 | Shipped crate lacks | The scratch copy gets |
 |---|---|
 | `assets/fonts/…` that `svg_renderer.rs` tests `include_bytes!` from Zed's repo | the first two `.ttf` files under `/usr/share/fonts`, as stand-ins (Ubuntu: `fonts-dejavu-core`) |
-| `util_macros` (Zed's `#[perf]` test attribute in `style.rs`) | the `#[perf]` lines and their `use` dropped |
+| `util_macros` (Zed's `#[perf]` test attribute in `style.rs`) | `#[test]` in place of `#[perf]`, its `use` dropped; the script fails if neither is there any more |
 
 ## Skipped tests
 
 The `skips` array in the script lists tests by full name, each with its reason: today the three `svg_renderer`
 tests that look IBM Plex Sans and Lilex up by family name, which the stand-ins don't have. Every other test must
 pass. Add a row only for a test this setup can't run, never for one a patch broke; fix the patch instead.
+libtest's `--skip` matches substrings, so the script lists the tests first (`--list`) and fails unless each row
+names exactly one test; your own filters still pass straight to libtest.
 
 ## CI
 
