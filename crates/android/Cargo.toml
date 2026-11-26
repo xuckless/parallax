@@ -21,8 +21,9 @@ workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"
 anyhow = "1"
-# Only to read family names from the few font files the fallback table names (src/text_system.rs).
-fontdb = { version = "0.23", default-features = false, features = ["std"] }
+# The FontSystem (and its fontdb) handed to gpui_wgpu's CosmicTextSystem::new_with_font_system (src/text_system.rs).
+# Same version as gpui_wgpu's; it picks the features.
+cosmic-text = { version = "0.19", default-features = false }
 futures = "0.3"
 gpui.workspace = true
 gpui_wgpu.workspace = true
@@ -34,14 +35,11 @@ memmap2 = "0.9"
 ndk-sys = "0.6"
 raw-window-handle = "0.6"
 roxmltree = "0.21"
-# For src/queue.rs, the local copy of upstream's priority queue; features as upstream gpui needs for it.
-rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
 uuid = "1"
 
 # The pure modules (surface state machine, pointer packet decoder, fonts.xml parser) are tested on the host.
 [dev-dependencies]
 gpui.workspace = true
-rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 roxmltree = "0.21"
 thiserror.workspace = true

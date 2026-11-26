@@ -31,4 +31,4 @@ rebuilds it:
    refills the same atlas GPUI holds.
 
 `Recovered` returns to `Ready` and resizes to the current surface; `RecoveryFailed` restarts the wait. No patch is needed: stock
-`gpui-pre` exposes `destroy`, `recover` and `WgpuContext::device_lost` (AGENTS.md, patch rule 11).
+`gpui-pre` exposes `destroy`, `recover` and `WgpuContext::device_lost`.

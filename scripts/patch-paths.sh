@@ -12,6 +12,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 crates="
 gpui-pre                    crates/gpui
 gpui-pre-apple              crates/gpui_apple
+gpui-pre-bench-metrics      crates/bench_metrics
 gpui-pre-collections        crates/collections
 gpui-pre-derive-refineable  crates/refineable/derive_refineable
 gpui-pre-http-client        crates/http_client
@@ -28,6 +29,7 @@ gpui-pre-util               crates/gpui_util
 gpui-pre-web                crates/gpui_web
 gpui-pre-wgpu               crates/gpui_wgpu
 gpui-pre-windows            crates/gpui_windows
+gpui-pre-zlog               crates/zlog
 gpui-pre-ztracing           crates/ztracing
 gpui-pre-ztracing-macro     crates/ztracing_macro
 "

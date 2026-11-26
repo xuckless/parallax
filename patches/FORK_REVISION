@@ -1,0 +1,6 @@
+# Patch revision of the parallax-gpui* fork crates: published as <gpui-pre version>-parallax.<revision>.
+# content: sha256 of upstream/UPSTREAM + patches/*.patch that revision is built from; fork-crates.sh fails if it
+# drifts. Change both only with scripts/fork-version.sh (bump / reset), which also repins Cargo.toml.
+# See docs/gpui-fork-crates.md.
+revision = 2
+content = 166d38a7df3b94566a25d961c1a59fa973e04f4e1558395f0356940b0fbc9f99

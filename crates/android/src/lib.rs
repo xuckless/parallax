@@ -19,16 +19,6 @@ mod platform;
 mod pointer;
 #[cfg(target_os = "android")]
 mod renderer;
-// Local copy of upstream's queue until patch 0001 lands upstream (AGENTS.md, patch rule 11).
-#[cfg(any(target_os = "android", test))]
-#[cfg_attr(
-    not(target_os = "android"),
-    allow(
-        dead_code,
-        reason = "host tests build the queue without its dispatcher"
-    )
-)]
-mod queue;
 #[cfg(any(target_os = "android", test))]
 mod surface;
 #[cfg(target_os = "android")]
@@ -115,6 +105,11 @@ pub enum Error {
     },
     #[error("no system font: the font list names no font file that is on disk")]
     NoSystemFont,
+    /// Kept so 0.1.x stays semver-compatible; removed when the enum turns `#[non_exhaustive]` on the next breaking line.
+    #[deprecated(
+        since = "0.1.3",
+        note = "never constructed: fonts no longer go through add_fonts (patch 0002)"
+    )]
     #[error("cannot add the system fonts: {0}")]
     AddFonts(String),
     #[error("no readable font list (tried {0:?})")]

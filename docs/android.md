@@ -15,9 +15,8 @@ Background: [android-spike.md](android-spike.md).
 - **Main thread only.** All JNI calls, GPUI and the renderer run on the Android main thread. They find their state in
   one thread-local, `MainThreadHost` in `host.rs` (why: static JNI methods carry no user pointer).
 - **Looper dispatcher.** [dispatcher.rs](../crates/android/src/dispatcher.rs): main-thread runnables go into GPUI's
-  priority queue, a local copy in [queue.rs](../crates/android/src/queue.rs) until
-  [patch 0001](../patches/0001-export-priority-queue-android.patch) lands upstream ([patches.md](patches.md#published-crates)); an eventfd
-  registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
+  priority queue (`PriorityQueueSender`/`Receiver`, exported on Android by
+  [patch 0001](../patches/0001-export-priority-queue-android.patch)); an eventfd registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
 - **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty.
 - **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
   one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
@@ -53,6 +52,9 @@ parallax::android_main!(launch);
 nothing elsewhere. `launch` runs when the first surface exists, because GPUI needs one to open its window.
 Apps that pick a platform themselves call `parallax_platform::current_platform`, which routes Android to
 `parallax_android::current_platform` ([platform.md](platform.md)).
+
+`Error` is public and exhaustive on 0.1.x, so variants are only added or deprecated (`AddFonts`, unused since
+patch 0002); it becomes `#[non_exhaustive]`, and deprecated variants go, on the next breaking line.
 
 ## Stubs (not yet on Android)
 
