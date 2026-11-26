@@ -7,7 +7,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 ## [Unreleased] (0.1.4)
 
 Wave 10: Android mouse, autofill and locale; touch labels; Gate 1 fixes. Built on `gpui-pre` 0.3.14 plus Parallax's
-patches (fork `0.3.14-parallax.6`). Checked by unit, JVM and patch tests and an API 35 emulator smoke test in CI; Gate 1
+patches (fork `0.3.14-parallax.7`). Checked by unit, JVM and patch tests and an API 35 emulator smoke test in CI; Gate 1
 run on API 28, 33 and 35 emulators; no real-device testing yet.
 
 ### Added
@@ -49,7 +49,8 @@ run on API 28, 33 and 35 emulators; no real-device testing yet.
   next input); a resize now makes a new surface.
 - `parallax-android`: colours are no longer dimmed: Android's default focus highlight greyed the whole view.
 - A field's composition (an underlined IME range) ends when focus leaves it (patch 0010), so the next IME session
-  doesn't get a stale range back and replace typed text.
+  doesn't get a stale range back and replace typed text. The native IME is told too, on macOS and the web, so moving
+  focus from code mid-composition no longer types the composed text a second time.
 
 ### Known limits
 

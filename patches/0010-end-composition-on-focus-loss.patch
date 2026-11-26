@@ -3,8 +3,14 @@ End a text field's IME composition when focus leaves it.
 What: at the start of `Window::draw`, the previous frame's input handler is taken a few lines earlier than before;
 if focus has left its field (`focus_id` differs from `Window::focus`: blur, or another element focused), the field's
 composition is ended (`PlatformInputHandler::end_composition_during_update`: `unmark_text` when
-`marked_text_range` is `Some`) before the draw drops the handler. Its marked text stays as plain text. Adds an input
-test with one row per focus move (another element, blur, a tap on another element, nothing marked, the same element).
+`marked_text_range` is `Some`) before the draw drops the handler. Its marked text stays as plain text. When it unmarked something, the draw then
+calls the new `PlatformWindow::end_composition` (no-op by default), so the native IME ends its side too: macOS
+`discardMarkedText` on the view's input context; web blur-and-refocus of the hidden IME mirror while the browser is
+composing (a blur commits the composition), then a mirror sync. iOS and Android keep the no-op: their sessions
+already restart when the field changes or blurs (iOS `invalidate_session` and `textWillChange`/`textDidChange`,
+Android `setClient`). Adds an input test with one row per focus move (another element, blur, a tap on another
+element, nothing marked, the same element), checking the field's marked text, its `unmark_text` calls and the
+platform's `end_composition` calls.
 
 Why: a field left mid-composition kept its marked text: it stayed underlined, and when focus came back the platform
 handed that range to a new IME session, whose next keystroke replaced it (Android, Gboard Korean: ㅏ then ㅁ gave ㅁ).
@@ -13,12 +19,64 @@ is gone, and a tap's focus change is drawn inside the touch dispatch (`draw_befo
 call runs between the two. Core already ends a composition when focus moves to a native view
 (`end_composition_before_focusing_native_view`, deferred until the update ends); a deferred call would reach the new
 field's handler after a tap's inline draw, so this runs in the draw, where no entity is being updated. Flutter's
-`EditableText` does the same on blur (`clearComposing`). Not platform-specific, so no cfg.
+`EditableText` does the same on blur (`clearComposing`). Unmarking alone left macOS and web composing: macOS's input
+method still held the composition and its next keystroke inserted it again at the caret ("かな" then x gave
+"かなかなx"), and gpui_web's mirror sync stays off while the browser composes, so the next `compositionupdate` went
+to the newly focused field. The core change is not platform-specific, so no cfg; each platform's part sits in its
+own crate.
 
 Upstream PR: not filed yet.
 
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 2601fc5..eab175b 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -1770,6 +1770,20 @@ impl PlatformWindow for MacWindow {
+         self.0.as_ref().lock().input_handler.take()
+     }
+ 
++    fn end_composition(&self) {
++        // GPUI already unmarked the field; without this the input method still holds its
++        // composition and inserts it again at the caret with the next keystroke. The lock is
++        // released first: the input context may call back into the view, which locks it.
++        let native_view = self.0.lock().native_view.as_ptr();
++        // SAFETY: `native_view` is this window's live GPUI view, which outlives `self`.
++        unsafe {
++            let input_context: *mut AnyObject = msg_send![native_view, inputContext];
++            if !input_context.is_null() {
++                let _: () = msg_send![input_context, discardMarkedText];
++            }
++        }
++    }
++
+     fn prompt(
+         &self,
+         level: PromptLevel,
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index a5a46ea..1a8a3bd 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -864,6 +864,18 @@ impl PlatformWindow for WebWindow {
+         }
+     }
+ 
++    fn end_composition(&self) {
++        // `sync` skips the mirror while the browser composes, so without this its composition
++        // would carry on into the next field. Browsers commit a composition when its element
++        // blurs: the commit's `compositionend` finds no input handler during this draw, or the
++        // next field's without marked text, so it inserts nothing.
++        if !self.inner.is_composing.replace(false) || !self.inner.ime_mirror.is_focused() {
++            return;
++        }
++        self.inner.focus_ime_mirror();
++        ImeMirror::schedule_sync(&self.inner);
++    }
++
+     fn prompt(
+         &self,
+         _level: PromptLevel,
 diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
-index 268f604..eb87ec2 100644
+index 268f604..734dce0 100644
 --- a/gpui-pre/src/input.rs
 +++ b/gpui-pre/src/input.rs
 @@ -322,9 +322,10 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
@@ -35,7 +93,7 @@ index 268f604..eb87ec2 100644
      };
  
      #[gpui::test]
-@@ -505,6 +506,228 @@ mod tests {
+@@ -505,6 +506,241 @@ mod tests {
          );
      }
  
@@ -54,12 +112,14 @@ index 268f604..eb87ec2 100644
 +
 +    #[gpui::test]
 +    fn focus_moves_end_the_left_fields_composition(cx: &mut TestAppContext) {
-+        // (name, marked text before, how focus moves) → marked text after, `unmark_text` calls.
++        // (name, marked text before, how focus moves) → marked text after, `unmark_text` calls,
++        // `PlatformWindow::end_composition` calls (once exactly when the field had marked text).
 +        type Row = (
 +            &'static str,
 +            Option<Range<usize>>,
 +            FocusMove,
 +            Option<Range<usize>>,
++            usize,
 +            usize,
 +        );
 +        let rows: [Row; 5] = [
@@ -69,12 +129,14 @@ index 268f604..eb87ec2 100644
 +                FocusMove::Other,
 +                None,
 +                1,
++                1,
 +            ),
 +            (
 +                "blur, marked: unmarked",
 +                Some(0..1),
 +                FocusMove::Blur,
 +                None,
++                1,
 +                1,
 +            ),
 +            (
@@ -83,12 +145,14 @@ index 268f604..eb87ec2 100644
 +                FocusMove::Tap,
 +                None,
 +                1,
++                1,
 +            ),
 +            (
 +                "another element, nothing marked: no call",
 +                None,
 +                FocusMove::Other,
 +                None,
++                0,
 +                0,
 +            ),
 +            (
@@ -97,9 +161,10 @@ index 268f604..eb87ec2 100644
 +                FocusMove::Same,
 +                Some(0..1),
 +                0,
++                0,
 +            ),
 +        ];
-+        for (name, marked, focus_move, want_marked, want_unmarks) in rows {
++        for (name, marked, focus_move, want_marked, want_unmarks, want_platform_ends) in rows {
 +            let window = cx.add_window(|_, cx| CompositionTestView {
 +                field: cx.focus_handle(),
 +                other: cx.focus_handle(),
@@ -107,6 +172,7 @@ index 268f604..eb87ec2 100644
 +                unmarks: 0,
 +            });
 +            let view = window.root(cx).unwrap();
++            let test_window = cx.test_window(window.into());
 +            let window = AnyWindowHandle::from(window);
 +            cx.update_window(window, |_, window, cx| {
 +                let field = view.read(cx).field.clone();
@@ -144,6 +210,11 @@ index 268f604..eb87ec2 100644
 +                view.read_with(cx, |view, _| (view.marked.clone(), view.unmarks));
 +            assert_eq!(marked, want_marked, "{name}: marked text");
 +            assert_eq!(unmarks, want_unmarks, "{name}: unmark_text calls");
++            assert_eq!(
++                test_window.composition_ends(),
++                want_platform_ends,
++                "{name}: end_composition calls"
++            );
 +        }
 +    }
 +
@@ -265,45 +336,109 @@ index 268f604..eb87ec2 100644
          focus_handle: FocusHandle,
          configuration: TextInputConfiguration,
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index d759314..f9d5ec5 100644
+index d759314..dbd0298 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -2257,6 +2257,13 @@ impl PlatformInputHandler {
+@@ -1319,6 +1319,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     /// element on web). Called only when the configuration changes, because
+     /// reconfiguring a live input session can restart the IME connection.
+     fn set_text_input_configuration(&mut self, _configuration: TextInputConfiguration) {}
++    /// GPUI ended the composition of a field that focus left: its marked text is plain text now.
++    /// End the native IME's composition too, without committing it, or its next keystroke
++    /// re-inserts that text. Called during a draw, with no input handler set, so IME callbacks
++    /// it triggers synchronously reach no field. No-op by default, for platforms whose IME
++    /// session already restarts when the focused field changes or blurs (iOS, Android).
++    fn end_composition(&self) {}
+     fn prompt(
+         &self,
+         level: PromptLevel,
+@@ -2257,6 +2263,19 @@ impl PlatformInputHandler {
          self.handler.unmark_text(window, cx);
      }
  
-+    /// Ends the composition, if the field has one, from inside an update.
-+    pub(crate) fn end_composition_during_update(&mut self, window: &mut Window, cx: &mut App) {
-+        if self.handler.marked_text_range(window, cx).is_some() {
++    /// Ends the composition, if the field has one, from inside an update. Returns whether it had one.
++    pub(crate) fn end_composition_during_update(
++        &mut self,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> bool {
++        let marked = self.handler.marked_text_range(window, cx).is_some();
++        if marked {
 +            self.handler.unmark_text(window, cx);
 +        }
++        marked
 +    }
 +
      pub fn dispatch_input(&mut self, input: &str, window: &mut Window, cx: &mut App) {
          self.handler.replace_text_in_range(None, input, window, cx);
      }
+diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
+index 32b2304..503d754 100644
+--- a/gpui-pre/src/platform/test/window.rs
++++ b/gpui-pre/src/platform/test/window.rs
+@@ -49,6 +49,7 @@ pub(crate) struct TestWindowState {
+     insets_callback: Option<Box<dyn FnMut(WindowInsets)>>,
+     virtual_keyboard_requests: usize,
+     virtual_keyboard_dismissals: usize,
++    composition_ends: usize,
+     moved_callback: Option<Box<dyn FnMut()>>,
+     display_changed_callback: Option<Box<dyn FnMut()>>,
+     appearance_change_callback: Option<Box<dyn FnMut()>>,
+@@ -125,6 +126,7 @@ impl TestWindow {
+             insets_callback: None,
+             virtual_keyboard_requests: 0,
+             virtual_keyboard_dismissals: 0,
++            composition_ends: 0,
+             moved_callback: None,
+             display_changed_callback: None,
+             appearance_change_callback: None,
+@@ -236,6 +238,11 @@ impl TestWindow {
+         self.0.lock().virtual_keyboard_dismissals
+     }
+ 
++    /// How many times GPUI ended a composition on the platform ([`PlatformWindow::end_composition`]).
++    pub fn composition_ends(&self) -> usize {
++        self.0.lock().composition_ends
++    }
++
+     /// Every [`TextInputConfiguration`] forwarded to this window, in order.
+     pub fn text_input_configurations(&self) -> Vec<TextInputConfiguration> {
+         self.0.lock().text_input_configurations.clone()
+@@ -467,6 +474,10 @@ impl PlatformWindow for TestWindow {
+         self.0.lock().text_input_state_changes.push(change);
+     }
+ 
++    fn end_composition(&self) {
++        self.0.lock().composition_ends += 1;
++    }
++
+     fn prompt(
+         &self,
+         _level: crate::PromptLevel,
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index ece537e..81a0e9a 100644
+index ece537e..55ee1eb 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3948,6 +3948,16 @@ impl Window {
+@@ -3948,6 +3948,18 @@ impl Window {
          if self.platform_window.prepare_frame() {
              self.refresh();
          }
 +        // A field that focus left (blur, another element) ends its IME composition before this
 +        // draw drops its input handler, so its marked text becomes plain text and no stale composing
-+        // range reaches the next input session. A tap's focus change is drawn inside the touch
-+        // dispatch, so this is the last point where the left field's handler is reachable.
++        // range reaches the next input session; the platform then ends its IME's side. A tap's
++        // focus change is drawn inside the touch dispatch, so this is the last point where the
++        // left field's handler is reachable.
 +        let mut input_handler = self.platform_window.take_input_handler();
 +        if let Some(handler) = &mut input_handler
 +            && handler.focus_id().is_some_and(|id| self.focus != Some(id))
++            && handler.end_composition_during_update(self, cx)
 +        {
-+            handler.end_composition_during_update(self, cx);
++            self.platform_window.end_composition();
 +        }
          self.invalidate_entities();
          cx.entities.clear_accessed();
          debug_assert!(self.rendered_entity_stack.is_empty());
-@@ -3958,7 +3968,7 @@ impl Window {
+@@ -3958,7 +3970,7 @@ impl Window {
          // Place it back into a None slot (left by a previous .take()) so that
          // cached paint_range indices in reuse_paint find the handler at the
          // expected position.
