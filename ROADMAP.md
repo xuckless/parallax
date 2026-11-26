@@ -180,6 +180,9 @@ small patch and is filed upstream.
 ## Phase 5: Tooling and docs
 
 - [ ] `cargo parallax run ios` (generates the Xcode project) and `cargo parallax run web`.
+- [ ] Store builds for app developers: `cargo parallax build android --release` signs with the app's own key and
+      outputs an App Bundle (`.aab`) for Google Play. Keystore path and key alias go in `parallax.toml`; passwords
+      come from environment variables or a prompt, never from the file. (Development builds stay debug-signed.)
 - [ ] Docs: getting started per target, the touch → mouse rule and its opt-out, the behaviour table, Flutter credits.
 - [ ] Example app polished for every target.
 
