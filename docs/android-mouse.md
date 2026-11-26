@@ -15,13 +15,16 @@ The packet path (Java processor → JNI → decoder) is shared with touch: [andr
 2. **Routing.** [pointer.rs](../crates/android/src/pointer.rs) reads each record's kind through `DEVICE_KINDS`, which
    names a `Route`: `Touch(device)` (finger, pen, unknown) or `Mouse` (mouse, trackpad). A signal with an action
    (`SIGNAL_KINDS`: scroll → wheel) wins over the route, so a wheel turn scrolls whatever tool reports it.
-3. **Mouse actions.** `MOUSE_ACTIONS` maps each change: down → `MouseDown`, move and hover → `MouseMove`, up →
-   `MouseUp`, cancel → `MouseExited` (GPUI has no mouse cancel, and an up would click), pan/zoom → `ScrollEvent` in
-   the matching `TouchPhase`, add and remove → nothing.
+3. **Mouse actions.** `CHANGES` gives each Flutter change its touch phase and its mouse action: down → press, move
+   and hover → move, up → release, cancel → `MouseExited` (GPUI has no mouse cancel, and an up would click), pan/zoom
+   → `ScrollEvent` in the matching `TouchPhase`, add and remove → nothing.
 4. **Buttons.** `BUTTONS` maps Flutter's bits (Android's `BUTTON_*` masked to five) to GPUI's: primary → `Left`,
-   secondary → `Right`, tertiary → `Middle`, back and forward → `Navigate`. A press's button is the bit that is new
-   since the last record (none new: `Left`); a release's is the bit that went. A move reports the first held bit.
-5. **Clicks.** `Pointers` keeps the last press. The next press of the same button within 300 ms (Android's double-tap
+   secondary → `Right`, tertiary → `Middle`, back and forward → `Navigate`. Android sends a down only for the first
+   button and an up only for the last, so the mouse keeps the held bits (`Held`) and diffs every press and move
+   against them: a `MouseUp` per bit that went, a `MouseDown` per new bit, so chords and out-of-order releases pair
+   up. A release lets go of everything held; a cancel drops it without ups. Wheel and pan records leave it alone. A
+   press reporting no button (some injected events) holds `Left` until the release. A move reports the first held bit.
+5. **Clicks.** The mouse keeps the last press (forgotten on a cancel). The next press of the same button within 300 ms (Android's double-tap
    timeout) and 5 logical pixels (gpui_web's radius; Android's double-tap slop is sized for fingers) counts one more
    click; packet time stamps (microseconds) are the clock, so it is testable. Down and up carry the count, so
    `on_click` gets `ClickEvent::Mouse` with `click_count` as on desktop (patch 0004: only taps are
@@ -36,15 +39,13 @@ The packet path (Java processor → JNI → decoder) is shared with touch: [andr
 
 - **Hover enter and exit.** Flutter's processor ignores `ACTION_HOVER_ENTER/EXIT`, so `is_hovered` stays false and no
   `MouseExited` is sent when the cursor leaves the view.
-- **A second button during a drag** (Android sends `ACTION_BUTTON_PRESS`, which the processor ignores) only changes the
-  held button of the moves; it sends no down or up of its own.
 - **Pointer icons** (`set_cursor_style`), pinch (Android reports no trackpad scale), and the right button as Back on
   devices whose firmware maps it.
 
 ## Changing it
 
-- Reroute a device kind: its `DEVICE_KINDS` row. Remap a change: its `MOUSE_ACTIONS` row. A new button: a `BUTTONS`
-  row. Each table has named test rows in `pointer::tests::mouse` and `devices`.
+- Reroute a device kind: its `DEVICE_KINDS` row. Remap a change: its `CHANGES` row. A new button: a `BUTTONS` row.
+  Each table has named test rows in `pointer::tests::mouse` and `touches`.
 - **Check on the emulator:** `adb shell input mouse tap X Y` (a click), `adb shell input mouse swipe X1 Y1 X2 Y2` (a
   drag), `adb shell input mouse scroll X Y --axis VSCROLL,-1` (a wheel notch down). `Shell::pointer` logs each event
   at debug level, below `on_load`'s info level.
