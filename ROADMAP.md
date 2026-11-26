@@ -32,7 +32,7 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 
 | Wave | Phase | Parallel work | Ships |
 |---|---|---|---|
-| 8 | 1 | Upstream: fork Zed, draft the BSD-licence question and the PR for patch 0001 (shown to the owner first) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
+| 8 | 1 | Upstream: fork Zed to `xuckless/zed` with a `parallax` branch carrying our patches (rule 14), draft the BSD-licence question and the PR for patch 0001 (shown to the owner first) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
 | 9 | 1 | Side-channel in `parallax-ext` (rule 12): input kind (keyboard type, secure, autofill), touch opt-out, pointer device query; the matching core patches drafted for Zed · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
 | 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
 | 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
@@ -47,8 +47,8 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 Known limits of this plan:
 
 - **Backend patches can't reach crates.io until Zed merges them** (rule 11). That covers desktop touch (Waves 13–14) and
-  iOS text-input fixes (Wave 15). Repo builds get them at once; published crates get them when Zed merges, or once the
-  iOS limit moves iOS text input into its own crate. Gates 3 and 4 are checked on repo builds.
+  iOS text-input fixes (Wave 15). Repo builds get them at once, and apps can opt in through our Zed fork's `parallax`
+  branch (rule 14); published crates get them when Zed merges, or once the iOS limit moves iOS text input into its own crate. Gates 3 and 4 are checked on repo builds.
 - **Hardware:** the owner has no real phones and possibly no touchscreen laptop. Gates are checked on emulators,
   simulators and synthetic touch injection until hardware is available.
 

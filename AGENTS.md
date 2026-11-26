@@ -122,6 +122,10 @@ third_party/
     wrapper over upstream's API.
 13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `docs/upstream-drafts/`
     and shown to the owner before they are opened.
+14. **Our Zed fork carries the patches until Zed replies.** `xuckless/zed` keeps a `parallax` branch: the snapshot
+    commit from `upstream/UPSTREAM` plus every patch (translated with `scripts/patch-paths.sh`), rebased at each sync.
+    Upstream PRs are cut from it. Apps that want unmerged backend patches (desktop touch, iOS fixes) can opt in with a
+    documented `[patch]` pointing at that branch; published crates still build on stock upstream (rule 11).
 
 ## Coding style: Caveman Code
 
