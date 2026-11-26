@@ -2,3 +2,4 @@
 
 pub use gpui;
 pub use gpui_platform;
+pub use parallax_platform;
