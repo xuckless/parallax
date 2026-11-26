@@ -372,10 +372,12 @@ impl Pending {
         }
     }
 
-    /// The call that commits GPUI's composition (`state`'s composing range) before the calls carry the state. A new
-    /// client is a new IME session and starts with no composing range, as Flutter's `EditableText` clears it on blur:
-    /// the IME's next keystroke would replace a range it never composed (a field left mid-composition keeps its
-    /// marked text unless it commits it on blur). The same client keeps the IME's own composition.
+    /// The call that commits GPUI's composition (`state`'s composing range) before the calls carry the state: a new
+    /// client is a new IME session, which must start with no composing range, or the IME's next keystroke replaces a
+    /// range it never composed. A backstop: patch 0010 already ends composition when focus leaves a field, so this
+    /// alone covers a new configuration on the same focused field while it composes (`Configured` sets a new client
+    /// without a focus change), and a field whose handler ignores `unmark_text`. The same client keeps the IME's own
+    /// composition.
     pub(crate) fn commit(&self, state: &EditingState) -> Option<Edit> {
         match (self.client, &state.composing) {
             (Client::Set, Some(_)) => Some(Edit::Unmark),
