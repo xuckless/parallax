@@ -22,7 +22,9 @@ use jni::{
 };
 
 use crate::{
-    Error, keys,
+    Error,
+    backend::Device,
+    keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     pointer,
     renderer::{self, NativeWindow},
@@ -657,6 +659,8 @@ pub(crate) struct Shell {
     pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
+    /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
+    device: Device,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
@@ -675,6 +679,7 @@ impl Shell {
             lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
+            device: renderer::device(),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
             pointers: RefCell::new(pointer::Pointers::default()),
@@ -722,7 +727,7 @@ impl Shell {
             return Err(Error::OneWindow);
         }
         let window = self.current_window().ok_or(Error::NoSurface)?;
-        let renderer = renderer::create(&self.gpu, &window, self.metrics.get().size)?;
+        let renderer = renderer::create(&self.gpu, self.device, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
         *self.renderer.borrow_mut() = Some(renderer);
         Ok(atlas)
@@ -780,7 +785,7 @@ impl Shell {
             Action::RecoverDevice => {
                 let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
                     (Some(renderer), Some(window)) => {
-                        renderer::recover(&self.gpu, renderer, &window, size)
+                        renderer::recover(&self.gpu, self.device, renderer, &window, size)
                     }
                     (None, _) | (_, None) => Err(Error::NoSurface),
                 };

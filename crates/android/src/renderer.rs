@@ -12,8 +12,9 @@ use crate::{
     backend::{Backend, Device},
 };
 
-/// This device, from `ro.hardware` (Java's `Build.HARDWARE`); unreadable counts as real hardware.
-fn device() -> Device {
+/// This device, from `ro.hardware` (Java's `Build.HARDWARE`); unreadable counts as real hardware. The FFI edge of the
+/// pure [`Device::from_hardware`]: the shell reads it once, when it is made, and passes it to [`create`] and [`recover`].
+pub(crate) fn device() -> Device {
     let mut value = [0u8; libc::PROP_VALUE_MAX as usize];
     // SAFETY: the name is NUL-terminated and `value` holds PROP_VALUE_MAX bytes, the most the call writes
     // (NUL included).
@@ -92,6 +93,16 @@ impl rwh::HasDisplayHandle for AndroidDisplay {
     }
 }
 
+/// The one place a [`Backend`] becomes wgpu's.
+impl From<Backend> for wgpu::Backends {
+    fn from(backend: Backend) -> Self {
+        match backend {
+            Backend::Vulkan => wgpu::Backends::VULKAN,
+            Backend::Gl => wgpu::Backends::GL,
+        }
+    }
+}
+
 pub(crate) fn surface_config(size: Size<DevicePixels>) -> WgpuSurfaceConfig {
     WgpuSurfaceConfig {
         size,
@@ -102,7 +113,12 @@ pub(crate) fn surface_config(size: Size<DevicePixels>) -> WgpuSurfaceConfig {
 
 /// Seeds `gpu` with a context from the first of this device's backends ([`Device::backends`]) that can configure
 /// the surface, unless it already holds a live one.
-fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Result<(), Error> {
+fn seed(
+    gpu: &GpuContext,
+    device: Device,
+    window: &NativeWindow,
+    size: Size<DevicePixels>,
+) -> Result<(), Error> {
     if gpu
         .borrow()
         .as_ref()
@@ -112,18 +128,13 @@ fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Re
     }
     // A lost context goes first, so its device is released before the next one is made (as upstream's recover).
     *gpu.borrow_mut() = None;
-    let device = device();
     let context = device
         .backends()
         .into_iter()
         .find_map(|backend| {
-            let backends = match backend {
-                Backend::Vulkan => wgpu::Backends::VULKAN,
-                Backend::Gl => wgpu::Backends::GL,
-            };
             let attempt = || -> anyhow::Result<WgpuContext> {
                 let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                    backends,
+                    backends: backend.into(),
                     flags: wgpu::InstanceFlags::default(),
                     backend_options: wgpu::BackendOptions::default(),
                     memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -153,11 +164,12 @@ fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Re
 /// Creates the renderer on `window`, on the calling (main) thread, on the context [`seed`] picked.
 pub(crate) fn create(
     gpu: &GpuContext,
+    device: Device,
     window: &NativeWindow,
     size: Size<DevicePixels>,
 ) -> Result<WgpuRenderer, Error> {
     let started = Instant::now();
-    seed(gpu, window, size)?;
+    seed(gpu, device, window, size)?;
     let renderer = WgpuRenderer::new(gpu.clone(), window, surface_config(size), None)
         .map_err(|error| Error::Renderer(format!("{error:#}")))?;
     log::info!(
@@ -176,6 +188,7 @@ pub(crate) fn create(
 /// ours instead. The surface state machine decides when to call it (after upstream's 350 ms, backing off on error).
 pub(crate) fn recover(
     gpu: &GpuContext,
+    device: Device,
     renderer: &mut WgpuRenderer,
     window: &NativeWindow,
     size: Size<DevicePixels>,
@@ -186,7 +199,7 @@ pub(crate) fn recover(
     // needs no second surface.
     renderer.destroy();
     renderer.update_drawable_size(size);
-    seed(gpu, window, size)?;
+    seed(gpu, device, window, size)?;
     renderer
         .recover(window)
         .map_err(|error| Error::Renderer(format!("{error:#}")))?;
