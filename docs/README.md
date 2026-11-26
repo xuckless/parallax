@@ -17,6 +17,9 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [ci.md](ci.md) | The seven CI jobs (six targets, Java tests), what each checks, running the checks locally, adding a target |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
 | [audits/oracle-inventory.md](audits/oracle-inventory.md) | Flutter 3.50.1 test files per area (gestures, text input, accessibility), the upstream GPUI code each checks, portability verdicts, Android/iOS test-infra risks, Phase 2/4 order |
+| [audits/oracle-inventory-gestures.md](audits/oracle-inventory-gestures.md) | Oracle inventory part: Flutter's gesture, velocity and scroll-physics tests, case counts and salvage per file |
+| [audits/oracle-inventory-text.md](audits/oracle-inventory-text.md) | Oracle inventory part: Flutter's text input and key tests (Java, Obj-C, Dart), case counts per file |
+| [audits/oracle-inventory-a11y.md](audits/oracle-inventory-a11y.md) | Oracle inventory part: Flutter's accessibility tests for Phase 6 |
 | [android-spike.md](android-spike.md) | Phase 1 emulator spike: ALooper dispatcher, minimum Platform/PlatformWindow surface, wgpu Vulkan vs GL on the emulator, tap→click, upstream Android status, emulator setup |
 | [cli.md](cli.md) | cargo-parallax: parallax.toml keys and defaults, what run android does step by step, the generated Gradle project, SDK/NDK/JDK requirements and env vars |
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
