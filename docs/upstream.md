@@ -50,6 +50,9 @@ scripts/sync-upstream.sh 0.3.15   # a specific version
 Review the result with `git diff`, then commit the sync as one concern (`upstream/`, `UPSTREAM`, `Cargo.toml`,
 `Cargo.lock`). To add a platform crate, add a vendor root in the script.
 
+Once it is committed, run [`scripts/sync-fork.sh`](../scripts/sync-fork.sh) to rebuild our Zed fork's `parallax`
+branch on the new commit ([zed-fork.md](zed-fork.md)).
+
 ## When a patch stops applying
 
 The sync leaves `upstream/` and `Cargo.toml` on the new version and lists the failing patches. For each one:
