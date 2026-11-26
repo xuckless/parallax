@@ -255,14 +255,22 @@ extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jin
 }
 
 /// `ParallaxActivity.onCreate`: a new live Activity, which owns the window once it starts; Java tags its events
-/// with the returned id.
-extern "system" fn activity_created(_env: JNIEnv, _class: JClass) -> jint {
-    let mut activity = 0;
-    with_host(|host| {
-        host.shell.lifecycle(ActivityEvent::Create);
-        activity = host.shell.lifecycle.borrow().newest().map_or(0, |id| id.0);
+/// with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
+extern "system" fn activity_created(mut env: JNIEnv, _class: JClass) -> jint {
+    let created = shell().map(|shell| {
+        shell.lifecycle(ActivityEvent::Create);
+        shell.lifecycle.borrow().newest()
     });
-    activity
+    let why = match created {
+        Ok(Some(activity)) => return activity.0,
+        Ok(None) => "the lifecycle handed out no id".to_string(),
+        Err(error) => error.to_string(),
+    };
+    log::error!("parallax: cannot create the Activity: {why}");
+    if let Err(error) = env.throw_new("java/lang/IllegalStateException", &why) {
+        log::error!("parallax: cannot throw to onCreate: {error}");
+    }
+    0
 }
 
 /// `ParallaxActivity`'s lifecycle, focus and memory callbacks: its id, an `EVENT_*` code and its value. The
