@@ -10,7 +10,8 @@
 // Parallax changes: package; key data goes to Rust through
 // ParallaxSurfaceView.nativeDispatchKeyData, which answers synchronously, instead of a
 // BinaryMessenger on the flutter/keydata channel (so the null-reply warning and io.flutter.Log are
-// gone); androidx annotations dropped (not on Parallax's classpath).
+// gone); sendKeyEvent also passes the event's isCanceled(), which key data has no field for;
+// androidx annotations dropped (not on Parallax's classpath).
 // Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
@@ -378,7 +379,7 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
     output.character = character;
     output.synthesized = false;
 
-    sendKeyEvent(output, onKeyEventHandledCallback);
+    sendKeyEvent(output, event.isCanceled(), onKeyEventHandledCallback);
     for (final Runnable postSyncEvent : postSynchronizeEvents) {
       postSyncEvent.run();
     }
@@ -397,13 +398,15 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
     if (physicalKey != 0 && logicalKey != 0) {
       updatePressingState(physicalKey, isDown ? logicalKey : null);
     }
-    sendKeyEvent(output, null);
+    sendKeyEvent(output, false, null);
   }
 
-  private void sendKeyEvent(KeyData data, OnKeyEventHandledCallback onKeyEventHandledCallback) {
+  // Parallax: `canceled` is the Android event's isCanceled() (false for synthesized events).
+  private void sendKeyEvent(
+      KeyData data, boolean canceled, OnKeyEventHandledCallback onKeyEventHandledCallback) {
     // Parallax: GPUI runs on this (main) thread, so Rust's answer is the reply; Flutter's
     // BinaryReply decoded the same answer from a one-byte message.
-    final boolean handled = ParallaxSurfaceView.nativeDispatchKeyData(data.toBytes());
+    final boolean handled = ParallaxSurfaceView.nativeDispatchKeyData(data.toBytes(), canceled);
     if (onKeyEventHandledCallback != null) {
       onKeyEventHandledCallback.onKeyEventHandled(handled);
     }

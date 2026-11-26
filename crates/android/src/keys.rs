@@ -193,6 +193,8 @@ enum Back {
 #[derive(Clone, Debug, PartialEq)]
 enum BackEvent {
     Key(KeyEventType),
+    /// The release came with `FLAG_CANCELED` (`KeyEvent.isCanceled()`): Android does not go back on it.
+    Cancel,
     Answer(DispatchEventResult),
 }
 
@@ -212,7 +214,7 @@ impl Back {
     /// The only place the back press changes: state × event → next state and its outcome.
     /// To add an event: add the variant, and the compiler lists the arms to write here.
     fn next(self, event: BackEvent) -> (Back, Outcome) {
-        use BackEvent::{Answer, Key};
+        use BackEvent::{Answer, Cancel, Key};
         use KeyEventType::{Down, Repeat, Up};
         let answer = |phase, handled| Outcome::Answer { phase, handled };
         match (self, event) {
@@ -223,7 +225,12 @@ impl Back {
             (Back::Claimed, Key(Up)) => {
                 (Back::Idle, answer(Some(BackGesturePhase::Committed), true))
             }
-            (Back::Idle | Back::Offered, Key(Repeat | Up)) => (Back::Idle, answer(None, false)),
+            (Back::Claimed, Cancel) => {
+                (Back::Idle, answer(Some(BackGesturePhase::Cancelled), true))
+            }
+            (Back::Idle | Back::Offered, Key(Repeat | Up) | Cancel) => {
+                (Back::Idle, answer(None, false))
+            }
             // An element with a back listener prevents default: it claims the press.
             (Back::Offered, Answer(result)) => match result.default_prevented {
                 true => (Back::Claimed, answer(None, true)),
@@ -283,9 +290,10 @@ impl Keyboard {
         self.capslock
     }
 
-    /// Decides what GPUI gets for one packet. `back_at` is where a back press starts: GPUI hit-tests back
-    /// gestures, and Android's back key has no position.
-    pub(crate) fn input(&mut self, data: &KeyData, back_at: Point<Pixels>) -> Step {
+    /// Decides what GPUI gets for one packet. `canceled` is the Android event's `FLAG_CANCELED`, which Flutter's
+    /// key data does not carry. `back_at` is where a back press starts: GPUI hit-tests back gestures, and
+    /// Android's back key has no position.
+    pub(crate) fn input(&mut self, data: &KeyData, canceled: bool, back_at: Point<Pixels>) -> Step {
         let unhandled = Step::Answer {
             input: None,
             handled: false,
@@ -307,7 +315,11 @@ impl Keyboard {
         };
         match key {
             Key::Back => {
-                let (back, outcome) = self.back.next(BackEvent::Key(data.kind));
+                let event = match (data.kind, canceled) {
+                    (KeyEventType::Up, true) => BackEvent::Cancel,
+                    (kind, _) => BackEvent::Key(kind),
+                };
+                let (back, outcome) = self.back.next(event);
                 self.back = back;
                 // A started press has made no progress; a committed one is complete.
                 let gesture = |phase| {
@@ -649,7 +661,7 @@ mod tests {
             let mut keyboard = Keyboard::default();
             let mut got = Vec::new();
             for (bytes, answer) in packets {
-                got.push(match keyboard.input(&decode(&bytes)?, back_at) {
+                got.push(match keyboard.input(&decode(&bytes)?, false, back_at) {
                     Step::Ask(input) => (Some(describe(&input)), keyboard.reply(answer)),
                     Step::Answer { input, handled } => (input.as_ref().map(describe), handled),
                 });
@@ -666,29 +678,32 @@ mod tests {
     #[test]
     fn back_transitions() {
         use Back::{Claimed, Idle, Offered};
-        use BackEvent::{Answer, Key};
-        use BackGesturePhase::{Committed, Started};
+        use BackEvent::{Answer, Cancel, Key};
+        use BackGesturePhase::{Cancelled, Committed, Started};
         use KeyEventType::{Down, Repeat, Up};
         let answer = |phase, handled| Outcome::Answer { phase, handled };
         // (row name, state, event, expected state, expected outcome). One row per (state, event); the answers are
         // GPUI's: handled, unhandled, and claimed by a back listener.
         #[rustfmt::skip]
-        let cases: [(&str, Back, BackEvent, Back, Outcome); 18] = [
+        let cases: [(&str, Back, BackEvent, Back, Outcome); 21] = [
             ("idle_down_offers", Idle, Key(Down), Offered, Outcome::Ask(Started)),
             ("idle_repeat_unhandled", Idle, Key(Repeat), Idle, answer(None, false)),
             ("idle_up_unhandled", Idle, Key(Up), Idle, answer(None, false)),
+            ("idle_cancel_unhandled", Idle, Cancel, Idle, answer(None, false)),
             ("idle_handled_answer", Idle, Answer(HANDLED), Idle, answer(None, true)),
             ("idle_unhandled_answer", Idle, Answer(UNHANDLED), Idle, answer(None, false)),
             ("idle_claimed_answer_is_handled", Idle, Answer(CLAIMED), Idle, answer(None, true)),
             ("offered_down_offers_again", Offered, Key(Down), Offered, Outcome::Ask(Started)),
             ("offered_repeat_unhandled", Offered, Key(Repeat), Idle, answer(None, false)),
             ("offered_up_unhandled", Offered, Key(Up), Idle, answer(None, false)),
+            ("offered_cancel_unhandled", Offered, Cancel, Idle, answer(None, false)),
             ("offered_handled_is_no_claim", Offered, Answer(HANDLED), Idle, answer(None, false)),
             ("offered_unhandled", Offered, Answer(UNHANDLED), Idle, answer(None, false)),
             ("offered_claimed", Offered, Answer(CLAIMED), Claimed, answer(None, true)),
             ("claimed_down_offers_again", Claimed, Key(Down), Offered, Outcome::Ask(Started)),
             ("claimed_repeat_swallowed", Claimed, Key(Repeat), Claimed, answer(None, true)),
             ("claimed_up_commits", Claimed, Key(Up), Idle, answer(Some(Committed), true)),
+            ("claimed_cancel_cancels", Claimed, Cancel, Idle, answer(Some(Cancelled), true)),
             ("claimed_handled_answer", Claimed, Answer(HANDLED), Claimed, answer(None, true)),
             ("claimed_unhandled_answer", Claimed, Answer(UNHANDLED), Claimed, answer(None, false)),
             ("claimed_claimed_answer", Claimed, Answer(CLAIMED), Claimed, answer(None, true)),

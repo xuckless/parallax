@@ -64,8 +64,10 @@ final class ParallaxSurfaceView extends SurfaceView
   static native void nativeActivityEvent(int activity, int event, int value);
 
   // Flutter's key data packet (KeyData.toBytes, the whole direct buffer), read before the call
-  // returns. Returns whether GPUI handled it: the reply Flutter's framework sends asynchronously.
-  static native boolean nativeDispatchKeyData(ByteBuffer packet);
+  // returns, and the event's isCanceled() (key data has no field for it: a cancelled back release
+  // must not go back). Returns whether GPUI handled it: the reply Flutter's framework sends
+  // asynchronously.
+  static native boolean nativeDispatchKeyData(ByteBuffer packet, boolean canceled);
 
   // As FlutterView: no platform views, so motion events are not tracked.
   private final AndroidTouchProcessor touchProcessor =

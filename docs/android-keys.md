@@ -15,8 +15,8 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
    which maps scan code and key code to Flutter's physical and logical keys with
    [`KeyboardMap`](../crates/android/java/io/github/xuckless/parallax/KeyboardMap.java), synthesizes the events that bring
    Shift, Ctrl, Alt and Caps Lock in line with the event's meta state, and packs each event with
-   [`KeyData.toBytes`](../crates/android/java/io/github/xuckless/parallax/KeyData.java). The only change: the packet goes
-   to the static native `nativeDispatchKeyData(buffer)` instead of the `flutter/keydata` channel, and its return value
+   [`KeyData.toBytes`](../crates/android/java/io/github/xuckless/parallax/KeyData.java). The changes: the packet goes
+   to the static native `nativeDispatchKeyData(buffer, canceled)` instead of the `flutter/keydata` channel, and its return value
    is the framework's reply, synchronously (GPUI runs on the main thread).
 3. **Unhandled keys.** As in Flutter, `KeyboardManager` then offers a key GPUI did not handle to the text input
    (`ViewDelegate.onTextInputKeyEvent`, false until the text-input port), and otherwise redispatches it to the root
@@ -37,7 +37,8 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
 `KEYCODE_BACK` (Flutter's `goBack`) becomes upstream's
 [`BackGestureEvent`](../upstream/gpui-pre/src/gestures.rs): `Started` on the press, at the window's left edge,
 mid-height (GPUI hit-tests back gestures; a key has no position). An element with `on_back_gesture` claims it
-(`default_prevented`); then repeats are swallowed and the release sends `Committed`. Unclaimed, the press and release
+(`default_prevented`); then repeats are swallowed and the release sends `Committed`, or `Cancelled` when Android
+cancelled it (`FLAG_CANCELED`, passed next to the packet because key data has no field for it). Unclaimed, the press and release
 go to Android, whose default finishes the Activity. One state enum, `Back::{Idle, Offered, Claimed}`, and one
 `Back::next(state, BackEvent) → (state, Outcome)` that both `Keyboard::input` (back key events) and `Keyboard::reply`
 (GPUI's answers) call; `keys::tests::back_transitions` has a row per (state, event).
