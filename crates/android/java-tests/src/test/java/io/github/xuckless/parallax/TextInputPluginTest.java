@@ -10,25 +10,26 @@
 // Parallax changes: package; io.flutter.Build.API_LEVELS → Build.VERSION_CODES. The port's
 // TextInputPlugin takes (view, channel): no ScribeChannel or platform-view controllers. Its
 // TextInputChannel takes an Activity id (0) in place of the DartExecutor, and Configuration has no
-// enableDeltaModel, autofill, contentCommitMimeTypes or fields arguments. The channel's messages are
+// enableDeltaModel or contentCommitMimeTypes arguments. The channel's messages are
 // ShadowParallaxSurfaceView's natives: what Flutter verified on DartExecutor.send is verified on
-// mockTextInput (ShadowParallaxSurfaceView.TextInput). FlutterView + FlutterEngine + FlutterRenderer
-// become a spied ParallaxSurfaceView whose nativeInsets reach a mocked
+// mockTextInput (ShadowParallaxSurfaceView.TextInput); incoming ones reach the channel's
+// handleFrameworkCalls (sendToBinaryMessageHandler builds its JSON). FlutterView + FlutterEngine +
+// FlutterRenderer become a (spied) ParallaxSurfaceView whose nativeInsets reach a mocked
 // ShadowParallaxSurfaceView.Renderer as ViewportMetrics (no engine to attach, so
 // clearTextInputClient_restartsImmWhenIMEHidden counts one restart less). verifyInputConnection has
 // no requestExistingInputState message. textEditingDelta_TestUpdateEditingValueWithDeltas-
 // IsNotInvokedWhenDeltaModelDisabled keeps its updateEditingState checks (the port's only path)
 // without the updateEditingStateWithDeltas ones. inputConnection_hintLocalesIsSetInEditorInfo runs
-// on API 28 (was 24). editorInfoForNumberConfig has no autofill parameter.
-// Dropped (21 of 53): textInputPlugin_RequestsReattachOnCreation (requestExistingInputState);
+// on API 28 (was 24), the autofill cases from API 28 (were 26). autofill_testLifeCycle has no
+// destroy step.
+// Dropped (11 of 53): textInputPlugin_RequestsReattachOnCreation (requestExistingInputState);
 // setTextInputEditingState_doesNotInvokeUpdateEditingStateWithDeltas,
 // textEditingDelta_TestUpdateEditingValueIsNotInvokedWhenDeltaModelEnabled and the three
 // textEditingDelta_TestDeltaIsCreatedWhenComposingTextSetIs* cases (delta model);
 // destroy_clearTextInputMethodHandler (destroy); inputConnection_setsStylusHandwritingAvailable and
 // inputConnection_doesNotCallSetsStylusHandwritingAvailableWhenAPILevelUnsupported (stylus
-// handwriting); sendAppPrivateCommand_dataIsEmpty and _hasData (private commands); pending the
-// autofill port: the nine autofill_* cases, respondsToInputChannelMessages (requestAutofill,
-// finishAutofillContext) and TestAfm. Ledger: third_party/flutter/PORTED.md.
+// handwriting); sendAppPrivateCommand_dataIsEmpty and _hasData (private commands). Also gone:
+// verifyMethodCall. Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
 
@@ -37,11 +38,14 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.AdditionalMatchers.aryEq;
+import static org.mockito.AdditionalMatchers.gt;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -52,17 +56,22 @@ import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.LocaleList;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.Selection;
+import android.util.SparseArray;
 import android.util.SparseIntArray;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewStructure;
 import android.view.WindowInsets;
 import android.view.WindowInsetsAnimation;
+import android.view.autofill.AutofillManager;
+import android.view.autofill.AutofillValue;
 import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -73,8 +82,10 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import io.github.xuckless.parallax.TextInputChannel.TextEditState;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.Before;
@@ -87,11 +98,17 @@ import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowAutofillManager;
 import org.robolectric.shadows.ShadowBuild;
 import org.robolectric.shadows.ShadowInputMethodManager;
 
-// Parallax: TestAfm (autofill) is gone, ShadowParallaxSurfaceView added.
-@Config(shadows = {TextInputPluginTest.TestImm.class, ShadowParallaxSurfaceView.class})
+// Parallax: ShadowParallaxSurfaceView added.
+@Config(
+    shadows = {
+      TextInputPluginTest.TestImm.class,
+      TextInputPluginTest.TestAfm.class,
+      ShadowParallaxSurfaceView.class
+    })
 @RunWith(AndroidJUnit4.class)
 public class TextInputPluginTest {
   private final Context ctx = ApplicationProvider.getApplicationContext();
@@ -104,7 +121,18 @@ public class TextInputPluginTest {
     ShadowParallaxSurfaceView.textInput = mockTextInput;
   }
 
-  // Parallax: verifyMethodCall and sendToBinaryMessageHandler are gone with the channel.
+  // Parallax: verifyMethodCall is gone with the channel. sendToBinaryMessageHandler hands the
+  // channel one call in handleFrameworkCalls' JSON, in place of the encoded MethodCall.
+  private static void sendToBinaryMessageHandler(
+      TextInputChannel textInputChannel, String method, Object args) {
+    try {
+      JSONObject methodCall =
+          new JSONObject().put("method", method).put("args", args == null ? JSONObject.NULL : args);
+      textInputChannel.handleFrameworkCalls(new JSONArray().put(methodCall).toString());
+    } catch (JSONException e) {
+      throw new AssertionError(e);
+    }
+  }
   // Parallax: textInputPlugin_RequestsReattachOnCreation is dropped (requestExistingInputState is dropped).
 
   @Test
@@ -127,6 +155,8 @@ public class TextInputPluginTest {
             true,
             true,
             TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
             null,
             null,
             null,
@@ -197,6 +227,8 @@ public class TextInputPluginTest {
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(
                 TextInputChannel.TextInputType.TEXT, false, false, false),
+            null,
+            null,
             null,
             null,
             null));
@@ -308,6 +340,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.TEXT, false, false, false),
             null,
             null,
+            null,
+            null,
             null));
 
     // There's a pending restart since we initialized the text input client. Flush that now.
@@ -396,6 +430,8 @@ public class TextInputPluginTest {
             null,
             null,
             null,
+            null,
+            null,
             null));
     // There's a pending restart since we initialized the text input client. Flush that now.
     textInputPlugin.setTextInputEditingState(
@@ -430,6 +466,8 @@ public class TextInputPluginTest {
             true,
             true,
             TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
             null,
             null,
             null,
@@ -479,6 +517,8 @@ public class TextInputPluginTest {
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(
                 TextInputChannel.TextInputType.TEXT, false, false, false),
+            null,
+            null,
             null,
             null,
             null));
@@ -581,6 +621,8 @@ public class TextInputPluginTest {
             null,
             null,
             null,
+            null,
+            null,
             null));
     // There's a pending restart since we initialized the text input client. Flush that now.
     textInputPlugin.setTextInputEditingState(
@@ -608,6 +650,8 @@ public class TextInputPluginTest {
             true,
             true,
             TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
             null,
             null,
             null,
@@ -646,6 +690,8 @@ public class TextInputPluginTest {
                     true,
                     true,
                     TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
                     null,
                     null,
                     null,
@@ -705,6 +751,8 @@ public class TextInputPluginTest {
             true,
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(textInputType, false, false, false),
+            null,
+            null,
             null,
             null,
             null));
@@ -768,6 +816,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.TEXT, false, false, false),
             null,
             null,
+            null,
+            null,
             null));
     // There's a pending restart since we initialized the text input client. Flush that now.
     textInputPlugin.setTextInputEditingState(
@@ -805,6 +855,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.NONE, false, false, false),
             null,
             null,
+            null,
+            null,
             null));
 
     InputConnection connection =
@@ -834,6 +886,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.NONE, false, false, false),
             null,
             null,
+            null,
+            null,
             null));
 
     textInputPlugin.showTextInput(testView);
@@ -859,6 +913,8 @@ public class TextInputPluginTest {
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(
                 TextInputChannel.TextInputType.WEB_SEARCH, false, false, false),
+            null,
+            null,
             null,
             null,
             null));
@@ -890,6 +946,8 @@ public class TextInputPluginTest {
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(
                 TextInputChannel.TextInputType.TWITTER, false, false, false),
+            null,
+            null,
             null,
             null,
             null));
@@ -924,6 +982,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.MULTILINE, false, false, false),
             null,
             null,
+            null,
+            null,
             null));
 
     EditorInfo editorInfo = new EditorInfo();
@@ -942,27 +1002,698 @@ public class TextInputPluginTest {
 
   // Parallax: inputConnection_doesNotCallSetsStylusHandwritingAvailableWhenAPILevelUnsupported is dropped (stylus handwriting).
 
-  // Parallax: autofill_enabledByDefault is dropped (pending autofill port).
+  // -------- Start: Autofill Tests -------
+  @Test
+  public void autofill_enabledByDefault() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    TextInputChannel textInputChannel = new TextInputChannel(0);
+    TextInputPlugin textInputPlugin =
+        new TextInputPlugin(
+            testView,
+            textInputChannel);
+    final TextInputChannel.Configuration.Autofill autofill =
+        new TextInputChannel.Configuration.Autofill(
+            "1", new String[] {}, null, new TextInputChannel.TextEditState("", 0, 0, -1, -1));
 
-  // Parallax: autofill_canBeDisabled is dropped (pending autofill port).
+    final TextInputChannel.Configuration config =
+        new TextInputChannel.Configuration(
+            false,
+            false,
+            true,
+            true,
+            TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
+            null,
+            autofill,
+            null,
+            null);
 
-  // Parallax: autofill_hintText is dropped (pending autofill port).
+    textInputPlugin.setTextInputClient(
+        0,
+        new TextInputChannel.Configuration(
+            false,
+            false,
+            true,
+            true,
+            TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
+            null,
+            autofill,
+            new TextInputChannel.Configuration[] {config},
+            null));
 
-  // Parallax: autofill_onProvideVirtualViewStructure is dropped (pending autofill port).
+    final ViewStructure viewStructure = mock(ViewStructure.class);
+    final ViewStructure[] children = {mock(ViewStructure.class), mock(ViewStructure.class)};
 
-  // Parallax: autofill_onProvideVirtualViewStructure_singular_textfield is dropped (pending autofill port).
+    when(viewStructure.newChild(anyInt()))
+        .thenAnswer(invocation -> children[(int) invocation.getArgument(0)]);
 
-  // Parallax: autofill_testLifeCycle is dropped (pending autofill port).
+    textInputPlugin.onProvideAutofillVirtualStructure(viewStructure, 0);
 
-  // Parallax: autofill_testAutofillUpdatesTheFramework is dropped (pending autofill port).
+    verify(viewStructure).newChild(0);
 
-  // Parallax: autofill_doesNotCrashAfterClearClientCall is dropped (pending autofill port).
+    verify(children[0]).setAutofillId(any(), eq("1".hashCode()));
+    // The flutter application sends an empty hint list, don't set hints.
+    verify(children[0], never()).setAutofillHints(aryEq(new String[] {}));
+    verify(children[0]).setDimens(anyInt(), anyInt(), anyInt(), anyInt(), gt(0), gt(0));
+  }
 
-  // Parallax: autofill_testSetTextInputClientUpdatesSideFields is dropped (pending autofill port).
+  @Test
+  public void autofill_canBeDisabled() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    TextInputChannel textInputChannel = new TextInputChannel(0);
+    TextInputPlugin textInputPlugin =
+        new TextInputPlugin(
+            testView,
+            textInputChannel);
+    final TextInputChannel.Configuration.Autofill autofill =
+        new TextInputChannel.Configuration.Autofill(
+            "1", new String[] {}, null, new TextInputChannel.TextEditState("", 0, 0, -1, -1));
 
+    final TextInputChannel.Configuration config =
+        new TextInputChannel.Configuration(
+            false,
+            false,
+            true,
+            true,
+            TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+
+    textInputPlugin.setTextInputClient(0, config);
+
+    final ViewStructure viewStructure = mock(ViewStructure.class);
+
+    textInputPlugin.onProvideAutofillVirtualStructure(viewStructure, 0);
+
+    verify(viewStructure, times(0)).newChild(anyInt());
+  }
+
+  @Test
+  public void autofill_hintText() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    TextInputChannel textInputChannel = new TextInputChannel(0);
+    TextInputPlugin textInputPlugin =
+        new TextInputPlugin(
+            testView,
+            textInputChannel);
+    final TextInputChannel.Configuration.Autofill autofill =
+        new TextInputChannel.Configuration.Autofill(
+            "1",
+            new String[] {},
+            "placeholder",
+            new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+
+    final TextInputChannel.Configuration config =
+        new TextInputChannel.Configuration(
+            false,
+            false,
+            true,
+            true,
+            TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
+            null,
+            autofill,
+            null,
+            null);
+
+    textInputPlugin.setTextInputClient(0, config);
+
+    final ViewStructure viewStructure = mock(ViewStructure.class);
+    final ViewStructure[] children = {mock(ViewStructure.class), mock(ViewStructure.class)};
+
+    when(viewStructure.newChild(anyInt()))
+        .thenAnswer(invocation -> children[(int) invocation.getArgument(0)]);
+
+    textInputPlugin.onProvideAutofillVirtualStructure(viewStructure, 0);
+    verify(children[0]).setHint("placeholder");
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @SuppressWarnings("deprecation")
+  @Test
+  public void autofill_onProvideVirtualViewStructure() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            TextInputChannel textInputChannel = new TextInputChannel(0);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel);
+            final TextInputChannel.Configuration.Autofill autofill1 =
+                new TextInputChannel.Configuration.Autofill(
+                    "1",
+                    new String[] {"HINT1"},
+                    "placeholder1",
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+            final TextInputChannel.Configuration.Autofill autofill2 =
+                new TextInputChannel.Configuration.Autofill(
+                    "2",
+                    new String[] {"HINT2", "EXTRA"},
+                    null,
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+
+            final TextInputChannel.Configuration config1 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    null,
+                    null);
+            final TextInputChannel.Configuration config2 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill2,
+                    null,
+                    null);
+
+            textInputPlugin.setTextInputClient(
+                0,
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    new TextInputChannel.Configuration[] {config1, config2},
+                    null));
+
+            final ViewStructure viewStructure = mock(ViewStructure.class);
+            final ViewStructure[] children = {mock(ViewStructure.class), mock(ViewStructure.class)};
+
+            when(viewStructure.newChild(anyInt()))
+                .thenAnswer(invocation -> children[(int) invocation.getArgument(0)]);
+
+            textInputPlugin.onProvideAutofillVirtualStructure(viewStructure, 0);
+
+            verify(viewStructure).newChild(0);
+            verify(viewStructure).newChild(1);
+
+            verify(children[0]).setAutofillId(any(), eq("1".hashCode()));
+            verify(children[0]).setAutofillHints(aryEq(new String[] {"HINT1"}));
+            verify(children[0]).setDimens(anyInt(), anyInt(), anyInt(), anyInt(), gt(0), gt(0));
+            verify(children[0]).setHint("placeholder1");
+
+            verify(children[1]).setAutofillId(any(), eq("2".hashCode()));
+            verify(children[1]).setAutofillHints(aryEq(new String[] {"HINT2", "EXTRA"}));
+            verify(children[1]).setDimens(anyInt(), anyInt(), anyInt(), anyInt(), gt(0), gt(0));
+            verify(children[1], times(0)).setHint(any());
+          });
+    }
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @Test
+  public void autofill_onProvideVirtualViewStructure_singular_textfield() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            TextInputChannel textInputChannel = new TextInputChannel(0);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel);
+            final TextInputChannel.Configuration.Autofill autofill =
+                new TextInputChannel.Configuration.Autofill(
+                    "1",
+                    new String[] {"HINT1"},
+                    "placeholder",
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+
+            // Autofill should still work without AutofillGroup.
+            textInputPlugin.setTextInputClient(
+                0,
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill,
+                    null,
+                    null));
+
+            final ViewStructure viewStructure = mock(ViewStructure.class);
+            final ViewStructure[] children = {mock(ViewStructure.class)};
+
+            when(viewStructure.newChild(anyInt()))
+                .thenAnswer(invocation -> children[(int) invocation.getArgument(0)]);
+
+            textInputPlugin.onProvideAutofillVirtualStructure(viewStructure, 0);
+
+            verify(viewStructure).newChild(0);
+
+            verify(children[0]).setAutofillId(any(), eq("1".hashCode()));
+            verify(children[0]).setAutofillHints(aryEq(new String[] {"HINT1"}));
+            verify(children[0]).setHint("placeholder");
+            // Verifies that the child has a non-zero size.
+            verify(children[0]).setDimens(anyInt(), anyInt(), anyInt(), anyInt(), gt(0), gt(0));
+          });
+    }
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @Test
+  public void autofill_testLifeCycle() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+
+    TestAfm testAfm = Shadow.extract(ctx.getSystemService(AutofillManager.class));
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            TextInputChannel textInputChannel = new TextInputChannel(0);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel);
+
+            // Set up an autofill scenario with 2 fields.
+            final TextInputChannel.Configuration.Autofill autofill1 =
+                new TextInputChannel.Configuration.Autofill(
+                    "1",
+                    new String[] {"HINT1"},
+                    "placeholder1",
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+            final TextInputChannel.Configuration.Autofill autofill2 =
+                new TextInputChannel.Configuration.Autofill(
+                    "2",
+                    new String[] {"HINT2", "EXTRA"},
+                    null,
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+
+            final TextInputChannel.Configuration config1 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    null,
+                    null);
+            final TextInputChannel.Configuration config2 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill2,
+                    null,
+                    null);
+
+            // Set client. This should call notifyViewExited on the FlutterView if the previous
+            // client is
+            // also eligible for autofill.
+            final TextInputChannel.Configuration autofillConfiguration =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    new TextInputChannel.Configuration[] {config1, config2},
+                    null);
+
+            textInputPlugin.setTextInputClient(0, autofillConfiguration);
+
+            // notifyViewExited should not be called as this is the first client we set.
+            assertEquals(testAfm.empty, testAfm.exitId);
+
+            // The framework updates the text, call notifyValueChanged.
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextInputChannel.TextEditState("new text", -1, -1, -1, -1));
+            assertEquals("new text", testAfm.changeString);
+            assertEquals("1".hashCode(), testAfm.changeVirtualId);
+
+            // The input method updates the text, call notifyValueChanged.
+            testAfm.resetStates();
+            final KeyboardManager mockKeyboardManager = mock(KeyboardManager.class);
+            InputConnectionAdaptor adaptor =
+                new InputConnectionAdaptor(
+                    testView,
+                    0,
+                    mock(TextInputChannel.class),
+                    mockKeyboardManager,
+                    (ListenableEditingState) textInputPlugin.getEditable(),
+                    new EditorInfo());
+            adaptor.commitText("input from IME ", 1);
+
+            assertEquals("input from IME new text", testAfm.changeString);
+            assertEquals("1".hashCode(), testAfm.changeVirtualId);
+
+            // notifyViewExited should be called on the previous client.
+            testAfm.resetStates();
+            textInputPlugin.setTextInputClient(
+                1,
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null));
+
+            assertEquals("1".hashCode(), testAfm.exitId);
+
+            // TextInputPlugin#clearTextInputClient calls notifyViewExited.
+            testAfm.resetStates();
+            textInputPlugin.setTextInputClient(3, autofillConfiguration);
+            assertEquals(testAfm.empty, testAfm.exitId);
+            textInputPlugin.clearTextInputClient();
+            assertEquals("1".hashCode(), testAfm.exitId);
+
+            // Parallax: the TextInputPlugin#destroy step is dropped (destroy is dropped).
+          });
+    }
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @SuppressWarnings("deprecation")
+  @Test
+  public void autofill_testAutofillUpdatesTheFramework() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+
+    TestAfm testAfm = Shadow.extract(ctx.getSystemService(AutofillManager.class));
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            TextInputChannel textInputChannel = spy(new TextInputChannel(0));
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel);
+
+            // Set up an autofill scenario with 2 fields.
+            final TextInputChannel.Configuration.Autofill autofill1 =
+                new TextInputChannel.Configuration.Autofill(
+                    "1",
+                    new String[] {"HINT1"},
+                    null,
+                    new TextInputChannel.TextEditState("field 1", 0, 0, -1, -1));
+            final TextInputChannel.Configuration.Autofill autofill2 =
+                new TextInputChannel.Configuration.Autofill(
+                    "2",
+                    new String[] {"HINT2", "EXTRA"},
+                    null,
+                    new TextInputChannel.TextEditState("field 2", 0, 0, -1, -1));
+
+            final TextInputChannel.Configuration config1 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    null,
+                    null);
+            final TextInputChannel.Configuration config2 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill2,
+                    null,
+                    null);
+
+            final TextInputChannel.Configuration autofillConfiguration =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    new TextInputChannel.Configuration[] {config1, config2},
+                    null);
+
+            textInputPlugin.setTextInputClient(0, autofillConfiguration);
+            textInputPlugin.setTextInputEditingState(
+                testView, new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+
+            final SparseArray<AutofillValue> autofillValues = new SparseArray();
+            autofillValues.append("1".hashCode(), AutofillValue.forText("focused field"));
+            autofillValues.append("2".hashCode(), AutofillValue.forText("unfocused field"));
+
+            // Autofill both fields.
+            textInputPlugin.autofill(autofillValues);
+
+            // Verify the Editable has been updated.
+            assertEquals("focused field", textInputPlugin.getEditable().toString());
+
+            // The autofill value of the focused field is sent via updateEditingState.
+            verify(textInputChannel, times(1))
+                .updateEditingState(anyInt(), eq("focused field"), eq(13), eq(13), eq(-1), eq(-1));
+
+            final ArgumentCaptor<HashMap> mapCaptor = ArgumentCaptor.forClass(HashMap.class);
+
+            verify(textInputChannel, times(1))
+                .updateEditingStateWithTag(anyInt(), mapCaptor.capture());
+            final TextInputChannel.TextEditState editState =
+                (TextInputChannel.TextEditState) mapCaptor.getValue().get("2");
+            assertEquals("unfocused field", editState.text);
+          });
+    }
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @Test
+  public void autofill_doesNotCrashAfterClearClientCall() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    TextInputChannel textInputChannel = spy(new TextInputChannel(0));
+    TextInputPlugin textInputPlugin =
+        new TextInputPlugin(
+            testView,
+            textInputChannel);
+    // Set up an autofill scenario with 2 fields.
+    final TextInputChannel.Configuration.Autofill autofillConfig =
+        new TextInputChannel.Configuration.Autofill(
+            "1",
+            new String[] {"HINT1"},
+            "placeholder1",
+            new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+    final TextInputChannel.Configuration config =
+        new TextInputChannel.Configuration(
+            false,
+            false,
+            true,
+            true,
+            TextInputChannel.TextCapitalization.NONE,
+            null,
+            null,
+            null,
+            autofillConfig,
+            null,
+            null);
+
+    textInputPlugin.setTextInputClient(0, config);
+    textInputPlugin.setTextInputEditingState(
+        testView, new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+    textInputPlugin.clearTextInputClient();
+
+    final SparseArray<AutofillValue> autofillValues = new SparseArray();
+    autofillValues.append("1".hashCode(), AutofillValue.forText("focused field"));
+    autofillValues.append("2".hashCode(), AutofillValue.forText("unfocused field"));
+
+    // Autofill both fields.
+    textInputPlugin.autofill(autofillValues);
+
+    verify(textInputChannel, never()).updateEditingStateWithTag(anyInt(), any());
+    verify(textInputChannel, never())
+        .updateEditingState(anyInt(), any(), anyInt(), anyInt(), anyInt(), anyInt());
+  }
+
+  // Parallax: from API 28, the port's minSdk (was API 26).
+  @Config(minSdk = Build.VERSION_CODES.P)
+  @Test
+  public void autofill_testSetTextInputClientUpdatesSideFields() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+
+    TestAfm testAfm = Shadow.extract(ctx.getSystemService(AutofillManager.class));
+    try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
+      scenario.onActivity(
+          activity -> {
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            TextInputChannel textInputChannel = new TextInputChannel(0);
+            TextInputPlugin textInputPlugin =
+                new TextInputPlugin(
+                    testView,
+                    textInputChannel);
+
+            // Set up an autofill scenario with 2 fields.
+            final TextInputChannel.Configuration.Autofill autofill1 =
+                new TextInputChannel.Configuration.Autofill(
+                    "1",
+                    new String[] {"HINT1"},
+                    "null",
+                    new TextInputChannel.TextEditState("", 0, 0, -1, -1));
+            final TextInputChannel.Configuration.Autofill autofill2 =
+                new TextInputChannel.Configuration.Autofill(
+                    "2",
+                    new String[] {"HINT2", "EXTRA"},
+                    "null",
+                    new TextInputChannel.TextEditState(
+                        "Unfocused fields need love like everything does", 0, 0, -1, -1));
+
+            final TextInputChannel.Configuration config1 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    null,
+                    null);
+            final TextInputChannel.Configuration config2 =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill2,
+                    null,
+                    null);
+
+            final TextInputChannel.Configuration autofillConfiguration =
+                new TextInputChannel.Configuration(
+                    false,
+                    false,
+                    true,
+                    true,
+                    TextInputChannel.TextCapitalization.NONE,
+                    null,
+                    null,
+                    null,
+                    autofill1,
+                    new TextInputChannel.Configuration[] {config1, config2},
+                    null);
+
+            textInputPlugin.setTextInputClient(0, autofillConfiguration);
+
+            // notifyValueChanged should be called for unfocused fields.
+            assertEquals("2".hashCode(), testAfm.changeVirtualId);
+            assertEquals("Unfocused fields need love like everything does", testAfm.changeString);
+          });
+    }
+  }
   // -------- End: Autofill Tests -------
 
-  // Parallax: respondsToInputChannelMessages is dropped (pending autofill port: requestAutofill, finishAutofillContext).
+  // Parallax: the channel's messages arrive as handleFrameworkCalls' JSON, so the captured
+  // BinaryMessageHandler becomes the channel itself.
+  @Test
+  public void respondsToInputChannelMessages() {
+    TextInputChannel.TextInputMethodHandler mockHandler =
+        mock(TextInputChannel.TextInputMethodHandler.class);
+    TextInputChannel textInputChannel = new TextInputChannel(0);
+
+    textInputChannel.setTextInputMethodHandler(mockHandler);
+
+    sendToBinaryMessageHandler(textInputChannel, "TextInput.requestAutofill", null);
+    verify(mockHandler, times(1)).requestAutofill();
+
+    sendToBinaryMessageHandler(textInputChannel, "TextInput.finishAutofillContext", true);
+    verify(mockHandler, times(1)).finishAutofillContext(true);
+
+    sendToBinaryMessageHandler(textInputChannel, "TextInput.finishAutofillContext", false);
+    verify(mockHandler, times(1)).finishAutofillContext(false);
+  }
+
 
   // Parallax: sendAppPrivateCommand_dataIsEmpty is dropped (private commands).
 
@@ -1360,6 +2091,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.MULTILINE, false, false, false),
             null,
             null,
+            null,
+            null,
             hintLocales));
 
     EditorInfo editorInfo = new EditorInfo();
@@ -1379,7 +2112,8 @@ public class TextInputPluginTest {
       boolean isDecimal,
       boolean isPassword,
       boolean obscureText,
-      boolean enableIMEPersonalizedLearning) {
+      boolean enableIMEPersonalizedLearning,
+      TextInputChannel.Configuration.Autofill autofill) {
     View testView = new View(ctx);
     TextInputChannel textInputChannel = new TextInputChannel(0);
     TextInputPlugin textInputPlugin =
@@ -1398,6 +2132,8 @@ public class TextInputPluginTest {
                 TextInputChannel.TextInputType.NUMBER, isSigned, isDecimal, isPassword),
             null,
             null,
+            autofill,
+            null,
             null));
 
     EditorInfo editorInfo = new EditorInfo();
@@ -1407,13 +2143,13 @@ public class TextInputPluginTest {
 
   @Test
   public void inputType_number() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, false, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, false, false, true, null);
     assertEquals(InputType.TYPE_CLASS_NUMBER, editorInfo.inputType);
   }
 
   @Test
   public void inputType_numberWithPassword() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, true, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, true, false, true, null);
     assertEquals(
         InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD,
         editorInfo.inputType);
@@ -1421,21 +2157,21 @@ public class TextInputPluginTest {
 
   @Test
   public void inputType_numberWithSigned() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(true, false, false, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(true, false, false, false, true, null);
     assertEquals(
         InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED, editorInfo.inputType);
   }
 
   @Test
   public void inputType_numberWithDecimal() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(false, true, false, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(false, true, false, false, true, null);
     assertEquals(
         InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, editorInfo.inputType);
   }
 
   @Test
   public void inputType_numberWithSignedAndPassword() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(true, false, true, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(true, false, true, false, true, null);
     assertEquals(
         InputType.TYPE_CLASS_NUMBER
             | InputType.TYPE_NUMBER_FLAG_SIGNED
@@ -1445,7 +2181,7 @@ public class TextInputPluginTest {
 
   @Test
   public void inputType_numberWithDecimalAndPassword() {
-    EditorInfo editorInfo = editorInfoForNumberConfig(false, true, true, false, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(false, true, true, false, true, null);
     assertEquals(
         InputType.TYPE_CLASS_NUMBER
             | InputType.TYPE_NUMBER_FLAG_DECIMAL
@@ -1459,7 +2195,7 @@ public class TextInputPluginTest {
     // TYPE_NUMBER_VARIATION_PASSWORD on a NUMBER field. This test is load-bearing because the
     // obscureText branch lives in the same inputTypeFromTextInputType() function as the NUMBER
     // branch — the two are the most plausible place for accidental coupling.
-    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, false, true, true);
+    EditorInfo editorInfo = editorInfoForNumberConfig(false, false, false, true, true, null);
     assertEquals(InputType.TYPE_CLASS_NUMBER, editorInfo.inputType);
     assertEquals(0, editorInfo.inputType & InputType.TYPE_NUMBER_VARIATION_PASSWORD);
   }
@@ -1577,5 +2313,48 @@ public class TextInputPluginTest {
     }
   }
 
-  // Parallax: TestAfm is dropped (pending autofill port).
+  @Implements(AutofillManager.class)
+  public static class TestAfm extends ShadowAutofillManager {
+    public static int empty = -999;
+
+    String finishState;
+    int changeVirtualId = empty;
+    String changeString;
+
+    int enterId = empty;
+    int exitId = empty;
+
+    @Implementation
+    public void cancel() {
+      finishState = "cancel";
+    }
+
+    public void commit() {
+      finishState = "commit";
+    }
+
+    public void notifyViewEntered(View view, int virtualId, Rect absBounds) {
+      enterId = virtualId;
+    }
+
+    public void notifyViewExited(View view, int virtualId) {
+      exitId = virtualId;
+    }
+
+    public void notifyValueChanged(View view, int virtualId, AutofillValue value) {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        return;
+      }
+      changeVirtualId = virtualId;
+      changeString = value.getTextValue().toString();
+    }
+
+    public void resetStates() {
+      finishState = null;
+      changeVirtualId = empty;
+      changeString = null;
+      enterId = empty;
+      exitId = empty;
+    }
+  }
 }

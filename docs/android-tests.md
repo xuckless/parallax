@@ -76,5 +76,5 @@ are). The shadow extends `ShadowSurfaceView`, so a test can also build a `Parall
 5. Every kept case must pass. A failure is a bug in the port: fix the port, never the test.
 
 Ported so far (cases kept of Flutter's; the ledger names the dropped ones): `AndroidTouchProcessorTest` 14/15,
-`KeyboardManagerTest` 25/29, `InputConnectionAdaptorTest` 26/36, `TextInputPluginTest` 32/53 (autofill cases wait for
-the autofill port), `ListenableEditingStateTest` 13/13, `TextEditingDeltaTest` 2/2.
+`KeyboardManagerTest` 25/29, `InputConnectionAdaptorTest` 26/36, `TextInputPluginTest` 42/53, `ListenableEditingStateTest`
+13/13, `TextEditingDeltaTest` 2/2.
