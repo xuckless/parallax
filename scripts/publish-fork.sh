@@ -82,6 +82,11 @@ for name in "${order[@]}"; do
         echo "publishing $name ${versions[$name]}"
         log="$scratch/publish.log"
         if cargo publish -p "$name" --target-dir "$target_dir" 2>&1 | tee "$log"; then break; fi
+        # Already there, though the index did not show it yet (lag after a partial run): a skip, not a failure.
+        if grep -q 'already exists\|already uploaded' "$log"; then
+            echo "skip $name ${versions[$name]}: crates.io already has it"
+            continue 2
+        fi
         # crates.io's new-crate rate limit: "... Please try again after <HTTP date> or email help@crates.io ...".
         retry_at="$(sed -n 's/.*try again after \(.*\) or email.*/\1/p' "$log" | head -n1)"
         [[ -n $retry_at ]] || die "cargo publish failed for $name (not a rate limit; see above)"
