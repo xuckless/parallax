@@ -1,4 +1,5 @@
-# Six builds, one per target, no feature variants (ROADMAP Phase 0), and the Java tests. See docs/ci.md.
+# Six builds, one per target, no feature variants (ROADMAP Phase 0), plus the Java tests and the patch tests (GPUI's own
+# tests on the patched fork crate). See docs/ci.md.
 name: CI
 
 on:
