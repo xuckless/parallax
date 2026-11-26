@@ -187,12 +187,20 @@ Full Android:
 - [x] Gate 1 fix: Android's default focus highlight is off (it dimmed every colour).
 - [x] Gate 1 fix: a composition left behind when focus moves is ended (patch 0010, `Pending::commit`).
 - [ ] Gboard select mode (Shift + arrows) doesn't extend the selection — Phase 4 (owner deferred).
-- [ ] Patch 0010 ends GPUI's composition but doesn't tell the native IME on macOS/iOS/web; check and patch.
+- [x] Patch 0010 tells the native IME (Wave 10): `PlatformWindow::end_composition` blurs and refocuses the web IME
+      mirror while the browser composes (checked in headless Chromium); Android and iOS restart their sessions on a
+      field change, so they keep the no-op ([core-patches.md](docs/core-patches.md)).
+- [ ] macOS: verify patch 0010's discardMarkedText with a real Japanese IME (needs the owner's console session on pixl-mac).
+- [ ] Web smoke test in CI (headless browser) — hello panicked on web unnoticed (no fonts on the web until Wave 10
+      embedded `WEB_FONTS`, [examples.md](docs/examples.md#web)).
+- [ ] Web CJK in hello: no CJK font is embedded (several MB); gpui_web's `CanvasFontFallback::EmojiAndCjk` could draw
+      it from the browser's fonts, but `gpui_platform` builds `WebPlatform` with the default (emoji only).
 - [ ] Emulator GL uses RGB565 (wgpu-hal `choose_config` without sRGB): dark colours are quantized on emulators only.
 
-**Gate 1:** the example app runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect,
-composing, selection, emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner
-has devices to test on (until then, releases are emulator-verified).
+- [x] **Gate 1** (Wave 10, 0.1.4; emulator-verified per owner decision, [gate-1.md](docs/gate-1.md)): the example app
+      runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect, composing, selection,
+      emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner has devices to
+      test on (until then, releases are emulator-verified).
 
 Gate 1 needs Play images (Gboard as users get it, updated from Play) for API 28, 33 and 35. Installed under `~/Android/Sdk`
 (2026-11-26): `system-images;android-28;google_apis;x86_64` and `system-images;android-35;google_apis;x86_64`, used by
