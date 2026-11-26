@@ -11,7 +11,8 @@
 use std::ops::Range;
 
 use gpui::{
-    Autocapitalize, FocusId, TextInputAction, TextInputConfiguration, TextInputStateChange,
+    Autocapitalize, AutofillHint, FocusId, KeyboardType, TextInputAction, TextInputConfiguration,
+    TextInputStateChange,
 };
 
 /// One side's editing state, as Flutter's `TextEditState`: text, selection and composing (marked) range.
@@ -399,14 +400,62 @@ const ACTIONS: [(TextInputAction, &str); 8] = [
     (TextInputAction::Send, "TextInputAction.send"),
 ];
 
-/// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration.
+/// GPUI's keyboard type → Flutter's `TextInputType` JSON (`InputType.fromJson`; `TextInputPlugin` turns it into
+/// `EditorInfo.inputType`). A `match` rather than a row table so a new GPUI variant fails to compile here: add its arm.
+/// Search is Flutter's `webSearch`, which Flutter's web engine maps back to `inputmode="search"`.
+fn input_type(keyboard_type: KeyboardType) -> &'static str {
+    match keyboard_type {
+        KeyboardType::Text => r#"{"name":"TextInputType.text"}"#,
+        KeyboardType::Number => r#"{"name":"TextInputType.number","signed":false,"decimal":false}"#,
+        KeyboardType::Decimal => r#"{"name":"TextInputType.number","signed":false,"decimal":true}"#,
+        KeyboardType::Phone => r#"{"name":"TextInputType.phone"}"#,
+        KeyboardType::Email => r#"{"name":"TextInputType.emailAddress"}"#,
+        KeyboardType::Url => r#"{"name":"TextInputType.url"}"#,
+        KeyboardType::Search => r#"{"name":"TextInputType.webSearch"}"#,
+    }
+}
+
+/// GPUI's autofill hint → Flutter's `AutofillHints` string (`Autofill.fromJson` reads it). Exhaustive like
+/// [`input_type`]: add an arm per new GPUI variant.
+fn autofill_hint(hint: AutofillHint) -> &'static str {
+    match hint {
+        AutofillHint::Username => "username",
+        AutofillHint::Password => "password",
+        AutofillHint::NewPassword => "newPassword",
+        AutofillHint::OneTimeCode => "oneTimeCode",
+        AutofillHint::Email => "email",
+        AutofillHint::Phone => "telephoneNumber",
+        AutofillHint::Name => "name",
+        AutofillHint::PostalAddress => "fullStreetAddress",
+        AutofillHint::PostalCode => "postalCode",
+        AutofillHint::CreditCardNumber => "creditCardNumber",
+    }
+}
+
+/// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration. A secure field is
+/// `obscureText` with personalized learning off, as the patch 0005 docs promise (kept out of dictionaries).
+/// `autofill` is Flutter's shape (one field, its value sent next by `setEditingState`); the ported Java drops it
+/// until autofill is ported.
 fn configuration_json(configuration: &TextInputConfiguration) -> String {
-    // Patch 0005 seam: keyboard type → "inputType" ("TextInputType.*"), secure → "obscureText" (and
-    // "enableIMEPersonalizedLearning": false), autofill → "autofill" (dropped in Java for now).
+    let autofill = configuration.autofill.map_or(String::new(), |hint| {
+        format!(
+            r#","autofill":{{"uniqueIdentifier":"0","hints":["{}"],"editingValue":{}}}"#,
+            autofill_hint(hint),
+            EditingState {
+                text: String::new(),
+                selection: None,
+                composing: None,
+            }
+            .to_json()
+        )
+    });
     format!(
-        r#"{{"inputType":{{"name":"TextInputType.text"}},"obscureText":false,"autocorrect":{},"enableSuggestions":{},"enableIMEPersonalizedLearning":true,"textCapitalization":"{}","inputAction":"{}"}}"#,
+        r#"{{"inputType":{},"obscureText":{},"autocorrect":{},"enableSuggestions":{},"enableIMEPersonalizedLearning":{},"textCapitalization":"{}","inputAction":"{}"{autofill}}}"#,
+        input_type(configuration.keyboard_type),
+        configuration.secure,
         configuration.autocorrect,
         configuration.suggestions,
+        !configuration.secure,
         name(&CAPITALIZATION, configuration.autocapitalize),
         name(&ACTIONS, configuration.input_action),
     )
@@ -807,6 +856,7 @@ mod tests {
             autocapitalize: Autocapitalize::Sentences,
             suggestions: true,
             input_action: TextInputAction::Send,
+            ..TextInputConfiguration::default()
         };
         let gpui = state("a\"😀\n", (4, 4), (1, 4));
         let rows: [(&str, Pending, Option<&str>); 4] = [
@@ -848,5 +898,94 @@ mod tests {
             None,
             "no field: no state"
         );
+    }
+
+    #[test]
+    fn configuration_for_java() {
+        // One row per KeyboardType, then secure and autofill: GPUI's configuration → Configuration.fromJson's JSON.
+        let base = TextInputConfiguration::default();
+        let keyboard = |keyboard_type| TextInputConfiguration {
+            keyboard_type,
+            ..base.clone()
+        };
+        let json = |input_type: &str, secure: bool, tail: &str| {
+            format!(
+                r#"{{"inputType":{input_type},"obscureText":{secure},"autocorrect":{},"enableSuggestions":{},"enableIMEPersonalizedLearning":{},"textCapitalization":"{}","inputAction":"{}"{tail}}}"#,
+                base.autocorrect,
+                base.suggestions,
+                !secure,
+                name(&CAPITALIZATION, base.autocapitalize),
+                name(&ACTIONS, base.input_action),
+            )
+        };
+        let text = r#"{"name":"TextInputType.text"}"#;
+        let rows = [
+            ("text", keyboard(KeyboardType::Text), json(text, false, "")),
+            (
+                "number",
+                keyboard(KeyboardType::Number),
+                json(
+                    r#"{"name":"TextInputType.number","signed":false,"decimal":false}"#,
+                    false,
+                    "",
+                ),
+            ),
+            (
+                "decimal",
+                keyboard(KeyboardType::Decimal),
+                json(
+                    r#"{"name":"TextInputType.number","signed":false,"decimal":true}"#,
+                    false,
+                    "",
+                ),
+            ),
+            (
+                "phone",
+                keyboard(KeyboardType::Phone),
+                json(r#"{"name":"TextInputType.phone"}"#, false, ""),
+            ),
+            (
+                "email",
+                keyboard(KeyboardType::Email),
+                json(r#"{"name":"TextInputType.emailAddress"}"#, false, ""),
+            ),
+            (
+                "url",
+                keyboard(KeyboardType::Url),
+                json(r#"{"name":"TextInputType.url"}"#, false, ""),
+            ),
+            (
+                "search",
+                keyboard(KeyboardType::Search),
+                json(r#"{"name":"TextInputType.webSearch"}"#, false, ""),
+            ),
+            (
+                "secure: obscured, no personalized learning",
+                TextInputConfiguration {
+                    secure: true,
+                    ..base.clone()
+                },
+                json(text, true, ""),
+            ),
+            (
+                "autofill: one hint, empty value",
+                TextInputConfiguration {
+                    autofill: Some(AutofillHint::Phone),
+                    ..base.clone()
+                },
+                json(
+                    text,
+                    false,
+                    concat!(
+                        r#","autofill":{"uniqueIdentifier":"0","hints":["telephoneNumber"],"#,
+                        r#""editingValue":{"text":"","selectionBase":-1,"selectionExtent":-1,"#,
+                        r#""composingBase":-1,"composingExtent":-1}}"#
+                    ),
+                ),
+            ),
+        ];
+        for (name, configuration, want) in rows {
+            assert_eq!(configuration_json(&configuration), want, "{name}");
+        }
     }
 }

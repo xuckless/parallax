@@ -49,9 +49,11 @@ action), as in Flutter. The IME's `sendKeyEvent` goes back through `KeyboardMana
 
 ## Configuration
 
-`configuration_json` maps GPUI's `TextInputConfiguration` with two tables, `CAPITALIZATION` and `ACTIONS` (add a row
-per new GPUI variant). Fixed for now: `TextInputType.text`, not obscured, personalized learning on. Patch 0005
-(keyboard type, secure, autofill) plugs in at the seam comment there; Java already reads the keys.
+`configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys: `CAPITALIZATION` and
+`ACTIONS` (row tables), `input_type` (`KeyboardType` → `TextInputType`; Search is `webSearch`) and `autofill_hint`
+(`AutofillHint` → Flutter's `AutofillHints`), exhaustive matches so a new variant of patch 0005 fails to compile until
+it gets an arm. `secure` is `obscureText` with personalized learning off. `autofill` is sent in Flutter's shape; the
+ported Java drops it until autofill is ported.
 
 ## Limits
 
