@@ -15,14 +15,15 @@ upstream version, Zed commit and applied patches, crediting Zed. [`NOTICE`](../N
 
 ## Versioning
 
-`<gpui-pre version>-parallax.<revision>`, e.g. `0.3.14-parallax.1`; the revision is
+`<gpui-pre version>-parallax.<revision>`, e.g. `0.3.14-parallax.1`: one rule, in
+[`fork-version.sh`](../scripts/fork-version.sh) (`scripts/fork-version.sh` prints it); the revision is in
 [`patches/FORK_REVISION`](../patches/FORK_REVISION). Parallax pins it exactly (`version = "=0.3.14-parallax.1"`): an
 `=` requirement matches a pre-release, which a `^` one would not. crates.io lists these as pre-releases; build
 metadata (`+parallax.1`) can't be used, crates.io rejects versions that differ only in it.
 
-- **New upstream version:** [`sync-upstream.sh`](../scripts/sync-upstream.sh) resets the revision to 1 and repins.
-- **Patches changed between syncs:** add 1 to `FORK_REVISION` and set the three `parallax-gpui*` pins in
-  [`Cargo.toml`](../Cargo.toml) to match. `fork-crates.sh` refuses to run while they disagree.
+- **New upstream version:** [`sync-upstream.sh`](../scripts/sync-upstream.sh) runs `fork-version.sh reset` (revision 1).
+- **Patches changed between syncs:** `scripts/fork-version.sh bump` raises the revision and rewrites the three
+  `parallax-gpui*` pins in [`Cargo.toml`](../Cargo.toml). `fork-crates.sh` refuses to run while pins and revision disagree.
 - **A patch upstream fixed:** delete it at the next sync ([upstream.md](upstream.md#when-a-patch-stops-applying)).
 
 ## Generate

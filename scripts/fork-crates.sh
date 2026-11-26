@@ -3,31 +3,30 @@
 # plus a workspace manifest there so publish-fork.sh can package them together. apply-patches.sh runs this last; run it
 # alone after editing build/gpui-patched/ while making a patch (docs/patches.md). build/ is generated: never edit it.
 # Each crate keeps upstream's code, [lib] name, licence and metadata; only its name, version, inter-crate deps,
-# description, repository and README change. Version: <gpui-pre version>-parallax.<patches/FORK_REVISION>.
-# See docs/gpui-fork-crates.md.
+# description, repository and README change. Version: scripts/fork-version.sh. See docs/gpui-fork-crates.md.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 in="build/gpui-patched"
 out="build/parallax-gpui"
 cd "$root"
+source scripts/fork-version.sh
 
 die() { echo "fork-crates: $*" >&2; exit 1; }
 
 # The one naming rule: gpui-pre → parallax-gpui, gpui-pre-<x> → parallax-gpui-<x>.
 fork_name() { echo "parallax-gpui${1#gpui-pre}"; }
 
-upstream_version="$(sed -n 's/^gpui-pre version: *\([^ ]*\)$/\1/p' upstream/UPSTREAM)"
+upstream_version="$(fork_upstream_version)"
+version="$(fork_version)"
 zed_rev="$(sed -n 's/^Zed commit: *\([0-9a-f]\{40\}\).*/\1/p' upstream/UPSTREAM)"
-revision="$(grep -v '^#' patches/FORK_REVISION | tr -d '[:space:]')"
-[[ -n $upstream_version && -n $zed_rev ]] || die "no gpui-pre version or Zed commit in upstream/UPSTREAM"
-[[ $revision =~ ^[1-9][0-9]*$ ]] || die "patches/FORK_REVISION must hold one positive integer, has '$revision'"
-version="$upstream_version-parallax.$revision"
+[[ -n $zed_rev ]] || die "no Zed commit in upstream/UPSTREAM"
 [[ -d $in ]] || die "no $in; run scripts/apply-patches.sh"
 
 # The workspace pins the fork exactly; a stale pin would build one version and publish another.
 stale="$(grep 'package = "parallax-gpui' Cargo.toml | grep -v "version = \"=$version\"" || true)"
-[[ -z $stale ]] || die "Cargo.toml must pin every parallax-gpui* crate to =$version:
+[[ -z $stale ]] || die "Cargo.toml must pin every parallax-gpui* crate to =$version (scripts/fork-version.sh bump
+rewrites both):
 $stale"
 
 # Patch list for the READMEs: file name and first header line of each patch.
