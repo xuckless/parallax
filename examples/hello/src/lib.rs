@@ -160,14 +160,12 @@ pub fn launch(cx: &mut App) {
                     cx,
                 )
             }),
-            // The platform's autofill may offer the user's addresses. Suggestions on, as Flutter's default: Android
-            // turns a field without suggestions into a visible-password one, which drops the email layout.
+            // The platform's autofill may offer the user's addresses.
             email: cx.new(|cx| {
                 TextField::new(
                     "Email",
                     TextInputConfiguration {
                         keyboard_type: KeyboardType::Email,
-                        suggestions: true,
                         autofill: Some(AutofillHint::Email),
                         input_action: TextInputAction::Done,
                         ..TextInputConfiguration::default()

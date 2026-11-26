@@ -626,10 +626,12 @@ fn action(input_action: TextInputAction) -> &'static str {
 /// it into `EditorInfo.inputType`). Exhaustive: a new GPUI variant needs an arm. Search is Flutter's `webSearch`,
 /// which Flutter's web engine maps back to `inputmode="search"`. Flutter's number branch returns before
 /// `obscureText`, so a secure number says `password` itself; Android has no phone password, so a secure phone
-/// field is a number password.
+/// field is a number password. A secure field whose type has a variation of its own ([`has_own_variation`]) is a text
+/// password: the password variation replaces email's or URL's instead of corrupting it.
 fn input_type(keyboard_type: KeyboardType, secure: bool) -> Value {
     let number = |decimal: bool| json!({"name": "TextInputType.number", "signed": false, "decimal": decimal, "password": secure});
     match (keyboard_type, secure) {
+        (kind, true) if has_own_variation(kind) => json!({"name": "TextInputType.text"}),
         (KeyboardType::Text, _) => json!({"name": "TextInputType.text"}),
         (KeyboardType::Number, _) | (KeyboardType::Phone, true) => number(false),
         (KeyboardType::Decimal, _) => number(true),
@@ -637,6 +639,20 @@ fn input_type(keyboard_type: KeyboardType, secure: bool) -> Value {
         (KeyboardType::Email, _) => json!({"name": "TextInputType.emailAddress"}),
         (KeyboardType::Url, _) => json!({"name": "TextInputType.url"}),
         (KeyboardType::Search, _) => json!({"name": "TextInputType.webSearch"}),
+    }
+}
+
+/// Whether Flutter's `TextInputType` for this keyboard sets an Android text variation of its own (email, URI).
+/// Android's variation is one value, not flags, yet `inputTypeFromTextInputType` ORs one in for `obscureText`
+/// (`VARIATION_PASSWORD`) and for `enableSuggestions: false` (`VARIATION_VISIBLE_PASSWORD`): email's 0x20 | 0x90 is
+/// 0xb0, `VARIATION_FILTER`, which loses the email keyboard. Number and phone return before either. Exhaustive: a new
+/// GPUI variant needs an arm.
+fn has_own_variation(keyboard_type: KeyboardType) -> bool {
+    match keyboard_type {
+        KeyboardType::Email | KeyboardType::Url | KeyboardType::Search => true,
+        KeyboardType::Text | KeyboardType::Number | KeyboardType::Decimal | KeyboardType::Phone => {
+            false
+        }
     }
 }
 
@@ -687,13 +703,15 @@ fn size_and_transform(bounds: Bounds<Pixels>) -> Value {
 
 /// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration, with the field's
 /// `autofill` ([`autofill_json`]) when it has one. A secure field is `obscureText` with personalized learning off,
-/// as the patch 0005 docs promise (kept out of dictionaries).
+/// as the patch 0005 docs promise (kept out of dictionaries). A type with a variation of its own
+/// ([`has_own_variation`]) always enables suggestions, Flutter's default: Flutter turns them off with the
+/// visible-password variation, which would replace that type's keyboard (and GPUI's default is off).
 fn configuration_json(configuration: &TextInputConfiguration, autofill: Option<Value>) -> Value {
     let mut out = json!({
         "inputType": input_type(configuration.keyboard_type, configuration.secure),
         "obscureText": configuration.secure,
         "autocorrect": configuration.autocorrect,
-        "enableSuggestions": configuration.suggestions,
+        "enableSuggestions": configuration.suggestions || has_own_variation(configuration.keyboard_type),
         "enableIMEPersonalizedLearning": !configuration.secure,
         "textCapitalization": capitalization(configuration.autocapitalize),
         "inputAction": action(configuration.input_action),
@@ -1855,8 +1873,10 @@ mod tests {
 
     #[test]
     fn configuration_for_java() {
-        // One row per keyboard type, secure and not: GPUI's configuration → Configuration.fromJson's `inputType`,
-        // `obscureText` and `enableIMEPersonalizedLearning`.
+        // One row per keyboard type, secure and not, with GPUI's default (no suggestions): GPUI's configuration →
+        // Configuration.fromJson's `inputType`, `enableSuggestions`, `obscureText` and
+        // `enableIMEPersonalizedLearning`. Email, URL and search keep suggestions on and are text when secure, so
+        // Flutter's visible-password and password variations never land on top of theirs.
         let keyboard = |keyboard_type, secure| TextInputConfiguration {
             keyboard_type,
             secure,
@@ -1866,76 +1886,94 @@ mod tests {
         let number_password =
             r#"{"name":"TextInputType.number","signed":false,"decimal":false,"password":true}"#;
         let rows = [
-            ("text", keyboard(KeyboardType::Text, false), text),
-            ("text, secure", keyboard(KeyboardType::Text, true), text),
+            ("text", keyboard(KeyboardType::Text, false), text, false),
+            (
+                "text, secure",
+                keyboard(KeyboardType::Text, true),
+                text,
+                false,
+            ),
             (
                 "number",
                 keyboard(KeyboardType::Number, false),
                 r#"{"name":"TextInputType.number","signed":false,"decimal":false,"password":false}"#,
+                false,
             ),
             (
                 "number, secure: password",
                 keyboard(KeyboardType::Number, true),
                 number_password,
+                false,
             ),
             (
                 "decimal",
                 keyboard(KeyboardType::Decimal, false),
                 r#"{"name":"TextInputType.number","signed":false,"decimal":true,"password":false}"#,
+                false,
             ),
             (
                 "decimal, secure: password",
                 keyboard(KeyboardType::Decimal, true),
                 r#"{"name":"TextInputType.number","signed":false,"decimal":true,"password":true}"#,
+                false,
             ),
             (
                 "phone",
                 keyboard(KeyboardType::Phone, false),
                 r#"{"name":"TextInputType.phone"}"#,
+                false,
             ),
             (
                 "phone, secure: number password",
                 keyboard(KeyboardType::Phone, true),
                 number_password,
+                false,
             ),
             (
                 "email",
                 keyboard(KeyboardType::Email, false),
                 r#"{"name":"TextInputType.emailAddress"}"#,
+                true,
             ),
             (
-                "email, secure",
+                "email, secure: text password",
                 keyboard(KeyboardType::Email, true),
-                r#"{"name":"TextInputType.emailAddress"}"#,
+                text,
+                true,
             ),
             (
                 "url",
                 keyboard(KeyboardType::Url, false),
                 r#"{"name":"TextInputType.url"}"#,
+                true,
             ),
             (
-                "url, secure",
+                "url, secure: text password",
                 keyboard(KeyboardType::Url, true),
-                r#"{"name":"TextInputType.url"}"#,
+                text,
+                true,
             ),
             (
                 "search",
                 keyboard(KeyboardType::Search, false),
                 r#"{"name":"TextInputType.webSearch"}"#,
+                true,
             ),
             (
-                "search, secure",
+                "search, secure: text password",
                 keyboard(KeyboardType::Search, true),
-                r#"{"name":"TextInputType.webSearch"}"#,
+                text,
+                true,
             ),
         ];
-        for (name, configuration, input_type) in rows {
+        for (name, configuration, input_type, suggestions) in rows {
             let out = configuration_json(&configuration, None);
             assert_eq!(
                 Some(&out["inputType"]),
                 json(input_type).as_ref(),
                 "{name}: inputType"
             );
+            assert_eq!(out["enableSuggestions"], suggestions, "{name}: suggestions");
             assert_eq!(
                 out["obscureText"], configuration.secure,
                 "{name}: obscureText"

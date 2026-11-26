@@ -60,21 +60,21 @@ action), as in Flutter. The IME's `sendKeyEvent` goes back through `KeyboardMana
 **Configuration.** `configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys
 `capitalization`, `action`, `input_type` (`KeyboardType` and `secure` → `TextInputType`; Search is `webSearch`) by
 exhaustive matches: a new patch 0005 variant needs an arm. `secure` is `obscureText`, personalized learning off.
-Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends `"password": true`; with no
-phone password on Android, a secure Phone is a number password. `autofill` adds Flutter's `Configuration.Autofill`
-and two calls around the new client ([android-autofill.md](android-autofill.md)).
+Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends `"password": true`; a secure
+Phone is a number password (Android has none for phones). Email, Url and Search carry their own Android variation,
+which Flutter's password and no-suggestions flags would overwrite (email without suggestions became `VARIATION_FILTER`,
+no email keyboard): `has_own_variation` sends them with suggestions on, and as text when secure. `autofill` adds
+`Configuration.Autofill` and two calls around the new client ([android-autofill.md](android-autofill.md)).
 
 ## Limits
 
 - Java mirrors the whole document; `text_input_editable_range` is not used. A handler without `text_length_utf16`
   is asked for `text_for_range(0..usize::MAX)`.
-- No deltas, private commands or `commitContent` (images) yet; see the ledger rows. Autofill's own limits:
-  [android-autofill.md](android-autofill.md#not-yet).
+- No deltas, private commands or `commitContent` (images) yet (ledger rows); autofill's: [android-autofill.md](android-autofill.md#not-yet).
 
 ## Check it
 
 `examples/hello` has a field ([examples.md](examples.md)). On the emulator: tap it, `adb shell input text hello`,
 `adb shell input keyevent 67` (backspace). IME edits and call deliveries log at debug level as lengths and ranges,
 never text (a field may be a password); raise `on_load`'s info-level logger in [host.rs](../crates/android/src/host.rs)
-to see them. Tests: `cargo test -p parallax-android text_input`, and `scripts/java-test.sh` for the Java (Flutter's
-`TextInputPluginTest`, `InputConnectionAdaptorTest` and two more, [android-tests.md](android-tests.md)).
+to see them. Tests: `cargo test -p parallax-android text_input`, `scripts/java-test.sh` ([android-tests.md](android-tests.md)).
