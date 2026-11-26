@@ -62,3 +62,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0007](../patches/0007-cosmic-text-system-font-database-id.patch) | `CosmicTextSystem::font_database_id`, so Android can draw emoji ([android-emoji.md](android-emoji.md)) |
 | [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
 | [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
+| [0010](../patches/0010-end-composition-on-focus-loss.patch) | a field that focus leaves ends its IME composition ([core-patches.md](core-patches.md)) |

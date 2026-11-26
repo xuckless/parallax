@@ -1,0 +1,314 @@
+End a text field's IME composition when focus leaves it.
+
+What: at the start of `Window::draw`, the previous frame's input handler is taken a few lines earlier than before;
+if focus has left its field (`focus_id` differs from `Window::focus`: blur, or another element focused), the field's
+composition is ended (`PlatformInputHandler::end_composition_during_update`: `unmark_text` when
+`marked_text_range` is `Some`) before the draw drops the handler. Its marked text stays as plain text. Adds an input
+test with one row per focus move (another element, blur, a tap on another element, nothing marked, the same element).
+
+Why: a field left mid-composition kept its marked text: it stayed underlined, and when focus came back the platform
+handed that range to a new IME session, whose next keystroke replaced it (Android, Gboard Korean: ㅏ then ㅁ gave ㅁ).
+Platforms can't end it themselves: they learn of the focus change only from the draw, after the left field's handler
+is gone, and a tap's focus change is drawn inside the touch dispatch (`draw_before_touch_release`), so no platform
+call runs between the two. Core already ends a composition when focus moves to a native view
+(`end_composition_before_focusing_native_view`, deferred until the update ends); a deferred call would reach the new
+field's handler after a tap's inline draw, so this runs in the draw, where no entity is being updated. Flutter's
+`EditableText` does the same on blur (`clearComposing`). Not platform-specific, so no cfg.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
+index 268f604..eb87ec2 100644
+--- a/gpui-pre/src/input.rs
++++ b/gpui-pre/src/input.rs
+@@ -322,9 +322,10 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
+ mod tests {
+     use super::*;
+     use crate::{
+-        AnyWindowHandle, AppContext as _, AutofillHint, FocusHandle, InteractiveElement as _,
+-        IntoElement, KeyboardType, ParentElement as _, Render, Styled as _, TestAppContext,
+-        TextInputAction, TextInputStateChange, canvas, div,
++        AnyWindowHandle, AppContext as _, AutofillHint, FocusHandle, InputEvent as _,
++        InteractiveElement as _, IntoElement, KeyboardType, MouseButton, ParentElement as _,
++        PointerDevice, Render, Styled as _, TestAppContext, TextInputAction, TextInputStateChange,
++        TouchEvent, TouchId, TouchPhase, canvas, div, point, px,
+     };
+ 
+     #[gpui::test]
+@@ -505,6 +506,228 @@ mod tests {
+         );
+     }
+ 
++    /// How focus leaves (or stays on) the field in [`focus_moves_end_the_left_fields_composition`].
++    #[derive(Clone, Copy, Debug)]
++    enum FocusMove {
++        /// `Window::focus` on another element, then a frame.
++        Other,
++        /// `Window::blur`, then a frame.
++        Blur,
++        /// A tap on another element that focuses it: drawn inside the touch dispatch, no frame after.
++        Tap,
++        /// `Window::focus` on the field itself, then a frame.
++        Same,
++    }
++
++    #[gpui::test]
++    fn focus_moves_end_the_left_fields_composition(cx: &mut TestAppContext) {
++        // (name, marked text before, how focus moves) → marked text after, `unmark_text` calls.
++        type Row = (
++            &'static str,
++            Option<Range<usize>>,
++            FocusMove,
++            Option<Range<usize>>,
++            usize,
++        );
++        let rows: [Row; 5] = [
++            (
++                "another element, marked: unmarked",
++                Some(0..1),
++                FocusMove::Other,
++                None,
++                1,
++            ),
++            (
++                "blur, marked: unmarked",
++                Some(0..1),
++                FocusMove::Blur,
++                None,
++                1,
++            ),
++            (
++                "tap on another element, marked: unmarked",
++                Some(0..1),
++                FocusMove::Tap,
++                None,
++                1,
++            ),
++            (
++                "another element, nothing marked: no call",
++                None,
++                FocusMove::Other,
++                None,
++                0,
++            ),
++            (
++                "same element, marked: kept",
++                Some(0..1),
++                FocusMove::Same,
++                Some(0..1),
++                0,
++            ),
++        ];
++        for (name, marked, focus_move, want_marked, want_unmarks) in rows {
++            let window = cx.add_window(|_, cx| CompositionTestView {
++                field: cx.focus_handle(),
++                other: cx.focus_handle(),
++                marked: None,
++                unmarks: 0,
++            });
++            let view = window.root(cx).unwrap();
++            let window = AnyWindowHandle::from(window);
++            cx.update_window(window, |_, window, cx| {
++                let field = view.read(cx).field.clone();
++                window.focus(&field, cx);
++                window.draw(cx).clear(cx);
++            })
++            .unwrap();
++            view.update(cx, |view, _| view.marked = marked);
++            cx.update_window(window, |_, window, cx| {
++                let (field, other) =
++                    view.read_with(cx, |view, _| (view.field.clone(), view.other.clone()));
++                match focus_move {
++                    FocusMove::Other => window.focus(&other, cx),
++                    FocusMove::Blur => window.blur(cx),
++                    FocusMove::Same => window.focus(&field, cx),
++                    FocusMove::Tap => {
++                        for phase in [TouchPhase::Started, TouchPhase::Ended] {
++                            let touch = TouchEvent {
++                                id: TouchId(1),
++                                phase,
++                                position: point(px(10.), px(75.)),
++                                predicted_position: None,
++                                force: None,
++                                device: PointerDevice::Touch,
++                            };
++                            window.dispatch_event(touch.to_platform_input(), cx);
++                        }
++                        return;
++                    }
++                }
++                window.draw(cx).clear(cx);
++            })
++            .unwrap();
++            let (marked, unmarks) =
++                view.read_with(cx, |view, _| (view.marked.clone(), view.unmarks));
++            assert_eq!(marked, want_marked, "{name}: marked text");
++            assert_eq!(unmarks, want_unmarks, "{name}: unmark_text calls");
++        }
++    }
++
++    /// A field (top 50 px) with marked text to end, and another focusable element below it that a tap focuses.
++    struct CompositionTestView {
++        field: FocusHandle,
++        other: FocusHandle,
++        marked: Option<Range<usize>>,
++        unmarks: usize,
++    }
++
++    impl Render for CompositionTestView {
++        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++            let view = cx.entity();
++            let field = self.field.clone();
++            div()
++                .size_full()
++                .child(
++                    div().h(px(50.)).w_full().track_focus(&self.field).child(
++                        canvas(
++                            |_, _, _| {},
++                            move |bounds, _, window, cx| {
++                                window.handle_input(
++                                    &field,
++                                    ElementInputHandler::new(bounds, view),
++                                    cx,
++                                );
++                            },
++                        )
++                        .size_full(),
++                    ),
++                )
++                .child(
++                    div()
++                        .h(px(50.))
++                        .w_full()
++                        .track_focus(&self.other)
++                        .on_mouse_down(
++                            MouseButton::Left,
++                            cx.listener(|view, _, window, cx| window.focus(&view.other, cx)),
++                        ),
++                )
++        }
++    }
++
++    impl EntityInputHandler for CompositionTestView {
++        fn text_for_range(
++            &mut self,
++            _range: Range<usize>,
++            _adjusted_range: &mut Option<Range<usize>>,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) -> Option<String> {
++            Some("a".into())
++        }
++
++        fn selected_text_range(
++            &mut self,
++            _ignore_disabled_input: bool,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) -> Option<UTF16Selection> {
++            None
++        }
++
++        fn marked_text_range(
++            &self,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) -> Option<Range<usize>> {
++            self.marked.clone()
++        }
++
++        fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
++            self.marked = None;
++            self.unmarks += 1;
++        }
++
++        fn replace_text_in_range(
++            &mut self,
++            _range: Option<Range<usize>>,
++            _text: &str,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) {
++        }
++
++        fn replace_and_mark_text_in_range(
++            &mut self,
++            _range: Option<Range<usize>>,
++            _new_text: &str,
++            _new_selected_range: Option<Range<usize>>,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) {
++        }
++
++        fn bounds_for_range(
++            &mut self,
++            _range_utf16: Range<usize>,
++            _element_bounds: Bounds<Pixels>,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) -> Option<Bounds<Pixels>> {
++            None
++        }
++
++        fn character_index_for_point(
++            &mut self,
++            _point: crate::Point<Pixels>,
++            _window: &mut Window,
++            _cx: &mut Context<Self>,
++        ) -> Option<usize> {
++            None
++        }
++    }
++
+     struct ConfigurationTestView {
+         focus_handle: FocusHandle,
+         configuration: TextInputConfiguration,
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index d759314..f9d5ec5 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -2257,6 +2257,13 @@ impl PlatformInputHandler {
+         self.handler.unmark_text(window, cx);
+     }
+ 
++    /// Ends the composition, if the field has one, from inside an update.
++    pub(crate) fn end_composition_during_update(&mut self, window: &mut Window, cx: &mut App) {
++        if self.handler.marked_text_range(window, cx).is_some() {
++            self.handler.unmark_text(window, cx);
++        }
++    }
++
+     pub fn dispatch_input(&mut self, input: &str, window: &mut Window, cx: &mut App) {
+         self.handler.replace_text_in_range(None, input, window, cx);
+     }
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index ece537e..81a0e9a 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3948,6 +3948,16 @@ impl Window {
+         if self.platform_window.prepare_frame() {
+             self.refresh();
+         }
++        // A field that focus left (blur, another element) ends its IME composition before this
++        // draw drops its input handler, so its marked text becomes plain text and no stale composing
++        // range reaches the next input session. A tap's focus change is drawn inside the touch
++        // dispatch, so this is the last point where the left field's handler is reachable.
++        let mut input_handler = self.platform_window.take_input_handler();
++        if let Some(handler) = &mut input_handler
++            && handler.focus_id().is_some_and(|id| self.focus != Some(id))
++        {
++            handler.end_composition_during_update(self, cx);
++        }
+         self.invalidate_entities();
+         cx.entities.clear_accessed();
+         debug_assert!(self.rendered_entity_stack.is_empty());
+@@ -3958,7 +3968,7 @@ impl Window {
+         // Place it back into a None slot (left by a previous .take()) so that
+         // cached paint_range indices in reuse_paint find the handler at the
+         // expected position.
+-        if let Some(input_handler) = self.platform_window.take_input_handler() {
++        if let Some(input_handler) = input_handler {
+             if let Some(slot) = self
+                 .rendered_frame
+                 .input_handlers
