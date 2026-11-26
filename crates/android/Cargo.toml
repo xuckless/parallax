@@ -1,10 +1,15 @@
 [package]
 name = "parallax-android"
-description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu (Vulkan, GL fallback), IME, AccessKit."
+description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu on Vulkan with a GL fallback."
 version.workspace = true
 edition.workspace = true
 license = "Apache-2.0 AND BSD-3-Clause"
-publish.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "android", "gui", "jni", "touch"]
+categories = ["gui", "os::android-apis"]
+# java/ (ParallaxActivity and the ported Flutter embedding) ships in the package: cargo-parallax compiles it from
+# wherever cargo metadata puts this crate, crates.io included.
 
 [lints]
 workspace = true

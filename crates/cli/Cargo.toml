@@ -1,10 +1,14 @@
 [package]
 name = "cargo-parallax"
-description = "cargo parallax: build and run GPUI apps on iOS, Android and web from parallax.toml."
+description = "cargo parallax: build and run GPUI apps on Android from parallax.toml (iOS and web later)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "android", "cargo", "cli", "mobile"]
+categories = ["development-tools::cargo-plugins", "command-line-utilities"]
+# templates/ (Gradle project and wrapper jar) are compiled in with include_str!/include_bytes!, so they ship too.
 
 [lints]
 workspace = true

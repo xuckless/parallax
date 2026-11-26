@@ -4,7 +4,10 @@ description = "Picks the GPUI platform for the current target (desktop, web, iOS
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "gui", "cross-platform", "android", "wasm"]
+categories = ["gui"]
 
 [lints]
 workspace = true

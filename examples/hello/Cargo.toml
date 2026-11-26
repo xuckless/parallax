@@ -4,7 +4,8 @@ description = "Parallax example: one window with a box that changes colour on ta
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+# Examples are never published.
+publish = false
 
 [lints]
 workspace = true
