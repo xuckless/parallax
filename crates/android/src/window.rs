@@ -68,7 +68,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        Point::default() // Not yet on Android: comes with touch (Wave 6).
+        self.shell.touches.borrow().last_position
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -110,7 +110,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn is_hovered(&self) -> bool {
-        false // no hover without a mouse or stylus; comes with touch (Wave 6)
+        false // Not yet on Android: mouse and stylus hover (the ported onGenericMotionEvent, not wired yet)
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
@@ -158,7 +158,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_hover_status_change(&self, _callback: Box<dyn FnMut(bool)>) {
-        // No hover yet; comes with touch (Wave 6).
+        // No hover yet; comes with mouse and stylus hover (onGenericMotionEvent).
     }
 
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {

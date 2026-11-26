@@ -27,7 +27,9 @@ Background: [android-spike.md](android-spike.md).
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
 - **Rotation** does not recreate the Activity (manifest `configChanges`, as Flutter): `surfaceChanged` resizes.
-- **Touch seam (Wave 6):** `onTouchEvent` → ported `AndroidTouchProcessor` → a `nativeTouch` row → `Callbacks::input`.
+- **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
+  `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
+  `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).
 
 ## The app entry point
 
@@ -51,7 +53,7 @@ Each is marked `Not yet on Android` in the source with where it will come from: 
 | Area | Stubs | Comes with |
 |---|---|---|
 | Lifecycle | `quit`, `on_quit`, `on_reopen`, `on_system_sleep/wake`, `is_active`, `visibility`, `on_active_status_change`, `on_visibility_change`, `on_should_close`, `on_close` | Full Android lifecycle |
-| Input | `mouse_position`, `modifiers`, `capslock`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | touch (Wave 6), keys, text input |
+| Input | `is_hovered`, `modifiers`, `capslock`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | mouse and stylus hover, keys, text input |
 | Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
 | System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |
 | Display | `on_displays_changed`, `on_display_changed`, display `uuid`, window raw handle | multi-display |

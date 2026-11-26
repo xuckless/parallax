@@ -9,6 +9,8 @@ mod dispatcher;
 mod host;
 #[cfg(target_os = "android")]
 mod platform;
+#[cfg(any(target_os = "android", test))]
+mod pointer;
 #[cfg(target_os = "android")]
 mod renderer;
 #[cfg(any(target_os = "android", test))]
@@ -46,7 +48,11 @@ macro_rules! android_main {
     };
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(dead_code, reason = "host tests build only the pure modules")
+)]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
@@ -57,6 +63,7 @@ pub enum Error {
     NoLooper,
     #[error("{0} failed: {1}")]
     Os(&'static str, #[source] std::io::Error),
+    #[cfg(target_os = "android")]
     #[error("JNI: {0}")]
     Jni(#[from] jni::errors::Error),
     #[error("no surface yet: GPUI opens its window once ParallaxSurfaceView has one")]
@@ -69,6 +76,12 @@ pub enum Error {
     Renderer(String),
     #[error("{0} is not yet on Android")]
     NotYet(&'static str),
+    #[error("pointer data packet of {0} bytes is not whole records (36 fields of 8 bytes each)")]
+    PacketLength(usize),
+    #[error("pointer data packet has an unknown PointerChange {0}")]
+    PointerChange(i64),
+    #[error("pointer data packet has an unknown PointerDeviceKind {0}")]
+    PointerKind(i64),
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,
