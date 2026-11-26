@@ -120,12 +120,12 @@ third_party/
     opt-out, keyboard type), published crates get the feature through Parallax API on stock GPUI (e.g. `parallax-ext`
     element methods, a per-window query from the backend). Once Zed merges the patch, the side-channel becomes a thin
     wrapper over upstream's API.
-13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `docs/upstream-drafts/`
+13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `drafts/upstream/` (git-ignored, owner-only)
     and shown to the owner before they are opened.
 14. **Our Zed fork carries the patches; upstreaming is paused.** `xuckless/zed` keeps a `parallax` branch: the snapshot
     commit from `upstream/UPSTREAM` plus every patch, rebuilt by `scripts/sync-fork.sh` at each sync. The owner has
     paused contacting Zed (2026-11-26): Zed's AI policy wants PRs and posts written and opened by a person, so agents
-    only keep patches, the fork branch and notes in `docs/upstream-drafts/` ready. There is no app opt-in to the fork
+    only keep patches, the fork branch and notes in `drafts/upstream/` (git-ignored, owner-only) ready. There is no app opt-in to the fork
     (its crate names differ from `gpui-pre`); apps get backend patches only when Zed merges them.
 
 ## Coding style: Caveman Code

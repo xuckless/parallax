@@ -243,7 +243,7 @@ tests are the oracle.
 - [x] Is upstream adding Android itself? No: the one Android PR (#61057) was closed as stale and too large (checked 2026-11-26).
 - [ ] When `zed-industries/gpui` holds code, move `upstream/` to it. Same code as `gpui-pre`, so only the source changes.
 - [ ] `gpui-pre` is published by one person. If its snapshots stop, fall back to vendoring Zed `crates/gpui*` with a generated manifest.
-- [ ] Will Zed accept patches whose code is BSD-3 (Flutter-derived) into an Apache-2.0 crate? Paused with upstreaming; notes in [docs/upstream-drafts/](docs/upstream-drafts/).
+- [ ] Will Zed accept patches whose code is BSD-3 (Flutter-derived) into an Apache-2.0 crate? Paused with upstreaming; notes in `drafts/upstream/` (git-ignored).
 
 ## Upstream notes
 
