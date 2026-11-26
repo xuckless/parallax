@@ -41,8 +41,8 @@ A target that cannot build a crate gets an explicit `--exclude` with a comment i
 
 ## android-smoke
 
-It boots an emulator and builds a two-ABI APK, about TODO minutes, so it runs where a merge is decided: pull requests,
-pushes to `main` and manual runs. Other branch pushes skip it; start it on a branch with
+It boots an emulator and builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs where a merge is
+decided: pull requests, pushes to `main` and manual runs. Other branch pushes skip it; start it on a branch with
 `gh workflow run ci.yml --ref <branch>`. Emulator setup, GPU mode and caching: [android-smoke.md](android-smoke.md#in-ci).
 
 ## Published crates
