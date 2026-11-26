@@ -260,10 +260,12 @@ extern "system" fn surface_created(
     };
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
-        host.shell.set_display(window.size(), density, refresh_rate);
+        let size = window.size();
+        host.shell.set_display(size, density, refresh_rate);
         host.shell.handle(SurfaceEvent::Created {
             window,
             activity: ActivityId(activity),
+            size,
         });
         // Read first, so the borrow ends before `follow_locales` runs GPUI.
         let loaded = match &*host.app.borrow() {
@@ -306,12 +308,9 @@ extern "system" fn surface_changed(
 ) {
     with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
-        host.shell.set_display(
-            size(DevicePixels(width), DevicePixels(height)),
-            density,
-            refresh_rate,
-        );
-        host.shell.handle(SurfaceEvent::Resized);
+        let size = size(DevicePixels(width), DevicePixels(height));
+        host.shell.set_display(size, density, refresh_rate);
+        host.shell.handle(SurfaceEvent::Resized { size });
     });
 }
 
@@ -794,6 +793,7 @@ impl Shell {
                     }
                 }
             }
+            Action::Redraw => self.resized(),
             Action::Draw => {
                 self.callbacks
                     .request_frame

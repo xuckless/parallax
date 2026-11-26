@@ -181,8 +181,11 @@ pub(crate) fn recover(
     size: Size<DevicePixels>,
 ) -> Result<(), Error> {
     let started = Instant::now();
-    // Drops the renderer's surface and its hold on the lost device before a new device is made.
+    // Drops the renderer's surface and its hold on the lost device before a new device is made. Upstream's recover
+    // builds its surface at the renderer's recorded size: record the current one, so a resize while recovering
+    // needs no second surface.
     renderer.destroy();
+    renderer.update_drawable_size(size);
     seed(gpu, window, size)?;
     renderer
         .recover(window)
