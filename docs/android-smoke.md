@@ -2,7 +2,7 @@
 
 [android-smoke.sh](../scripts/android-smoke.sh) runs [examples/hello](examples.md#hello) on one running device or
 emulator and checks, step by step, that it still opens, draws, takes taps and text, rotates and survives the
-background. The same script runs locally and in the [`android-smoke` CI job](ci.md#android-smoke).
+background. The same script runs locally and in the [`android-smoke` CI job](ci.md#jobs).
 
 ```sh
 scripts/apply-patches.sh
@@ -28,7 +28,7 @@ the regex. A crash, a native signal or an ANR for the app fails the current step
 | tap the box | taps the blue box | `box colour ef4444 (touch click` |
 | focus the field | taps the first white field | an insets line with a non-zero IME bottom (the keyboard opened) |
 | type and submit | `input text smoke`, then Enter | `text field submitted: 5 bytes` (the app logs the length, never the text) |
-| rotate to landscape / portrait | `settings put system user_rotation` (auto-rotate turned off) | `parallax: surface … Resize` |
+| rotate to landscape / portrait | `settings put system user_rotation` (auto-rotate turned off) | `parallax: surface … Attach` (a resize makes a new surface) |
 | background | Home | `parallax: lifecycle From(…, Stop)` |
 | resume | `am start` again | `parallax: surface … Attach` (a new surface) |
 | tap the box again | taps the red box | `box colour 22c55e (touch click` |
@@ -40,8 +40,8 @@ To add a step, add a row to `steps`. Commands may call `on_device` (`adb shell`)
 ## Finding what to tap
 
 GPUI draws everything itself, so there is no view tree to query. `tap_colour <rrggbb>` reads a raw `screencap` and
-taps the middle of the topmost band of rows where at least a quarter of the pixels have that colour. It accepts the
-colour scaled by 0.5–1.1, because the emulator shows hello's colours dimmed (about ×0.88), and retries for 10 s
+taps the middle of the topmost band of rows where at least a quarter of the pixels have that colour. It accepts each
+channel within 8, because an emulator's GL draws to a 16-bit RGB565 surface (Vulkan is exact), and retries for 10 s
 while a splash screen, the keyboard or a rotation settles. Status bar icons and glyphs never fill a quarter of a row.
 
 ## In CI

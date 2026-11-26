@@ -38,7 +38,8 @@ log_since() {
 
 # Taps the centre of the topmost horizontal band of the screen painted in colour $1 (RGB hex): the band is the rows
 # where at least a quarter of the sampled pixels match, so status bar icons and glyphs never count. A pixel matches
-# when it is the colour scaled by 0.5 to 1.1: the emulator's screen shows hello's colours dimmed (about 0.88).
+# within 8 per channel: on an emulator's GL, wgpu draws to a 16-bit RGB565 surface, which rounds red and blue to
+# steps of 8 (Vulkan is exact).
 # Looks again each second for up to 10 s, while a splash screen, keyboard or rotation settles.
 locate='
 import struct, sys
@@ -49,8 +50,7 @@ want = bytes.fromhex(sys.argv[1])
 step = 8
 
 def matches(pixel):
-    scale = sum(pixel) / sum(want)
-    return 0.5 <= scale <= 1.1 and all(abs(p - scale * w) <= 8 for p, w in zip(pixel, want))
+    return all(abs(p - w) <= 8 for p, w in zip(pixel, want))
 
 band = []  # (y, mean x) of matching rows in the first band
 for y in range(0, height, step):
@@ -85,8 +85,8 @@ steps=(
   "tap the box|tap_colour 3b82f6|box colour ef4444 \(touch click|20"
   "focus the field|tap_colour ffffff|insets in pixels: .*ime Edges .*bottom: [1-9]|20"
   "type and submit|on_device input text $typed && on_device input keyevent KEYCODE_ENTER|text field submitted: ${#typed} bytes|20"
-  "rotate to landscape|on_device settings put system user_rotation 1|parallax: surface .*Resize|30"
-  "rotate to portrait|on_device settings put system user_rotation 0|parallax: surface .*Resize|30"
+  "rotate to landscape|on_device settings put system user_rotation 1|parallax: surface .*Attach|30"
+  "rotate to portrait|on_device settings put system user_rotation 0|parallax: surface .*Attach|30"
   "background|on_device input keyevent KEYCODE_HOME|parallax: lifecycle From\(.*, Stop\)|20"
   "resume|on_device am start -n $component|parallax: surface .*Attach|20"
   "tap the box again|tap_colour ef4444|box colour 22c55e \(touch click|20"
