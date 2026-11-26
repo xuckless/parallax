@@ -90,8 +90,11 @@ for name in "${order[@]}"; do
         # crates.io's new-crate rate limit: "... Please try again after <HTTP date> or email help@crates.io ...".
         retry_at="$(sed -n 's/.*try again after \(.*\) or email.*/\1/p' "$log" | head -n1)"
         [[ -n $retry_at ]] || die "cargo publish failed for $name (not a rate limit; see above)"
-        wait_s=$(( $(date -d "$retry_at" +%s) - $(date +%s) + 5 ))
+        retry_epoch="$(date -d "$retry_at" +%s 2> /dev/null)" \
+            || die "cargo publish for $name was rate limited, but the retry time '$retry_at' does not parse"
+        wait_s=$(( retry_epoch - $(date +%s) + 5 ))
         echo "rate limited: waiting $wait_s s, until $retry_at"
+        # A time already past (clock skew) still waits 5 s, once per crates.io answer, never in a tight loop.
         sleep $(( wait_s > 0 ? wait_s : 5 ))
     done
     published=$((published + 1))
