@@ -48,35 +48,31 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    edit for a client GPUI is replacing (a new field or none pending) is dropped: it belongs to the field GPUI left.
 
 Focus shows the keyboard, blur hides it (as `gpui_ios`). Only a field that takes text input counts (between GPUI's
-`FocusGained` and `FocusLost`). When another Activity takes the window, its view's `TextInputPlugin` has no client,
-so a focused field is announced again (`Session::owner_changed`). Editor actions (`performEditorAction`) reach GPUI
-as an Enter press, every action alike until GPUI has an action table; GPUI's `TextInputAction` only labels the key.
+`FocusGained` and `FocusLost`). When another Activity takes the window, its view's `TextInputPlugin` has no client, so
+a focused field is announced again (`Session::owner_changed`). Editor actions (`performEditorAction`) reach GPUI as an
+Enter press, every action alike until GPUI has an action table; GPUI's `TextInputAction` only labels the key.
 `CursorAnchorInfo` gets GPUI's caret (`nativeBoundsForRange`); `update_ime_position` is not used.
 
-## Keys
-
-Hardware keys go to GPUI first ([android-keys.md](android-keys.md)); keys GPUI leaves unhandled go to
+**Keys.** Hardware keys go to GPUI first ([android-keys.md](android-keys.md)); keys GPUI leaves unhandled go to
 `TextInputPlugin.handleKeyEvent` → `InputConnectionAdaptor.handleKeyEvent` (characters, arrows, Enter as the editor
 action), as in Flutter. The IME's `sendKeyEvent` goes back through `KeyboardManager` (`KeyboardDelegate`).
 
-## Configuration
-
-`configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys: `capitalization`,
-`action` and `input_type` (`KeyboardType` and `secure` → `TextInputType`; Search is `webSearch`), exhaustive matches
-so a new variant of patch 0005 fails to compile until it gets an arm. `secure` is `obscureText` with personalized
-learning off. Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends
-`"password": true`; Android has no phone password, so a secure Phone field is a number password. GPUI's autofill
-hint is not sent: the ported Java has no autofill yet ([ROADMAP.md](../ROADMAP.md)).
+**Configuration.** `configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys
+`capitalization`, `action`, `input_type` (`KeyboardType` and `secure` → `TextInputType`; Search is `webSearch`) by
+exhaustive matches: a new patch 0005 variant needs an arm. `secure` is `obscureText`, personalized learning off.
+Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends `"password": true`; with no
+phone password on Android, a secure Phone is a number password.
 
 ## Limits
 
 - Java mirrors the whole document; `text_input_editable_range` is not used. A handler without `text_length_utf16`
   is asked for `text_for_range(0..usize::MAX)`.
-- No autofill, deltas, private commands or `commitContent` (images) yet; see the ledger rows.
+- No autofill (GPUI's autofill hint is not sent; [ROADMAP.md](../ROADMAP.md)), deltas, private commands or
+  `commitContent` (images) yet; see the ledger rows.
 
 ## Check it
 
 `examples/hello` has a field ([examples.md](examples.md)). On the emulator: tap it, `adb shell input text hello`,
-`adb shell input keyevent 67` (backspace). Each IME edit and each delivery of calls is logged at debug level as
-lengths and ranges, never the text (a field may be a password); `on_load`'s logger stops at info, so raise its level
-in [host.rs](../crates/android/src/host.rs) to see them. Tests: `cargo test -p parallax-android text_input`.
+`adb shell input keyevent 67` (backspace). IME edits and call deliveries log at debug level as lengths and ranges,
+never text (a field may be a password); raise `on_load`'s info-level logger in [host.rs](../crates/android/src/host.rs)
+to see them. Tests: `cargo test -p parallax-android text_input`.
