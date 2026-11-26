@@ -7,6 +7,8 @@
 mod dispatcher;
 #[cfg(target_os = "android")]
 mod host;
+#[cfg(any(target_os = "android", test))]
+mod keys;
 #[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]
@@ -95,6 +97,14 @@ pub enum Error {
     PointerChange(i64),
     #[error("pointer data packet has an unknown PointerDeviceKind {0}")]
     PointerKind(i64),
+    #[error(
+        "key data packet of {0} bytes does not match its header (7 fields of 8 bytes, then the character)"
+    )]
+    KeyPacketLength(usize),
+    #[error("key data packet has an unknown KeyEventType {0}")]
+    KeyEventType(i64),
+    #[error("key data packet's character is not UTF-8")]
+    KeyCharacter,
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,

@@ -72,11 +72,11 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn modifiers(&self) -> Modifiers {
-        Modifiers::default() // Not yet on Android: comes with keys (KeyboardManager port).
+        self.shell.keyboard.borrow().modifiers()
     }
 
     fn capslock(&self) -> Capslock {
-        Capslock::default() // Not yet on Android: comes with keys.
+        self.shell.keyboard.borrow().capslock()
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
