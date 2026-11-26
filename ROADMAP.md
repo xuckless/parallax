@@ -31,7 +31,7 @@ no fixed schedule and no planned last number.
       and the Zed commit it snapshots in `upstream/UPSTREAM`.
 - [x] `scripts/apply-patches.sh`: pristine `upstream/` + `patches/` → `build/gpui-patched/`. Deterministic, idempotent, fails loudly.
 - [x] Wire `[patch]` in the root `Cargo.toml` to `build/gpui-patched/`.
-- [ ] `scripts/sync-upstream.sh`: bump to the latest `gpui-pre` snapshot, re-vendor, re-apply patches, list the ones that no longer apply.
+- [x] `scripts/sync-upstream.sh`: bump to the latest `gpui-pre` snapshot, re-vendor, re-apply patches, list the ones that no longer apply.
 - [x] Flutter stable tag `3.50.1` pinned in `third_party/flutter/PORTED.md`. `scripts/flutter-diff.sh`: for every ledger row,
       show the Flutter source diff between the pinned tag and a newer stable tag.
 - [ ] `scripts/patch-paths.sh`: translate a patch between the vendored `gpui-pre` layout and Zed's `crates/gpui*` layout,

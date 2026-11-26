@@ -5,3 +5,4 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | Doc | Covers |
 |---|---|
 | [flutter.md](flutter.md) | Recording Flutter ports in the ledger, port vs oracle, bumping the pinned tag with flutter-diff.sh |
+| [upstream.md](upstream.md) | upstream/ snapshot, apply-patches.sh, sync-upstream.sh, fixing patches that stop applying |
