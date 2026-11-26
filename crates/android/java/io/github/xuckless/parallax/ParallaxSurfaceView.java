@@ -96,6 +96,8 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public boolean onTouchEvent(MotionEvent event) {
+    // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
+    requestUnbufferedDispatch(event);
     return touchProcessor.onTouchEvent(event);
   }
 
