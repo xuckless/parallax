@@ -18,7 +18,7 @@ pub(crate) struct FontConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Family {
     pub(crate) name: Option<String>,
-    /// BCP-47 tags from `lang="zh-Hant,zh-Bopo"`.
+    /// BCP-47 tags from `lang="zh-Hant,zh-Bopo"` (API 35) or `lang="zh-Hant zh-Bopo"` (API 28).
     pub(crate) langs: Vec<String>,
     /// `ignore="true"`: Android itself skips the family.
     pub(crate) ignore: bool,
@@ -61,8 +61,9 @@ pub(crate) fn parse(xml: &str) -> Result<FontConfig, Error> {
                     .attribute("lang")
                     .map(|langs| {
                         langs
-                            .split(',')
-                            .map(|lang| lang.trim().to_string())
+                            .split([',', ' '])
+                            .filter(|lang| !lang.is_empty())
+                            .map(str::to_string)
                             .collect()
                     })
                     .unwrap_or_default(),
@@ -338,7 +339,7 @@ mod tests {
         <font weight="400" style="normal" index="2">NotoSansCJK-Regular.ttc</font>
         <font weight="400" style="normal" index="2" fallbackFor="serif">NotoSerifCJK-Regular.otf</font>
     </family>
-    <family lang="zh-Hant,zh-Bopo">
+    <family lang="zh-Hant zh-Bopo">
         <font weight="400" style="normal" index="3">NotoSansCJK-Regular.ttc</font>
     </family>
     <family lang="ja">
@@ -501,6 +502,19 @@ mod tests {
                         ),
                     ],
                     aliases: vec![alias("sans-serif-thin", "sans-serif", Some(100))],
+                },
+            ),
+            (
+                "lang lists: commas (API 35), spaces (API 28), both",
+                r#"<familyset><family lang="zh-Hant,zh-Bopo"/><family lang="zh-Hant zh-Bopo"/>
+                    <family lang="und-Geor, und-Geok"/></familyset>"#,
+                FontConfig {
+                    families: vec![
+                        family(None, &["zh-Hant", "zh-Bopo"], false, vec![]),
+                        family(None, &["zh-Hant", "zh-Bopo"], false, vec![]),
+                        family(None, &["und-Geor", "und-Geok"], false, vec![]),
+                    ],
+                    aliases: vec![],
                 },
             ),
             (
