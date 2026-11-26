@@ -1,4 +1,4 @@
-# Six builds, one per target, no feature variants (ROADMAP Phase 0). See docs/ci.md.
+# Six builds, one per target, no feature variants (ROADMAP Phase 0), and the Java tests. See docs/ci.md.
 name: CI
 
 on:
@@ -106,21 +106,26 @@ jobs:
               echo "::warning::the pinned parallax-gpui* version is not on crates.io yet; published libraries not packaged" ;;
             *) exit "$status" ;;
           esac
-      # JVM tests of the ported Android Java (docs/android-tests.md). JDK 21: Robolectric needs it for SDK 37.
-      - if: matrix.target == 'linux'
-        uses: actions/setup-java@v6.3.0
+
+  # JVM tests of the ported Android Java (docs/android-tests.md). No Rust or build/, so a job of its own.
+  java-tests:
+    name: java-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # JDK 21: Robolectric needs it for SDK 37. `cache: gradle` keeps Gradle's caches and wrapper.
+      - uses: actions/setup-java@v6.3.0
         with:
           distribution: temurin
           java-version: 21.0.13+9
           cache: gradle
       # Robolectric's android-all jars (one per emulated SDK, ~1.5 GB) download outside Gradle's cache.
-      - if: matrix.target == 'linux'
-        uses: actions/cache@v6.1.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.m2/repository/org/robolectric
           key: robolectric-${{ hashFiles('crates/android/java-tests/build.gradle') }}
-      - if: matrix.target == 'linux'
-        run: scripts/java-test.sh
+      # The runner's Android SDK (ANDROID_HOME); Gradle fetches platforms;android-37 into it.
+      - run: scripts/java-test.sh
 
   # GPUI's own lib tests on the patched fork crate parallax-gpui, every patch's tests among them; the build jobs never
   # compile them (docs/patch-tests.md). Stand-in fonts come from fonts-dejavu-core.

@@ -1,7 +1,7 @@
 # CI
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
-one job per target, no feature variants. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+one job per target, no feature variants, plus one job each for the Java tests and the patch tests. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -9,20 +9,19 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-All six jobs run on every push, every pull request and on manual `workflow_dispatch`. A newer push to the same ref
+All eight jobs run on every push, every pull request and on manual `workflow_dispatch`. A newer push to the same ref
 cancels the older run.
 
 | Target | Runner | Runs |
 |---|---|---|
-| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package -p cargo-parallax`, `scripts/publish-fork.sh --dry-run`, package of the published libraries, [`scripts/java-test.sh`](android-tests.md) (JDK 21, Gradle and Robolectric jars cached) |
+| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package -p cargo-parallax`, `scripts/publish-fork.sh --dry-run`, package of the published libraries |
 | windows | windows-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | macos | macos-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | ios | macos-latest | `cargo check --workspace` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` |
 | android | ubuntu-latest | `cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings`, package of the published libraries |
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
-
-Next to the six, the `patch-tests` job (ubuntu-latest) runs [`scripts/patch-test.sh`](../scripts/patch-test.sh):
-GPUI's own lib tests on the patched fork crate, every patch's tests among them ([patch-tests.md](patch-tests.md)).
+| java-tests | ubuntu-latest | [`scripts/java-test.sh`](android-tests.md) on JDK 21 and the runner's Android SDK; Gradle and Robolectric jars cached. Its own job (`java-tests`, not a matrix row): no Rust, no `build/` |
+| patch-tests | ubuntu-latest | [`scripts/patch-test.sh`](../scripts/patch-test.sh): GPUI's own lib tests on the patched fork crate, every patch's tests among them ([patch-tests.md](patch-tests.md)). Its own job, not a matrix row |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
 (a subset of Zed's `script/linux`).
