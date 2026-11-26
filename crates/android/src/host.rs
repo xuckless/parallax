@@ -23,7 +23,7 @@ use jni::{
 
 use crate::{
     Error, keys,
-    lifecycle::{ActivityEvent, Effect, Lifecycle},
+    lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
@@ -34,7 +34,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 9] {
+fn natives() -> [NativeMethod; 10] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -43,29 +43,34 @@ fn natives() -> [NativeMethod; 9] {
     [
         row(
             "nativeSurfaceCreated",
-            "(Landroid/view/Surface;FF)V",
+            "(ILandroid/view/Surface;FF)V",
             surface_created as *mut c_void,
         ),
         row(
             "nativeSurfaceChanged",
-            "(IIF)V",
+            "(IIIF)V",
             surface_changed as *mut c_void,
         ),
         row(
             "nativeSurfaceDestroyed",
-            "()V",
+            "(I)V",
             surface_destroyed as *mut c_void,
         ),
-        row("nativeFrame", "()V", frame as *mut c_void),
-        row("nativeInsets", "(IIIIIIII)V", insets as *mut c_void),
+        row("nativeFrame", "(I)V", frame as *mut c_void),
+        row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
             "(Ljava/nio/ByteBuffer;I)V",
             dispatch_pointer_data_packet as *mut c_void,
         ),
         row(
+            "nativeActivityCreated",
+            "()I",
+            activity_created as *mut c_void,
+        ),
+        row(
             "nativeActivityEvent",
-            "(II)V",
+            "(III)V",
             activity_event as *mut c_void,
         ),
         row(
@@ -153,9 +158,21 @@ fn with_host(f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
+/// [`with_host`] for an event from `activity`'s view: dropped when a newer Activity owns the window.
+fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
+    with_host(|host| {
+        if host.shell.lifecycle.get().accepts(ActivityId(activity)) {
+            f(host)
+        } else {
+            log::warn!("parallax: event from replaced Activity {activity} ignored");
+        }
+    });
+}
+
 extern "system" fn surface_created(
     env: JNIEnv,
     _class: JClass,
+    activity: jint,
     surface: JObject,
     density: jfloat,
     refresh_rate: jfloat,
@@ -168,7 +185,8 @@ extern "system" fn surface_created(
         log::error!("parallax: surfaceCreated without a native window");
         return;
     };
-    with_host(|host| {
+    // A stale view's window is released on return, unused.
+    with_owner(activity, |host| {
         host.shell.set_display(window.size(), density, refresh_rate);
         host.shell.handle(SurfaceEvent::Created(window));
         let launch = match &*host.app.borrow() {
@@ -195,11 +213,12 @@ extern "system" fn surface_created(
 extern "system" fn surface_changed(
     _env: JNIEnv,
     _class: JClass,
+    activity: jint,
     width: jint,
     height: jint,
     density: jfloat,
 ) {
-    with_host(|host| {
+    with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
         host.shell.set_display(
             size(DevicePixels(width), DevicePixels(height)),
@@ -210,23 +229,43 @@ extern "system" fn surface_changed(
     });
 }
 
-extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass) {
-    with_host(|host| {
+extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jint) {
+    with_owner(activity, |host| {
         host.shell
             .handle(SurfaceEvent::Destroyed { at: Instant::now() })
     });
 }
 
-/// `ParallaxActivity`'s lifecycle, focus and memory callbacks: an `EVENT_*` code and its value.
-extern "system" fn activity_event(_env: JNIEnv, _class: JClass, code: jint, value: jint) {
-    match ActivityEvent::from_java(code, value) {
-        Some(event) => with_host(|host| host.shell.lifecycle(event)),
+/// `ParallaxActivity.onCreate`: the new Activity owns the window; Java tags its events with the returned id.
+extern "system" fn activity_created(_env: JNIEnv, _class: JClass) -> jint {
+    let mut activity = 0;
+    with_host(|host| {
+        host.shell.lifecycle(ActivityEvent::Create);
+        activity = host.shell.lifecycle.get().activity().0;
+    });
+    activity
+}
+
+/// `ParallaxActivity`'s lifecycle, focus and memory callbacks: its id, an `EVENT_*` code and its value. The
+/// lifecycle itself drops events from a replaced Activity.
+extern "system" fn activity_event(
+    _env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    code: jint,
+    value: jint,
+) {
+    match Callback::from_java(code, value) {
+        Some(callback) => with_host(|host| {
+            host.shell
+                .lifecycle(ActivityEvent::From(ActivityId(activity), callback))
+        }),
         None => log::error!("parallax: unknown Activity event {code} ({value})"),
     }
 }
 
-extern "system" fn frame(_env: JNIEnv, _class: JClass) {
-    with_host(|host| host.shell.frame());
+extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
+    with_owner(activity, |host| host.shell.frame());
 }
 
 /// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
@@ -298,11 +337,12 @@ extern "system" fn dispatch_key_data(env: JNIEnv, _class: JClass, packet: JByteB
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the JNI signature: two edge sets"
+    reason = "the JNI signature: the Activity and two edge sets"
 )]
 extern "system" fn insets(
     _env: JNIEnv,
     _class: JClass,
+    activity: jint,
     safe_left: jint,
     safe_top: jint,
     safe_right: jint,
@@ -318,7 +358,7 @@ extern "system" fn insets(
         bottom: DevicePixels(bottom),
         left: DevicePixels(left),
     };
-    with_host(|host| {
+    with_owner(activity, |host| {
         host.shell.set_insets(
             edges(safe_left, safe_top, safe_right, safe_bottom),
             edges(ime_left, ime_top, ime_right, ime_bottom),
@@ -445,8 +485,7 @@ impl Shell {
     fn new() -> Self {
         Self {
             surface: RefCell::new(Surface::None),
-            // JNI_OnLoad runs inside onCreate.
-            lifecycle: Cell::new(Lifecycle::Created { focused: false }),
+            lifecycle: Cell::new(Lifecycle::LOADED),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),

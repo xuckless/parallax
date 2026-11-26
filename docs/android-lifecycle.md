@@ -8,10 +8,11 @@ how the renderer survives GPU device loss. The backend around it: [android.md](a
 
 1. **Java.** [`ParallaxActivity`](../crates/android/java/io/github/xuckless/parallax/ParallaxActivity.java) forwards
    `onStart`, `onResume`, `onPause`, `onStop`, `onDestroy`, `onWindowFocusChanged` and `onTrimMemory`
-   as one native, `ParallaxSurfaceView.nativeActivityEvent(code, value)` (a row in `natives` in
-   [host.rs](../crates/android/src/host.rs)). `value` is the focus flag or the trim level.
+   as one native, `ParallaxSurfaceView.nativeActivityEvent(activity, code, value)` (a row in `natives` in
+   [host.rs](../crates/android/src/host.rs)). `value` is the focus flag or the trim level; `activity` is the id
+   `nativeActivityCreated` returned in `onCreate`, which the view's surface, frame and inset natives carry too.
 2. **State machine.** [lifecycle.rs](../crates/android/src/lifecycle.rs): `Lifecycle::{Created, Started, Resumed}`
-   (each with the last focus flag) and `Disconnected`; one `next(state, event) → (state, effect)`. Pure, tested row by
+   (each with the owning Activity and the last focus flag) and `Disconnected`; one `next(state, event) → (state, effect)`. Pure, tested row by
    row on the host (`cargo test -p parallax-android`), rejected events included.
 3. **Shell.** `Shell::lifecycle` stores the new state, tells the window (`on_active_status_change`,
    `on_visibility_change`) when `is_active()` or `visibility()` changed, then the app (`Platform::on_app_lifecycle` or
@@ -41,6 +42,11 @@ how the renderer survives GPU device loss. The backend around it: [android.md](a
   root, "Don't keep activities"), and GPUI's quit path (`App::shutdown`) closes every window for good; so GPUI keeps
   running, the surface was already released in `surfaceDestroyed`, and the next `onStart` reattaches. `on_quit` never
   fires: Android kills processes without notice, so save state on `Background`.
+- **Only the newest Activity counts.** A clear-task relaunch overlaps two instances: the old one's `onStop`,
+  `onDestroy` and `surfaceDestroyed` arrive after the new one started. `Lifecycle::accepts` is the one rule: events
+  (lifecycle and the view's surface, frame and insets) from any other Activity are dropped. A still-visible Activity
+  being replaced reports `Background` until its successor starts. Touch and key natives (ported Flutter Java) carry
+  no id; only the focused, newest view receives input.
 - Back is the keys port's (`on_should_close`); `quit` (`Activity.finish()`) is still a stub ([android.md](android.md#stubs-not-yet-on-android)).
 
 To add a callback: an `EVENT_*` constant in `ParallaxActivity`, a row in `ActivityEvent::from_java`, the variant, and

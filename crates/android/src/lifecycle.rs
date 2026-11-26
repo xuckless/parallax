@@ -5,23 +5,39 @@
 
 use gpui::{AppLifecyclePhase, WindowVisibility};
 
-/// Where the Activity is. `focused` is the last `onWindowFocusChanged`: kept in every state of a live Activity,
-/// because focus and lifecycle callbacks arrive in no fixed order (Flutter's `LifecycleChannel` says so too).
+/// Which `ParallaxActivity` instance an event comes from. Each `onCreate` gets the next one; only the newest owns the
+/// window. Two instances overlap when Android replaces one (a clear-task relaunch): the old one's `onStop`,
+/// `onDestroy` and `surfaceDestroyed` arrive after the new one started, and must not touch the new one's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActivityId(pub i32);
+
+/// Where the owning Activity is. `focused` is the last `onWindowFocusChanged`: kept in every state of a live
+/// Activity, because focus and lifecycle callbacks arrive in no fixed order (Flutter's `LifecycleChannel` says so).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lifecycle {
     /// After `onCreate` or `onStop`: not visible. The surface is gone or about to go.
-    Created { focused: bool },
+    Created { activity: ActivityId, focused: bool },
     /// After `onStart` or `onPause`: visible, not resumed.
-    Started { focused: bool },
+    Started { activity: ActivityId, focused: bool },
     /// After `onResume`.
-    Resumed { focused: bool },
-    /// After `onDestroy`. The process and GPUI live on; a new Activity in this process starts again from here.
-    Disconnected,
+    Resumed { activity: ActivityId, focused: bool },
+    /// Before the first `onCreate` (`ActivityId(0)`), or after `onDestroy` of `activity`. The process and GPUI live
+    /// on; a new Activity in this process starts again from here.
+    Disconnected { activity: ActivityId },
 }
 
-/// One per `ParallaxActivity` callback.
+/// What happened, and to which Activity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ActivityEvent {
+    /// `onCreate`: a new Activity owns the window from now on.
+    Create,
+    /// A callback from Activity `from`.
+    From(ActivityId, Callback),
+}
+
+/// One per `ParallaxActivity` callback after `onCreate`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Callback {
     Start,
     Resume,
     Pause,
@@ -53,9 +69,9 @@ pub enum Effect {
 /// warnings before its first frame; here GPUI has no observers before launch, and launch is one vsync before it.
 const TRIM_MEMORY_RUNNING_LOW: i32 = 10;
 
-/// `ParallaxActivity`'s event codes (its `EVENT_*` constants) → events; `value` is the focus flag or trim level.
+/// `ParallaxActivity`'s event codes (its `EVENT_*` constants) → callbacks; `value` is the focus flag or trim level.
 /// To add a callback: add a constant in `ParallaxActivity.java`, a row here, and the variant above.
-impl ActivityEvent {
+impl Callback {
     pub fn from_java(code: i32, value: i32) -> Option<Self> {
         match code {
             0 => Some(Self::Start),
@@ -71,67 +87,116 @@ impl ActivityEvent {
 }
 
 impl Lifecycle {
+    /// Before the first `onCreate`: JNI_OnLoad runs inside it, and `Create` follows.
+    pub const LOADED: Lifecycle = Lifecycle::Disconnected {
+        activity: ActivityId(0),
+    };
+
+    /// The Activity that owns the window: the newest one created.
+    pub fn activity(self) -> ActivityId {
+        match self {
+            Lifecycle::Created { activity, .. }
+            | Lifecycle::Started { activity, .. }
+            | Lifecycle::Resumed { activity, .. }
+            | Lifecycle::Disconnected { activity } => activity,
+        }
+    }
+
+    /// The one rule for stale events, lifecycle and surface alike: only the owning Activity's events count.
+    pub fn accepts(self, from: ActivityId) -> bool {
+        from == self.activity()
+    }
+
     /// The only place the lifecycle changes: state × event → next state and the effect that goes with it.
     /// To add an event: add the variant, and the compiler lists the arms to write here.
     pub fn next(self, event: ActivityEvent) -> (Self, Effect) {
-        use ActivityEvent as E;
         use AppLifecyclePhase as P;
+        use Callback as C;
         use Effect::{MemoryWarning, Nothing, Phase, Reject};
         use Lifecycle as S;
         let reject = |why| (self, Reject { why });
-        match (self, event) {
+        let (from, callback) = match event {
+            ActivityEvent::Create => {
+                let activity = ActivityId(self.activity().0.wrapping_add(1));
+                let created = S::Created {
+                    activity,
+                    focused: false,
+                };
+                // A replaced Activity that is still visible leaves GPUI's window hidden until the new one starts.
+                let effect = match self {
+                    S::Started { .. } | S::Resumed { .. } => Phase(P::Background),
+                    S::Created { .. } | S::Disconnected { .. } => Nothing,
+                };
+                return (created, effect);
+            }
+            ActivityEvent::From(from, _) if !self.accepts(from) => {
+                return reject("event from a replaced Activity");
+            }
+            ActivityEvent::From(from, callback) => (from, callback),
+        };
+        let activity = from;
+        match (self, callback) {
             // Memory pressure changes no state, in any state.
-            (state, E::TrimMemory(level)) if level >= TRIM_MEMORY_RUNNING_LOW => {
+            (state, C::TrimMemory(level)) if level >= TRIM_MEMORY_RUNNING_LOW => {
                 (state, MemoryWarning)
             }
-            (state, E::TrimMemory(_)) => (state, Nothing),
-            (S::Created { focused }, E::Start) => (S::Started { focused }, Phase(P::Foreground)),
-            // A new Activity in the same process: its window has not been focused yet.
-            (S::Disconnected, E::Start) => (S::Started { focused: false }, Phase(P::Foreground)),
-            (S::Started { focused }, E::Resume) => (
-                S::Resumed { focused },
+            (state, C::TrimMemory(_)) => (state, Nothing),
+            (S::Created { focused, .. }, C::Start) => {
+                (S::Started { activity, focused }, Phase(P::Foreground))
+            }
+            (S::Started { focused, .. }, C::Resume) => (
+                S::Resumed { activity, focused },
                 if focused { Phase(P::Active) } else { Nothing },
             ),
-            (S::Resumed { focused }, E::Pause) => (
-                S::Started { focused },
+            (S::Resumed { focused, .. }, C::Pause) => (
+                S::Started { activity, focused },
                 if focused { Phase(P::Inactive) } else { Nothing },
             ),
-            (S::Started { focused }, E::Stop) => (S::Created { focused }, Phase(P::Background)),
-            (S::Created { .. }, E::Destroy) => (S::Disconnected, Phase(P::Disconnected)),
-            (S::Created { .. }, E::Focus(focused)) => (S::Created { focused }, Nothing),
-            (S::Started { .. }, E::Focus(focused)) => (S::Started { focused }, Nothing),
-            (S::Resumed { focused: was }, E::Focus(focused)) => (
-                S::Resumed { focused },
+            (S::Started { focused, .. }, C::Stop) => {
+                (S::Created { activity, focused }, Phase(P::Background))
+            }
+            (S::Created { .. }, C::Destroy) => {
+                (S::Disconnected { activity }, Phase(P::Disconnected))
+            }
+            (S::Created { .. }, C::Focus(focused)) => (S::Created { activity, focused }, Nothing),
+            (S::Started { .. }, C::Focus(focused)) => (S::Started { activity, focused }, Nothing),
+            (S::Resumed { focused: was, .. }, C::Focus(focused)) => (
+                S::Resumed { activity, focused },
                 match (was, focused) {
                     (false, true) => Phase(P::Active),
                     (true, false) => Phase(P::Inactive),
                     (false, false) | (true, true) => Nothing,
                 },
             ),
-            (S::Started { .. } | S::Resumed { .. }, E::Start) => reject("start while started"),
-            (S::Created { .. } | S::Disconnected, E::Resume) => reject("resume before start"),
-            (S::Resumed { .. }, E::Resume) => reject("resume while resumed"),
-            (S::Created { .. } | S::Started { .. } | S::Disconnected, E::Pause) => {
+            (S::Disconnected { .. }, C::Start) => reject("start without onCreate"),
+            (S::Started { .. } | S::Resumed { .. }, C::Start) => reject("start while started"),
+            (S::Created { .. } | S::Disconnected { .. }, C::Resume) => {
+                reject("resume before start")
+            }
+            (S::Resumed { .. }, C::Resume) => reject("resume while resumed"),
+            (S::Created { .. } | S::Started { .. } | S::Disconnected { .. }, C::Pause) => {
                 reject("pause while not resumed")
             }
-            (S::Created { .. } | S::Disconnected, E::Stop) => reject("stop while not started"),
-            (S::Resumed { .. }, E::Stop) => reject("stop before pause"),
-            (S::Started { .. } | S::Resumed { .. }, E::Destroy) => reject("destroy before stop"),
-            (S::Disconnected, E::Destroy) => reject("destroy while disconnected"),
-            (S::Disconnected, E::Focus(_)) => reject("focus without an Activity"),
+            (S::Created { .. } | S::Disconnected { .. }, C::Stop) => {
+                reject("stop while not started")
+            }
+            (S::Resumed { .. }, C::Stop) => reject("stop before pause"),
+            (S::Started { .. } | S::Resumed { .. }, C::Destroy) => reject("destroy before stop"),
+            (S::Disconnected { .. }, C::Destroy) => reject("destroy while disconnected"),
+            (S::Disconnected { .. }, C::Focus(_)) => reject("focus without an Activity"),
         }
     }
 
     /// GPUI's `PlatformWindow::is_active`: resumed and focused.
     pub fn is_active(self) -> bool {
-        matches!(self, Lifecycle::Resumed { focused: true })
+        matches!(self, Lifecycle::Resumed { focused: true, .. })
     }
 
     /// GPUI's `PlatformWindow::visibility`: between `onStart` and `onStop`.
     pub fn visibility(self) -> WindowVisibility {
         match self {
             Lifecycle::Started { .. } | Lifecycle::Resumed { .. } => WindowVisibility::Visible,
-            Lifecycle::Created { .. } | Lifecycle::Disconnected => WindowVisibility::Hidden,
+            Lifecycle::Created { .. } | Lifecycle::Disconnected { .. } => WindowVisibility::Hidden,
         }
     }
 
@@ -140,9 +205,11 @@ impl Lifecycle {
     pub fn launch_phases(self) -> &'static [AppLifecyclePhase] {
         use AppLifecyclePhase as P;
         match self {
-            Lifecycle::Created { .. } | Lifecycle::Disconnected => &[],
-            Lifecycle::Started { .. } | Lifecycle::Resumed { focused: false } => &[P::Foreground],
-            Lifecycle::Resumed { focused: true } => &[P::Foreground, P::Active],
+            Lifecycle::Created { .. } | Lifecycle::Disconnected { .. } => &[],
+            Lifecycle::Started { .. } | Lifecycle::Resumed { focused: false, .. } => {
+                &[P::Foreground]
+            }
+            Lifecycle::Resumed { focused: true, .. } => &[P::Foreground, P::Active],
         }
     }
 }
@@ -150,10 +217,42 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ActivityEvent as E;
     use AppLifecyclePhase as P;
+    use Callback as C;
     use Effect::{MemoryWarning, Nothing, Phase, Reject};
-    use Lifecycle::Disconnected as D;
+
+    /// The owning Activity in the rows; `OLD` is the one it replaced.
+    const A: ActivityId = ActivityId(2);
+    const OLD: ActivityId = ActivityId(1);
+    const D: Lifecycle = Lifecycle::Disconnected { activity: A };
+
+    const fn c(focused: bool) -> Lifecycle {
+        Lifecycle::Created {
+            activity: A,
+            focused,
+        }
+    }
+    const fn s(focused: bool) -> Lifecycle {
+        Lifecycle::Started {
+            activity: A,
+            focused,
+        }
+    }
+    const fn r(focused: bool) -> Lifecycle {
+        Lifecycle::Resumed {
+            activity: A,
+            focused,
+        }
+    }
+    const fn on(callback: Callback) -> ActivityEvent {
+        ActivityEvent::From(A, callback)
+    }
+    const fn old(callback: Callback) -> ActivityEvent {
+        ActivityEvent::From(OLD, callback)
+    }
+    const fn no(why: &'static str) -> Effect {
+        Reject { why }
+    }
 
     #[test]
     fn trim_levels() {
@@ -172,7 +271,7 @@ mod tests {
             for (name, level, warns) in levels {
                 let effect = if warns { MemoryWarning } else { Nothing };
                 assert_eq!(
-                    state.next(E::TrimMemory(level)),
+                    state.next(on(C::TrimMemory(level))),
                     (state, effect),
                     "{name} in {state:?}"
                 );
@@ -180,69 +279,68 @@ mod tests {
         }
     }
 
-    const fn c(focused: bool) -> Lifecycle {
-        Lifecycle::Created { focused }
-    }
-    const fn s(focused: bool) -> Lifecycle {
-        Lifecycle::Started { focused }
-    }
-    const fn r(focused: bool) -> Lifecycle {
-        Lifecycle::Resumed { focused }
-    }
-    const fn no(why: &'static str) -> Effect {
-        Reject { why }
-    }
-
     #[test]
     fn transitions() {
+        let created_by = |activity| Lifecycle::Created {
+            activity,
+            focused: false,
+        };
         // (row name, state, event, expected state, expected effect). One row per (state, event), rejected
-        // included; c/s/r are Created/Started/Resumed with the focus flag, D is Disconnected. Kept one row per
-        // line (rustfmt::skip) so the table reads as a table.
+        // included; c/s/r are Created/Started/Resumed of Activity A with the focus flag, D is A disconnected.
+        // Kept one row per line (rustfmt::skip) so the table reads as a table.
         #[rustfmt::skip]
-        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 43] = [
-            ("created_start_foregrounds", c(false), E::Start, s(false), Phase(P::Foreground)),
-            ("created_start_keeps_early_focus", c(true), E::Start, s(true), Phase(P::Foreground)),
-            ("created_resume_rejected", c(false), E::Resume, c(false), no("resume before start")),
-            ("created_pause_rejected", c(false), E::Pause, c(false), no("pause while not resumed")),
-            ("created_stop_rejected", c(false), E::Stop, c(false), no("stop while not started")),
-            ("created_destroy_disconnects", c(false), E::Destroy, D, Phase(P::Disconnected)),
-            ("created_focus_remembered", c(false), E::Focus(true), c(true), Nothing),
-            ("created_unfocus_remembered", c(true), E::Focus(false), c(false), Nothing),
-            ("created_trim_running_low_warns", c(false), E::TrimMemory(10), c(false), MemoryWarning),
-            ("created_trim_complete_warns", c(false), E::TrimMemory(80), c(false), MemoryWarning),
-            ("created_trim_below_running_low_quiet", c(true), E::TrimMemory(9), c(true), Nothing),
-            ("started_start_rejected", s(false), E::Start, s(false), no("start while started")),
-            ("started_resume_unfocused_waits", s(false), E::Resume, r(false), Nothing),
-            ("started_resume_focused_activates", s(true), E::Resume, r(true), Phase(P::Active)),
-            ("started_pause_rejected", s(true), E::Pause, s(true), no("pause while not resumed")),
-            ("started_stop_backgrounds", s(false), E::Stop, c(false), Phase(P::Background)),
-            ("started_stop_keeps_focus", s(true), E::Stop, c(true), Phase(P::Background)),
-            ("started_destroy_rejected", s(false), E::Destroy, s(false), no("destroy before stop")),
-            ("started_focus_quiet", s(false), E::Focus(true), s(true), Nothing),
-            ("started_unfocus_quiet", s(true), E::Focus(false), s(false), Nothing),
-            ("started_trim_ui_hidden_warns", s(true), E::TrimMemory(20), s(true), MemoryWarning),
-            ("started_trim_moderate_quiet", s(true), E::TrimMemory(5), s(true), Nothing),
-            ("resumed_start_rejected", r(true), E::Start, r(true), no("start while started")),
-            ("resumed_resume_rejected", r(true), E::Resume, r(true), no("resume while resumed")),
-            ("resumed_focused_pause_deactivates", r(true), E::Pause, s(true), Phase(P::Inactive)),
-            ("resumed_unfocused_pause_quiet", r(false), E::Pause, s(false), Nothing),
-            ("resumed_stop_rejected", r(true), E::Stop, r(true), no("stop before pause")),
-            ("resumed_destroy_rejected", r(true), E::Destroy, r(true), no("destroy before stop")),
-            ("resumed_focus_activates", r(false), E::Focus(true), r(true), Phase(P::Active)),
-            ("resumed_unfocus_deactivates", r(true), E::Focus(false), r(false), Phase(P::Inactive)),
-            ("resumed_focus_again_quiet", r(true), E::Focus(true), r(true), Nothing),
-            ("resumed_unfocus_again_quiet", r(false), E::Focus(false), r(false), Nothing),
-            ("resumed_trim_running_low_warns", r(true), E::TrimMemory(10), r(true), MemoryWarning),
-            ("resumed_trim_moderate_quiet", r(true), E::TrimMemory(5), r(true), Nothing),
-            ("disconnected_start_reconnects", D, E::Start, s(false), Phase(P::Foreground)),
-            ("disconnected_resume_rejected", D, E::Resume, D, no("resume before start")),
-            ("disconnected_pause_rejected", D, E::Pause, D, no("pause while not resumed")),
-            ("disconnected_stop_rejected", D, E::Stop, D, no("stop while not started")),
-            ("disconnected_destroy_rejected", D, E::Destroy, D, no("destroy while disconnected")),
-            ("disconnected_focus_rejected", D, E::Focus(true), D, no("focus without an Activity")),
-            ("disconnected_unfocus_rejected", D, E::Focus(false), D, no("focus without an Activity")),
-            ("disconnected_trim_warns", D, E::TrimMemory(80), D, MemoryWarning),
-            ("disconnected_trim_quiet", D, E::TrimMemory(5), D, Nothing),
+        let cases: [(&str, Lifecycle, ActivityEvent, Lifecycle, Effect); 50] = [
+            ("loaded_create_owns_activity_1", Lifecycle::LOADED, ActivityEvent::Create, created_by(ActivityId(1)), Nothing),
+            ("created_create_replaces_quietly", c(true), ActivityEvent::Create, created_by(ActivityId(3)), Nothing),
+            ("started_create_replaces_and_hides", s(true), ActivityEvent::Create, created_by(ActivityId(3)), Phase(P::Background)),
+            ("resumed_create_replaces_and_hides", r(true), ActivityEvent::Create, created_by(ActivityId(3)), Phase(P::Background)),
+            ("disconnected_create_reconnects", D, ActivityEvent::Create, created_by(ActivityId(3)), Nothing),
+            ("created_start_foregrounds", c(false), on(C::Start), s(false), Phase(P::Foreground)),
+            ("created_start_keeps_early_focus", c(true), on(C::Start), s(true), Phase(P::Foreground)),
+            ("created_resume_rejected", c(false), on(C::Resume), c(false), no("resume before start")),
+            ("created_pause_rejected", c(false), on(C::Pause), c(false), no("pause while not resumed")),
+            ("created_stop_rejected", c(false), on(C::Stop), c(false), no("stop while not started")),
+            ("created_destroy_disconnects", c(false), on(C::Destroy), D, Phase(P::Disconnected)),
+            ("created_focus_remembered", c(false), on(C::Focus(true)), c(true), Nothing),
+            ("created_unfocus_remembered", c(true), on(C::Focus(false)), c(false), Nothing),
+            ("started_start_rejected", s(false), on(C::Start), s(false), no("start while started")),
+            ("started_resume_unfocused_waits", s(false), on(C::Resume), r(false), Nothing),
+            ("started_resume_focused_activates", s(true), on(C::Resume), r(true), Phase(P::Active)),
+            ("started_pause_rejected", s(true), on(C::Pause), s(true), no("pause while not resumed")),
+            ("started_stop_backgrounds", s(false), on(C::Stop), c(false), Phase(P::Background)),
+            ("started_stop_keeps_focus", s(true), on(C::Stop), c(true), Phase(P::Background)),
+            ("started_destroy_rejected", s(false), on(C::Destroy), s(false), no("destroy before stop")),
+            ("started_focus_quiet", s(false), on(C::Focus(true)), s(true), Nothing),
+            ("started_unfocus_quiet", s(true), on(C::Focus(false)), s(false), Nothing),
+            ("resumed_start_rejected", r(true), on(C::Start), r(true), no("start while started")),
+            ("resumed_resume_rejected", r(true), on(C::Resume), r(true), no("resume while resumed")),
+            ("resumed_focused_pause_deactivates", r(true), on(C::Pause), s(true), Phase(P::Inactive)),
+            ("resumed_unfocused_pause_quiet", r(false), on(C::Pause), s(false), Nothing),
+            ("resumed_stop_rejected", r(true), on(C::Stop), r(true), no("stop before pause")),
+            ("resumed_destroy_rejected", r(true), on(C::Destroy), r(true), no("destroy before stop")),
+            ("resumed_focus_activates", r(false), on(C::Focus(true)), r(true), Phase(P::Active)),
+            ("resumed_unfocus_deactivates", r(true), on(C::Focus(false)), r(false), Phase(P::Inactive)),
+            ("resumed_focus_again_quiet", r(true), on(C::Focus(true)), r(true), Nothing),
+            ("resumed_unfocus_again_quiet", r(false), on(C::Focus(false)), r(false), Nothing),
+            ("disconnected_start_rejected", D, on(C::Start), D, no("start without onCreate")),
+            ("disconnected_resume_rejected", D, on(C::Resume), D, no("resume before start")),
+            ("disconnected_pause_rejected", D, on(C::Pause), D, no("pause while not resumed")),
+            ("disconnected_stop_rejected", D, on(C::Stop), D, no("stop while not started")),
+            ("disconnected_destroy_rejected", D, on(C::Destroy), D, no("destroy while disconnected")),
+            ("disconnected_focus_rejected", D, on(C::Focus(true)), D, no("focus without an Activity")),
+            ("disconnected_unfocus_rejected", D, on(C::Focus(false)), D, no("focus without an Activity")),
+            // The replaced Activity's late callbacks (the clear-task relaunch) change nothing.
+            ("stale_start_rejected", c(false), old(C::Start), c(false), no("event from a replaced Activity")),
+            ("stale_resume_rejected", s(false), old(C::Resume), s(false), no("event from a replaced Activity")),
+            ("stale_pause_rejected", r(true), old(C::Pause), r(true), no("event from a replaced Activity")),
+            ("stale_stop_rejected", r(true), old(C::Stop), r(true), no("event from a replaced Activity")),
+            ("stale_destroy_rejected", r(true), old(C::Destroy), r(true), no("event from a replaced Activity")),
+            ("stale_unfocus_rejected", r(true), old(C::Focus(false)), r(true), no("event from a replaced Activity")),
+            ("stale_trim_rejected", r(true), old(C::TrimMemory(80)), r(true), no("event from a replaced Activity")),
+            ("stale_destroy_after_disconnect_rejected", D, old(C::Destroy), D, no("event from a replaced Activity")),
+            ("newer_than_owner_rejected", r(true), ActivityEvent::From(ActivityId(3), C::Pause), r(true), no("event from a replaced Activity")),
+            ("trim_in_created_warns", c(false), on(C::TrimMemory(10)), c(false), MemoryWarning),
+            ("trim_in_disconnected_quiet", D, on(C::TrimMemory(5)), D, Nothing),
         ];
         for (name, state, event, expected_state, expected_effect) in cases {
             assert_eq!(
@@ -250,6 +348,23 @@ mod tests {
                 (expected_state, expected_effect),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn accepts_only_the_owner() {
+        // (row name, state, event's Activity, accepted?). Surface events go through the same rule.
+        #[rustfmt::skip]
+        let cases: [(&str, Lifecycle, ActivityId, bool); 6] = [
+            ("loaded_rejects_any_view", Lifecycle::LOADED, A, false),
+            ("resumed_accepts_owner", r(true), A, true),
+            ("resumed_rejects_replaced", r(true), OLD, false),
+            ("created_rejects_replaced", c(false), OLD, false),
+            ("disconnected_accepts_its_last_surface_destroyed", D, A, true),
+            ("disconnected_rejects_older", D, OLD, false),
+        ];
+        for (name, state, from, accepted) in cases {
+            assert_eq!(state.accepts(from), accepted, "{name}");
         }
     }
 
@@ -278,21 +393,21 @@ mod tests {
 
     #[test]
     fn java_codes() {
-        // (row name, code, value, event). Codes must match ParallaxActivity's EVENT_* constants.
+        // (row name, code, value, callback). Codes must match ParallaxActivity's EVENT_* constants.
         #[rustfmt::skip]
-        let cases: [(&str, i32, i32, Option<ActivityEvent>); 9] = [
-            ("start", 0, 0, Some(E::Start)),
-            ("resume", 1, 0, Some(E::Resume)),
-            ("pause", 2, 0, Some(E::Pause)),
-            ("stop", 3, 0, Some(E::Stop)),
-            ("destroy", 4, 0, Some(E::Destroy)),
-            ("focus", 5, 1, Some(E::Focus(true))),
-            ("unfocus", 5, 0, Some(E::Focus(false))),
-            ("trim_memory", 6, 15, Some(E::TrimMemory(15))),
+        let cases: [(&str, i32, i32, Option<Callback>); 9] = [
+            ("start", 0, 0, Some(C::Start)),
+            ("resume", 1, 0, Some(C::Resume)),
+            ("pause", 2, 0, Some(C::Pause)),
+            ("stop", 3, 0, Some(C::Stop)),
+            ("destroy", 4, 0, Some(C::Destroy)),
+            ("focus", 5, 1, Some(C::Focus(true))),
+            ("unfocus", 5, 0, Some(C::Focus(false))),
+            ("trim_memory", 6, 15, Some(C::TrimMemory(15))),
             ("unknown", 7, 0, None),
         ];
-        for (name, code, value, event) in cases {
-            assert_eq!(ActivityEvent::from_java(code, value), event, "{name}");
+        for (name, code, value, callback) in cases {
+            assert_eq!(Callback::from_java(code, value), callback, "{name}");
         }
     }
 }

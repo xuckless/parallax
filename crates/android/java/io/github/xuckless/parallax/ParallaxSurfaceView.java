@@ -26,15 +26,20 @@ import java.nio.ByteBuffer;
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
-  private static native void nativeSurfaceCreated(Surface surface, float density, float refreshRate);
+  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops events
+  // from a replaced Activity, whose callbacks can still arrive after its successor started.
+  private static native void nativeSurfaceCreated(
+      int activity, Surface surface, float density, float refreshRate);
 
-  private static native void nativeSurfaceChanged(int width, int height, float density);
+  private static native void nativeSurfaceChanged(
+      int activity, int width, int height, float density);
 
-  private static native void nativeSurfaceDestroyed();
+  private static native void nativeSurfaceDestroyed(int activity);
 
-  private static native void nativeFrame();
+  private static native void nativeFrame(int activity);
 
   private static native void nativeInsets(
+      int activity,
       int safeLeft,
       int safeTop,
       int safeRight,
@@ -48,9 +53,13 @@ final class ParallaxSurfaceView extends SurfaceView
   // read before the call returns. Named after FlutterJNI.nativeDispatchPointerDataPacket.
   static native void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position);
 
-  // ParallaxActivity's lifecycle, focus and memory callbacks: one of its EVENT_* codes and a value
-  // (focus flag or trim level). Declared here so one class holds every native JNI_OnLoad binds.
-  static native void nativeActivityEvent(int event, int value);
+  // ParallaxActivity.onCreate: a new Activity owns the window; returns its id for every later event.
+  // Declared here so one class holds every native JNI_OnLoad binds.
+  static native int nativeActivityCreated();
+
+  // ParallaxActivity's lifecycle, focus and memory callbacks: its id, one of its EVENT_* codes and a
+  // value (focus flag or trim level).
+  static native void nativeActivityEvent(int activity, int event, int value);
 
   // The app's locales, BCP-47 tags joined by commas, preference order (LocaleList.toLanguageTags()).
   // ParallaxActivity sends them before the first surface; the fonts read them when the app starts.
@@ -69,8 +78,12 @@ final class ParallaxSurfaceView extends SurfaceView
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
 
-  ParallaxSurfaceView(Context context) {
+  /** The id nativeActivityCreated gave the Activity showing this view; tags every event it sends. */
+  private final int activity;
+
+  ParallaxSurfaceView(Context context, int activity) {
     super(context);
+    this.activity = activity;
     getHolder().addCallback(this);
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
@@ -91,7 +104,7 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void doFrame(long frameTimeNanos) {
-    nativeFrame();
+    nativeFrame(activity);
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -99,18 +112,18 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void surfaceCreated(SurfaceHolder holder) {
-    nativeSurfaceCreated(holder.getSurface(), density(), getDisplay().getRefreshRate());
+    nativeSurfaceCreated(activity, holder.getSurface(), density(), getDisplay().getRefreshRate());
   }
 
   @Override
   public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-    nativeSurfaceChanged(width, height, density());
+    nativeSurfaceChanged(activity, width, height, density());
   }
 
   @Override
   public void surfaceDestroyed(SurfaceHolder holder) {
     // Rust releases its ANativeWindow before this returns, as Android requires.
-    nativeSurfaceDestroyed();
+    nativeSurfaceDestroyed(activity);
   }
 
   @Override
@@ -162,12 +175,14 @@ final class ParallaxSurfaceView extends SurfaceView
           insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
       Insets ime = insets.getInsets(WindowInsets.Type.ime());
       nativeInsets(
+          activity,
           safe.left, safe.top, safe.right, safe.bottom, ime.left, ime.top, ime.right, ime.bottom);
     } else {
       // API 28-29: system window insets cover the bars (and the keyboard, which is not split out
       // before API 30); the cutout is reported separately.
       DisplayCutout cutout = insets.getDisplayCutout();
       nativeInsets(
+          activity,
           Math.max(insets.getSystemWindowInsetLeft(), cutout == null ? 0 : cutout.getSafeInsetLeft()),
           Math.max(insets.getSystemWindowInsetTop(), cutout == null ? 0 : cutout.getSafeInsetTop()),
           Math.max(
