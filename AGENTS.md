@@ -53,7 +53,7 @@ Rules for ported code:
 
 | Topic | Decision |
 |---|---|
-| Upstream source | `gpui-pre-*` crates from crates.io: unmodified weekly snapshots of Zed's GPUI, standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
+| Upstream source | `gpui-pre-*` crates from crates.io: weekly snapshots of Zed's GPUI (a few files adapted to build standalone, each marked `// Modified for gpui-pre`), standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
 | Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/` (generated, git-ignored). The workspace points at that via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
 | Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |

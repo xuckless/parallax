@@ -31,10 +31,10 @@ no fixed schedule and no planned last number.
       and the Zed commit it snapshots in `upstream/UPSTREAM`.
 - [x] `scripts/apply-patches.sh`: pristine `upstream/` + `patches/` → `build/gpui-patched/`. Deterministic, idempotent, fails loudly.
 - [x] Wire `[patch]` in the root `Cargo.toml` to `build/gpui-patched/`.
-- [ ] `scripts/sync-upstream.sh`: bump to the latest `gpui-pre` snapshot, re-vendor, re-apply patches, list the ones that no longer apply.
-- [ ] Flutter stable tag `3.50.1` pinned in `third_party/flutter/PORTED.md`. `scripts/flutter-diff.sh`: for every ledger row,
+- [x] `scripts/sync-upstream.sh`: bump to the latest `gpui-pre` snapshot, re-vendor, re-apply patches, list the ones that no longer apply.
+- [x] Flutter stable tag `3.50.1` pinned in `third_party/flutter/PORTED.md`. `scripts/flutter-diff.sh`: for every ledger row,
       show the Flutter source diff between the pinned tag and a newer stable tag.
-- [ ] `scripts/patch-paths.sh`: translate a patch between the vendored `gpui-pre` layout and Zed's `crates/gpui*` layout,
+- [x] `scripts/patch-paths.sh`: translate a patch between the vendored `gpui-pre` layout and Zed's `crates/gpui*` layout,
       so one patch applies to both.
 - [ ] CI matrix: iOS, Android, wasm, macOS, Windows, Linux (six builds; no feature variants).
 - [ ] Gap audit: run upstream's iOS and web examples, then write down what is missing for touch, IME,
@@ -43,7 +43,7 @@ no fixed schedule and no planned last number.
       fallback. Size the work and add it to Phase 1.
 - [ ] Oracle inventory: list Flutter's test files for text input, gestures, velocity tracking and scroll physics,
       and which upstream GPUI code each one checks. This sets the order of Phases 2 and 4.
-- [ ] `parallax-platform`: one target → platform table (desktop, web, iOS upstream; Android later).
+- [x] `parallax-platform`: one target → platform table (desktop, web, iOS upstream; Android later).
 - [ ] Reserve `parallax*` crate names on crates.io and the GitHub org name.
 - [ ] Set up a GitHub fork of `zed-industries/zed` for filing upstream PRs (patches are re-based onto Zed main there).
 
@@ -171,9 +171,11 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 |---|---|---|
 | 2026-11-25 | zed `8aeb64f7` | `zed-industries/gpui` repo holds only a README ("See you in a few weeks"). |
 | 2026-11-25 | zed `8aeb64f7` | Zed's `crates/gpui*` use Zed's `workspace = true` deps and don't build standalone. Tracking `gpui-pre` instead. |
-| 2026-11-25 | gpui-pre 0.3.14 = zed `f126950` | `gpui-pre-*` on crates.io: weekly unmodified snapshots of Zed GPUI (incl. `gpui-pre-ios`, `gpui-pre-web`). Chosen as the interim base. |
+| 2026-11-25 | gpui-pre 0.3.14 = zed `f126950` | `gpui-pre-*` on crates.io: weekly snapshots of Zed GPUI (incl. `gpui-pre-ios`, `gpui-pre-web`). Chosen as the interim base. |
 | 2026-11-25 | gpui-pre 0.3.14 = zed `f126950` | 20 `gpui-pre-*` crates vendored (15 MB); each Cargo.toml carries `[package.metadata.gpui-pre] zed-rev`. Builds standalone on Linux, no extra system packages. |
 | 2026-11-25 | zed `f126950` | Zed pins Rust 1.98.1 (no crate declares `rust-version`). Our toolchain follows it, down from 1.100.0. |
+| 2026-11-25 | gpui-pre 0.3.14 | Not byte-identical to Zed: 7 files carry `// Modified for gpui-pre` (`action.rs`, `gpui_macros.rs` + `gpui_pre_facade_paths.rs`, `gpui_apple/build.rs`, 3 wgpu files for wgpu 30). `gpui-pre-apple/vendor/` copies gpui sources; `gpui_web/examples/` is dropped. Everything else matches Zed byte for byte except `Cargo.toml`. |
+| 2026-11-25 | gpui-pre 0.3.14 | `gpui` compiles for Android; `gpui_platform` does not (no Android arm). On wasm32, `gpui_platform`'s default `multithreaded` feature pulls `wasm_thread`, which needs nightly. |
 | 2026-11-25 | gpui-ce main | `gpui-ce` has no `gpui_ios` and is moving to Parley text with API drift. Not used. |
 | 2026-11-25 | zed `8aeb64f7` | `gpui_ios` exists (added 2026-10-14, #63068): UIKit, Metal, CoreText, text input (49 KB), safe area, back gesture. |
 | 2026-11-25 | zed `8aeb64f7` | Core gpui has `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag) and `ScrollPhysics::{ios, android}`. |
@@ -181,4 +183,5 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-25 | zed `8aeb64f7` | No touch input on `gpui_windows`, `gpui_linux` or `gpui_macos`. No Android backend. |
 | 2026-11-25 | flutter 3.50.1 | Pinned stable tag (stable branch `ae9b586f34`, 2026-11-19). Ported files exist unchanged at this tag. |
 | 2026-11-25 | flutter `322dfd0771` (master) | BSD-3-Clause. Android text input: `TextInputPlugin.java` 36 KB, `InputConnectionAdaptor.java` 21 KB. iOS: `FlutterTextInputPlugin.mm` 141 KB + 207 KB of tests. Web: `text_editing.dart` 113 KB. |
+| 2026-11-25 | flutter GitHub releases | `releases/latest` returns `3.19.0-0.1.pre` (a 2024 beta not marked pre-release). Find stable tags from the tag list, highest plain `X.Y.Z`. |
 | 2026-11-25 | accesskit | `accesskit_android` 0.9.1 exists (permissive: Apache, MIT, Chromium-derived BSD). Use it, don't port Flutter's `AccessibilityBridge`. |

@@ -1,0 +1,64 @@
+# Upstream GPUI
+
+How Parallax gets GPUI, changes it, and moves to newer snapshots. The rules behind this are in
+[AGENTS.md](../AGENTS.md) ("Decisions" and "Upstream and patch rules").
+
+## upstream/: the pristine snapshot
+
+[`upstream/`](../upstream/) holds the [`gpui-pre-*`](https://crates.io/crates/gpui-pre) crates from crates.io:
+weekly snapshots of GPUI from [zed-industries/zed](https://github.com/zed-industries/zed). A few files are adapted
+so the crates build standalone; each starts with `// Modified for gpui-pre` (`grep -rl "Modified for gpui-pre" upstream/`).
+[`upstream/UPSTREAM`](../upstream/UPSTREAM) records the version, the Zed commit it snapshots, Zed's toolchain and
+the crate list.
+
+It is never hand-edited. Every crate keeps its `.cargo-checksum.json`, so any edit is detectable, and every change
+we make is a patch that can be filed with Zed. Only the `gpui-pre-*` crates are vendored; third-party deps come from
+crates.io.
+
+## build/gpui-patched/: what the workspace builds
+
+[`scripts/apply-patches.sh`](../scripts/apply-patches.sh) copies `upstream/` to `build/gpui-patched/` and applies
+`patches/*.patch` in sorted order, stopping at the first patch that fails. Patch paths are relative to `upstream/`
+(`a/gpui-pre/src/app.rs`). `build/` is generated and git-ignored: never edit it, rerun the script.
+
+The `[patch.crates-io]` block in [`Cargo.toml`](../Cargo.toml) points every `gpui-pre-*` crate at
+`build/gpui-patched/<crate>`, one row per crate in `UPSTREAM`. On a fresh clone:
+
+```sh
+scripts/apply-patches.sh && cargo check --workspace
+```
+
+## Syncing to a newer snapshot
+
+Cadence: see the "Sync cadence" decision in [AGENTS.md](../AGENTS.md).
+
+```sh
+scripts/sync-upstream.sh          # latest gpui-pre on crates.io
+scripts/sync-upstream.sh 0.3.15   # a specific version
+```
+
+[`scripts/sync-upstream.sh`](../scripts/sync-upstream.sh):
+
+1. `cargo vendor`s a scratch crate on the vendor roots listed in the script (`gpui-pre`, `gpui-pre-platform`,
+   `gpui-pre-wgpu`, `gpui-pre-ios`, `gpui-pre-web`) and replaces `upstream/` wholesale with the `gpui-pre-*` crates.
+2. Rewrites `upstream/UPSTREAM` (Zed commit from each crate's `[package.metadata.gpui-pre] zed-rev`), prints crates
+   added or removed, bumps the version in `Cargo.toml` and regenerates its `[patch.crates-io]` rows.
+3. Warns if Zed's toolchain differs from [`rust-toolchain.toml`](../rust-toolchain.toml). Bumping it is a manual step.
+4. Checks every patch in order and lists **all** that no longer apply, then exits non-zero.
+5. Otherwise runs `apply-patches.sh` and `cargo check --workspace`.
+
+Review the result with `git diff`, then commit the sync as one concern (`upstream/`, `UPSTREAM`, `Cargo.toml`,
+`Cargo.lock`). To add a platform crate, add a vendor root in the script.
+
+## When a patch stops applying
+
+The sync leaves `upstream/` and `Cargo.toml` on the new version and lists the failing patches. For each one:
+
+1. **Merged upstream?** If Zed took the change, delete the patch (AGENTS.md: patches are deleted once upstream
+   merges them).
+2. **Code moved?** Rebase it: copy `upstream/` somewhere scratch, apply the earlier patches, redo the change,
+   and regenerate the patch with `diff -ru` (paths relative to `upstream/`). Keep its header and number.
+3. **No longer needed or wrong now?** Fix or drop it, and note why in `ROADMAP.md` "Upstream notes".
+
+Rerun `scripts/sync-upstream.sh <version>` until it ends with `synced to gpui-pre <version>`. Upstream behaviour that
+surprised you goes under "Upstream notes" in [ROADMAP.md](../ROADMAP.md) with the Zed commit.
