@@ -16,3 +16,6 @@ Parallax is not affiliated with or endorsed by Google or the Flutter project.
 cargo-parallax includes the Gradle Wrapper 9.8.2 (https://github.com/gradle/gradle),
 crates/cli/templates/android/gradle/wrapper/gradle-wrapper.jar, licensed under the
 Apache License 2.0 (license text inside the jar, META-INF/LICENSE). Copyright Gradle, Inc.
+
+assets/brand/ holds the Parallax brand mark, copyright Syed Ali (xuckless), the owner's own brand
+and not under the Apache License 2.0; see assets/brand/README.md.
