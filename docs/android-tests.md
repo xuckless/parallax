@@ -13,7 +13,7 @@ scripts/java-test.sh            # gradle test; extra args go to Gradle, e.g. --t
 Needs `ANDROID_HOME` and a Java 17+ to start Gradle. First run downloads Gradle 9.8.2, AGP, `platforms;android-37`
 (licenses must be accepted), JDK 21 (foojay, if none is installed) and Robolectric's `android-all` jars (one per
 emulated SDK, ~1.5 GB, into `~/.m2/repository/org/robolectric`). After that a run takes about 25 s.
-Report: `crates/android/java-tests/build/reports/tests/testDebugUnitTest/index.html`. CI runs it in the linux job
+Report: `crates/android/java-tests/build/reports/tests/testDebugUnitTest/index.html`. CI runs it in its own `java-tests` job
 ([ci.md](ci.md)).
 
 ## Layout
