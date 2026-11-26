@@ -27,11 +27,9 @@ It stops (exit 1) on a patch that does not translate or apply, or a failed fetch
 `patches/` (see [upstream.md](upstream.md#when-a-patch-stops-applying)) and rerun; never commit to the fork by hand,
 since the next run throws hand-made commits away. Pushing needs `gh auth login` as the fork's owner.
 
-## Apps and the fork
+## The fork crates vs this branch
 
-There is no app opt-in (owner decision, [AGENTS.md rule 14](../AGENTS.md#upstream-and-patch-rules)). The fork holds
-Zed's crate names (`gpui` 0.2.2, `workspace = true` manifests), so a `[patch]` of `gpui-pre` onto it can't resolve.
-Apps get backend patches only when Zed merges them; published Parallax crates build on stock `gpui-pre` (rule 11).
-For a local experiment only, an app can `[patch.crates-io]` each `gpui-pre-*` crate onto a Parallax checkout's
-`build/gpui-patched/` (after `scripts/apply-patches.sh`), the same rows Parallax's own [`Cargo.toml`](../Cargo.toml)
-uses. That is unsupported.
+Two things carry the same patches. This branch is Zed's layout and crate names (`gpui` 0.2.2, `workspace = true`
+manifests): it exists so upstream PRs can be cut from it, and apps can't `[patch]` onto it. Apps get the patches
+from the published [`parallax-gpui*` fork crates](gpui-fork-crates.md) instead, built from `upstream/` + `patches/`
+in crates.io's `gpui-pre` layout (rule 11). Both are rebuilt at every sync and whenever a patch changes.

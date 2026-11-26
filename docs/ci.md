@@ -4,8 +4,8 @@
 one job per target, no feature variants. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
-[apply-patches.sh](../scripts/apply-patches.sh) to generate `build/gpui-patched/` (never committed), then runs its checks.
-Cargo output is cached per target.
+[apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
+[fork crates](gpui-fork-crates.md), never committed), then runs its checks. Cargo output is cached per target.
 
 ## Jobs
 
@@ -14,12 +14,12 @@ cancels the older run.
 
 | Target | Runner | Runs |
 |---|---|---|
-| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package` of the published crates, [`scripts/java-test.sh`](android-tests.md) (JDK 21, Gradle and Robolectric jars cached) |
+| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package -p cargo-parallax`, `scripts/publish-fork.sh --dry-run`, package of the published libraries, [`scripts/java-test.sh`](android-tests.md) (JDK 21, Gradle and Robolectric jars cached) |
 | windows | windows-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | macos | macos-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | ios | macos-latest | `cargo check --workspace` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` |
-| android | ubuntu-latest | `cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings`, `cargo package` of the published libraries |
-| wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, `cargo package` of the published libraries |
+| android | ubuntu-latest | `cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings`, package of the published libraries |
+| wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
 (a subset of Zed's `script/linux`).
@@ -35,14 +35,11 @@ Both check the whole workspace, nothing excluded.
 
 A target that cannot build a crate gets an explicit `--exclude` with a comment in `ci.yml`, never `continue-on-error`.
 
-## Published crates build on stock upstream
+## Published crates
 
-`cargo package` verifies each crate by building its unpacked tarball under `target/package/`. That build ignores the
-workspace `[patch]` and takes `gpui-pre` from crates.io (cargo 1.98; the `Compiling gpui-pre` lines show no path),
-so it proves [AGENTS.md](../AGENTS.md#upstream-and-patch-rules) patch rule 11. Several `-p` in one call package
-together, so dependents verify against the just-packaged crates before they are on crates.io. The crate list is
-`PUBLISHED_LIBS` at the top of `ci.yml`; `cargo-parallax`, a host tool, is packaged on Linux only.
-Local copies standing in for patches: [patches.md](patches.md#published-crates).
+Linux runs `scripts/publish-fork.sh --dry-run` (the fork crates package), and rows with a `package_target` package
+`PUBLISHED_LIBS` once their fork version is on crates.io; `cargo-parallax` is packaged on Linux every run. What
+each check proves and the publish-first order: [gpui-fork-crates.md](gpui-fork-crates.md#ci).
 
 ## Run the same checks locally
 
@@ -52,7 +49,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/java-test.sh
-cargo package -p parallax-android -p parallax-platform -p parallax -p cargo-parallax
+cargo package -p cargo-parallax
+scripts/publish-fork.sh --dry-run
+scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax
 cargo check --workspace --target wasm32-unknown-unknown
 ```
 

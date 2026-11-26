@@ -4,6 +4,34 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
+## [Unreleased] (0.1.3)
+
+Wave 9: our GPUI fork, core patches and Android text input. Built on `gpui-pre` 0.3.14 plus Parallax's patches.
+Verified on the Android emulator (no real-device testing yet).
+
+### Added
+
+- Our patched GPUI fork, published as `parallax-gpui*` crates (one per `gpui-pre-*` crate); every Parallax crate
+  depends on it, so apps get each patch from crates.io.
+- Pointer device on every pointer event: `TouchEvent::device` (mouse, touch, pen) and `Window::pointer_source()`,
+  which says the device and whether the event was synthesized from touch. Taps reach `on_click` as
+  `ClickEvent::Touch`.
+- `.on_touch` on `StatefulInteractiveElement`: raw touches without touch → mouse emulation; the deepest handler under
+  the touch wins, and buttons or scroll containers inside still click and scroll.
+- `TextInputConfiguration`: `keyboard_type`, `secure` and an autofill hint (Android sends keyboard type and secure;
+  autofill is not sent yet).
+- `parallax-android`: soft-keyboard text input through Flutter's ported `InputConnectionAdaptor` and `TextInputPlugin`
+  (checked with Gboard on the emulator).
+- `parallax-android`: colour emoji drawn by Android itself, so every Android version draws its own (COLRv1 included).
+
+### Fixed
+
+- The back button can be claimed again right after typing (it was ignored until the next touch or mouse move).
+
+### Known limits
+
+- Android mouse and trackpad clicks arrive as synthesized taps; no hover or wheel yet. No Android autofill yet.
+
 ## [0.1.2] - 2026-11-26
 
 Wave 8: Android keys, fonts and lifecycle. Built on `gpui-pre` 0.3.14. Verified on the Android emulator (API 28 and 35

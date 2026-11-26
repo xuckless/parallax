@@ -13,6 +13,8 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.WindowInsets;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import java.nio.ByteBuffer;
 
 /**
@@ -21,7 +23,8 @@ import java.nio.ByteBuffer;
  *
  * <p>Touch: onTouchEvent → the ported AndroidTouchProcessor → nativeDispatchPointerDataPacket (see
  * docs/android-touch.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
- * nativeDispatchKeyData (see docs/android-keys.md).
+ * nativeDispatchKeyData (see docs/android-keys.md). Text input: the ported TextInputPlugin, synced
+ * with GPUI over the natives below (see docs/android-text-input.md).
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
@@ -40,7 +43,12 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private static native void nativeSurfaceDestroyed(int activity);
 
+  // Every vsync: GPUI draws if anything changed.
   private static native void nativeFrame(int activity);
+
+  // GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a JSON array, for
+  // TextInputChannel.handleFrameworkCalls), or null when there are none.
+  private static native String nativeTextInputCalls(int activity);
 
   private static native void nativeInsets(
       int activity,
@@ -72,10 +80,30 @@ final class ParallaxSurfaceView extends SurfaceView
   // asynchronously.
   static native boolean nativeDispatchKeyData(int activity, ByteBuffer packet, boolean canceled);
 
+  // Text input (TextInputChannel): the editing state after an IME edit, in UTF-16 offsets, -1 for
+  // none (Flutter's TextInputClient.updateEditingState); GPUI applies it synchronously.
+  static native void nativeUpdateEditingState(
+      int activity,
+      String text,
+      int selectionStart,
+      int selectionEnd,
+      int composingStart,
+      int composingEnd);
+
+  // The IME's editor action, by Flutter's name ("TextInputAction.done", ...).
+  static native void nativePerformAction(int activity, String action);
+
+  // GPUI's bounds of the UTF-16 range [start, end) in view pixels into `ltrb`; false if none.
+  static native boolean nativeBoundsForRange(int activity, int start, int end, float[] ltrb);
+
   // Both tag what they send with `activity`, so they are built once it is set.
   private final AndroidTouchProcessor touchProcessor;
 
   private final KeyboardManager keyboardManager;
+
+  private final TextInputChannel textInputChannel;
+
+  private final TextInputPlugin textInputPlugin;
 
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
@@ -88,7 +116,20 @@ final class ParallaxSurfaceView extends SurfaceView
     this.activity = activity;
     // As FlutterView: no platform views, so motion events are not tracked.
     touchProcessor = new AndroidTouchProcessor(activity, /* trackMotionEvents= */ false);
-    keyboardManager = new KeyboardManager(this);
+    // A key GPUI handles may edit the field: the IME's mirror takes GPUI's state before the IME's
+    // next call (Gboard sends DEL as a key event, then may commit text before the next vsync). Both
+    // hardware keys and the IME's sendKeyEvent come through here.
+    keyboardManager =
+        new KeyboardManager(this) {
+          @Override
+          public boolean handleEvent(KeyEvent keyEvent) {
+            boolean handled = super.handleEvent(keyEvent);
+            runTextInputCalls();
+            return handled;
+          }
+        };
+    textInputChannel = new TextInputChannel(activity);
+    textInputPlugin = new TextInputPlugin(this, textInputChannel);
     getHolder().addCallback(this);
     // As FlutterView: focusable, so key events (and later the IME) reach this view.
     setFocusable(true);
@@ -110,6 +151,7 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public void doFrame(long frameTimeNanos) {
     nativeFrame(activity);
+    runTextInputCalls();
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -167,11 +209,25 @@ final class ParallaxSurfaceView extends SurfaceView
     return keyboardManager.handleEvent(event) || super.dispatchKeyEvent(event);
   }
 
-  // The text-input seam: keys GPUI did not handle are offered here before Android gets them.
-  // FlutterView calls TextInputPlugin.handleKeyEvent; the text-input port fills this in.
+  // As FlutterView: keys GPUI did not handle go to the IME (TextInputPlugin) before Android.
   @Override
   public boolean onTextInputKeyEvent(KeyEvent keyEvent) {
-    return false;
+    return textInputPlugin.handleKeyEvent(keyEvent);
+  }
+
+  // As FlutterView.onCreateInputConnection.
+  @Override
+  public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+    return textInputPlugin.createInputConnection(this, keyboardManager, outAttrs);
+  }
+
+  // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's
+  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free.
+  private void runTextInputCalls() {
+    String calls = nativeTextInputCalls(activity);
+    if (calls != null) {
+      textInputChannel.handleFrameworkCalls(calls);
+    }
   }
 
   @Override

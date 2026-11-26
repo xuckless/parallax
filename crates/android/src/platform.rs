@@ -35,7 +35,7 @@ impl AndroidPlatform {
     /// `locales`: the app's BCP-47 tags in preference order, for the per-language font order.
     pub(crate) fn new(shell: Rc<Shell>, locales: &[String]) -> Result<Self, Error> {
         let dispatcher = Arc::new(AndroidDispatcher::new()?);
-        let text_system = crate::text_system::load(locales);
+        let text_system = crate::text_system::load(&shell.vm, locales);
         Ok(Self {
             shell,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
@@ -167,7 +167,6 @@ impl Platform for AndroidPlatform {
         Ok(Box::new(AndroidWindow {
             shell: self.shell.clone(),
             atlas,
-            input_handler: None,
         }))
     }
 

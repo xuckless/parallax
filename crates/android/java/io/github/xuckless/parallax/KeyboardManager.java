@@ -9,8 +9,7 @@
 //
 // Parallax changes: package; the one responder is KeyEmbedderResponder (KeyChannelResponder and
 // its KeyEventChannel dropped); KeyboardChannel dropped; ViewDelegate.getBinaryMessenger becomes
-// getActivityId (the responder tags key data with it); the
-// InputConnectionAdaptor.KeyboardDelegate interface waits for the text-input port; androidx
+// getActivityId (the responder tags key data with it); androidx
 // annotations and io.flutter.Log (→ android.util.Log) dropped (not on Parallax's classpath).
 // ParallaxSurfaceView is the ViewDelegate. Ledger: third_party/flutter/PORTED.md.
 
@@ -48,9 +47,8 @@ import java.util.Map;
  *       encounter.
  * </ul>
  */
-// Parallax: `implements InputConnectionAdaptor.KeyboardDelegate` comes back with the text-input
-// port (the IME's sendKeyEvent calls handleEvent); KeyboardChannel.KeyboardMethodHandler is dropped.
-public class KeyboardManager {
+// Parallax: KeyboardChannel.KeyboardMethodHandler is dropped.
+public class KeyboardManager implements InputConnectionAdaptor.KeyboardDelegate {
   private static final String TAG = "KeyboardManager";
 
   /**
@@ -223,6 +221,7 @@ public class KeyboardManager {
   private final HashSet<KeyEvent> redispatchedEvents = new HashSet<>();
   private final ViewDelegate viewDelegate;
 
+  @Override
   public boolean handleEvent(KeyEvent keyEvent) {
     final boolean isRedispatchedEvent = redispatchedEvents.remove(keyEvent);
     if (isRedispatchedEvent) {

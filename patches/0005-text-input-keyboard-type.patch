@@ -1,0 +1,131 @@
+Add keyboard type, secure entry and autofill hint to TextInputConfiguration.
+
+What: three fields on `TextInputConfiguration`:
+- `keyboard_type: KeyboardType`: Text, Number, Decimal, Phone, Email, Url or Search (the HTML `inputmode` set).
+  The default is Text.
+- `secure: bool`: password entry.
+- `autofill: Option<AutofillHint>`: Username, Password, NewPassword, OneTimeCode, Email, Phone, Name, PostalAddress,
+  PostalCode or CreditCardNumber.
+This is data only: no backend reads the fields yet. The iOS test that builds the struct as a literal gains
+`..Default::default()`.
+
+Why: software keyboards need the right layout (digits for a PIN, `@` for email). Password fields must be hidden and
+kept out of suggestions. Platform autofill needs to know what a field holds. Upstream's configuration covers only
+autocorrect, autocapitalize, suggestions and the action key.
+
+Test: `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs) also forwards the new fields.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
+index 5464d6f..604df9f 100644
+--- a/gpui-pre-ios/src/ios/text_input.rs
++++ b/gpui-pre-ios/src/ios/text_input.rs
+@@ -882,6 +882,7 @@ pub(super) mod tests {
+             autocapitalize: Autocapitalize::Sentences,
+             suggestions: true,
+             input_action: TextInputAction::Search,
++            ..Default::default()
+         });
+         assert_eq!(view.autocorrectionType(), UITextAutocorrectionType::Yes);
+         assert_eq!(
+diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
+index 815ea92..268f604 100644
+--- a/gpui-pre/src/input.rs
++++ b/gpui-pre/src/input.rs
+@@ -322,9 +322,9 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
+ mod tests {
+     use super::*;
+     use crate::{
+-        AnyWindowHandle, AppContext as _, FocusHandle, InteractiveElement as _, IntoElement,
+-        ParentElement as _, Render, Styled as _, TestAppContext, TextInputAction,
+-        TextInputStateChange, canvas, div,
++        AnyWindowHandle, AppContext as _, AutofillHint, FocusHandle, InteractiveElement as _,
++        IntoElement, KeyboardType, ParentElement as _, Render, Styled as _, TestAppContext,
++        TextInputAction, TextInputStateChange, canvas, div,
+     };
+ 
+     #[gpui::test]
+@@ -332,6 +332,9 @@ mod tests {
+         let custom = TextInputConfiguration {
+             autocorrect: true,
+             input_action: TextInputAction::Send,
++            keyboard_type: KeyboardType::Email,
++            secure: true,
++            autofill: Some(AutofillHint::Username),
+             ..Default::default()
+         };
+         let window = cx.add_window({
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 154e5f6..d759314 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -2640,6 +2640,68 @@ pub struct TextInputConfiguration {
+     pub suggestions: bool,
+     /// The action advertised on a software keyboard's confirm ("enter") key.
+     pub input_action: TextInputAction,
++    /// Which software keyboard layout the platform should show.
++    pub keyboard_type: KeyboardType,
++    /// Whether the text is a secret (a password): the platform hides it and
++    /// keeps it out of suggestions, dictionaries and screenshots.
++    pub secure: bool,
++    /// What the field holds, for the platform's autofill; `None` offers none.
++    pub autofill: Option<AutofillHint>,
++}
++
++/// The software keyboard layout requested for a text input.
++///
++/// The variants are the HTML `inputmode` attribute's value set
++/// (<https://html.spec.whatwg.org/multipage/interaction.html#input-modalities:-the-inputmode-attribute>),
++/// which also maps onto Android's `InputType` classes and iOS's
++/// `UIKeyboardType`. `inputmode=none` is not a variant: hiding the keyboard
++/// is not a layout.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum KeyboardType {
++    /// Free text.
++    #[default]
++    Text,
++    /// Digits only.
++    Number,
++    /// Digits and a decimal separator.
++    Decimal,
++    /// A telephone number.
++    Phone,
++    /// An email address.
++    Email,
++    /// A URL.
++    Url,
++    /// A search query.
++    Search,
++}
++
++/// What a text input holds, so the platform can offer to fill it.
++///
++/// Each variant maps onto an HTML `autocomplete` token, an Android
++/// `View.AUTOFILL_HINT_*` (or androidx `HintConstants`) value and an iOS
++/// `UITextContentType`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum AutofillHint {
++    /// An account name or login.
++    Username,
++    /// An existing password.
++    Password,
++    /// A password being chosen.
++    NewPassword,
++    /// A one-time code, e.g. from an SMS.
++    OneTimeCode,
++    /// An email address.
++    Email,
++    /// A telephone number.
++    Phone,
++    /// A person's full name.
++    Name,
++    /// A full street address.
++    PostalAddress,
++    /// A postal code.
++    PostalCode,
++    /// A payment card number.
++    CreditCardNumber,
+ }
+ 
+ /// Automatic capitalization applied by software keyboards.

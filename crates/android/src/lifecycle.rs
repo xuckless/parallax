@@ -150,12 +150,17 @@ impl Lifecycle {
         }
     }
 
+    /// The Activity that owns the window, if any.
+    pub fn owner(&self) -> Option<ActivityId> {
+        match self {
+            Lifecycle::Live { owner, .. } => Some(owner.id),
+            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => None,
+        }
+    }
+
     /// The one rule for events from a view (surface, frame, insets, touch, keys): only the owner's count.
     pub fn accepts(&self, from: ActivityId) -> bool {
-        match self {
-            Lifecycle::Live { owner, .. } => owner.id == from,
-            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => false,
-        }
+        self.owner() == Some(from)
     }
 
     fn level(&self) -> Level {

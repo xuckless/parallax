@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{Pixels, Point, TouchEvent, TouchId, TouchPhase, point, px};
+use gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase, point, px};
 
 use crate::Error;
 
@@ -103,14 +103,16 @@ const POINTER_CHANGES: [PointerChange; 10] = [
     PointerChange::PanZoomEnd,
 ];
 
-/// Packet value → device kind, indexed by Flutter's value. To follow Flutter: append new values in its order.
-const POINTER_DEVICE_KINDS: [PointerDeviceKind; 6] = [
-    PointerDeviceKind::Touch,
-    PointerDeviceKind::Mouse,
-    PointerDeviceKind::Stylus,
-    PointerDeviceKind::InvertedStylus,
-    PointerDeviceKind::Trackpad,
-    PointerDeviceKind::Unknown,
+/// Packet value → Flutter's device kind and the GPUI `TouchEvent::device` it becomes, indexed by Flutter's value.
+/// An inverted stylus is the eraser end of a pen; a trackpad is an indirect pointer like a mouse; an unknown device
+/// is taken for a finger. To follow Flutter: append new values in its order; to remap a kind, change its row.
+const DEVICE_KINDS: [(PointerDeviceKind, PointerDevice); 6] = [
+    (PointerDeviceKind::Touch, PointerDevice::Touch),
+    (PointerDeviceKind::Mouse, PointerDevice::Mouse),
+    (PointerDeviceKind::Stylus, PointerDevice::Pen),
+    (PointerDeviceKind::InvertedStylus, PointerDevice::Pen),
+    (PointerDeviceKind::Trackpad, PointerDevice::Mouse),
+    (PointerDeviceKind::Unknown, PointerDevice::Touch),
 ];
 
 /// What GPUI gets for each change; `None` sends nothing. Add and remove are Flutter's own bookkeeping (a remove
@@ -133,7 +135,8 @@ const TOUCH_PHASES: [(PointerChange, Option<TouchPhase>); 10] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PointerData {
     pub(crate) change: PointerChange,
-    pub(crate) kind: PointerDeviceKind,
+    /// Flutter's `kind`, as the GPUI device it becomes (`DEVICE_KINDS`).
+    pub(crate) kind: PointerDevice,
     /// `(pointerId << 3) | toolType`: Android reuses pointer ids, so this names a pointer, not one touch.
     pub(crate) device: i64,
     pub(crate) physical_x: f64,
@@ -165,7 +168,8 @@ pub(crate) fn decode(packet: &[u8]) -> Result<Vec<PointerData>, Error> {
                     .ok_or(Error::PointerChange(change))?,
                 kind: usize::try_from(kind)
                     .ok()
-                    .and_then(|index| POINTER_DEVICE_KINDS.get(index).copied())
+                    .and_then(|index| DEVICE_KINDS.get(index))
+                    .map(|(_, device)| *device)
                     .ok_or(Error::PointerKind(kind))?,
                 device: long(Field::Device),
                 physical_x: double(Field::PhysicalX),
@@ -216,8 +220,6 @@ impl Touches {
                 );
                 self.last_position = position;
                 let range = data.pressure_max - data.pressure_min;
-                // The device kind (`data.kind`) and Flutter's `synthesized` plug in here once the core patch gives
-                // GPUI pointer events a device and a synthesized flag; until then every kind is a touch.
                 Some(TouchEvent {
                     id,
                     phase,
@@ -226,6 +228,7 @@ impl Touches {
                     force: (range > 0.0).then(|| {
                         ((data.pressure - data.pressure_min) / range).clamp(0.0, 1.0) as f32
                     }),
+                    device: data.kind,
                 })
             })
             .collect()
@@ -259,6 +262,9 @@ mod tests {
     const TOUCH: i64 = 0;
     const MOUSE: i64 = 1;
     const STYLUS: i64 = 2;
+    const INVERTED_STYLUS: i64 = 3;
+    const TRACKPAD: i64 = 4;
+    const UNKNOWN: i64 = 5;
     // Device ids as uniquePointerIdByType makes them: (pointerId << 3) | TOOL_TYPE_FINGER (1).
     const FINGER_0: i64 = 1;
     const FINGER_1: i64 = (1 << 3) | 1;
@@ -412,6 +418,29 @@ mod tests {
             });
             assert_eq!(format!("{got:?}"), format!("{expected:?}"), "{name}");
         }
+    }
+
+    #[test]
+    fn devices() -> Result<(), Error> {
+        // (row name, Flutter device kind, expected GPUI device).
+        let cases = [
+            ("finger", TOUCH, PointerDevice::Touch),
+            ("mouse", MOUSE, PointerDevice::Mouse),
+            ("stylus", STYLUS, PointerDevice::Pen),
+            ("inverted_stylus", INVERTED_STYLUS, PointerDevice::Pen),
+            ("trackpad", TRACKPAD, PointerDevice::Mouse),
+            ("unknown", UNKNOWN, PointerDevice::Touch),
+        ];
+        for (name, kind, device) in cases {
+            let mut touches = Touches::default();
+            let events = touches.events(&decode(&record(DOWN, kind, 2, 0., 0.))?, 2.0);
+            assert_eq!(
+                events.iter().map(|event| event.device).collect::<Vec<_>>(),
+                [device],
+                "{name}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

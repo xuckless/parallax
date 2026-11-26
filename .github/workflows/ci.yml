@@ -15,8 +15,8 @@ env:
   CARGO_TERM_COLOR: always
   # System libraries gpui_linux links (wayland, x11/xcb, xkbcommon, fontconfig, freetype); subset of Zed's script/linux.
   LINUX_PACKAGES: libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
-  # The library crates published to crates.io. `cargo package` builds each from its packaged tarball against
-  # crates.io gpui-pre, without the workspace [patch] (AGENTS.md patch rule 11). Add a row when a crate goes public.
+  # The library crates published to crates.io. `cargo package` builds each from its packaged tarball against the
+  # parallax-gpui* fork crates on crates.io, without the workspace [patch] (docs/ci.md). Add a row when a crate goes public.
   PUBLISHED_LIBS: -p parallax-android -p parallax-platform -p parallax
 
 defaults:
@@ -30,6 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       # One row per target. To add a target: add a row here and its rustup target in rust-toolchain.toml.
+      # package_target: the target the published libraries are packaged for (none: not packaged on this row).
       matrix:
         include:
           - target: linux
@@ -38,7 +39,9 @@ jobs:
               cargo fmt --all --check
               cargo clippy --workspace --all-targets -- -D warnings
               cargo test --workspace
-              cargo package $PUBLISHED_LIBS -p cargo-parallax
+              cargo package -p cargo-parallax
+              scripts/publish-fork.sh --dry-run
+            package_target: x86_64-unknown-linux-gnu
           - target: windows
             os: windows-latest
             checks: |
@@ -57,17 +60,13 @@ jobs:
           - target: android
             os: ubuntu-latest
             checks: |
-              ndk_bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-              export CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android28-clang"
-              export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
-              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android28-clang"
               cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
-              cargo package $PUBLISHED_LIBS --target aarch64-linux-android
+            package_target: aarch64-linux-android
           - target: wasm
             os: ubuntu-latest
             checks: |
               cargo check --workspace --target wasm32-unknown-unknown
-              cargo package $PUBLISHED_LIBS --target wasm32-unknown-unknown
+            package_target: wasm32-unknown-unknown
     steps:
       - uses: actions/checkout@v7.0.1
       # rustup reads channel, components and targets from rust-toolchain.toml.
@@ -77,9 +76,36 @@ jobs:
           key: ${{ matrix.target }}
       - if: matrix.target == 'linux'
         run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES
-      # build/ is generated, never committed: every job rebuilds build/gpui-patched from upstream/ + patches/.
+      # The NDK's clang as C compiler and linker, for this step and every later one.
+      - if: matrix.target == 'android'
+        run: |
+          ndk_bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CC_aarch64_linux_android=$ndk_bin/aarch64-linux-android28-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$ndk_bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ndk_bin/aarch64-linux-android28-clang" >> "$GITHUB_ENV"
+      # build/ is generated, never committed: every job rebuilds it (patched GPUI + fork crates) from upstream/ + patches/.
       - run: scripts/apply-patches.sh
       - run: ${{ matrix.checks }}
+      # The published libraries resolve parallax-gpui* from crates.io, so they package only once the pinned fork
+      # version is published (docs/gpui-fork-crates.md#publishing). Not yet published: a warning on pull requests and
+      # other branches, a failure on main and release tags (v*). publish-fork.sh exits 1 for "not published"; any other
+      # non-zero exit is an error and fails the job.
+      - if: matrix.package_target
+        env:
+          REQUIRE_FORK: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          status=0
+          scripts/publish-fork.sh --published || status=$?
+          case $status in
+            0) cargo package $PUBLISHED_LIBS --target ${{ matrix.package_target }} ;;
+            1)
+              if [[ $REQUIRE_FORK == true ]]; then
+                echo "::error::the pinned parallax-gpui* version is not on crates.io; publish it first (docs/gpui-fork-crates.md)"
+                exit 1
+              fi
+              echo "::warning::the pinned parallax-gpui* version is not on crates.io yet; published libraries not packaged" ;;
+            *) exit "$status" ;;
+          esac
       # JVM tests of the ported Android Java (docs/android-tests.md). JDK 21: Robolectric needs it for SDK 37.
       - if: matrix.target == 'linux'
         uses: actions/setup-java@v6.3.0

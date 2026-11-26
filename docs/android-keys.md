@@ -19,7 +19,7 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
    to the static native `nativeDispatchKeyData(activity, buffer, canceled)` instead of the `flutter/keydata` channel, and its return value
    is the framework's reply, synchronously (GPUI runs on the main thread).
 3. **Unhandled keys.** As in Flutter, `KeyboardManager` then offers a key GPUI did not handle to the text input
-   (`ViewDelegate.onTextInputKeyEvent`, false until the text-input port), and otherwise redispatches it to the root
+   (`ViewDelegate.onTextInputKeyEvent` → `TextInputPlugin.handleKeyEvent`, [android-text-input.md](android-text-input.md)), and otherwise redispatches it to the root
    view, which hands it on to Android: volume to the system, an unclaimed back to the Activity.
 4. **JNI.** A row in `natives` in [host.rs](../crates/android/src/host.rs) borrows the buffer for the call and hands
    it to `Shell::key`, which returns GPUI's answer. Keys from a view whose Activity does not own the window are
@@ -44,14 +44,14 @@ go to Android, whose default finishes the Activity. One state enum, `Back::{Idle
 `Back::next(state, BackEvent) → (state, Outcome)` that both `Keyboard::input` (back key events) and `Keyboard::reply`
 (GPUI's answers) call; `keys::tests::back_transitions` has a row per (state, event).
 
-Upstream surprise: `on_back_gesture` tests `hitbox.is_hovered`, which is false while the last input was a key, so
-after typing no element can claim a back press until the next touch.
+Claiming works after typing because of [patch 0006](../patches/0006-claim-back-gesture-after-key-input.patch):
+upstream's `on_back_gesture` tested `hitbox.is_hovered`, which is false while the last input was a key (keyboard
+modality hides hover), and a back gesture does not change the modality, so no element could claim a back press until
+the next touch. The patch hit-tests the gesture's own position regardless of modality; its window test has a row per
+preceding input (key press, touch).
 
 ## Not yet
 
-- **Text input.** `onTextInputKeyEvent` returns false; the IME port fills it in and makes `KeyboardManager` an
-  `InputConnectionAdaptor.KeyboardDelegate` again (the IME's `sendKeyEvent` calls `handleEvent`). Until then
-  `KeyDown` inserts no text.
 - **Keyboard layout.** `keyboard_layout` and `keyboard_mapper` are still stubs ([android.md](android.md#stubs-not-yet-on-android)).
 - **Predictive back** (API 33+ `OnBackInvokedCallback`, progress while swiping) and the device type field.
 - **Java tests.** Flutter's `KeyboardManagerTest` (needs Robolectric); its channel-responder cases drop.

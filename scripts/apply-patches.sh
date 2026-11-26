@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build build/gpui-patched/ from pristine upstream/ plus patches/*.patch, applied in sorted order.
-# Patch paths are relative to upstream/ (e.g. a/gpui-pre/src/app.rs).
+# Build build/gpui-patched/ from pristine upstream/ plus patches/*.patch, applied in sorted order, then the
+# parallax-gpui* fork crates the workspace builds on (build/parallax-gpui/, by fork-crates.sh). One command for a
+# fresh clone. Patch paths are relative to upstream/ (e.g. a/gpui-pre/src/app.rs).
 # build/ is generated and git-ignored: never edit it. Every run starts from a fresh copy.
 set -euo pipefail
 
@@ -18,3 +19,4 @@ for patch in patches/*.patch; do
     git apply --directory="$out" "$patch" || { echo "error: $patch does not apply to upstream/" >&2; exit 1; }
 done
 echo "built $out"
+scripts/fork-crates.sh

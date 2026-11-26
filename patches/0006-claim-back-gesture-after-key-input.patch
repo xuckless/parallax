@@ -1,0 +1,94 @@
+Let on_back_gesture claim a back gesture after keyboard input.
+
+What: `Interactivity::on_back_gesture` hit-tests with `HitboxId::is_hovered_ignoring_last_input` instead of
+`Hitbox::is_hovered`. Adds a window test with one row per input before the gesture (key press, touch).
+
+Why: `Window::dispatch_event` leaves the input modality unchanged for `BackGesture` (window.rs, the
+`last_input_modality` match), and `HitboxId::is_hovered` returns false while the modality is Keyboard. So after
+any `KeyDown` no element can claim a back gesture until a mouse move or touch resets the modality. Keyboard
+modality exists to hide hover under a stale cursor; a back gesture carries its own `start_position`, which
+`dispatch_event` has just hit-tested, so the modality must not apply. Android's back key (parallax-android sends
+it as a `BackGestureEvent`) arrives right after typing; iPad users with a hardware keyboard hit the same case.
+Not platform-specific, so no cfg.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
+index 754a975..aa20f93 100644
+--- a/gpui-pre/src/elements/div.rs
++++ b/gpui-pre/src/elements/div.rs
+@@ -427,7 +427,11 @@ impl Interactivity {
+     ) {
+         self.back_gesture_listeners
+             .push(Box::new(move |event, phase, hitbox, window, cx| {
+-                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
++                // A back gesture carries its own position, so keyboard modality (which hides hover
++                // under a stale cursor) must not stop a claim: Android's back key arrives after typing.
++                if phase == DispatchPhase::Bubble
++                    && hitbox.id.is_hovered_ignoring_last_input(window)
++                {
+                     (listener)(event, window, cx);
+                     window.prevent_default();
+                     cx.stop_propagation();
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 775021f..2231499 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -10039,6 +10039,57 @@ mod tests {
+         assert_eq!(claims.borrow().as_slice(), ["inner", "outer"]);
+     }
+ 
++    #[gpui::test]
++    fn back_gesture_is_claimed_whatever_the_last_input(cx: &mut TestAppContext) {
++        // One row per input that sets the modality before the back gesture; add a row per modality.
++        let key_down = PlatformInput::KeyDown(KeyDownEvent {
++            keystroke: Keystroke::parse("a").expect("valid keystroke"),
++            is_held: false,
++            prefer_character_input: false,
++        });
++        let touch = TouchEvent {
++            id: TouchId(0),
++            phase: TouchPhase::Started,
++            position: point(px(140.), px(10.)),
++            predicted_position: None,
++            force: None,
++            device: PointerDevice::Touch,
++        }
++        .to_platform_input();
++        let rows = [
++            ("after a key press", key_down.clone(), 10., Some("inner")),
++            ("after a key press, outer", key_down.clone(), 80., Some("outer")),
++            ("after a key press, unclaimed", key_down, 150., None),
++            ("after a touch", touch.clone(), 10., Some("inner")),
++            ("after a touch, unclaimed", touch, 150., None),
++        ];
++        for (name, before, x, claim) in rows {
++            let claims = Rc::new(RefCell::new(Vec::new()));
++            let window = cx.add_window({
++                let claims = claims.clone();
++                move |_, _| BackListeners { claims }
++            });
++            let prevented = cx
++                .update_window(window.into(), |_, window, cx| {
++                    window.dispatch_event(before, cx);
++                    window
++                        .dispatch_event(
++                            BackGestureEvent {
++                                phase: BackGesturePhase::Started,
++                                start_position: point(px(x), px(10.)),
++                                progress: 0.,
++                            }
++                            .to_platform_input(),
++                            cx,
++                        )
++                        .default_prevented
++                })
++                .unwrap();
++            assert_eq!(prevented, claim.is_some(), "{name}");
++            assert_eq!(claims.borrow().first().copied(), claim, "{name}");
++        }
++    }
++
+     struct BackListeners {
+         claims: Rc<RefCell<Vec<&'static str>>>,
+     }

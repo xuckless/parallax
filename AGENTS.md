@@ -55,7 +55,7 @@ Rules for ported code:
 |---|---|
 | Published GPUI | Our patched GPUI fork, published as `parallax-gpui*` crates; all Parallax crates depend on it (patch rule 11). Rebuilt from upstream + patches at each sync; patches upstream fixed are dropped. |
 | Upstream source | `gpui-pre-*` crates from crates.io: weekly snapshots of Zed's GPUI (a few files adapted to build standalone, each marked `// Modified for gpui-pre`), standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
-| Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/` (generated, git-ignored). The workspace points at that via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
+| Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/`, which `scripts/fork-crates.sh` turns into the `parallax-gpui*` fork crates in `build/parallax-gpui/` (both generated, git-ignored). Parallax crates depend on the fork crates, published to crates.io as `parallax-gpui*`; for local builds the workspace points at `build/parallax-gpui/` via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
 | Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |
 | Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
@@ -66,11 +66,11 @@ Rules for ported code:
 | Android threading | GPUI runs on the Android main (UI) thread, like `gpui_ios` on UIKit's. IME queries are answered synchronously. No second UI thread. |
 | Flutter | Second source of truth: port its platform glue and behaviour, use its tests as the oracle for upstream (see below). Pinned commit in `third_party/flutter/PORTED.md`. |
 | App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
-| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element. Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized; the rule is a row in the platform behaviour table. |
+| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element (`.on_touch`). Every pointer event's device (mouse, touch, pen) and whether it was synthesized are queryable; the API is in [core-patches.md](docs/core-patches.md). The rule is a row in the platform behaviour table. |
 | Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
 | Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
 | Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |
-| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines or Zed rejects 3. Past that, iOS text input moves into its own Parallax crate. |
+| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes). Past that, iOS text input moves into its own Parallax crate. |
 | Releases | Two rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. |
 | Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
 | Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |

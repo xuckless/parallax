@@ -19,7 +19,7 @@ This page is the how-to.
 ```sh
 scripts/apply-patches.sh                    # fresh build/gpui-patched/ with all current patches
 cd build/gpui-patched && git init -q && git add -A && git commit -qm base
-# ...edit files, cargo check from the repo root...
+# ...edit files, then from the repo root: scripts/fork-crates.sh && cargo check (the workspace builds build/parallax-gpui/)...
 git diff > ../../patches/0004-my-concern.patch   # paths come out as a/gpui-pre-*/..., as required
 cd ../.. && rm -rf build/gpui-patched/.git
 scripts/apply-patches.sh                    # must apply cleanly on top of the earlier patches
@@ -29,61 +29,34 @@ Add the header to the top of the file before committing it.
 
 ## Translating for filing upstream
 
-Patches are filed against [zed-industries/zed](https://github.com/zed-industries/zed) at the commit in
-[`upstream/UPSTREAM`](../upstream/UPSTREAM), where the same crates live under `crates/`.
-[`patch-paths.sh`](../scripts/patch-paths.sh) rewrites only the path lines of each file header; hunks are untouched:
-
-```sh
-scripts/patch-paths.sh to-zed patches/0004-my-concern.patch > /tmp/0004-zed.patch
-git -C ~/src/zed apply --check /tmp/0004-zed.patch     # zed checked out at the UPSTREAM commit
-scripts/patch-paths.sh to-vendored /tmp/0004-zed.patch # back again, e.g. for a fix made in Zed's tree
-```
-
-It fails loudly (exit 1, nothing usable on stdout) on any path outside the crate table and on files with no faithful
-counterpart in Zed's tree:
-
-- **`Cargo.toml`: refused.** crates.io rewrites manifests on publish (workspace inheritance resolved, `gpui-pre-*`
-  package names, paths dropped). A vendored manifest hunk has no mechanical Zed equivalent, and a silently wrong
-  translation is worse than none. Hand-write the Zed manifest change when filing.
-- **Packaging artifacts: refused.** `Cargo.toml.orig`, `Cargo.lock`, `.cargo-checksum.json` exist only in the vendored copy.
-- **gpui-pre's own files: refused.** `gpui-pre-apple/vendor/` (a copy of `crates/gpui` sources for its `build.rs`;
-  patch `gpui-pre/` instead) and `gpui-pre-macros/src/gpui_pre_facade_paths.rs`.
-- **Files gpui-pre rewrote: warning.** The snapshot is not byte-identical to Zed: gpui-pre edits a few sources and
-  marks each with a first-line `// Modified for gpui-pre` comment (at 0.3.14: `gpui/src/action.rs`,
-  `gpui_apple/build.rs`, `gpui_macros/src/gpui_macros.rs`, three `gpui_wgpu` files). `git apply` absorbs the
-  one-line offset, but a hunk touching gpui-pre's edits must be fixed by hand.
-
-Every other file is byte-identical. Zed's tree also has files the package drops (e.g. `crates/gpui_web/examples/`);
-patches touching them translate but will not apply to `upstream/`.
+Patches are written against the vendored layout and translated to Zed's `crates/` layout with
+[`patch-paths.sh`](../scripts/patch-paths.sh): [patch-translation.md](patch-translation.md).
 
 ## Our Zed fork
 
 [`scripts/sync-fork.sh`](../scripts/sync-fork.sh) rebuilds the `parallax` branch of
 [`xuckless/zed`](https://github.com/xuckless/zed/tree/parallax): the UPSTREAM commit plus every patch, translated as
-above, one commit each. Run it whenever a patch is added or changed. Apps can't `[patch]` onto that branch (Zed's
-crate names differ from crates.io's `gpui-pre-*`); they opt in through a Parallax checkout instead. Both are in
-[zed-fork.md](zed-fork.md).
-
-## The crate table
-
-One row per vendored crate in the `crates` table at the top of [`patch-paths.sh`](../scripts/patch-paths.sh):
-`upstream/` dir → Zed dir. Rows were checked against Zed's tree at the UPSTREAM commit. Most are
-`gpui-pre-x` → `crates/gpui_x` or `crates/x`; one is nested: `gpui-pre-derive-refineable` →
-`crates/refineable/derive_refineable` (the longest matching Zed prefix wins in `to-vendored`).
-
-To extend it, at a sync that vendors a new `gpui-pre-*` crate: read its `zed-crate` from
-`[package.metadata.gpui-pre]` in its `Cargo.toml`, find that crate's directory in Zed's tree at the new commit
-(`gh api "repos/zed-industries/zed/contents/crates?ref=<commit>"`), and add the row. Add a row to the
-`untranslatable` table next to it when a sync finds a new packaging-only or gpui-pre-only file.
+in [patch-translation.md](patch-translation.md), one commit each. Run it whenever a patch is added or changed.
+Apps don't use that branch; they get every patch through the published `parallax-gpui*` crates. Both are in [zed-fork.md](zed-fork.md).
 
 ## Published crates
 
-crates.io packages can't carry `patches/`, so every published crate builds on stock `gpui-pre`
-([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 11). A crate whose code needs a patch carries a local
-copy until Zed merges it. CI's `cargo package` step proves the packages build without `[patch]`
-([ci.md](ci.md#published-crates-build-on-stock-upstream)). One row per patch a published crate works around; delete the copy with the patch.
+Every patch reaches crates.io through our fork crates ([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 11):
+[`apply-patches.sh`](../scripts/apply-patches.sh) ends by running [`fork-crates.sh`](../scripts/fork-crates.sh), which
+renames the patched `gpui-pre*` crates to `parallax-gpui*` in `build/parallax-gpui/`, and every Parallax crate depends
+on those. Changing a patch between syncs means bumping [`patches/FORK_REVISION`](../patches/FORK_REVISION) and
+publishing a new fork version: [gpui-fork-crates.md](gpui-fork-crates.md).
 
-| Patch | Published crate | Local copy |
-|---|---|---|
-| [0001](../patches/0001-export-priority-queue-android.patch) | `parallax-android` | [queue.rs](../crates/android/src/queue.rs): `PriorityQueueSender`/`Receiver`, trimmed to what the dispatcher uses |
-| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `parallax-android` | No copy (the text system is too big): [text_system.rs](../crates/android/src/text_system.rs) feeds stock `CosmicTextSystem` memory-mapped files through `add_fonts` and appends the per-locale CJK fallbacks to every font ([android-fonts.md](android-fonts.md#stock-upstream-workaround-patch-0002)) |
+## The patches
+
+One row per file in [`patches/`](../patches/); the header of each says what and why.
+
+| Patch | Concern |
+|---|---|
+| [0001](../patches/0001-export-priority-queue-android.patch) | export `PriorityQueueSender`/`Receiver` on Android |
+| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `CosmicTextSystem::new_with_font_system` |
+| [0003](../patches/0003-pointer-source.patch) | `TouchEvent::device`, `Window::pointer_source()` ([core-patches.md](core-patches.md)) |
+| [0004](../patches/0004-touch-opt-out.patch) | `on_touch` opts an element out of touch → mouse; taps click as `ClickEvent::Touch` ([core-patches.md](core-patches.md)) |
+| [0005](../patches/0005-text-input-keyboard-type.patch) | keyboard type, secure entry, autofill hint in `TextInputConfiguration` ([core-patches.md](core-patches.md)) |
+| [0006](../patches/0006-claim-back-gesture-after-key-input.patch) | `on_back_gesture` claims after key input ([android-keys.md](android-keys.md#back)) |
+| [0007](../patches/0007-cosmic-text-system-font-database-id.patch) | `CosmicTextSystem::font_database_id`, so Android can draw emoji ([android-emoji.md](android-emoji.md)) |

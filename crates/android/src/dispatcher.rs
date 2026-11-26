@@ -10,10 +10,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{PlatformDispatcher, Priority, RunnableVariant};
+use gpui::{
+    PlatformDispatcher, Priority, PriorityQueueReceiver, PriorityQueueSender, RunnableVariant,
+};
 
 use crate::Error;
-use crate::queue::{PriorityQueueReceiver, PriorityQueueSender};
 
 const MIN_WORKERS: usize = 2;
 

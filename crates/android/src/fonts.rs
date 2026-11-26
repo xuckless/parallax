@@ -126,10 +126,9 @@ fn bad_attribute(node: roxmltree::Node, attribute: &'static str, value: Option<&
     }
 }
 
-/// Files swash cannot draw → the file to load instead when it is on disk. swash paints CBDT and COLRv0, not COLRv1;
-/// API 33+ ship COLRv1 `NotoColorEmoji.ttf` and keep the CBDT copy as `NotoColorEmojiLegacy.ttf`. Add a row per
-/// such pair; remove it once swash paints COLRv1.
-const SUBSTITUTES: &[(&str, &str)] = &[("NotoColorEmoji.ttf", "NotoColorEmojiLegacy.ttf")];
+/// The script subtag fonts.xml tags colour emoji families with (`lang="und-Zsye"`): the emoji font and, on newer
+/// images, the separate flags font. Android draws these faces' glyphs itself (`docs/android-emoji.md`).
+const EMOJI_SCRIPT: &str = "Zsye";
 
 /// Locales that name no script → the Han script Android's families are tagged with. Rows are tried in order; an
 /// empty region matches any. Add a row for another language whose fonts.xml families carry a script.
@@ -166,11 +165,13 @@ pub(crate) struct FontPlan {
     /// Language-tagged fallbacks (CJK), those matching the app's locales first, then XML order: per-language glyphs
     /// for Han text, as Android picks them.
     pub(crate) by_locale: Vec<Face>,
+    /// The colour emoji faces (`EMOJI_SCRIPT` families), in XML order.
+    pub(crate) emoji: Vec<Face>,
     /// Listed files not on disk (OEM images drop some) or not readable.
     pub(crate) missing: Vec<PathBuf>,
 }
 
-/// Plans the load: files in `dir` that are `readable`, substitutes applied, ignored families skipped. A file that
+/// Plans the load: files in `dir` that are `readable`, ignored families skipped. A file that
 /// is on disk but cannot be read (permissions, a broken OEM image) is `missing` like an absent one, so it costs only
 /// itself, never the other system fonts.
 pub(crate) fn plan(
@@ -179,14 +180,7 @@ pub(crate) fn plan(
     locales: &[String],
     readable: impl Fn(&Path) -> bool,
 ) -> Result<FontPlan, Error> {
-    let path = |file: &str| {
-        let substitute = SUBSTITUTES
-            .iter()
-            .find(|(over, _)| *over == file)
-            .map(|(_, with)| dir.join(with))
-            .filter(|with| readable(with));
-        substitute.unwrap_or_else(|| dir.join(file))
-    };
+    let path = |file: &str| dir.join(file);
     // A family's face for primary or per-language use: its first font that is on disk and not serif-only.
     let face = |family: &Family| {
         family
@@ -269,11 +263,30 @@ pub(crate) fn plan(
     tagged.sort_by_key(|(rank, _)| *rank); // stable: ties keep XML order
     let by_locale = tagged.into_iter().map(|(_, face)| face).collect();
 
+    let emoji = config
+        .families
+        .iter()
+        .filter(|family| {
+            !family.ignore
+                && family
+                    .langs
+                    .iter()
+                    .any(|lang| explicit_script(lang) == Some(EMOJI_SCRIPT))
+        })
+        .flat_map(|family| &family.fonts)
+        .map(|font| Face {
+            path: path(&font.file),
+            index: font.index,
+        })
+        .filter(|face| readable(&face.path))
+        .collect();
+
     Ok(FontPlan {
         files,
         default,
         generics,
         by_locale,
+        emoji,
         missing,
     })
 }
@@ -375,6 +388,12 @@ mod tests {
     </family>
     <family lang="und-Zsye">
         <font weight="400" style="normal">NotoColorEmoji.ttf</font>
+    </family>
+    <family lang="und-Zsye">
+        <font weight="400" style="normal">NotoColorEmojiFlags.ttf</font>
+    </family>
+    <family lang="und-Zsym">
+        <font weight="400" style="normal">NotoSansSymbols-Regular-Subsetted2.ttf</font>
     </family>
 </familyset>"#;
 
@@ -501,6 +520,18 @@ mod tests {
                             &["und-Zsye"],
                             false,
                             vec![font("NotoColorEmoji.ttf", 0, None)],
+                        ),
+                        family(
+                            None,
+                            &["und-Zsye"],
+                            false,
+                            vec![font("NotoColorEmojiFlags.ttf", 0, None)],
+                        ),
+                        family(
+                            None,
+                            &["und-Zsym"],
+                            false,
+                            vec![font("NotoSansSymbols-Regular-Subsetted2.ttf", 0, None)],
                         ),
                     ],
                     aliases: vec![alias("sans-serif-thin", "sans-serif", Some(100))],
@@ -702,6 +733,7 @@ mod tests {
                     by_locale: [2, 3, 0, 1]
                         .map(|index| face("NotoSansCJK-Regular.ttc", index))
                         .to_vec(),
+                    emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: vec![],
                 }),
             ),
@@ -719,6 +751,7 @@ mod tests {
                         generic("arial", "Roboto-Bold.ttf", None),
                     ],
                     by_locale: vec![],
+                    emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: paths(&[
                         "Roboto-Regular.ttf",
                         "NotoNaskhArabic-Regular.ttf",
@@ -752,23 +785,28 @@ mod tests {
                     by_locale: [2, 3, 0, 1]
                         .map(|index| face("NotoSansCJK-Regular.ttc", index))
                         .to_vec(),
+                    emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: paths(&["DroidSansMono.ttf"]),
                 }),
             ),
             (
-                "API 35 with the CBDT copy: COLRv1 emoji swapped for Legacy, ignored family skipped",
+                "API 35: COLRv1 emoji and flags are the emoji faces, ignored Legacy and symbols are not",
                 FONT_FALLBACK_XML_35,
                 vec![
                     "Roboto-Regular.ttf",
                     "NotoSansCJK-Regular.ttc",
                     "NotoColorEmoji.ttf",
                     "NotoColorEmojiLegacy.ttf",
+                    "NotoColorEmojiFlags.ttf",
+                    "NotoSansSymbols-Regular-Subsetted2.ttf",
                 ],
                 Ok(FontPlan {
                     files: paths(&[
                         "Roboto-Regular.ttf",
                         "NotoSansCJK-Regular.ttc",
-                        "NotoColorEmojiLegacy.ttf",
+                        "NotoColorEmoji.ttf",
+                        "NotoColorEmojiFlags.ttf",
+                        "NotoSansSymbols-Regular-Subsetted2.ttf",
                     ]),
                     default: face("Roboto-Regular.ttf", 0),
                     generics: vec![
@@ -776,11 +814,15 @@ mod tests {
                         generic("sans-serif-thin", "Roboto-Regular.ttf", Some(100)),
                     ],
                     by_locale: vec![face("NotoSansCJK-Regular.ttc", 0)],
+                    emoji: vec![
+                        face("NotoColorEmoji.ttf", 0),
+                        face("NotoColorEmojiFlags.ttf", 0),
+                    ],
                     missing: vec![],
                 }),
             ),
             (
-                "API 35 without the CBDT copy: COLRv1 emoji kept",
+                "API 35 without the flags file: one emoji face, the flags file missing",
                 FONT_FALLBACK_XML_35,
                 vec![
                     "Roboto-Regular.ttf",
@@ -799,7 +841,11 @@ mod tests {
                         generic("sans-serif-thin", "Roboto-Regular.ttf", Some(100)),
                     ],
                     by_locale: vec![face("NotoSansCJK-Regular.ttc", 0)],
-                    missing: vec![],
+                    emoji: vec![face("NotoColorEmoji.ttf", 0)],
+                    missing: paths(&[
+                        "NotoColorEmojiFlags.ttf",
+                        "NotoSansSymbols-Regular-Subsetted2.ttf",
+                    ]),
                 }),
             ),
             (

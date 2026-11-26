@@ -1,26 +1,35 @@
-//! The shell around [`crate::fonts`]: reads the system font list, memory-maps the planned files into upstream's
-//! `CosmicTextSystem`, and wraps it to add Android's generic names and per-language fallbacks. Main thread, once,
-//! when the platform starts; the time is logged. How it fits together: `docs/android-fonts.md`.
-//!
-//! Local workaround for patch 0002 (AGENTS.md, patch rule 11): stock `CosmicTextSystem` takes fonts only as bytes
-//! and keeps cosmic-text's empty Android fallback table, so files are mapped and leaked, and the per-language order
-//! is applied as GPUI fallbacks on every font. Once `new_with_font_system` is upstream, this builds a `FontSystem`
-//! (fonts by path, the app's locale, an `impl Fallback` from the same plan) and the wrapper shrinks to the names.
+//! The shell around [`crate::fonts`]: reads the system font list, memory-maps the planned files into a font
+//! database for upstream's `CosmicTextSystem` (`new_with_font_system`, patch 0002), and wraps it to add Android's
+//! generic names and per-language fallbacks. Main thread, once, when the platform starts; the time is logged.
+//! Colour emoji glyphs are drawn by Android itself ([`crate::emoji`] decides, `EmojiRasterizer.java` draws).
+//! How it fits together: `docs/android-fonts.md`, `docs/android-emoji.md`.
 
 use std::{
-    borrow::Cow, collections::HashMap, fs::File, path::Path, path::PathBuf, sync::Arc,
+    borrow::Cow,
+    collections::HashMap,
+    fs::File,
+    path::Path,
+    path::PathBuf,
+    sync::{Arc, Mutex, PoisonError},
     time::Instant,
 };
+
+use cosmic_text::{FontSystem, fontdb};
 
 use gpui::{
     Bounds, DevicePixels, Font, FontFallbacks, FontId, FontMetrics, FontRun, FontWeight, GlyphId,
     Hsla, LineLayout, MissingGlyphSink, Pixels, PlatformTextSystem, RenderGlyphParams,
-    SharedString, Size, TextRenderingMode,
+    SharedString, Size, TextRenderingMode, point, size,
 };
 use gpui_wgpu::CosmicTextSystem;
+use jni::{
+    JNIEnv, JavaVM,
+    objects::{GlobalRef, JClass, JIntArray, JValue},
+};
 
 use crate::{
     Error,
+    emoji::{self, Clusters, Raster},
     fonts::{self, Face, FontPlan},
 };
 
@@ -31,7 +40,15 @@ const FONT_LISTS: &[&str] = &["/system/etc/font_fallback.xml", "/system/etc/font
 /// The files both lists name.
 const FONT_DIR: &str = "/system/fonts";
 
-/// GPUI's text system with Android's system fonts. Every method but `font_id` is upstream's.
+/// cosmic-text's locale when the surface sent none (an empty `LocaleList`): what upstream's
+/// `new_without_system_fonts` uses, so behaviour matches upstream's default.
+const FALLBACK_LOCALE: &str = "en-US";
+
+/// Parallax's Java helper that draws emoji (`java/io/github/xuckless/parallax/EmojiRasterizer.java`).
+const EMOJI_CLASS: &str = "io/github/xuckless/parallax/EmojiRasterizer";
+
+/// GPUI's text system with Android's system fonts. Every method is upstream's but `font_id` and, for colour emoji,
+/// `layout_line`, `glyph_raster_bounds` and `rasterize_glyph`.
 pub(crate) struct AndroidTextSystem {
     cosmic: CosmicTextSystem,
     /// fonts.xml family and alias names (`sans-serif`, `monospace`, `arial`) → the family name inside the file,
@@ -39,11 +56,26 @@ pub(crate) struct AndroidTextSystem {
     generics: HashMap<String, (SharedString, Option<FontWeight>)>,
     /// The per-language faces' family names, the app's locales first: appended to every font's fallbacks.
     by_locale: Vec<String>,
+    /// `None` when the Java helper could not be reached (logged): emoji stay on upstream's path.
+    emoji: Option<Emoji>,
+}
+
+/// Android's half of colour emoji. Main thread only: GPUI runs on Android's main thread (AGENTS.md, Decisions:
+/// Android threading), and each call reaches Java through that thread's `JNIEnv` ([`Self::call`]). A call from
+/// another thread finds no attached `JNIEnv` and returns an error (the glyph is not drawn), never a crash.
+struct Emoji {
+    vm: JavaVM,
+    /// `EmojiRasterizer`, looked up once while a Java frame is on the stack (so the app's class loader finds it).
+    class: GlobalRef,
+    /// Each system emoji face → its Android `Typeface`, made from the same file cosmic-text shapes with.
+    faces: HashMap<fontdb::ID, GlobalRef>,
+    /// The emoji clusters layouts produced, by the glyph id [`emoji::mark`] gave each.
+    clusters: Mutex<Clusters>,
 }
 
 /// Loads the system fonts for `locales` (BCP-47, the app's preference order). On any failure the text system has
 /// no system fonts, as before Phase 1, and the error is logged: text still renders with fonts the app adds.
-pub(crate) fn load(locales: &[String]) -> Arc<dyn PlatformTextSystem> {
+pub(crate) fn load(vm: &JavaVM, locales: &[String]) -> Arc<dyn PlatformTextSystem> {
     let started = Instant::now();
     let planned = FONT_LISTS
         .iter()
@@ -59,16 +91,21 @@ pub(crate) fn load(locales: &[String]) -> Arc<dyn PlatformTextSystem> {
             ))
         });
     match planned {
-        Ok((list, plan)) => match AndroidTextSystem::new(&plan) {
+        Ok((list, plan)) => match AndroidTextSystem::new(vm, &plan, locales) {
             Ok(text_system) => {
                 log::info!(
                     "parallax: fonts: {} files from {list} ({} listed but missing) in {:?}; default {}, \
-                     per-language order {:?} for locales {locales:?}",
+                     per-language order {:?} for locales {locales:?}; {} of {} emoji faces drawn by Android",
                     plan.files.len(),
                     plan.missing.len(),
                     started.elapsed(),
                     plan.default.path.display(),
                     text_system.by_locale,
+                    text_system
+                        .emoji
+                        .as_ref()
+                        .map_or(0, |emoji| emoji.faces.len()),
+                    plan.emoji.len(),
                 );
                 return Arc::new(text_system);
             }
@@ -80,82 +117,256 @@ pub(crate) fn load(locales: &[String]) -> Arc<dyn PlatformTextSystem> {
 }
 
 impl AndroidTextSystem {
-    fn new(plan: &FontPlan) -> Result<Self, Error> {
-        // Each file is mapped for the life of the process: fonts are never unloaded, and stock `add_fonts` needs
-        // `'static` bytes. The pages stay in the shared page cache, not in the app's heap. The plan opened each
-        // file once already; one that still fails here is skipped and logged, like a missing one.
-        let mapped: HashMap<&PathBuf, &'static [u8]> = plan
-            .files
-            .iter()
-            .filter_map(|path| {
-                let mapped = File::open(path)
-                    .map_err(|error| Error::Os("open font", error))
-                    .and_then(|file| {
-                        // SAFETY: system fonts live on the read-only system partition; nothing truncates or
-                        // rewrites them while mapped.
-                        unsafe { memmap2::Mmap::map(&file) }
-                            .map_err(|error| Error::Os("mmap font", error))
-                    });
-                match mapped {
-                    Ok(mapped) => Some((path, &**Box::leak(Box::new(mapped)))),
-                    Err(error) => {
-                        log::warn!("parallax: fonts: skipped {}: {error}", path.display());
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        // Family names live in the files, not the XML: read them for the few faces the plan names.
-        let mut names = fontdb::Database::new();
+    fn new(vm: &JavaVM, plan: &FontPlan, locales: &[String]) -> Result<Self, Error> {
+        // Files load in plan order (cosmic-text's last-resort scan follows it). Each mapping is owned by the
+        // database and lives as long as it; the pages stay in the shared page cache, not in the app's heap. The
+        // plan opened each file once already; one that still fails here is skipped and logged, like a missing one.
+        let mut db = fontdb::Database::new();
         let mut ids: HashMap<&PathBuf, Vec<fontdb::ID>> = HashMap::new();
-        let named = std::iter::once(&plan.default)
-            .chain(plan.generics.iter().map(|generic| &generic.face))
-            .chain(&plan.by_locale);
-        for face in named {
-            if let (false, Some(&bytes)) = (ids.contains_key(&face.path), mapped.get(&face.path)) {
-                let loaded = names.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
-                ids.insert(&face.path, loaded.to_vec());
+        for path in &plan.files {
+            let mapped = File::open(path)
+                .map_err(|error| Error::Os("open font", error))
+                .and_then(|file| {
+                    // SAFETY: system fonts live on the read-only system partition; nothing truncates or
+                    // rewrites them while mapped.
+                    unsafe { memmap2::Mmap::map(&file) }
+                        .map_err(|error| Error::Os("mmap font", error))
+                });
+            match mapped {
+                Ok(mapped) => {
+                    let loaded = db.load_font_source(fontdb::Source::Binary(Arc::new(mapped)));
+                    ids.insert(path, loaded.to_vec());
+                }
+                Err(error) => log::warn!("parallax: fonts: skipped {}: {error}", path.display()),
             }
         }
+
+        // Family names live in the files, not the XML: read them from the faces just loaded.
         let family = |face: &Face| -> Option<String> {
             ids.get(&face.path)?
                 .iter()
-                .filter_map(|id| names.face(*id))
+                .filter_map(|id| db.face(*id))
                 .find(|info| info.index == face.index)?
                 .families
                 .first()
                 .map(|(name, _)| name.clone())
         };
-
         let default = family(&plan.default).ok_or(Error::NoSystemFont)?;
-        let cosmic = CosmicTextSystem::new_without_system_fonts(&default);
-        cosmic
-            .add_fonts(
-                plan.files
-                    .iter()
-                    .filter_map(|path| mapped.get(path))
-                    .map(|bytes| Cow::Borrowed(*bytes))
-                    .collect(),
-            )
-            .map_err(|error| Error::AddFonts(format!("{error:#}")))?;
-        Ok(Self {
-            cosmic,
-            generics: plan
-                .generics
+        let generics = plan
+            .generics
+            .iter()
+            .filter_map(|generic| {
+                Some((
+                    generic.name.clone(),
+                    (
+                        family(&generic.face)?.into(),
+                        generic.weight.map(|weight| FontWeight(weight.into())),
+                    ),
+                ))
+            })
+            .collect();
+        let by_locale = plan.by_locale.iter().filter_map(family).collect();
+        let emoji_faces = plan.emoji.iter().filter_map(|face| {
+            let id = ids
+                .get(&face.path)?
                 .iter()
-                .filter_map(|generic| {
-                    Some((
-                        generic.name.clone(),
-                        (
-                            family(&generic.face)?.into(),
-                            generic.weight.map(|weight| FontWeight(weight.into())),
-                        ),
-                    ))
-                })
-                .collect(),
-            by_locale: plan.by_locale.iter().filter_map(family).collect(),
+                .copied()
+                .find(|id| db.face(*id).is_some_and(|info| info.index == face.index))?;
+            Some((id, face))
+        });
+        let emoji = Emoji::new(vm, emoji_faces)
+            .inspect_err(|error| {
+                log::error!("parallax: fonts: emoji stay on swash (COLRv1 is blank): {error}")
+            })
+            .ok();
+
+        // cosmic-text's Android fallback table is empty, so its locale changes nothing yet; the per-language order
+        // stays GPUI fallbacks on every font (`font_id`). The app's locale is still the right one to hand over.
+        let locale = locales
+            .first()
+            .map_or(FALLBACK_LOCALE, String::as_str)
+            .to_string();
+        Ok(Self {
+            cosmic: CosmicTextSystem::new_with_font_system(
+                FontSystem::new_with_locale_and_db(locale, db),
+                &default,
+            ),
+            generics,
+            by_locale,
+            emoji,
         })
+    }
+
+    /// Android's drawing of `params` and its size in device pixels, or `None` for upstream's path
+    /// ([`emoji::route`]).
+    fn emoji_raster(
+        &self,
+        params: &RenderGlyphParams,
+    ) -> Option<(&Emoji, &GlobalRef, String, f32)> {
+        let emoji = self.emoji.as_ref()?;
+        let face = self
+            .cosmic
+            .font_database_id(params.font_id)
+            .and_then(|id| emoji.faces.get(&id));
+        let cluster = emoji
+            .clusters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .text(params.glyph_id)
+            .map(str::to_string);
+        match emoji::route(params.is_emoji, face, cluster) {
+            Raster::Android { face, cluster } => Some((
+                emoji,
+                face,
+                cluster,
+                f32::from(params.font_size) * params.scale_factor,
+            )),
+            Raster::Upstream => None,
+        }
+    }
+}
+
+impl Emoji {
+    fn new<'a>(
+        vm: &JavaVM,
+        faces: impl Iterator<Item = (fontdb::ID, &'a Face)>,
+    ) -> Result<Self, Error> {
+        let mut env = vm.get_env()?;
+        let class = env.find_class(EMOJI_CLASS)?;
+        let mut emoji = Self {
+            vm: env.get_java_vm()?,
+            class: env.new_global_ref(class)?,
+            faces: HashMap::new(),
+            clusters: Mutex::default(),
+        };
+        for (id, face) in faces {
+            let typeface = emoji.call(|env, class| {
+                let path = env.new_string(face.path.to_string_lossy())?;
+                let typeface = env
+                    .call_static_method(
+                        class,
+                        "typeface",
+                        "(Ljava/lang/String;I)Landroid/graphics/Typeface;",
+                        &[JValue::Object(&path), JValue::Int(face.index as i32)],
+                    )?
+                    .l()?;
+                (!typeface.is_null())
+                    .then(|| env.new_global_ref(typeface))
+                    .transpose()
+            })?;
+            match typeface {
+                Some(typeface) => {
+                    emoji.faces.insert(id, typeface);
+                }
+                None => log::warn!(
+                    "parallax: fonts: Android cannot load emoji face {}, left to swash",
+                    face.path.display()
+                ),
+            }
+        }
+        Ok(emoji)
+    }
+
+    /// Runs `f` on the main thread's `JNIEnv` in its own local frame (a frame paints many glyphs inside one Java
+    /// callback), with `EmojiRasterizer`. A Java exception becomes an error and is cleared.
+    fn call<T>(
+        &self,
+        f: impl FnOnce(&mut JNIEnv, &JClass) -> jni::errors::Result<T>,
+    ) -> Result<T, Error> {
+        let mut env = self.vm.get_env()?;
+        let class = <&JClass>::from(self.class.as_obj());
+        let result = env.with_local_frame(8, |env| f(env, class));
+        if result.is_err() && env.exception_check()? {
+            env.exception_clear()?;
+        }
+        Ok(result?)
+    }
+
+    /// `EmojiRasterizer.<method>(typeface, cluster, size_px, ints…)` into `out`, which holds as many ints as the
+    /// returned `int[]` must (a shorter one is an error): the shape [`Self::bounds`] and [`Self::draw`] share.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Java method's name, signature and arguments"
+    )]
+    fn ints(
+        &self,
+        method: &str,
+        signature: &str,
+        typeface: &GlobalRef,
+        cluster: &str,
+        size_px: f32,
+        ints: &[i32],
+        out: &mut [i32],
+    ) -> Result<(), Error> {
+        self.call(|env, class| {
+            let text = env.new_string(cluster)?;
+            let mut args = vec![
+                JValue::Object(typeface.as_obj()),
+                JValue::Object(&text),
+                JValue::Float(size_px),
+            ];
+            args.extend(ints.iter().map(|&value| JValue::Int(value)));
+            let array = JIntArray::from(
+                env.call_static_method(class, method, signature, &args)?
+                    .l()?,
+            );
+            env.get_int_array_region(&array, 0, out)
+        })
+    }
+
+    /// The pixels `cluster` covers at `size_px` device pixels, from the glyph origin, y down.
+    fn bounds(
+        &self,
+        typeface: &GlobalRef,
+        cluster: &str,
+        size_px: f32,
+    ) -> Result<Bounds<DevicePixels>, Error> {
+        let mut ltrb = [0; 4];
+        self.ints(
+            "bounds",
+            "(Landroid/graphics/Typeface;Ljava/lang/String;F)[I",
+            typeface,
+            cluster,
+            size_px,
+            &[],
+            &mut ltrb,
+        )?;
+        let [left, top, right, bottom] = ltrb;
+        Ok(Bounds {
+            origin: point(DevicePixels(left), DevicePixels(top)),
+            size: size(DevicePixels(right - left), DevicePixels(bottom - top)),
+        })
+    }
+
+    /// `cluster` drawn into `bounds` (from [`Self::bounds`]), as GPUI's colour atlas takes it: BGRA, unpremultiplied.
+    fn draw(
+        &self,
+        typeface: &GlobalRef,
+        cluster: &str,
+        size_px: f32,
+        bounds: Bounds<DevicePixels>,
+    ) -> Result<Vec<u8>, Error> {
+        let started = Instant::now();
+        let (width, height) = (bounds.size.width.0, bounds.size.height.0);
+        let mut pixels = vec![0; width.max(0) as usize * height.max(0) as usize];
+        self.ints(
+            "draw",
+            "(Landroid/graphics/Typeface;Ljava/lang/String;FIIII)[I",
+            typeface,
+            cluster,
+            size_px,
+            &[bounds.origin.x.0, bounds.origin.y.0, width, height],
+            &mut pixels,
+        )?;
+        log::debug!(
+            "parallax: emoji: drew {cluster:?} at {size_px} px ({width}x{height}) in {:?}",
+            started.elapsed()
+        );
+        // Java's ARGB ints as little-endian bytes are B, G, R, A.
+        Ok(pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_le_bytes())
+            .collect())
     }
 }
 
@@ -218,7 +429,12 @@ impl PlatformTextSystem for AndroidTextSystem {
         &self,
         params: &RenderGlyphParams,
     ) -> anyhow::Result<Bounds<DevicePixels>> {
-        self.cosmic.glyph_raster_bounds(params)
+        match self.emoji_raster(params) {
+            Some((emoji, typeface, cluster, size_px)) => {
+                Ok(emoji.bounds(typeface, &cluster, size_px)?)
+            }
+            None => self.cosmic.glyph_raster_bounds(params),
+        }
     }
 
     fn rasterize_glyph(
@@ -226,11 +442,36 @@ impl PlatformTextSystem for AndroidTextSystem {
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> anyhow::Result<(Size<DevicePixels>, Vec<u8>)> {
-        self.cosmic.rasterize_glyph(params, raster_bounds)
+        match self.emoji_raster(params) {
+            Some((emoji, typeface, cluster, size_px)) => Ok((
+                raster_bounds.size,
+                emoji.draw(typeface, &cluster, size_px, raster_bounds)?,
+            )),
+            None => self.cosmic.rasterize_glyph(params, raster_bounds),
+        }
     }
 
+    /// Upstream's layout, with the system emoji faces' runs rewritten for Android to draw ([`emoji::mark`]).
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
-        self.cosmic.layout_line(text, font_size, runs)
+        let mut layout = self.cosmic.layout_line(text, font_size, runs);
+        if let Some(emoji) = &self.emoji {
+            // Locked once per line, not per glyph.
+            let mut clusters = emoji
+                .clusters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            emoji::mark(
+                &mut layout,
+                text,
+                |font_id| {
+                    self.cosmic
+                        .font_database_id(font_id)
+                        .is_some_and(|id| emoji.faces.contains_key(&id))
+                },
+                |cluster| clusters.id(cluster),
+            );
+        }
+        layout
     }
 
     fn recommended_rendering_mode(&self, font_id: FontId, font_size: Pixels) -> TextRenderingMode {
