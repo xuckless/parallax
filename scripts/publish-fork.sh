@@ -6,6 +6,7 @@
 #                limit (HTTP 429) and retries, which can take hours for a set of new names. Needs `cargo login`.
 #   --dry-run    package and verify every fork crate together (`cargo package --workspace`); publishes nothing.
 #   --published  exit 0 if every fork crate's version is on crates.io, 1 if any is missing (CI gates on it).
+# Exit codes: 0 done, 1 not published (--published only), 2 error (bad option, index unreachable, failed publish).
 # Compiled output goes to target/parallax-gpui/, so regenerating build/ keeps the compiled dependencies.
 set -euo pipefail
 
@@ -13,7 +14,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fork="$root/build/parallax-gpui"
 target_dir="$root/target/parallax-gpui"
 
-die() { echo "publish-fork: $*" >&2; exit 1; }
+die() { echo "publish-fork: $*" >&2; exit 2; }
 
 # Arguments first, before any work.
 [[ $# -le 1 ]] || die "takes at most one option (see the usage at the top)"
@@ -49,15 +50,21 @@ mapfile -t order < <(jq -r '.packages[] | .name as $crate | "\($crate) \($crate)
 
 # Is name@version on crates.io? Asks the sparse index (what cargo reads): 200 lists the versions, 404 means a new name.
 on_crates_io() {
-    local name=$1 version=$2 body="$scratch/index" status found=1
+    local name=$1 version=$2 body="$scratch/index" status jq_status=0
     status="$(curl -sS -o "$body" -w '%{http_code}' "https://index.crates.io/${name:0:2}/${name:2:2}/$name")" \
         || die "cannot reach index.crates.io"
     case $status in
-        200) jq -e --arg version "$version" 'select(.vers == $version)' "$body" > /dev/null && found=0 ;;
-        404) ;;
+        200) ;;
+        404) return 1 ;;
         *) die "index.crates.io answered $status for $name" ;;
     esac
-    return $found
+    # jq -e: 0 a line matched, 1 or 4 none did; anything else is an unreadable answer.
+    jq -e --arg version "$version" 'select(.vers == $version)' "$body" > /dev/null || jq_status=$?
+    case $jq_status in
+        0) return 0 ;;
+        1 | 4) return 1 ;;
+        *) die "cannot read the index entry for $name" ;;
+    esac
 }
 
 if [[ $mode == published ]]; then

@@ -44,7 +44,7 @@ crate some manifest names that is not vendored (optional deps included; add a ve
 ```sh
 scripts/apply-patches.sh && scripts/publish-fork.sh --dry-run   # package and verify all, publish nothing
 scripts/apply-patches.sh && scripts/publish-fork.sh             # real publish; needs `cargo login`
-scripts/publish-fork.sh --published                             # exit 0 if every version is on crates.io
+scripts/publish-fork.sh --published                             # 0 all on crates.io, 1 not yet, 2 error
 ```
 
 - `--dry-run` is `cargo package --workspace`: each crate is verified against its just-packaged siblings.

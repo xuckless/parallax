@@ -44,7 +44,7 @@ Two checks, because Parallax crates depend on our [fork crates](gpui-fork-crates
   Every job also builds the whole Parallax workspace on those same crates, through the `[patch.crates-io]` rows.
 - **Parallax crates package.** `cargo package` builds each tarball without the workspace `[patch]`, so it resolves
   `parallax-gpui*` from crates.io. It runs only when `scripts/publish-fork.sh --published` finds the pinned version
-  there; otherwise the step warns. So publish the fork crates first ([gpui-fork-crates.md](gpui-fork-crates.md#publishing)),
+  there (exit 1 = not yet: a warning on PRs, a failure on main and `v*` tags; exit 2 = error, fails). So publish the fork crates first ([gpui-fork-crates.md](gpui-fork-crates.md#publishing)),
   then land the pin bump or release on them. List: `PUBLISHED_LIBS` in `ci.yml`, packaged per row's `package_target`;
   `cargo-parallax` (no GPUI) is packaged on Linux every run.
 

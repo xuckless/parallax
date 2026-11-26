@@ -87,14 +87,25 @@ jobs:
       - run: scripts/apply-patches.sh
       - run: ${{ matrix.checks }}
       # The published libraries resolve parallax-gpui* from crates.io, so they package only once the pinned fork
-      # version is published (publish order: docs/ci.md). Until then the step warns instead.
+      # version is published (docs/gpui-fork-crates.md#publishing). Not yet published: a warning on pull requests and
+      # other branches, a failure on main and release tags (v*). publish-fork.sh exits 1 for "not published"; any other
+      # non-zero exit is an error and fails the job.
       - if: matrix.package_target
+        env:
+          REQUIRE_FORK: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
         run: |
-          if scripts/publish-fork.sh --published; then
-            cargo package $PUBLISHED_LIBS --target ${{ matrix.package_target }}
-          else
-            echo "::warning::the pinned parallax-gpui* version is not on crates.io yet; published libraries not packaged (docs/ci.md)"
-          fi
+          status=0
+          scripts/publish-fork.sh --published || status=$?
+          case $status in
+            0) cargo package $PUBLISHED_LIBS --target ${{ matrix.package_target }} ;;
+            1)
+              if [[ $REQUIRE_FORK == true ]]; then
+                echo "::error::the pinned parallax-gpui* version is not on crates.io; publish it first (docs/gpui-fork-crates.md)"
+                exit 1
+              fi
+              echo "::warning::the pinned parallax-gpui* version is not on crates.io yet; published libraries not packaged" ;;
+            *) exit "$status" ;;
+          esac
       # JVM tests of the ported Android Java (docs/android-tests.md). JDK 21: Robolectric needs it for SDK 37.
       - if: matrix.target == 'linux'
         uses: actions/setup-java@v6.3.0
