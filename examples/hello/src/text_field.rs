@@ -273,6 +273,7 @@ impl EntityInputHandler for TextField {
             autocapitalize: Autocapitalize::Sentences,
             suggestions: true,
             input_action: TextInputAction::Done,
+            ..TextInputConfiguration::default()
         }
     }
 
