@@ -70,16 +70,16 @@ Skeleton (0.1.1):
 
 - [x] `parallax` facade crate: one dependency for apps, re-exporting GPUI and the Parallax crates.
 - [ ] `cargo-parallax`: `parallax.toml` schema and `cargo parallax run android` (generates the Gradle project around the Java port).
-- [ ] Main-thread dispatcher: GPUI's foreground executor on the Android main `Looper` via `ALooper_addFd` + an eventfd
+- [x] Main-thread dispatcher: GPUI's foreground executor on the Android main `Looper` via `ALooper_addFd` + an eventfd
       (no Java `Handler`). Small patch: export upstream's `PriorityQueue*` on Android (today only windows/linux/wasm).
-- [ ] Activity and View: write a small Parallax Activity and `SurfaceView`, using `FlutterActivity`, `FlutterView` and
+- [x] Activity and View: write a small Parallax Activity and `SurfaceView`, using `FlutterActivity`, `FlutterView` and
       `FlutterSurfaceView` as reference for lifecycle, surface and insets.
-- [ ] Rendering: `gpui_wgpu` on the ported view's `Surface`, Vulkan with GL fallback. The backend choice is one visible table.
+- [x] Rendering: `gpui_wgpu` on the ported view's `Surface`, Vulkan with GL fallback. The backend choice is one visible table.
       The renderer is created on the main thread (about 0.5 s on the emulator); measure on a device and move it off
       only if startup exceeds the budget.
-- [ ] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss. Needed in the
+- [x] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss. Needed in the
       skeleton: in the spike, returning from Home failed on a stale surface.
-- [ ] Insets: `targetSdk` 35 forces edge-to-edge, so the window draws under the system bars; report safe-area insets.
+- [x] Insets: `targetSdk` 35 forces edge-to-edge, so the window draws under the system bars; report safe-area insets.
 - [ ] Touch: port `AndroidTouchProcessor` and `MotionEventTracker`; emit upstream `TouchEvent`.
 - [ ] Example app: one window with a box that changes colour on tap, built for desktop, web and Android.
 - [ ] Publish 0.1.1.
@@ -96,6 +96,8 @@ Core patches (needed by Android from the start; iOS and web get them too):
 
 Full Android:
 
+- [ ] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
+      backend table.
 - [ ] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
       Back button → `BackGestureEvent`.
 - [ ] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,

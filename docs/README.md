@@ -15,3 +15,4 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [android-spike.md](android-spike.md) | Phase 1 emulator spike: ALooper dispatcher, minimum Platform/PlatformWindow surface, wgpu Vulkan vs GL on the emulator, tap→click, upstream Android status, emulator setup |
 | [cli.md](cli.md) | cargo-parallax: parallax.toml keys and defaults, what run android does step by step, the generated Gradle project, SDK/NDK/JDK requirements and env vars |
+| [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
