@@ -18,7 +18,7 @@ cancels the older run.
 | windows | windows-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | macos | macos-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | ios | macos-latest | `cargo check --workspace` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` |
-| android | ubuntu-latest | `cargo check --workspace --target aarch64-linux-android`, `cargo package` of the published libraries |
+| android | ubuntu-latest | `cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings`, `cargo package` of the published libraries |
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, `cargo package` of the published libraries |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
@@ -62,7 +62,7 @@ Android needs the NDK's clang as C compiler and linker (CI reads `$ANDROID_NDK_L
 bin=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 CC_aarch64_linux_android=$bin/aarch64-linux-android28-clang AR_aarch64_linux_android=$bin/llvm-ar \
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android28-clang \
-  cargo check --workspace --target aarch64-linux-android
+  cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
 ```
 
 iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-apple-ios`.

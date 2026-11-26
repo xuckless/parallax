@@ -61,7 +61,7 @@ jobs:
               export CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android28-clang"
               export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
               export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android28-clang"
-              cargo check --workspace --target aarch64-linux-android
+              cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
               cargo package $PUBLISHED_LIBS --target aarch64-linux-android
           - target: wasm
             os: ubuntu-latest

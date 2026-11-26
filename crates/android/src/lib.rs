@@ -48,7 +48,10 @@ macro_rules! android_main {
     ($launch:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
-        pub extern "system" fn JNI_OnLoad(
+        /// # Safety
+        ///
+        /// Only the JVM calls this, with its own valid `JavaVM` pointer, on the thread loading the library.
+        pub unsafe extern "system" fn JNI_OnLoad(
             vm: *mut $crate::jni::sys::JavaVM,
             _reserved: *mut ::core::ffi::c_void,
         ) -> $crate::jni::sys::jint {
