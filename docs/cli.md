@@ -74,3 +74,6 @@ installs without a keystore.
 
 AGP downloads a missing `platforms;android-<target_sdk>` or build-tools into the SDK if its licenses are accepted
 (`sdkmanager --licenses`).
+
+The generated manifest sets `android:configChanges` on `ParallaxActivity` (as Flutter does), so rotation and other
+config changes reach `onConfigurationChanged` instead of recreating the Activity.

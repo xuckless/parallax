@@ -6,7 +6,10 @@
         <meta-data android:name="parallax.lib_name" android:value="{{lib}}" />
         <activity
             android:name="io.github.xuckless.parallax.ParallaxActivity"
-            android:exported="true">
+            android:exported="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode">
+            <!-- Like Flutter's FlutterActivity: config changes (rotation, keyboard, locale, theme) reach
+                 onConfigurationChanged instead of recreating the Activity, so GPUI's state lives on. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
