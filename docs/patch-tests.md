@@ -28,7 +28,7 @@ plus two test-only changes the crate needs because it can't run its own tests as
 
 ## Skipped tests
 
-The `skips` array in the script lists tests by full name, each with its reason: today the three `svg_renderer`
+The `skips` array in the script lists tests by full name, each with its reason: today the four `svg_renderer`
 tests that look IBM Plex Sans and Lilex up by family name, which the stand-ins don't have. Every other test must
 pass. Add a row only for a test this setup can't run, never for one a patch broke; fix the patch instead.
 libtest's `--skip` matches substrings, so the script lists the tests first (`--list`) and fails unless each row

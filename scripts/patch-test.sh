@@ -38,9 +38,10 @@ sed -i -E 's/^(\s*)#\[perf\]$/\1#[test]/; /^\s*use util_macros::perf;$/d' "$styl
 # Tests skipped by full name, one row each with the reason. Add a row only for a test this setup can't run, never
 # for a test a patch broke.
 skips=(
-    # These three look the bundled fonts up by family name ("IBM Plex Sans", "Lilex"); stand-ins have other names.
+    # These four look the bundled fonts up by family name ("IBM Plex Sans", "Lilex"); stand-ins have other names.
     svg_renderer::tests::fix_generic_font_families_monospace_resolves_to_lilex
     svg_renderer::tests::fix_generic_font_families_sets_all_families
+    svg_renderer::tests::measured_text_width_matches_rasterized_advance
     svg_renderer::tests::test_select_emoji_font_skips_family_without_glyph
 )
 test_cmd=(cargo test --manifest-path "$out/crates/Cargo.toml" -p parallax-gpui --features test-support --lib
