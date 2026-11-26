@@ -28,6 +28,9 @@ let platform = parallax::parallax_platform::current_platform(false)?;
 gpui::Application::with_platform(platform).run(|cx| { /* ... */ });
 ```
 
+On the web, call `parallax_platform::web_init()` first (upstream's panic hook and console logger, re-exported on
+wasm only), as upstream's web examples do; [hello](../examples/hello/src/lib.rs) shows it.
+
 `current_platform(headless)` looks up the current row. For `Upstream` rows it calls upstream
 [`gpui_platform::current_platform`](../upstream/gpui-pre-platform/src/gpui_platform.rs), which builds the backend
 itself. Parallax does not build upstream backends a second way. For the `Parallax` row (Android) it calls
@@ -47,7 +50,8 @@ The crate compiles on every target in the table. Upstream `gpui_platform` has no
 there, so [Cargo.toml](../crates/platform/Cargo.toml) depends on it only off Android, and on `parallax-android` only on
 Android. On wasm it runs
 single-threaded on stable Rust: the [workspace](../Cargo.toml) turns off `gpui_platform`'s default `multithreaded`
-feature, which needs nightly (AGENTS.md "Web threading").
+feature, which needs nightly (AGENTS.md "Web threading"). It turns on `wayland` and `x11`, which upstream leaves
+off: without them Linux finds no display server, starts headless and draws nothing, with no error.
 
 ## Adding a target or backend
 

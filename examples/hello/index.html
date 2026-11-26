@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=0" />
+    <title>Parallax hello</title>
+    <!-- gpui_web appends its own full-page canvas to <body>. -->
+    <style>html, body { margin: 0; height: 100%; overflow: hidden; }</style>
+  </head>
+  <body>
+    <script type="module">
+      // Built by wasm-pack into ./pkg (docs/examples.md); init() runs the #[wasm_bindgen(start)] function.
+      import init from "./pkg/hello.js";
+      init();
+    </script>
+  </body>
+</html>

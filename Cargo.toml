@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "examples/*"]
 exclude = ["upstream", "build"]
 
 [workspace.package]
@@ -12,7 +12,8 @@ publish = false
 [workspace.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14" }
 # No default features: `multithreaded` (gpui_web threads) needs nightly and affects only wasm32. See AGENTS.md, Web threading.
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
+# `wayland` and `x11` are off by default upstream; without them Linux starts headless and draws nothing.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["wayland", "x11"] }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.14" }
 parallax-android = { path = "crates/android" }
 parallax-platform = { path = "crates/platform" }
