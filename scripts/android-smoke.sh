@@ -80,7 +80,7 @@ steps=(
   "tap the box|tap_colour 3b82f6|box colour ef4444 \(touch click|20"
   "focus the field|tap_colour ffffff|insets in pixels: .*ime Edges .*bottom: [1-9]|20"
   "type and submit|on_device input text $typed && on_device input keyevent KEYCODE_ENTER|text field submitted: ${#typed} bytes|20"
-  "rotate to landscape|on_device settings put system accelerometer_rotation 0 && on_device settings put system user_rotation 1|parallax: surface .*Resize|30"
+  "rotate to landscape|on_device settings put system user_rotation 1|parallax: surface .*Resize|30"
   "rotate to portrait|on_device settings put system user_rotation 0|parallax: surface .*Resize|30"
   "background|on_device input keyevent KEYCODE_HOME|parallax: lifecycle From\(.*, Stop\)|20"
   "resume|on_device am start -n $component|parallax: surface .*Attach|20"
@@ -102,6 +102,10 @@ fail() {
 # A slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no crash or ANR
 # dialogs at all (the logcat lines that catch our own crashes stay).
 on_device settings put global hide_error_dialogs 1
+# Portrait, auto-rotate off. Set well before the rotate steps: turning auto-rotate off makes Android store the current
+# rotation as user_rotation a moment later, which would undo a user_rotation written right after it.
+on_device settings put system accelerometer_rotation 0
+on_device settings put system user_rotation 0
 on_device logcat -b all -c
 : >"$log"  # exists before the first step reads it, however late logcat starts
 "$adb" -s "$serial" logcat -b main,system,crash -v time >"$log" &
