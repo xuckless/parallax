@@ -5,10 +5,11 @@
 use std::ops::Range;
 
 use parallax::gpui::{
-    App, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    FocusHandle, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
-    Window, actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    App, Autocapitalize, Bounds, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextInputAction,
+    TextInputConfiguration, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
+    hsla, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -259,6 +260,20 @@ impl EntityInputHandler for TextField {
             point(bounds.left() + line.x_for_index(range.start), bounds.top()),
             point(bounds.left() + line.x_for_index(range.end), bounds.bottom()),
         ))
+    }
+
+    /// Prose: the keyboard may suggest, correct and capitalize (GPUI's default turns all of that off).
+    fn text_input_configuration(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> TextInputConfiguration {
+        TextInputConfiguration {
+            autocorrect: true,
+            autocapitalize: Autocapitalize::Sentences,
+            suggestions: true,
+            input_action: TextInputAction::Done,
+        }
     }
 
     fn character_index_for_point(
