@@ -12,8 +12,11 @@ reaches Android's autofill service, and how a filled value gets back into GPUI. 
    `uniqueIdentifier` is `parallax.field.<FocusId>`, so it is the same for the field's whole life and differs per
    field; `hints` is one Flutter `AutofillHints` name (`autofill_hint`, an exhaustive match, below); `editingValue`
    is the state sent with it. The calls then follow Flutter's `EditableText` attach: `setClient`,
-   `setEditableSizeAndTransform` (the field's text bounds from `bounds_for_range`, read by `Shell` for a new client;
-   an empty rect when GPUI has none), `setEditingState`, `show`, `requestAutofill` last.
+   `setEditableSizeAndTransform` (the field's text bounds from `bounds_for_range`, read by `Shell` only for a field
+   with a hint; at least 1 logical pixel wide, since an empty field's bounds are its 0-wide caret and Android takes
+   a 0-wide `Rect` as empty), `setEditingState`, `show`, `requestAutofill` last. While that client lives, `Shell`
+   reads the bounds every frame and `Session` sends `setEditableSizeAndTransform` again whenever they moved from
+   the rect Java has (the field scrolled or resized under the keyboard), as `EditableText` does on layout.
 2. **Java → AutofillManager, ported.** `ParallaxSurfaceView` is `IMPORTANT_FOR_AUTOFILL_YES`, as `FlutterView`.
    `TextInputPlugin` keeps the client's configuration per autofill id (`updateAutofillConfigurationIfNeeded`), saves
    the rect, calls `notifyViewEntered` on `requestAutofill`, `notifyViewExited` on hide, a new client and clear, and

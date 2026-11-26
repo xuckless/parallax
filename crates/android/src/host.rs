@@ -948,21 +948,23 @@ impl Shell {
                  the IME sees it empty"
             );
         }
-        log::debug!(
-            "parallax: text input {pending:?}, state: {}",
-            state.as_ref().map_or("none".to_string(), describe)
-        );
-        // A new client's text bounds, for autofill's rect: the caret when the field is empty.
-        let bounds = if pending.sets_client() {
-            let length = state
-                .as_ref()
-                .map_or(0, |state| state.text.encode_utf16().count());
-            self.with_input_handler(|handler| handler.bounds_for_range(0..length))
-                .flatten()
+        // The field's text bounds, for autofill's rect: the caret when the field is empty.
+        let reads_bounds = self.text_input.borrow().reads_bounds(&pending);
+        let bounds = if reads_bounds {
+            self.with_input_handler(|handler| {
+                let length = match &state {
+                    Some(state) => state.text.encode_utf16().count(),
+                    None => handler.text_length_utf16().unwrap_or(0),
+                };
+                handler.bounds_for_range(0..length)
+            })
+            .flatten()
         } else {
             None
         };
+        let described = state.as_ref().map_or("none".to_string(), describe);
         let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
+        log::debug!("parallax: text input {pending:?}, state: {described}");
         Some(calls.to_string())
     }
 
