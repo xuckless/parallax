@@ -384,6 +384,28 @@ impl Keyboard {
         }))
     }
 
+    /// A press and release of `key` (a GPUI key name) with the held modifiers: the IME's editor action, which
+    /// GPUI receives as ordinary input (`TextInputAction` only labels the key).
+    #[cfg_attr(
+        not(target_os = "android"),
+        allow(dead_code, reason = "called by the shell, which is Android only")
+    )]
+    pub(crate) fn press(&self, key: &str) -> [PlatformInput; 2] {
+        let keystroke = Keystroke {
+            modifiers: self.modifiers(),
+            key: key.to_string(),
+            key_char: None,
+        };
+        [
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+            PlatformInput::KeyUp(KeyUpEvent { keystroke }),
+        ]
+    }
+
     fn keystroke(&self, key: String, data: &KeyData) -> Step {
         let keystroke = Keystroke {
             modifiers: self.modifiers(),

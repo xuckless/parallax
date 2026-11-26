@@ -7,8 +7,9 @@ use futures::channel::oneshot;
 use gpui::{
     Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowInsets, WindowVisibility,
+    PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration, TextInputStateChange,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets,
+    WindowVisibility,
 };
 use raw_window_handle as rwh;
 
@@ -18,7 +19,6 @@ pub(crate) struct AndroidWindow {
     pub(crate) shell: Rc<Shell>,
     /// The renderer's atlas. GPUI keeps the one it got at open; device recovery refills this same atlas.
     pub(crate) atlas: Arc<dyn PlatformAtlas>,
-    pub(crate) input_handler: Option<PlatformInputHandler>,
 }
 
 impl rwh::HasWindowHandle for AndroidWindow {
@@ -79,12 +79,39 @@ impl PlatformWindow for AndroidWindow {
         self.shell.keyboard.borrow().capslock()
     }
 
+    // The handler lives in the shell, where the IME's JNI calls reach it (docs/android-text-input.md).
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.input_handler = Some(input_handler);
+        self.shell
+            .text_input
+            .borrow_mut()
+            .installed(input_handler.focus_id());
+        *self.shell.input_handler.borrow_mut() = Some(input_handler);
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.input_handler.take()
+        self.shell.input_handler.borrow_mut().take()
+    }
+
+    fn set_text_input_configuration(&mut self, configuration: TextInputConfiguration) {
+        self.shell.text_input.borrow_mut().configure(configuration);
+    }
+
+    fn show_soft_keyboard(&self) {
+        self.shell
+            .text_input
+            .borrow_mut()
+            .notice(crate::text_input::Notice::Show);
+    }
+
+    fn hide_soft_keyboard(&self) {
+        self.shell
+            .text_input
+            .borrow_mut()
+            .notice(crate::text_input::Notice::Hide);
+    }
+
+    fn text_input_state_changed(&self, change: TextInputStateChange) {
+        self.shell.text_input.borrow_mut().state_changed(change);
     }
 
     fn prompt(
@@ -209,7 +236,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
-        // Not yet on Android: text input (InputConnectionAdaptor port).
+        // Android pulls the caret instead: CursorAnchorInfo asks `bounds_for_range` (docs/android-text-input.md).
     }
 
     fn insets(&self) -> WindowInsets {

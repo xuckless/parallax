@@ -23,6 +23,8 @@ mod pointer;
 mod renderer;
 #[cfg(any(target_os = "android", test))]
 mod surface;
+#[cfg(any(target_os = "android", test))]
+mod text_input;
 #[cfg(target_os = "android")]
 mod text_system;
 #[cfg(target_os = "android")]

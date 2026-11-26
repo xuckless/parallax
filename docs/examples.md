@@ -5,9 +5,15 @@ example is a workspace member, so [CI](ci.md) checks it on all six targets.
 
 ## hello
 
-[examples/hello](../examples/hello/): one window with a centred box. Each click or tap moves the box to the next
-colour of `COLOURS` in [lib.rs](../examples/hello/src/lib.rs). It is the app of Milestone 0.1.1 in
+[examples/hello](../examples/hello/): one window with a text field, a line in several scripts (`SCRIPTS`: Latin,
+CJK, Arabic, emoji) and a box. Each click or tap moves the box to the next colour of `COLOURS` in
+[lib.rs](../examples/hello/src/lib.rs); a tap outside the field blurs it. It is the app of Milestone 0.1.1 in
 [ROADMAP.md](../ROADMAP.md): it opens, draws and reacts to a tap on desktop, web and Android.
+
+The field ([text_field.rs](../examples/hello/src/text_field.rs)) is example-local: upstream GPUI has no text field
+outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one
+`EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes. On Android it drives the IME
+([android-text-input.md](android-text-input.md)).
 
 What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade.
 

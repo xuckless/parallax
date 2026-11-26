@@ -167,7 +167,6 @@ impl Platform for AndroidPlatform {
         Ok(Box::new(AndroidWindow {
             shell: self.shell.clone(),
             atlas,
-            input_handler: None,
         }))
     }
 
