@@ -44,8 +44,11 @@ go to Android, whose default finishes the Activity. One state enum, `Back::{Idle
 `Back::next(state, BackEvent) → (state, Outcome)` that both `Keyboard::input` (back key events) and `Keyboard::reply`
 (GPUI's answers) call; `keys::tests::back_transitions` has a row per (state, event).
 
-Upstream surprise: `on_back_gesture` tests `hitbox.is_hovered`, which is false while the last input was a key, so
-after typing no element can claim a back press until the next touch.
+Claiming works after typing because of [patch 0006](../patches/0006-claim-back-gesture-after-key-input.patch):
+upstream's `on_back_gesture` tested `hitbox.is_hovered`, which is false while the last input was a key (keyboard
+modality hides hover), and a back gesture does not change the modality, so no element could claim a back press until
+the next touch. The patch hit-tests the gesture's own position regardless of modality; its window test has a row per
+preceding input (key press, touch).
 
 ## Not yet
 
