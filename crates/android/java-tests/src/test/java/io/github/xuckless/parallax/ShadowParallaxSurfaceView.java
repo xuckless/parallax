@@ -29,4 +29,21 @@ public class ShadowParallaxSurfaceView {
       int activity, ByteBuffer buffer, int position) {
     renderer.dispatchPointerDataPacket(buffer, position);
   }
+
+  /**
+   * Stands in for the "flutter/keydata" BinaryMessenger the ported KeyboardManagerTest mocked.
+   * Returns the reply (whether the key was handled), as the native does.
+   */
+  public interface KeyDataSink {
+    boolean dispatchKeyData(ByteBuffer packet, boolean canceled);
+  }
+
+  // Static for the same reason as `renderer`; KeyboardManagerTest's KeyboardTester sets it.
+  static KeyDataSink keyData;
+
+  @Implementation
+  protected static boolean nativeDispatchKeyData(
+      int activity, ByteBuffer packet, boolean canceled) {
+    return keyData.dispatchKeyData(packet, canceled);
+  }
 }
