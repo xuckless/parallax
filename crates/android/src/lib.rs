@@ -130,11 +130,13 @@ pub enum Error {
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,
-/// after `JNI_OnLoad` (parallax-android does this itself on the first surface). Apps pick platforms through
-/// `parallax_platform::current_platform`, which routes Android here.
+/// after `JNI_OnLoad`. Apps pick platforms through `parallax_platform::current_platform`, which routes Android here.
+/// parallax-android starts its own platform on the first surface, with the app's locales from the view; this entry
+/// has no view to ask, so its CJK fonts keep fonts.xml order (docs/android-fonts.md).
 #[cfg(target_os = "android")]
 pub fn current_platform() -> Result<std::rc::Rc<dyn gpui::Platform>, Error> {
     Ok(std::rc::Rc::new(platform::AndroidPlatform::new(
         host::shell()?,
+        &[],
     )?))
 }

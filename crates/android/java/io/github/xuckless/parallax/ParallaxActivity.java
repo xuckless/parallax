@@ -20,7 +20,7 @@ import android.view.WindowManager;
 public class ParallaxActivity extends Activity {
   private static final String LIB_NAME_KEY = "parallax.lib_name";
 
-  // Event codes for ParallaxSurfaceView.nativeActivityEvent; must match ActivityEvent::from_java in
+  // Event codes for ParallaxSurfaceView.nativeActivityEvent; must match Callback::from_java in
   // crates/android/src/lifecycle.rs. To add a callback: a constant here, a row there.
   private static final int EVENT_START = 0;
   private static final int EVENT_RESUME = 1;
@@ -41,8 +41,6 @@ public class ParallaxActivity extends Activity {
     // The app's JNI_OnLoad (android_main!) runs here, on the main thread, and binds the natives.
     System.loadLibrary(libName());
     activity = ParallaxSurfaceView.nativeActivityCreated();
-    // Per-app locales (API 33+) are in the Activity's configuration, not the system property.
-    ParallaxSurfaceView.nativeLocales(getResources().getConfiguration().getLocales().toLanguageTags());
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
     view = new ParallaxSurfaceView(this, activity);

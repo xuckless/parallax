@@ -25,7 +25,8 @@ public class ShadowParallaxSurfaceView {
   static Renderer renderer;
 
   @Implementation
-  protected static void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position) {
+  protected static void nativeDispatchPointerDataPacket(
+      int activity, ByteBuffer buffer, int position) {
     renderer.dispatchPointerDataPacket(buffer, position);
   }
 }

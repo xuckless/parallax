@@ -4,6 +4,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::lifecycle::ActivityId;
+
 /// How long to wait after device loss (or after a failed rebuild) before rebuilding: index = failed attempts so far,
 /// the last row repeats. The first row is upstream's 350 ms (`WgpuRenderer::recover` sleeps that long for the GPU
 /// driver to settle); each failure doubles it, so a GPU that stays gone is not retried every frame. To tune the
@@ -16,17 +18,19 @@ const RECOVERY_DELAYS: [Duration; 5] = [
     Duration::from_millis(5600),
 ];
 
-/// Where the app's drawing surface is. `W` is the native window (`ANativeWindow` on Android, a plain value in tests).
+/// Where the app's drawing surface is. `W` is the native window (`ANativeWindow` on Android, a plain value in tests);
+/// `activity` is the Activity whose view created it, the only one whose `surfaceDestroyed` releases it.
 #[derive(Debug, PartialEq)]
 pub enum Surface<W> {
     /// No surface since launch: the `SurfaceView` has not created one yet.
     None,
     /// A native window the renderer draws into.
-    Ready(W),
+    Ready { window: W, activity: ActivityId },
     /// The GPU device was lost at `since` (or the last rebuild failed then, after `failures` failed rebuilds). The
     /// renderer is torn down; it is rebuilt on `window` once the delay for `failures` has passed.
     Recovering {
         window: W,
+        activity: ActivityId,
         since: Instant,
         failures: usize,
     },
@@ -37,12 +41,13 @@ pub enum Surface<W> {
 /// What Android, the vsync or the GPU reported.
 #[derive(Debug)]
 pub enum SurfaceEvent<W> {
-    /// `surfaceCreated`, with the new native window.
-    Created(W),
+    /// `surfaceCreated` in the window owner's view, with the new native window.
+    Created { window: W, activity: ActivityId },
     /// `surfaceChanged`: new size (rotation, split screen) on the same window.
     Resized,
-    /// `surfaceDestroyed`: the window must be released before the callback returns.
-    Destroyed { at: Instant },
+    /// `surfaceDestroyed` in `activity`'s view, owner or not: its window must be released before the callback
+    /// returns, and never drawn into again.
+    Destroyed { activity: ActivityId, at: Instant },
     /// A `Choreographer` vsync, with whether the renderer reports its GPU device lost.
     Frame { at: Instant, device_lost: bool },
     /// The renderer was rebuilt on a new device.
@@ -78,11 +83,18 @@ impl<W> Surface<W> {
         use Surface as S;
         use SurfaceEvent as E;
         match (self, event) {
-            (S::None | S::Lost { .. }, E::Created(window)) => {
-                (S::Ready(window), A::Attach { previous: None })
+            (S::None | S::Lost { .. }, E::Created { window, activity }) => {
+                (S::Ready { window, activity }, A::Attach { previous: None })
             }
-            (S::Ready(previous), E::Created(window)) => (
-                S::Ready(window),
+            // A new view's surface before the old one's surfaceDestroyed: the old window is released here, so
+            // that late surfaceDestroyed finds nothing of its own.
+            (
+                S::Ready {
+                    window: previous, ..
+                },
+                E::Created { window, activity },
+            ) => (
+                S::Ready { window, activity },
                 A::Attach {
                     previous: Some(previous),
                 },
@@ -93,30 +105,46 @@ impl<W> Surface<W> {
                     window: previous,
                     since,
                     failures,
+                    ..
                 },
-                E::Created(window),
+                E::Created { window, activity },
             ) => (
                 S::Recovering {
                     window,
+                    activity,
                     since,
                     failures,
                 },
                 A::Detach { window: previous },
             ),
-            (S::Ready(window), E::Resized) => (S::Ready(window), A::Resize),
+            (S::Ready { window, activity }, E::Resized) => {
+                (S::Ready { window, activity }, A::Resize)
+            }
             // The size is applied when recovery ends (`Recovered` → `Resize`).
             (state @ S::Recovering { .. }, E::Resized) => (state, A::Wait),
-            (S::Ready(window) | S::Recovering { window, .. }, E::Destroyed { at }) => {
-                (S::Lost { since: at }, A::Detach { window })
-            }
+            // Its own view's surfaceDestroyed always releases the window, even once another Activity owns the
+            // lifecycle (the old surface destroyed before the new one is created).
             (
-                S::Ready(window),
+                S::Ready { window, activity }
+                | S::Recovering {
+                    window, activity, ..
+                },
+                E::Destroyed { activity: from, at },
+            ) if from == activity => (S::Lost { since: at }, A::Detach { window }),
+            (state @ (S::Ready { .. } | S::Recovering { .. }), E::Destroyed { .. }) => (
+                state,
+                A::Reject {
+                    why: "destroyed another view's surface",
+                },
+            ),
+            (
+                S::Ready { window, activity },
                 E::Frame {
                     device_lost: false, ..
                 },
-            ) => (S::Ready(window), A::Draw),
+            ) => (S::Ready { window, activity }, A::Draw),
             (
-                S::Ready(window),
+                S::Ready { window, activity },
                 E::Frame {
                     at,
                     device_lost: true,
@@ -124,6 +152,7 @@ impl<W> Surface<W> {
             ) => (
                 S::Recovering {
                     window,
+                    activity,
                     since: at,
                     failures: 0,
                 },
@@ -132,6 +161,7 @@ impl<W> Surface<W> {
             (
                 S::Recovering {
                     window,
+                    activity,
                     since,
                     failures,
                 },
@@ -145,6 +175,7 @@ impl<W> Surface<W> {
                 };
                 let state = S::Recovering {
                     window,
+                    activity,
                     since,
                     failures,
                 };
@@ -152,15 +183,24 @@ impl<W> Surface<W> {
             }
             // Frames run from onResume to onPause, with or without a surface.
             (state @ (S::None | S::Lost { .. }), E::Frame { .. }) => (state, A::Wait),
-            (S::Recovering { window, .. }, E::Recovered) => (S::Ready(window), A::Resize),
             (
                 S::Recovering {
-                    window, failures, ..
+                    window, activity, ..
+                },
+                E::Recovered,
+            ) => (S::Ready { window, activity }, A::Resize),
+            (
+                S::Recovering {
+                    window,
+                    activity,
+                    failures,
+                    ..
                 },
                 E::RecoveryFailed { at },
             ) => (
                 S::Recovering {
                     window,
+                    activity,
                     since: at,
                     failures: failures.saturating_add(1),
                 },
@@ -178,13 +218,13 @@ impl<W> Surface<W> {
                     why: "destroyed without a surface",
                 },
             ),
-            (state @ (S::None | S::Ready(_) | S::Lost { .. }), E::Recovered) => (
+            (state @ (S::None | S::Ready { .. } | S::Lost { .. }), E::Recovered) => (
                 state,
                 A::Reject {
                     why: "recovered while not recovering",
                 },
             ),
-            (state @ (S::None | S::Ready(_) | S::Lost { .. }), E::RecoveryFailed { .. }) => (
+            (state @ (S::None | S::Ready { .. } | S::Lost { .. }), E::RecoveryFailed { .. }) => (
                 state,
                 A::Reject {
                     why: "recovery failed while not recovering",
@@ -198,6 +238,10 @@ impl<W> Surface<W> {
 mod tests {
     use super::*;
 
+    /// The Activity whose view made the surface in the rows, and `B`, another one's view.
+    const A: ActivityId = ActivityId(1);
+    const B: ActivityId = ActivityId(2);
+
     #[test]
     fn transitions() {
         let t0 = Instant::now();
@@ -205,9 +249,19 @@ mod tests {
         let lost = || Surface::Lost { since: t0 };
         let recovering = |window, since, failures| Surface::Recovering {
             window,
+            activity: A,
             since,
             failures,
         };
+        let ready = |window| Surface::Ready {
+            window,
+            activity: A,
+        };
+        let created = |window| SurfaceEvent::Created {
+            window,
+            activity: A,
+        };
+        let destroyed = |at| SurfaceEvent::Destroyed { activity: A, at };
         let frame = |at, device_lost| SurfaceEvent::Frame { at, device_lost };
         let no = |why| Action::Reject { why };
         // (row name, state, event, expected state, expected action). Windows are plain numbers; times are ms after t0.
@@ -220,22 +274,22 @@ mod tests {
             Action<u8>,
         );
         #[rustfmt::skip]
-        let cases: [Row; 31] = [
-            ("none_created_attaches", Surface::None, SurfaceEvent::Created(1), Surface::Ready(1), Action::Attach { previous: None }),
-            ("ready_created_replaces", Surface::Ready(1), SurfaceEvent::Created(2), Surface::Ready(2), Action::Attach { previous: Some(1) }),
-            ("recovering_created_swaps_window", recovering(1, t0, 2), SurfaceEvent::Created(2), recovering(2, t0, 2), Action::Detach { window: 1 }),
-            ("lost_created_reattaches", lost(), SurfaceEvent::Created(2), Surface::Ready(2), Action::Attach { previous: None }),
+        let cases: [Row; 36] = [
+            ("none_created_attaches", Surface::None, created(1), ready(1), Action::Attach { previous: None }),
+            ("ready_created_replaces", ready(1), created(2), ready(2), Action::Attach { previous: Some(1) }),
+            ("recovering_created_swaps_window", recovering(1, t0, 2), created(2), recovering(2, t0, 2), Action::Detach { window: 1 }),
+            ("lost_created_reattaches", lost(), created(2), ready(2), Action::Attach { previous: None }),
             ("none_resized_rejected", Surface::None, SurfaceEvent::Resized, Surface::None, no("resized without a surface")),
-            ("ready_resized_resizes", Surface::Ready(1), SurfaceEvent::Resized, Surface::Ready(1), Action::Resize),
+            ("ready_resized_resizes", ready(1), SurfaceEvent::Resized, ready(1), Action::Resize),
             ("recovering_resized_waits", recovering(1, t0, 0), SurfaceEvent::Resized, recovering(1, t0, 0), Action::Wait),
             ("lost_resized_rejected", lost(), SurfaceEvent::Resized, lost(), no("resized without a surface")),
-            ("none_destroyed_rejected", Surface::None, SurfaceEvent::Destroyed { at: ms(1) }, Surface::None, no("destroyed without a surface")),
-            ("ready_destroyed_detaches", Surface::Ready(1), SurfaceEvent::Destroyed { at: ms(1) }, Surface::Lost { since: ms(1) }, Action::Detach { window: 1 }),
-            ("recovering_destroyed_detaches", recovering(1, t0, 1), SurfaceEvent::Destroyed { at: ms(1) }, Surface::Lost { since: ms(1) }, Action::Detach { window: 1 }),
-            ("lost_destroyed_rejected_keeps_first_loss", lost(), SurfaceEvent::Destroyed { at: ms(1) }, lost(), no("destroyed without a surface")),
+            ("none_destroyed_rejected", Surface::None, destroyed(ms(1)), Surface::None, no("destroyed without a surface")),
+            ("ready_destroyed_detaches", ready(1), destroyed(ms(1)), Surface::Lost { since: ms(1) }, Action::Detach { window: 1 }),
+            ("recovering_destroyed_detaches", recovering(1, t0, 1), destroyed(ms(1)), Surface::Lost { since: ms(1) }, Action::Detach { window: 1 }),
+            ("lost_destroyed_rejected_keeps_first_loss", lost(), destroyed(ms(1)), lost(), no("destroyed without a surface")),
             ("none_frame_waits", Surface::None, frame(ms(1), false), Surface::None, Action::Wait),
-            ("ready_frame_draws", Surface::Ready(1), frame(ms(1), false), Surface::Ready(1), Action::Draw),
-            ("ready_frame_device_lost_starts_recovering", Surface::Ready(1), frame(ms(1), true), recovering(1, ms(1), 0), Action::Wait),
+            ("ready_frame_draws", ready(1), frame(ms(1), false), ready(1), Action::Draw),
+            ("ready_frame_device_lost_starts_recovering", ready(1), frame(ms(1), true), recovering(1, ms(1), 0), Action::Wait),
             ("recovering_frame_before_350ms_waits", recovering(1, t0, 0), frame(ms(349), true), recovering(1, t0, 0), Action::Wait),
             ("recovering_frame_at_350ms_recovers", recovering(1, t0, 0), frame(ms(350), true), recovering(1, t0, 0), Action::RecoverDevice),
             ("recovering_after_1_failure_waits_700ms", recovering(1, t0, 1), frame(ms(699), true), recovering(1, t0, 1), Action::Wait),
@@ -244,13 +298,20 @@ mod tests {
             ("recovering_after_9_failures_recovers_at_5600ms", recovering(1, t0, 9), frame(ms(5600), true), recovering(1, t0, 9), Action::RecoverDevice),
             ("lost_frame_waits", lost(), frame(ms(1), true), lost(), Action::Wait),
             ("none_recovered_rejected", Surface::None, SurfaceEvent::Recovered, Surface::None, no("recovered while not recovering")),
-            ("ready_recovered_rejected", Surface::Ready(1), SurfaceEvent::Recovered, Surface::Ready(1), no("recovered while not recovering")),
-            ("recovering_recovered_resizes", recovering(1, t0, 3), SurfaceEvent::Recovered, Surface::Ready(1), Action::Resize),
+            ("ready_recovered_rejected", ready(1), SurfaceEvent::Recovered, ready(1), no("recovered while not recovering")),
+            ("recovering_recovered_resizes", recovering(1, t0, 3), SurfaceEvent::Recovered, ready(1), Action::Resize),
             ("lost_recovered_rejected", lost(), SurfaceEvent::Recovered, lost(), no("recovered while not recovering")),
             ("none_recovery_failed_rejected", Surface::None, SurfaceEvent::RecoveryFailed { at: ms(1) }, Surface::None, no("recovery failed while not recovering")),
-            ("ready_recovery_failed_rejected", Surface::Ready(1), SurfaceEvent::RecoveryFailed { at: ms(1) }, Surface::Ready(1), no("recovery failed while not recovering")),
+            ("ready_recovery_failed_rejected", ready(1), SurfaceEvent::RecoveryFailed { at: ms(1) }, ready(1), no("recovery failed while not recovering")),
             ("recovering_recovery_failed_backs_off", recovering(1, t0, 0), SurfaceEvent::RecoveryFailed { at: ms(400) }, recovering(1, ms(400), 1), Action::Wait),
             ("recovering_recovery_failed_counts_on", recovering(1, t0, 4), SurfaceEvent::RecoveryFailed { at: ms(400) }, recovering(1, ms(400), 5), Action::Wait),
+            // Two Activities' views (a deep link stacked B on A, then back), in both orders. Its own view's
+            // surfaceDestroyed always releases the window; a late one from a replaced view finds nothing of its own.
+            ("other_view_created_replaces_before_destroyed", ready(1), SurfaceEvent::Created { window: 2, activity: B }, Surface::Ready { window: 2, activity: B }, Action::Attach { previous: Some(1) }),
+            ("replaced_view_destroyed_late_rejected", Surface::Ready { window: 2, activity: B }, destroyed(ms(1)), Surface::Ready { window: 2, activity: B }, no("destroyed another view's surface")),
+            ("own_view_destroyed_before_other_created", ready(1), destroyed(ms(1)), Surface::Lost { since: ms(1) }, Action::Detach { window: 1 }),
+            ("other_view_created_after_destroyed", Surface::Lost { since: ms(1) }, SurfaceEvent::Created { window: 2, activity: B }, Surface::Ready { window: 2, activity: B }, Action::Attach { previous: None }),
+            ("recovering_other_view_destroyed_rejected", recovering(1, t0, 0), SurfaceEvent::Destroyed { activity: B, at: ms(1) }, recovering(1, t0, 0), no("destroyed another view's surface")),
             ("lost_recovery_failed_rejected", lost(), SurfaceEvent::RecoveryFailed { at: ms(1) }, lost(), no("recovery failed while not recovering")),
         ];
         for (name, state, event, expected_state, expected_action) in cases {

@@ -6,9 +6,10 @@ itself. Rules: [AGENTS.md](../AGENTS.md) (Decisions: Android fonts; patch rule 1
 
 ## How fonts are found
 
-1. **Locale.** [`ParallaxActivity`](../crates/android/java/io/github/xuckless/parallax/ParallaxActivity.java) sends
-   `LocaleList.toLanguageTags()` from `onCreate` (`nativeLocales`, [host.rs](../crates/android/src/host.rs)): per-app
-   locales on API 33+ included, which the `persist.sys.locale` property cosmic-text reads lacks. Read once at startup.
+1. **Locale.** [`ParallaxSurfaceView`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java)
+   sends `LocaleList.toLanguageTags()` with each surface (`nativeSurfaceCreated`, [host.rs](../crates/android/src/host.rs)):
+   per-app locales on API 33+ included, which the `persist.sys.locale` property cosmic-text reads lacks. The first
+   surface passes them straight into the platform start; later changes are not followed yet.
 2. **List.** [text_system.rs](../crates/android/src/text_system.rs) reads the first readable of `FONT_LISTS`:
    `/system/etc/font_fallback.xml` (API 35+), then `/system/etc/fonts.xml`. On the API 35 emulator image the first is
    not readable by apps (SELinux), so `fonts.xml`, which API 35 still ships, is used.
@@ -17,8 +18,10 @@ itself. Rules: [AGENTS.md](../AGENTS.md) (Decisions: Android fonts; patch rule 1
    `lang` lists are comma-separated on API 35, space-separated on API 28. Unknown elements are skipped; malformed
    XML or a bad number is a typed `Error`.
 4. **Plan.** `plan` (pure, tested on the host) turns that into files to load in XML order (once each, missing ones
-   listed), the default face (the first family), generic names and the per-language order.
-5. **Load.** Files are memory-mapped (pages stay in the shared page cache) and handed to upstream's
+   listed), the default face (the first family), generic names and the per-language order. A file that is on disk
+   but cannot be opened counts as missing: it costs only itself, and the family's next font stands in.
+5. **Load.** Files are memory-mapped (pages stay in the shared page cache; one that fails to map is skipped and
+   logged) and handed to upstream's
    `CosmicTextSystem`. The log line `parallax: fonts: … in …` gives the count and the time, next to the renderer's.
 
 Measured (release build, emulator): about 300 ms on the first launch after boot (API 35, cold page cache), 3–10 ms

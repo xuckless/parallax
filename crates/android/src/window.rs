@@ -102,11 +102,11 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn is_active(&self) -> bool {
-        self.shell.lifecycle.get().is_active()
+        self.shell.lifecycle.borrow().is_active()
     }
 
     fn visibility(&self) -> WindowVisibility {
-        self.shell.lifecycle.get().visibility()
+        self.shell.lifecycle.borrow().visibility()
     }
 
     fn is_hovered(&self) -> bool {
