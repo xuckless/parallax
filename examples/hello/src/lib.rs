@@ -47,16 +47,19 @@ enum Shown {
 
 impl Render for Hello {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Below the status bar; the keyboard covers the bottom, so the field sits at the top.
-        let top = window.insets().safe_area.top;
+        // Inside the status and navigation bars and any cutout on every side (in landscape the navigation bar sits
+        // left or right); the keyboard covers the bottom, so the field sits at the top.
+        let safe = window.insets().safe_area;
         div()
             .size_full()
             .flex()
             .flex_col()
             .items_center()
             .gap(px(24.))
-            .pt(top + px(24.))
-            .px(px(24.))
+            .pt(safe.top + px(24.))
+            .pr(safe.right + px(24.))
+            .pb(safe.bottom)
+            .pl(safe.left + px(24.))
             .bg(rgb(0x1e1e2e))
             .text_color(rgb(0xcdd6f4))
             .text_size(px(20.))
