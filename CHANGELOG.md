@@ -34,6 +34,9 @@ Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 
 
 ### Fixed
 
+- `parallax-android`: mouse buttons pressed or released out of order (right up before left, say) send a `MouseDown`
+  or `MouseUp` for the button that changed, not the wrong one.
+- `parallax-android`: autofill's anchor rect follows the field when it scrolls or resizes under the keyboard.
 - `parallax-android`: an email, URL or search field keeps its keyboard layout when suggestions are off (GPUI's
   default); a secure one is a plain password field.
 
