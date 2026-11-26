@@ -1,0 +1,4 @@
+# LF everywhere; git decides text vs binary.
+* text=auto eol=lf
+# Vendored crates stay byte-for-byte what cargo vendor wrote (.cargo-checksum.json checks them).
+upstream/** -text
