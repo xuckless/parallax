@@ -1,0 +1,54 @@
+# GPUI fork crates
+
+Parallax publishes its patched GPUI to crates.io as `parallax-gpui*` crates, and every Parallax crate depends on them,
+so every patch in [`patches/`](../patches/) reaches apps ([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch
+rule 11). They are built from [`upstream/`](../upstream/) + patches at each sync ([upstream.md](upstream.md)).
+
+## What they are
+
+One fork crate per vendored `gpui-pre*` crate (22 at gpui-pre 0.3.14), named by one rule in
+[`fork-crates.sh`](../scripts/fork-crates.sh): `gpui-pre` → `parallax-gpui`, `gpui-pre-<x>` → `parallax-gpui-<x>`.
+That is the one product-name exception to patch rule 9: the name says these are Parallax's build of GPUI.
+Each keeps upstream's code, `[lib] name` (code still says `gpui`, `gpui_platform`, …), Apache-2.0 licence, licence
+file and metadata. Changed: name, version, deps on each other, description, repository, and a README listing the
+upstream version, Zed commit and applied patches, crediting Zed. [`NOTICE`](../NOTICE) credits Zed too.
+
+## Versioning
+
+`<gpui-pre version>-parallax.<revision>`, e.g. `0.3.14-parallax.1`; the revision is
+[`patches/FORK_REVISION`](../patches/FORK_REVISION). Parallax pins it exactly (`version = "=0.3.14-parallax.1"`): an
+`=` requirement matches a pre-release, which a `^` one would not. crates.io lists these as pre-releases; build
+metadata (`+parallax.1`) can't be used, crates.io rejects versions that differ only in it.
+
+- **New upstream version:** [`sync-upstream.sh`](../scripts/sync-upstream.sh) resets the revision to 1 and repins.
+- **Patches changed between syncs:** add 1 to `FORK_REVISION` and set the three `parallax-gpui*` pins in
+  [`Cargo.toml`](../Cargo.toml) to match. `fork-crates.sh` refuses to run while they disagree.
+- **A patch upstream fixed:** delete it at the next sync ([upstream.md](upstream.md#when-a-patch-stops-applying)).
+
+## Generate
+
+[`apply-patches.sh`](../scripts/apply-patches.sh) runs `fork-crates.sh` last, so a fresh clone stays one command. It
+is a separate script because a patch session edits `build/gpui-patched/` and regenerates only the fork crates
+([patches.md](patches.md#making-one-from-a-change-in-buildgpui-patched)). Output: `build/parallax-gpui/<crate>/` and a
+workspace manifest of all of them. Deps between fork crates carry the exact version and a sibling `path` (cargo drops
+the path on publish). It fails loudly on a stale pin, a leftover `gpui-pre` name, a missing licence file, or a fork
+crate some manifest names that is not vendored (optional deps included; add a vendor root in `sync-upstream.sh`).
+
+## Publishing
+
+[`publish-fork.sh`](../scripts/publish-fork.sh); compiled output goes to `target/parallax-gpui/`.
+
+```sh
+scripts/apply-patches.sh && scripts/publish-fork.sh --dry-run   # package and verify all, publish nothing
+scripts/apply-patches.sh && scripts/publish-fork.sh             # real publish; needs `cargo login`
+scripts/publish-fork.sh --published                             # exit 0 if every version is on crates.io
+```
+
+- `--dry-run` is `cargo package --workspace`: each crate is verified against its just-packaged siblings.
+- The real publish goes in topological order computed from `cargo metadata` (`tsort`), skips any version already
+  on the [sparse index](https://index.crates.io), and on HTTP 429 sleeps until crates.io's "try again after" time,
+  then retries. crates.io lets few **new** crate names through at once, then about one per 10 minutes: the first
+  publish of all 22 names takes about 3 hours. Later versions of existing names go fast.
+
+Then bump Parallax: CI packages the Parallax crates once their pinned fork version is on crates.io
+([ci.md](ci.md#published-crates)), and the next Parallax release ships on it.
