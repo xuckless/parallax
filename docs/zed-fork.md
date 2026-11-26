@@ -27,32 +27,11 @@ It stops (exit 1) on a patch that does not translate or apply, or a failed fetch
 `patches/` (see [upstream.md](upstream.md#when-a-patch-stops-applying)) and rerun; never commit to the fork by hand,
 since the next run throws hand-made commits away. Pushing needs `gh auth login` as the fork's owner.
 
-## Using the fork's patches in an app
+## Apps and the fork
 
-**A `[patch]` onto the fork does not work.** Apps and Parallax's crates depend on the crates.io names (`gpui-pre`,
-`gpui-pre-platform`, ...), version 0.3.x. The fork holds Zed's crates: `gpui` 0.2.2, `gpui_platform`, ... with
-`workspace = true` manifests. Cargo matches a patch by package name, so
-
-```toml
-[patch.crates-io]
-gpui-pre = { git = "https://github.com/xuckless/zed", branch = "parallax" }
-```
-
-fails with "patch location ... does not contain packages matching `gpui-pre`", and adding `package = "gpui"`
-patches crates.io's `gpui` instead ("patch ... was not used in the crate graph"). Checked with cargo 1.98.1.
-
-**What works today:** patch onto a Parallax checkout's `build/gpui-patched/`, which keeps the crates.io names. It is
-the same block Parallax's own [`Cargo.toml`](../Cargo.toml) uses, one row per crate in `UPSTREAM`:
-
-```sh
-git clone https://github.com/xuckless/parallax && parallax/scripts/apply-patches.sh
-```
-
-```toml
-[patch.crates-io]
-gpui-pre          = { path = "../parallax/build/gpui-patched/gpui-pre" }
-gpui-pre-platform = { path = "../parallax/build/gpui-patched/gpui-pre-platform" }
-# ...one row for every gpui-pre-* crate in upstream/UPSTREAM
-```
-
-Rerun `apply-patches.sh` after pulling Parallax. The app's `gpui-pre` version must equal the one in `UPSTREAM`.
+There is no app opt-in (owner decision, [AGENTS.md rule 14](../AGENTS.md#upstream-and-patch-rules)). The fork holds
+Zed's crate names (`gpui` 0.2.2, `workspace = true` manifests), so a `[patch]` of `gpui-pre` onto it can't resolve.
+Apps get backend patches only when Zed merges them; published Parallax crates build on stock `gpui-pre` (rule 11).
+For a local experiment only, an app can `[patch.crates-io]` each `gpui-pre-*` crate onto a Parallax checkout's
+`build/gpui-patched/` (after `scripts/apply-patches.sh`), the same rows Parallax's own [`Cargo.toml`](../Cargo.toml)
+uses. That is unsupported.
