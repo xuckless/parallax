@@ -15,7 +15,7 @@ What it shows: one shared `launch(cx)` and a thin entry point per target, all th
 |---|---|---|
 | Desktop | [main.rs](../examples/hello/src/main.rs) | `parallax_platform::current_platform` ([platform.md](platform.md)) then `Application::run(launch)` |
 | Android | `parallax::android_main!(launch)` in lib.rs | `ParallaxActivity` loads the `cdylib` ([android.md](android.md)) |
-| Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs | [index.html](../examples/hello/index.html) imports the wasm-pack module |
+| Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs | [index.html](../examples/hello/index.html) imports the wasm-pack module; `favicon.svg` links to the brand icon in [assets/brand/](../assets/brand/) |
 | iOS | none yet | |
 
 Run every command from the repo root after `scripts/apply-patches.sh`.

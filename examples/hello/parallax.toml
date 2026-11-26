@@ -2,3 +2,4 @@
 [app]
 name = "Hello"
 id = "io.github.xuckless.parallax.hello"
+icon = "../../assets/brand/parallax-app-icon.svg"
