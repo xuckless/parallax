@@ -33,7 +33,7 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 | Wave | Phase | Parallel work | Ships |
 |---|---|---|---|
 | 8 | 1 | Upstream: fork Zed to `xuckless/zed` with a `parallax` branch carrying our patches (rule 14), notes for the BSD-licence question and patch 0001 (upstreaming paused) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
-| 9 | 1 | Side-channel in `parallax-ext` (rule 12): input kind (keyboard type, secure, autofill), touch opt-out, pointer device query; the matching core patches drafted for Zed · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
+| 9 | 1 | Publish our GPUI fork as `parallax-gpui*` crates (patch rule 11) and move the Parallax crates onto it, dropping the local queue copy and fonts workaround · Core patches (rule 12): pointer device + synthesized tags, touch opt-out, keyboard type / secure / autofill · Back button: claim it again after typing (patch) · Emoji: Android rasterizes emoji glyphs via Canvas/Typeface (COLRv1 on Android 13+) · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
 | 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
 | 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
 | 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches drafted for Zed) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
@@ -46,9 +46,8 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 
 Known limits of this plan:
 
-- **Backend patches can't reach crates.io until Zed merges them** (rule 11). That covers desktop touch (Waves 13–14) and
-  iOS text-input fixes (Wave 15). Repo builds get them at once; published crates get them only when Zed merges (upstreaming is
-  paused, rule 14), or once the iOS limit moves iOS text input into its own crate. Gates 3 and 4 are checked on repo builds.
+- **All patches reach crates.io through our published GPUI fork** (`parallax-gpui*`, patch rule 11), from Wave 9 on.
+  Upstreaming stays paused (rule 14); patches upstream fixes on its own are dropped at the next sync.
 - **Hardware:** the owner has no real phones and possibly no touchscreen laptop. Gates are checked on emulators,
   simulators and synthetic touch injection until hardware is available.
 

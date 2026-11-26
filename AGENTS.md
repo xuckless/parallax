@@ -53,6 +53,7 @@ Rules for ported code:
 
 | Topic | Decision |
 |---|---|
+| Published GPUI | Our patched GPUI fork, published as `parallax-gpui*` crates; all Parallax crates depend on it (patch rule 11). Rebuilt from upstream + patches at each sync; patches upstream fixed are dropped. |
 | Upstream source | `gpui-pre-*` crates from crates.io: weekly snapshots of Zed's GPUI (a few files adapted to build standalone, each marked `// Modified for gpui-pre`), standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
 | Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/` (generated, git-ignored). The workspace points at that via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
@@ -75,6 +76,7 @@ Rules for ported code:
 | Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |
 | Android fonts | Loaded on the main thread at startup. Measure; move off it only if startup exceeds the budget. |
 | Android renderer startup | The wgpu renderer is created on the main thread (about 0.5 s on the emulator). Same rule as fonts: measure, move only if over budget. |
+| Android emoji | Emoji glyphs are rasterized by Android itself (Canvas/Typeface over JNI) inside our Android text system and handed to GPUI's atlas, so every Android version draws its own colour emoji (COLRv1 included). |
 | iOS text selection | Native `UITextInteraction` on iOS. Flutter's selection behaviour is ported for Android and touch desktops. |
 | Errors | Typed errors, no panics in library code (see below). |
 | Tests | Pure-logic unit tests plus example smoke runs (see below). |
@@ -110,23 +112,22 @@ third_party/
 6. **Upstream what you can.** Every patch is written so it could be filed upstream (filing is paused, see rule 14). When upstream merges it, delete it at the next sync.
 7. **No editor code.** Never copy Zed's editor or text stack crates (GPL). Only Apache-licensed GPUI crates.
 8. **Licenses.** Every vendored dependency keeps its license file. Flag anything not Apache-compatible before it lands. Keep `NOTICE` current.
-9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a crate or product name.
+9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a product name. One exception: our published
+   GPUI fork crates are named `parallax-gpui*` (rule 11), so it is clear they are Parallax's build of GPUI.
 10. **One patch, two layouts.** Patches are written against the vendored `gpui-pre` layout; `scripts/patch-paths.sh` translates them to Zed's `crates/gpui*` layout for filing upstream.
-11. **Published crates build on stock upstream.** Crates on crates.io can't carry `patches/`, so every published Parallax
-    crate must build against unpatched `gpui-pre`. When code needs a patch, the published crate carries a small local
-    copy or workaround (credited, with a comment naming the patch) until Zed merges it; then the copy is deleted.
-    Patches stay for filing upstream and for local work.
-12. **Core-type changes ship as a side-channel.** When a patch changes GPUI's own types (pointer device tags, touch
-    opt-out, keyboard type), published crates get the feature through Parallax API on stock GPUI (e.g. `parallax-ext`
-    element methods, a per-window query from the backend). Once Zed merges the patch, the side-channel becomes a thin
-    wrapper over upstream's API.
+11. **We publish our own GPUI fork.** Published Parallax crates depend on our patched GPUI, published to crates.io as
+    `parallax-gpui*` crates (one per `gpui-pre-*` crate), built from `upstream/` + `patches/` at each sync. Every patch
+    therefore reaches crates.io users. When upstream fixes something a patch did, the patch is dropped at the next sync.
+    The fork crates keep upstream's code and licence (Apache-2.0) and credit Zed in their README and `NOTICE`.
+12. **Core-type changes are patches.** Changes to GPUI's own types (pointer device tags, touch opt-out, keyboard type)
+    go in as patches to the fork like any other; no side-channel API is needed.
 13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `drafts/upstream/` (git-ignored, owner-only)
     and shown to the owner before they are opened.
 14. **Our Zed fork carries the patches; upstreaming is paused.** `xuckless/zed` keeps a `parallax` branch: the snapshot
     commit from `upstream/UPSTREAM` plus every patch, rebuilt by `scripts/sync-fork.sh` at each sync. The owner has
     paused contacting Zed (2026-11-26): Zed's AI policy wants PRs and posts written and opened by a person, so agents
-    only keep patches, the fork branch and notes in `drafts/upstream/` (git-ignored, owner-only) ready. There is no app opt-in to the fork
-    (its crate names differ from `gpui-pre`); apps get backend patches only when Zed merges them.
+    only keep patches, the fork branch and notes in `drafts/upstream/` (git-ignored, owner-only) ready. Apps get every patch through our published
+    `parallax-gpui*` crates (rule 11).
 
 ## Coding style: Caveman Code
 
