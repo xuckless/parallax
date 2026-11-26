@@ -67,3 +67,14 @@ To extend it, at a sync that vendors a new `gpui-pre-*` crate: read its `zed-cra
 `[package.metadata.gpui-pre]` in its `Cargo.toml`, find that crate's directory in Zed's tree at the new commit
 (`gh api "repos/zed-industries/zed/contents/crates?ref=<commit>"`), and add the row. Add a row to the
 `untranslatable` table next to it when a sync finds a new packaging-only or gpui-pre-only file.
+
+## Published crates
+
+crates.io packages can't carry `patches/`, so every published crate builds on stock `gpui-pre`
+([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 11). A crate whose code needs a patch carries a local
+copy until Zed merges it. CI's `cargo package` step proves the packages build without `[patch]`
+([ci.md](ci.md#published-crates-build-on-stock-upstream)). One row per patch a published crate works around; delete the copy with the patch.
+
+| Patch | Published crate | Local copy |
+|---|---|---|
+| [0001](../patches/0001-export-priority-queue-android.patch) | `parallax-android` | [queue.rs](../crates/android/src/queue.rs): `PriorityQueueSender`/`Receiver`, trimmed to what the dispatcher uses |

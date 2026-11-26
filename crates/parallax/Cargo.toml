@@ -5,7 +5,10 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "gui", "cross-platform", "android", "mobile"]
+categories = ["gui"]
 
 [lints]
 workspace = true

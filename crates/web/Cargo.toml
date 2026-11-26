@@ -5,7 +5,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+# Stub: not published yet (0.0.0 name placeholder on crates.io).
+publish = false
 
 [lints]
 workspace = true

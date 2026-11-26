@@ -1,11 +1,16 @@
 [package]
 name = "parallax-android"
-description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu (Vulkan, GL fallback), IME, AccessKit."
+description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu on Vulkan with a GL fallback."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license = "Apache-2.0 AND BSD-3-Clause"
-publish.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "android", "gui", "jni", "touch"]
+categories = ["gui", "os::android-apis"]
+# java/ (ParallaxActivity and the ported Flutter embedding) ships in the package: cargo-parallax compiles it from
+# wherever cargo metadata puts this crate, crates.io included.
 
 [lints]
 workspace = true
@@ -22,10 +27,13 @@ libc = "0.2"
 log = "0.4"
 ndk-sys = "0.6"
 raw-window-handle = "0.6"
+# For src/queue.rs, the local copy of upstream's priority queue; features as upstream gpui needs for it.
+rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
 uuid = "1"
 
 # The pure modules (surface state machine, pointer packet decoder) are tested on the host.
 [dev-dependencies]
 gpui.workspace = true
+rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
