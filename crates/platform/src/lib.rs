@@ -21,6 +21,8 @@ pub enum Target {
 pub enum Status {
     /// Upstream `gpui_platform::current_platform` builds it.
     Upstream,
+    /// A Parallax crate builds it (`parallax_android::current_platform`).
+    Parallax,
     /// Planned, not built yet: [`current_platform`] returns [`Error::NotYet`].
     NotYet,
 }
@@ -63,7 +65,7 @@ pub const TABLE: [Row; 6] = [
     Row {
         target: Target::Android,
         backend: "parallax-android",
-        status: Status::NotYet,
+        status: Status::Parallax,
     },
 ];
 
@@ -78,7 +80,9 @@ pub const CURRENT_TARGET: Option<Target> = cfg_select! {
     _ => None,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+// Not comparable on Android: `parallax_android::Error` carries OS errors.
+#[derive(Debug, thiserror::Error)]
+#[cfg_attr(not(target_os = "android"), derive(Clone, Copy, PartialEq, Eq))]
 pub enum Error {
     #[error("Parallax has no platform for this target (no row in parallax_platform::TABLE)")]
     UnsupportedTarget,
@@ -87,6 +91,9 @@ pub enum Error {
         target: Target,
         backend: &'static str,
     },
+    #[cfg(target_os = "android")]
+    #[error(transparent)]
+    Android(#[from] parallax_android::Error),
 }
 
 /// Returns `target`'s row when its backend is available, or the reason it is not.
@@ -96,7 +103,7 @@ pub fn lookup(target: Option<Target>) -> Result<&'static Row, Error> {
         .find(|row| Some(row.target) == target)
         .ok_or(Error::UnsupportedTarget)?;
     match row.status {
-        Status::Upstream => Ok(row),
+        Status::Upstream | Status::Parallax => Ok(row),
         Status::NotYet => Err(Error::NotYet {
             target: row.target,
             backend: row.backend,
@@ -106,17 +113,25 @@ pub fn lookup(target: Option<Target>) -> Result<&'static Row, Error> {
 
 /// Returns the GPUI platform for the current target. Pass it to `gpui::Application::with_platform`.
 pub fn current_platform(headless: bool) -> Result<Rc<dyn Platform>, Error> {
+    #[cfg(target_os = "android")]
+    let _ = headless;
     let row = lookup(CURRENT_TARGET)?;
-    cfg_select! {
+    let not_built_here = Error::NotYet {
+        target: row.target,
+        backend: row.backend,
+    };
+    match row.status {
         // gpui_platform is not a dependency on Android (see Cargo.toml): an Upstream row there has nothing to call.
-        target_os = "android" => {
-            let _ = headless;
-            Err(Error::NotYet { target: row.target, backend: "gpui_platform" })
-        }
-        _ => {
-            let _ = row;
-            Ok(gpui_platform::current_platform(headless))
-        }
+        Status::Upstream => cfg_select! {
+            target_os = "android" => Err(not_built_here),
+            _ => Ok(gpui_platform::current_platform(headless)),
+        },
+        // parallax-android is a dependency only on Android. It has no headless mode: the Activity owns the window.
+        Status::Parallax => cfg_select! {
+            target_os = "android" => Ok(parallax_android::current_platform()?),
+            _ => Err(not_built_here),
+        },
+        Status::NotYet => Err(not_built_here),
     }
 }
 
@@ -126,7 +141,7 @@ mod tests {
 
     #[test]
     fn lookup_table() {
-        // (row name, target, expected backend or error)
+        // (row name, target, expected backend or error). Errors compare as text: on Android they are not `PartialEq`.
         let cases: [(&str, Option<Target>, Result<&str, Error>); 7] = [
             ("macos_upstream", Some(Target::MacOs), Ok("gpui_macos")),
             (
@@ -138,17 +153,19 @@ mod tests {
             ("web_upstream", Some(Target::Web), Ok("gpui_web")),
             ("ios_upstream", Some(Target::Ios), Ok("gpui_ios")),
             (
-                "android_not_yet",
+                "android_parallax",
                 Some(Target::Android),
-                Err(Error::NotYet {
-                    target: Target::Android,
-                    backend: "parallax-android",
-                }),
+                Ok("parallax-android"),
             ),
             ("unsupported_target", None, Err(Error::UnsupportedTarget)),
         ];
         for (name, target, expected) in cases {
-            assert_eq!(lookup(target).map(|row| row.backend), expected, "{name}");
+            let actual = lookup(target).map(|row| row.backend);
+            assert_eq!(
+                actual.map_err(|error| error.to_string()),
+                expected.map_err(|error| error.to_string()),
+                "{name}"
+            );
         }
     }
 }
