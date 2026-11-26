@@ -70,7 +70,7 @@ Rules for ported code:
 | Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
 | Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
 | Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |
-| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines or Zed rejects 3. Past that, iOS text input moves into its own Parallax crate. |
+| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes). Past that, iOS text input moves into its own Parallax crate. |
 | Releases | Two rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. |
 | Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
 | Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |

@@ -34,10 +34,10 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 |---|---|---|---|
 | 8 | 1 | Upstream: fork Zed to `xuckless/zed` with a `parallax` branch carrying our patches (rule 14), notes for the BSD-licence question and patch 0001 (upstreaming paused) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
 | 9 | 1 | Publish our GPUI fork as `parallax-gpui*` crates (patch rule 11) and move the Parallax crates onto it, dropping the local queue copy and fonts workaround · Core patches (rule 12): pointer device + synthesized tags, touch opt-out, keyboard type / secure / autofill · Back button: claim it again after typing (patch) · Emoji: Android rasterizes emoji glyphs via Canvas/Typeface (COLRv1 on Android 13+) · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
-| 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
+| 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Runtime locale changes (follow per-app / system locale after start) · composing check with a second IME/language (Gboard opened no composing region in Wave 9) · emoji picker timing (100 new emoji ≈ 0.2 s in Wave 9; measure, move rasterizing off the hot path only if over budget) · patch tests in CI · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
 | 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
-| 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches drafted for Zed) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
-| 13 | 3 | Confirm the macOS 27 touchscreen API · desktop touch patches 0002 Windows, 0003 Linux (Wayland + X11), 0004 macOS · synthetic touch injection for testing (Windows `InjectTouchInput`, Linux `uinput`) | repo builds |
+| 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches on the fork with drafts in `drafts/upstream/`) · Android multi-window (decide a window per Activity) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
+| 13 | 3 | Confirm the macOS 27 touchscreen API · desktop touch patches `touch-windows`, `touch-linux` (Wayland + X11), `touch-macos` (numbered when they land) · synthetic touch injection for testing (Windows `InjectTouchInput`, Linux `uinput`) | repo builds |
 | 14 | 3 | Desktop traces replayed against phone and browser traces · prepare the touch patches on the fork (upstreaming paused) | 0.1.7 = **Gate 3** |
 | 15 | 4 | iOS: the 39 `UITextInput` cases as tables + fixes, hardware keyboard, keyboard inset (iOS simulator) · web: `ime_mirror` cases, lifecycle, keyboard inset | 0.1.8 |
 | 16 | 4 | Selection: native `UITextInteraction` on iOS, Flutter's selection behaviour on Android and touch desktops · remaining lifecycle and safe-area gaps · `parallax-ext` friction items | 0.1.9 = **Gate 4** |
@@ -116,41 +116,41 @@ Skeleton (0.1.1):
 
 Core patches (needed by Android from the start; iOS and web get them too):
 
-- [ ] Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized from touch. Upstream
+- [x] Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized from touch. Upstream
       has neither ([gap audit](docs/audits/gap-audit.md)).
-- [ ] Per-element opt-out of touch → mouse emulation: build upstream's declared-but-unused `ClickEvent::Touch`.
-- [ ] `TextInputConfiguration`: keyboard type, secure entry and autofill hint.
+- [x] Per-element opt-out of touch → mouse emulation: build upstream's declared-but-unused `ClickEvent::Touch`.
+- [x] `TextInputConfiguration`: keyboard type, secure entry and autofill hint.
 - [ ] Run each patch's own GPUI tests in CI (the fork crates' tests don't build as shipped).
 - [x] Fork `zed-industries/zed` (`xuckless/zed`, `parallax` branch). Filing is paused (AGENTS.md rule 14).
 
 Full Android:
 
-- [ ] Runtime locale changes: follow per-app / system locale changes after start (today only the first surface's
+- [ ] Runtime locale changes (Wave 10): follow per-app / system locale changes after start (today only the first surface's
       locales are used).
-- [ ] Multi-window: one GPUI window per process, so in split-screen only the most recently started Activity draws;
+- [ ] Multi-window (after Gate 1, Wave 12): one GPUI window per process, so in split-screen only the most recently started Activity draws;
       decide whether to support a window per Activity.
 - [x] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
       backend table.
 - [x] Keys: port `KeyboardManager` and `KeyEmbedderResponder`; Android key code → GPUI key as one Rust table.
       Back button → `BackGestureEvent`.
-- [ ] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,
+- [x] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,
       `ImeSyncDeferringInsetsCallback` and the input parts of `TextInputPlugin`. On the same thread, the Rust side
       answers queries straight from GPUI's `InputHandler` (both use UTF-16 offsets); Flutter's editing state is kept for
       its batch-edit logic. Ledger rows list the parts left out.
-- [x] Java test setup copied from Flutter's `test_runner`: Gradle, JDK 17, Robolectric 4.17, Mockito 5.20 (JVM, no device).
+- [x] Java test setup copied from Flutter's `test_runner`: Gradle, JDK 21 toolchain, Robolectric 4.17, Mockito 5.20 (JVM, no device).
 - [ ] Port the matching Flutter Android tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`,
       `AndroidTouchProcessorTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) as tests of the Java port.
       Cases pinned below API 28 are dropped and listed in the ledger.
 - [x] Fonts ([audit](docs/audits/android-fonts.md)): a small upstream patch so `CosmicTextSystem` takes our own font
       list; a `fonts.xml` / `font_fallback.xml` parser with table tests; the Android fallback table (per-language CJK,
-      emoji); load fonts by path and prefer the CBDT `NotoColorEmojiLegacy.ttf` (swash can't draw COLRv1); pass the
+      emoji); load fonts by path and prefer the CBDT `NotoColorEmojiLegacy.ttf` (swash can't draw COLRv1; superseded in Wave 9: Android draws emoji itself via Canvas/Typeface over JNI, patch 0007, [docs/android-emoji.md](docs/android-emoji.md)); pass the
       app locale over JNI. Fonts load on the main thread at startup; measure startup and move them off it only if it
       exceeds the budget.
 - [ ] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35.
 - [x] Lifecycle: implement upstream's existing lifecycle, memory-warning, inset and back hooks for Android. Map
       `onDestroy` to an explicit choice (upstream has no terminate phase).
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge, fonts.xml parser.
-- [ ] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
+- [x] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
 
 **Gate 1:** the example app runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect,
 composing, selection, emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner
@@ -159,7 +159,7 @@ has devices to test on (until then, releases are emulator-verified).
 ## Phase 2: Gestures, physics and platform behaviour
 
 Flutter's gesture and physics tests check upstream `gestures.rs` and `ScrollPhysics`. Where upstream fails, Flutter's
-fix goes in as a small patch and is filed upstream. The tables built here are what Phase 3 replays desktop traces through.
+fix goes in as a patch to our published fork, with a draft kept in `drafts/upstream/`. The tables built here are what Phase 3 replays desktop traces through.
 Tests drive GPUI through its test platform (touch events in, gestures and scroll offsets out); a small public-seam
 patch only for a case that can't be reached that way. Order follows the [oracle inventory](docs/audits/oracle-inventory.md).
 
@@ -172,7 +172,7 @@ patch only for a case that can't be reached that way. Order follows the [oracle 
 - [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
       Covers scroll physics preset, gesture tuning (GPUI's touch slop is 8 px, Flutter's 18), touch → mouse
       emulation, overscroll, haptics, touch-target minimum.
-- [ ] Trace recorder: capture raw touch traces into test fixtures, starting with an Android phone, an iPhone and a browser.
+- [ ] Trace recorder: capture raw touch traces into test fixtures, starting with the Android emulator, the iOS simulator and a browser until the owner has devices.
 - [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
 
 **Gate 2:** the ported gesture and physics tables pass on every target, and the phone and browser traces replay to the
@@ -183,11 +183,11 @@ same gestures and scroll outcomes everywhere.
 Always compiled in; behaviour follows pointer type at runtime. Each patch feeds upstream `TouchEvent` and drops the
 fake mouse events the OS makes from touch, so a tap fires once.
 
-- [ ] `0001-touch-windows`: `WM_POINTER` touch and pen in `gpui_windows`.
-- [ ] `0002-touch-linux`: Wayland `wl_touch` and X11 XInput2 touch in `gpui_linux`.
-- [ ] `0003-touch-macos`: touchscreen events in `gpui_macos`. Confirm the macOS 27 API first (open question).
+- [ ] `touch-windows`: `WM_POINTER` touch and pen in `gpui_windows`.
+- [ ] `touch-linux`: Wayland `wl_touch` and X11 XInput2 touch in `gpui_linux`.
+- [ ] `touch-macos`: touchscreen events in `gpui_macos`. Confirm the macOS 27 API first (open question).
 - [ ] Record traces on a touchscreen laptop for each desktop OS and add them to the Phase 2 fixtures.
-- [ ] File each patch upstream.
+- [ ] Keep a draft for each patch in `drafts/upstream/`.
 
 **Gate 3:** the touchscreen laptop traces replay to the same gestures and scroll outcomes as the phone and browser
 traces, on each desktop OS.
@@ -195,11 +195,11 @@ traces, on each desktop OS.
 ## Phase 4: Text input oracle and selection
 
 Flutter's text-input tests check upstream GPUI. Where upstream fails, Flutter's fix goes in as a
-small patch and is filed upstream.
+patch to our published fork, with a draft kept in `drafts/upstream/`.
 
 - [ ] iOS text input: the 39 `UITextInput` behaviour cases from `FlutterTextInputPluginTest.mm` as a table against
       `gpui_ios`, then the 15 mapped cases (text traits, update counts); patch the failures. The other 81 test Flutter
-      internals and are skipped. Limit: once these patches total about 800 lines or Zed rejects 3, move iOS text
+      internals and are skipped. Limit: once these patches total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes), move iOS text
       input into its own Parallax crate.
 - [ ] iOS hardware keyboard: `pressesBegan`/`pressesEnded` → `KeyDown`/`KeyUp`, shortcuts and arrow keys.
 - [ ] iOS keyboard inset: intersect the keyboard frame with the window (floating iPad keyboards) and animate it.
@@ -241,7 +241,7 @@ tests are the oracle.
 
 ## Open questions
 
-- [ ] macOS 27: how are touchscreen events exposed? Needed before `0003-touch-macos`.
+- [ ] macOS 27: how are touchscreen events exposed? Needed before `touch-macos`.
 - [x] Which Android `Looper` integration does GPUI's dispatcher need? `ALooper_addFd` with an eventfd ([spike](docs/android-spike.md)).
 - [ ] Which patches to file upstream first (when upstreaming resumes).
 - [x] Is upstream adding Android itself? No: the one Android PR (#61057) was closed as stale and too large (checked 2026-11-26).
