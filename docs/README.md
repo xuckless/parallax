@@ -14,7 +14,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
-| [ci.md](ci.md) | The seven CI jobs (six targets, Java tests), what each checks, running the checks locally, adding a target |
+| [ci.md](ci.md) | The nine CI jobs (six targets, Java tests, patch tests, Android smoke), what each checks, when each runs, running the checks locally, adding a target |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
 | [audits/oracle-inventory.md](audits/oracle-inventory.md) | Flutter 3.50.1 test files per area (gestures, text input, accessibility), the upstream GPUI code each checks, portability verdicts, Android/iOS test-infra risks, Phase 2/4 order |
 | [audits/oracle-inventory-gestures.md](audits/oracle-inventory-gestures.md) | Oracle inventory part: Flutter's gesture, velocity and scroll-physics tests, case counts and salvage per file |
@@ -25,6 +25,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent per device route, what is not yet wired, following Flutter packet changes |
 | [android-mouse.md](android-mouse.md) | Android mouse, trackpad and wheel: device-kind routes, mouse action and button tables, click counting, scroll signs |
+| [android-smoke.md](android-smoke.md) | android-smoke.sh: hello on an emulator, the step table (tap, type, rotate, background), finding tap targets by colour, limits |
 | [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, ported tests, porting the next Flutter test |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
