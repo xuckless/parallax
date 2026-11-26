@@ -64,8 +64,7 @@ pub(crate) fn mark(
     starts.dedup();
     let end = |start: usize| {
         starts
-            .iter()
-            .find(|next| **next > start)
+            .get(starts.partition_point(|next| *next <= start))
             .copied()
             .unwrap_or(text.len())
     };

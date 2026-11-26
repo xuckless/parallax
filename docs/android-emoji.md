@@ -20,6 +20,7 @@ font on newer images (API 33+ without `NotoColorEmojiLegacy.ttf`). So Android dr
    cluster id goes to [`EmojiRasterizer`](../crates/android/java/io/github/xuckless/parallax/EmojiRasterizer.java)
    (`Paint.getTextBounds`, then `Canvas.drawText` into a `Bitmap`, unpremultiplied ARGB → BGRA); everything else
    stays on upstream's swash path. GPUI caches bounds and pixels (its atlas), so each cluster and size is drawn once.
+   Main thread only, where GPUI runs on Android: a call from another thread has no `JNIEnv` and returns an error.
 
 Why one glyph per cluster: Android draws text, not glyph ids (`Canvas.drawGlyphs` is API 31+, the minimum is 28).
 A ZWJ sequence newer than the font shapes to several glyphs on one index (API 28: 🧑🏾‍🦱 is person + hair), and its
