@@ -34,7 +34,7 @@ diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
 index 775021f..2231499 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -10039,6 +10039,56 @@ mod tests {
+@@ -10039,6 +10039,57 @@ mod tests {
          assert_eq!(claims.borrow().as_slice(), ["inner", "outer"]);
      }
  
@@ -52,6 +52,7 @@ index 775021f..2231499 100644
 +            position: point(px(140.), px(10.)),
 +            predicted_position: None,
 +            force: None,
++            device: PointerDevice::Touch,
 +        }
 +        .to_platform_input();
 +        let rows = [
