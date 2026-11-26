@@ -1,6 +1,6 @@
 # parallax
 
-One GPUI app on desktop, web and Android. This facade re-exports `gpui` (`gpui-pre`),
+One GPUI app on desktop, web and Android. This facade re-exports `gpui` (`parallax-gpui`: upstream `gpui-pre` plus Parallax patches),
 [parallax-platform](https://crates.io/crates/parallax-platform) and
 [parallax-android](https://crates.io/crates/parallax-android). Built on GPUI; not affiliated with Zed Industries.
 

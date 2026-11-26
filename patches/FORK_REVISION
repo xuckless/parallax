@@ -1,0 +1,4 @@
+# Patch revision of the parallax-gpui* fork crates: published as <gpui-pre version>-parallax.<revision>.
+# Bump it (and the =version pins in Cargo.toml) when patches/ changes between syncs; scripts/sync-upstream.sh resets
+# it to 1. See docs/gpui-fork-crates.md.
+1

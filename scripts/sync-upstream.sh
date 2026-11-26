@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Move upstream/ to a gpui-pre snapshot from crates.io: re-vendor it, rewrite upstream/UPSTREAM, bump the version and
-# the [patch.crates-io] rows in Cargo.toml, check every patch (listing all that no longer apply), rebuild
-# build/gpui-patched/ with apply-patches.sh, then `cargo check --workspace`.
+# Move upstream/ to a gpui-pre snapshot from crates.io: re-vendor it, rewrite upstream/UPSTREAM, reset
+# patches/FORK_REVISION to 1 on a new version, repin the parallax-gpui* fork crates in Cargo.toml, check every patch
+# (listing all that no longer apply), rebuild build/ with apply-patches.sh, regenerate the [patch.crates-io] rows from
+# the fork crates it built, then `cargo check --workspace`.
 # Usage: scripts/sync-upstream.sh [VERSION]    (default: latest gpui-pre on crates.io)
 # Needs network (crates.io, github.com), curl and jq. Replaces upstream/ wholesale; review the result with git diff.
 set -euo pipefail
@@ -92,24 +93,19 @@ Crates (crates.io name, version, Zed crate):
 $(printf '%s\n' "${crate_rows[@]}")
 EOF
 
+old_version="$(sed -n 's/^gpui-pre version: *\([^ ]*\)$/\1/p' upstream/UPSTREAM)"
 rm -rf upstream
 mv "$scratch/upstream" upstream
 echo "replaced upstream/"
 
-# Cargo.toml: bump every gpui-pre-* version requirement, then regenerate the [patch.crates-io] rows from the crate list.
-sed -i -E "/package = \"gpui-pre/ s/version = \"=[^\"]*\"/version = \"=$version\"/" Cargo.toml
-width=0
-for crate in "${new_crates[@]}"; do if (( ${#crate} > width )); then width=${#crate}; fi; done
-rows="$(for crate in "${new_crates[@]}"; do
-    printf '%-*s = { path = "build/gpui-patched/%s" }\n' "$width" "$crate" "$crate"
-done)"
-awk -v rows="$rows" '
-    /^gpui-pre[a-z-]* *= \{ path = "build\/gpui-patched\// { next }
-    { print }
-    /^\[patch\.crates-io\]$/ { print rows }
-' Cargo.toml > "$scratch/Cargo.toml"
-mv "$scratch/Cargo.toml" Cargo.toml
-echo "updated Cargo.toml (gpui-pre =$version, [patch.crates-io] rows)"
+# A new upstream version starts the fork's patch revision over; re-vendoring the same version keeps it.
+if [[ "$old_version" != "$version" ]]; then
+    sed -i -E 's/^[0-9]+$/1/' patches/FORK_REVISION
+    echo "reset patches/FORK_REVISION to 1"
+fi
+fork_version="$version-parallax.$(grep -v '^#' patches/FORK_REVISION | tr -d '[:space:]')"
+sed -i -E "/package = \"parallax-gpui/ s/version = \"=[^\"]*\"/version = \"=$fork_version\"/" Cargo.toml
+echo "pinned parallax-gpui* to =$fork_version in Cargo.toml"
 
 rustup_channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
 [[ "$rustup_channel" == "$zed_toolchain" ]] \
@@ -131,5 +127,21 @@ if [[ ${#failed[@]} -gt 0 ]]; then
 fi
 
 scripts/apply-patches.sh
+
+# Regenerate the [patch.crates-io] rows from the fork crates apply-patches.sh just built (fork-crates.sh's naming rule).
+mapfile -t forks < <(find build/parallax-gpui -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+width=0
+for fork in "${forks[@]}"; do if (( ${#fork} > width )); then width=${#fork}; fi; done
+rows="$(for fork in "${forks[@]}"; do
+    printf '%-*s = { path = "build/parallax-gpui/%s" }\n' "$width" "$fork" "$fork"
+done)"
+awk -v rows="$rows" '
+    /^parallax-gpui[a-z-]* *= \{ path = "build\/parallax-gpui\// { next }
+    { print }
+    /^\[patch\.crates-io\]$/ { print rows }
+' Cargo.toml > "$scratch/Cargo.toml"
+mv "$scratch/Cargo.toml" Cargo.toml
+echo "regenerated the [patch.crates-io] rows"
+
 cargo check --workspace
 echo "synced to gpui-pre $version (zed $zed_rev)"

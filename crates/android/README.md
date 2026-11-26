@@ -1,7 +1,7 @@
 # parallax-android
 
 GPUI's `Platform` and `PlatformWindow` for Android, part of [Parallax](https://github.com/xuckless/parallax), built
-on GPUI (`gpui-pre`). GPUI runs on the Android main Looper and draws with `gpui_wgpu` (Vulkan, GL fallback).
+on GPUI (`parallax-gpui`: upstream `gpui-pre` plus Parallax patches). GPUI runs on the Android main Looper and draws with `gpui_wgpu` (Vulkan, GL fallback).
 `java/` holds `ParallaxActivity` and Flutter's touch handling, ported as Java.
 
 ```rust
