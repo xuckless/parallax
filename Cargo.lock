@@ -3235,7 +3235,6 @@ dependencies = [
  "ndk-sys",
  "parallax-gpui",
  "parallax-gpui-wgpu",
- "rand 0.9.5",
  "raw-window-handle",
  "roxmltree 0.21.2",
  "thiserror 2.0.21",

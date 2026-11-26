@@ -34,14 +34,11 @@ memmap2 = "0.9"
 ndk-sys = "0.6"
 raw-window-handle = "0.6"
 roxmltree = "0.21"
-# For src/queue.rs, the local copy of upstream's priority queue; features as upstream gpui needs for it.
-rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 thiserror.workspace = true
 uuid = "1"
 
 # The pure modules (surface state machine, pointer packet decoder, fonts.xml parser) are tested on the host.
 [dev-dependencies]
 gpui.workspace = true
-rand = { version = "0.9", default-features = false, features = ["std", "small_rng"] }
 roxmltree = "0.21"
 thiserror.workspace = true
