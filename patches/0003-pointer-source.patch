@@ -30,7 +30,7 @@ reads. The iOS mapping is ~15 lines.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
-index b5ae74c..7f8d848 100644
+index b5ae74c..c17b8f4 100644
 --- a/gpui-pre-ios/src/ios/events.rs
 +++ b/gpui-pre-ios/src/ios/events.rs
 @@ -1,13 +1,13 @@
@@ -50,7 +50,7 @@ index b5ae74c..7f8d848 100644
  };
  
  /// A release faster than this, in points per second toward going back, commits
-@@ -126,3 +126,14 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+@@ -126,3 +126,17 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
      }
      Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
  }
@@ -61,7 +61,10 @@ index b5ae74c..7f8d848 100644
 +    match touch.r#type() {
 +        UITouchType::Pencil => PointerDevice::Pen,
 +        UITouchType::IndirectPointer => PointerDevice::Mouse,
-+        // `Direct` fingers; `Indirect` (a remote's touch surface) also reads as one.
++        // `Indirect` is a remote's touch surface: a finger too.
++        UITouchType::Direct | UITouchType::Indirect => PointerDevice::Touch,
++        // objc2 makes `UITouchType` an open newtype, so a match needs this arm; a
++        // type UIKit adds later reads as a finger.
 +        _ => PointerDevice::Touch,
 +    }
 +}
