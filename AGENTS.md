@@ -16,7 +16,7 @@ Upstream GPUI already covers a lot. Parallax fills only the gaps:
 | Web | `gpui_web` (WebGPU/WebGL2, touch, IME mirror) | `parallax-web`: semantics DOM for screen readers, other gaps |
 | Android | Nothing | `parallax-android`: whole backend, built on Flutter's ported Android embedding |
 | Desktop touch | Nothing on Windows, Linux, macOS | Patches feeding `TouchEvent` from each OS |
-| Accessibility | AccessKit tree in core, Windows adapter | Android adapter, web semantics DOM, gaps elsewhere |
+| Accessibility | AccessKit tree in core; macOS, Windows and Linux adapters | Android adapter, iOS adapter (`parallax-ios`), web semantics DOM, gaps elsewhere |
 | Tooling | Nothing for mobile builds | `cargo-parallax` CLI |
 
 Re-check this table against upstream at every sync. Upstream moves fast; never assume a gap is still a gap.
@@ -71,7 +71,10 @@ Rules for ported code:
 | Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |
 | iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines or Zed rejects 3. Past that, iOS text input moves into its own Parallax crate. |
 | Releases | Two rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. |
-| Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. |
+| Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
+| Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |
+| Android fonts | Loaded on the main thread at startup. Measure; move off it only if startup exceeds the budget. |
+| iOS text selection | Native `UITextInteraction` on iOS. Flutter's selection behaviour is ported for Android and touch desktops. |
 | Errors | Typed errors, no panics in library code (see below). |
 | Tests | Pure-logic unit tests plus example smoke runs (see below). |
 
