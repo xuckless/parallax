@@ -420,7 +420,7 @@ extern "system" fn dispatch_pointer_data_packet(
     // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
-    with_owner(activity, |host| host.shell.touch(packet));
+    with_owner(activity, |host| host.shell.pointer(packet));
 }
 
 /// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
@@ -575,7 +575,7 @@ impl<F: ?Sized> Default for Slot<F> {
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]), keys as key, modifier and back events
+    /// Pointers arrive here as touch, mouse and scroll input ([`Shell::pointer`]), keys as key, modifier and back events
     /// ([`Shell::key`]).
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
@@ -598,7 +598,7 @@ pub(crate) struct Shell {
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
-    pub(crate) touches: RefCell<pointer::Touches>,
+    pub(crate) pointers: RefCell<pointer::Pointers>,
     pub(crate) keyboard: RefCell<keys::Keyboard>,
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
@@ -615,7 +615,7 @@ impl Shell {
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
-            touches: RefCell::new(pointer::Touches::default()),
+            pointers: RefCell::new(pointer::Pointers::default()),
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
@@ -797,22 +797,25 @@ impl Shell {
         });
     }
 
-    /// One pointer data packet → GPUI touch events, dispatched in packet order. Upstream turns a tap into a click.
-    fn touch(&self, packet: &[u8]) {
+    /// One pointer data packet → GPUI touch, mouse and scroll events, dispatched in packet order. Upstream turns a
+    /// tap into a click; a mouse clicks itself. The keyboard is read before GPUI runs (it reads modifiers too).
+    fn pointer(&self, packet: &[u8]) {
+        let modifiers = self.keyboard.borrow().modifiers();
         let events = match pointer::decode(packet) {
-            Ok(data) => self
-                .touches
-                .borrow_mut()
-                .events(&data, self.metrics.get().density),
+            Ok(data) => {
+                self.pointers
+                    .borrow_mut()
+                    .events(&data, self.metrics.get().density, modifiers)
+            }
             Err(error) => {
-                log::error!("parallax: touch dropped: {error}");
+                log::error!("parallax: pointer packet dropped: {error}");
                 return;
             }
         };
         for event in events {
             log::debug!("parallax: {event:?}");
             self.callbacks.input.with(|callback| {
-                callback(PlatformInput::Touch(event));
+                callback(event);
             });
         }
     }

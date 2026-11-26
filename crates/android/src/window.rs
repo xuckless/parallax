@@ -68,7 +68,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        self.shell.touches.borrow().last_position
+        self.shell.pointers.borrow().last_position
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -137,7 +137,8 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn is_hovered(&self) -> bool {
-        false // Not yet on Android: mouse and stylus hover (the ported onGenericMotionEvent, not wired yet)
+        // Not yet on Android: Flutter's processor sends hover moves (mouse moves in GPUI), not hover enter or exit.
+        false
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
@@ -185,7 +186,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_hover_status_change(&self, _callback: Box<dyn FnMut(bool)>) {
-        // No hover yet; comes with mouse and stylus hover (onGenericMotionEvent).
+        // Not yet on Android: no hover enter or exit (see is_hovered).
     }
 
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {

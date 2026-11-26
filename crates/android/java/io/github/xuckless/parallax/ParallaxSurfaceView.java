@@ -21,8 +21,8 @@ import java.nio.ByteBuffer;
  * The surface GPUI draws into. Forwards the surface lifecycle, vsync frames and system-bar insets
  * to Rust (parallax-android, crates/android/src/host.rs); everything runs on the main thread.
  *
- * <p>Touch: onTouchEvent → the ported AndroidTouchProcessor → nativeDispatchPointerDataPacket (see
- * docs/android-touch.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
+ * <p>Touch and mouse: onTouchEvent and onGenericMotionEvent → the ported AndroidTouchProcessor →
+ * nativeDispatchPointerDataPacket (see docs/android-touch.md, docs/android-mouse.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
  * nativeDispatchKeyData (see docs/android-keys.md). Text input: the ported TextInputPlugin, synced
  * with GPUI over the natives below (see docs/android-text-input.md).
  */
@@ -184,6 +184,16 @@ final class ParallaxSurfaceView extends SurfaceView
     // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
     requestUnbufferedDispatch(event);
     return touchProcessor.onTouchEvent(event);
+  }
+
+  // As FlutterView.onGenericMotionEvent: mouse hover moves and wheel turns (the processor takes
+  // pointer-class hover moves and scrolls, and leaves the rest to Android). Hover events reach here
+  // because this view's onHoverEvent does not take them (it is not clickable), as in FlutterView
+  // without accessibility.
+  @Override
+  public boolean onGenericMotionEvent(MotionEvent event) {
+    boolean handled = touchProcessor.onGenericMotionEvent(event, getContext());
+    return handled ? true : super.onGenericMotionEvent(event);
   }
 
   // The app's only view takes focus as soon as it is in the window: without it, key events stop at

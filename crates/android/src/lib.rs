@@ -97,6 +97,8 @@ pub enum Error {
     PointerChange(i64),
     #[error("pointer data packet has an unknown PointerDeviceKind {0}")]
     PointerKind(i64),
+    #[error("pointer data packet has an unknown PointerSignalKind {0}")]
+    PointerSignal(i64),
     #[error("fonts.xml: {0}")]
     FontsXml(#[source] roxmltree::Error),
     #[error("fonts.xml: root element is <{0}>, not <familyset>")]

@@ -27,7 +27,7 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   - Web touches are `Touch`.
   - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
-    are `Pen`, mouse and trackpad are `Mouse`.
+    are `Pen`; a mouse and trackpad send real mouse events instead ([android-mouse.md](android-mouse.md)).
   - Later patches that build a `TouchEvent` literal must set `device` (0006's test does).
 - **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
   `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
