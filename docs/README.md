@@ -21,7 +21,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent, what is not yet wired, following Flutter packet changes |
 | [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
-| [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, porting the next Flutter test |
+| [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, ported tests, porting the next Flutter test |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, the FontSystem from patch 0002 |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |

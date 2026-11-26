@@ -75,4 +75,5 @@ phone password on Android, a secure Phone is a number password.
 `examples/hello` has a field ([examples.md](examples.md)). On the emulator: tap it, `adb shell input text hello`,
 `adb shell input keyevent 67` (backspace). IME edits and call deliveries log at debug level as lengths and ranges,
 never text (a field may be a password); raise `on_load`'s info-level logger in [host.rs](../crates/android/src/host.rs)
-to see them. Tests: `cargo test -p parallax-android text_input`.
+to see them. Tests: `cargo test -p parallax-android text_input`, and `scripts/java-test.sh` for the Java (Flutter's
+`TextInputPluginTest`, `InputConnectionAdaptorTest` and two more, [android-tests.md](android-tests.md)).
