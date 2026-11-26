@@ -19,7 +19,9 @@
 // updateEditingStateWithDeltas), platform views (setPlatformViewClient), setEditableSizeAndTransform,
 // app private commands (sendAppPrivateCommand, performPrivateCommand), commitContent
 // (contentCommitMimeTypes), requestExistingInputState; androidx annotations; io.flutter.Log
-// (→ android.util.Log). Added: boundsForRange (GPUI's caret bounds for CursorAnchorInfo). The sync
+// (→ android.util.Log). handleFrameworkCalls catches a call's RuntimeException and logs it, as the
+// MethodChannel's handler did. updateEditingState's log gives the text's length, not the text (it
+// may be a password). Added: boundsForRange (GPUI's caret bounds for CursorAnchorInfo). The sync
 // protocol: docs/android-text-input.md. Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
@@ -62,7 +64,14 @@ public class TextInputChannel {
       final JSONArray callList = new JSONArray(calls);
       for (int i = 0; i < callList.length(); i++) {
         final JSONObject call = callList.getJSONObject(i);
-        onMethodCall(call.getString("method"), call.opt("args"));
+        final String method = call.getString("method");
+        try {
+          onMethodCall(method, call.opt("args"));
+        } catch (RuntimeException e) {
+          // As MethodChannel's IncomingMethodCallHandler: a failing call is logged, not thrown into
+          // the caller (here doFrame, where it would end the app).
+          Log.e(TAG, "Failed to handle method call " + method, e);
+        }
       }
     } catch (JSONException exception) {
       Log.e(TAG, "unreadable text input calls: " + exception.getMessage());
@@ -126,8 +135,8 @@ public class TextInputChannel {
     Log.v(
         TAG,
         "Sending message to update editing state: \n"
-            + "Text: "
-            + text
+            + "Text length: "
+            + text.length()
             + "\n"
             + "Selection start: "
             + selectionStart

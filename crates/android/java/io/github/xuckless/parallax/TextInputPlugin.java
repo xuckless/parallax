@@ -18,7 +18,8 @@
 // view lives as long as its Activity), the delta-model branch (GPUI takes full states),
 // contentCommitMimeTypes and stylus handwriting (EditorInfoCompat); androidx annotations;
 // ViewCompat/WindowInsetsCompat → View.getRootWindowInsets (API 30+, else no restart);
-// io.flutter.Log → android.util.Log; io.flutter.Build.API_LEVELS → Build.VERSION_CODES. The sync
+// io.flutter.Log → android.util.Log; io.flutter.Build.API_LEVELS → Build.VERSION_CODES;
+// didChangeEditingState's log gives the text's length, not the text (it may be a password). The sync
 // with GPUI: docs/android-text-input.md.
 // Ledger: third_party/flutter/PORTED.md.
 
@@ -398,7 +399,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
                 && composingStart == mLastKnownFrameworkTextEditingState.composingStart
                 && composingEnd == mLastKnownFrameworkTextEditingState.composingEnd);
     if (!skipFrameworkUpdate) {
-      Log.v(TAG, "send EditingState to flutter: " + mEditable.toString());
+      Log.v(TAG, "send EditingState to flutter: " + mEditable.length() + " chars");
 
       textInputChannel.updateEditingState(
           inputTarget.id,
