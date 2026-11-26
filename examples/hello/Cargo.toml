@@ -1,6 +1,6 @@
 [package]
 name = "hello"
-description = "Parallax example: one window with a box that changes colour on tap, on every target."
+description = "Parallax example: one window with a text field, a multi-script line and a box that changes colour on tap, on every target."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -18,6 +18,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 log = "0.4"
 parallax = { path = "../../crates/parallax" }
+# Grapheme boundaries for the text field's cursor moves and deletes (src/text_field.rs).
+unicode-segmentation = "1"
 
 # The #[wasm_bindgen(start)] attribute that starts the app in the browser.
 [target.'cfg(target_family = "wasm")'.dependencies]

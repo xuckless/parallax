@@ -1892,6 +1892,7 @@ version = "0.1.2"
 dependencies = [
  "log",
  "parallax",
+ "unicode-segmentation",
  "wasm-bindgen",
 ]
 
