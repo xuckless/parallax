@@ -87,8 +87,8 @@ for name in "${order[@]}"; do
             echo "skip $name ${versions[$name]}: crates.io already has it"
             continue 2
         fi
-        # crates.io's new-crate rate limit: "... Please try again after <HTTP date> or email help@crates.io ...".
-        retry_at="$(sed -n 's/.*try again after \(.*\) or email.*/\1/p' "$log" | head -n1)"
+        # crates.io's new-crate rate limit: "... Please try again after <HTTP date, ending in GMT> ...".
+        retry_at="$(sed -n 's/.*try again after \([^.]* GMT\).*/\1/p' "$log" | head -n1)"
         [[ -n $retry_at ]] || die "cargo publish failed for $name (not a rate limit; see above)"
         retry_epoch="$(date -d "$retry_at" +%s 2> /dev/null)" \
             || die "cargo publish for $name was rate limited, but the retry time '$retry_at' does not parse"
