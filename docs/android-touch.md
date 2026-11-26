@@ -26,7 +26,9 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 4. **TouchEvent.** `Touches` maps Flutter's `device` (Android pointer id and tool type) to a fresh upstream `TouchId`
    per touch, since GPUI ids must never be reused and Android's are. The `TOUCH_PHASES` table says what each change
    becomes: down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove, hover and trackpad
-   pan/zoom send nothing yet. Positions are divided by the display density (logical pixels); pressure becomes
+   pan/zoom send nothing yet. The `DEVICES` table maps Flutter's device kind to `TouchEvent::device`: stylus and
+   eraser → `Pen`, mouse and trackpad → `Mouse`, finger and unknown → `Touch`. Positions are divided by the display
+   density (logical pixels); pressure becomes
    `force` when the device reports a range. A move or up for a pointer that never went down is dropped.
 5. **GPUI.** Each event goes to the window as `PlatformInput::Touch` through `Callbacks::input`, in packet order.
    Upstream's [gestures.rs](../upstream/gpui-pre/src/gestures.rs) recognizes taps (synthesized mouse down/up, so
@@ -35,9 +37,8 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 
 ## Not yet
 
-- **Device kind and synthesized flag.** Every kind (finger, stylus, eraser, mouse button) becomes a `TouchEvent`;
-  upstream has no field for the device. The core patch in [ROADMAP.md](../ROADMAP.md) Phase 1 plugs in where
-  `Touches::events` builds the event.
+- **Mouse buttons as a mouse.** Every kind (finger, stylus, eraser, mouse button) still becomes a `TouchEvent`;
+  the `DEVICES` table only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)).
 - **Mouse hover, wheel and trackpad.** `AndroidTouchProcessor.onGenericMotionEvent` is ported but the view does not
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported

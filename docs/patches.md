@@ -4,6 +4,16 @@ Parallax changes upstream GPUI only through numbered patches in [`patches/`](../
 is allowed, size, `cfg` gating, header, filing upstream) are in [AGENTS.md, "Upstream and patch rules"](../AGENTS.md#upstream-and-patch-rules).
 This page is the how-to.
 
+## The patches
+
+| Patch | Concern | Doc |
+|---|---|---|
+| [0001](../patches/0001-export-priority-queue-android.patch) | Export GPUI's priority queues on Android | [android.md](android.md) |
+| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `CosmicTextSystem` from a caller-built `FontSystem` | [android-fonts.md](android-fonts.md) |
+| [0003](../patches/0003-pointer-source.patch) | `TouchEvent::device`, `Window::pointer_source()` | [core-patches.md](core-patches.md) |
+| [0004](../patches/0004-touch-opt-out.patch) | `on_touch` opts an element out of touch → mouse; taps click as `ClickEvent::Touch` | [core-patches.md](core-patches.md) |
+| [0005](../patches/0005-text-input-keyboard-type.patch) | Keyboard type, secure entry, autofill hint in `TextInputConfiguration` | [core-patches.md](core-patches.md) |
+
 ## Writing a patch
 
 - **Format:** a git-format diff (`git diff` or `git format-patch`), paths relative to `upstream/`:
