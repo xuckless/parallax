@@ -5,9 +5,11 @@ example is a workspace member, so [CI](ci.md) checks it on all six targets.
 
 ## hello
 
-[examples/hello](../examples/hello/): one window with a text field, a line in several scripts (`SCRIPTS`: Latin,
+[examples/hello](../examples/hello/): one window with two text fields (prose, and an email field with an autofill
+hint), a line in several scripts (`SCRIPTS`: Latin,
 CJK, Arabic, emoji) and a box. Each click or tap moves the box to the next colour of `COLOURS` in
-[lib.rs](../examples/hello/src/lib.rs); a tap outside the field blurs it. It is the app of Milestone 0.1.1 in
+[lib.rs](../examples/hello/src/lib.rs), and the log line says whether the click came from a mouse, a tap or a key; a
+tap outside a field blurs it. It is the app of Milestone 0.1.1 in
 [ROADMAP.md](../ROADMAP.md): it opens, draws and reacts to a tap on desktop, web and Android.
 
 Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the app's language
@@ -15,7 +17,7 @@ Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the ap
 (`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them
 ([android-emoji.md](android-emoji.md#cost)).
 
-The field ([text_field.rs](../examples/hello/src/text_field.rs)) is example-local: upstream GPUI has no text field
+The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local: upstream GPUI has no text field
 outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one
 `EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes. On Android it drives the IME
 ([android-text-input.md](android-text-input.md)).

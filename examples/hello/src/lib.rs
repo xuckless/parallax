@@ -1,12 +1,14 @@
-//! One window: a text field, a line in several scripts, and a centred box; each click or tap moves the box to
-//! the next colour in `COLOURS`. Tapping outside the field blurs it (Android hides the keyboard). A button swaps the
-//! box for a grid of `EMOJI_GRID` and back, logging how long the frame that draws the grid took.
+//! One window: a prose field, an email field (with autofill), a line in several scripts, and a centred box; each
+//! click or tap moves the box to the next colour in `COLOURS`. Tapping outside a field blurs it (Android hides the
+//! keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long the frame that draws
+//! the grid took.
 //! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
 
 use parallax::gpui::{
-    App, Bounds, Context, Entity, MouseButton, Window, WindowBounds, WindowOptions, div,
+    App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity, KeyboardType,
+    MouseButton, TextInputAction, TextInputConfiguration, Window, WindowBounds, WindowOptions, div,
     prelude::*, px, rgb, size,
 };
 
@@ -29,7 +31,8 @@ const GRID_COLUMNS: usize = 10;
 struct Hello {
     /// Index into `COLOURS`.
     colour: usize,
-    field: Entity<TextField>,
+    prose: Entity<TextField>,
+    email: Entity<TextField>,
     /// The emoji grid's rows while it is shown.
     grid: Option<Vec<String>>,
 }
@@ -50,7 +53,8 @@ impl Render for Hello {
             .text_color(rgb(0xcdd6f4))
             .text_size(px(20.))
             .on_mouse_down(MouseButton::Left, |_, window, cx| window.blur(cx))
-            .child(self.field.clone())
+            .child(self.prose.clone())
+            .child(self.email.clone())
             .child(SCRIPTS)
             .child(
                 div()
@@ -86,9 +90,18 @@ impl Render for Hello {
                     .size(px(160.))
                     .rounded_lg()
                     .bg(rgb(COLOURS[self.colour]))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                         this.colour = (this.colour + 1) % COLOURS.len();
-                        log::info!("box colour {:06x}", COLOURS[this.colour]);
+                        let source = match event {
+                            ClickEvent::Mouse(_) => "mouse",
+                            ClickEvent::Keyboard(_) => "keyboard",
+                            ClickEvent::Touch(_) => "touch",
+                        };
+                        log::info!(
+                            "box colour {:06x} ({source} click, count {})",
+                            COLOURS[this.colour],
+                            event.click_count()
+                        );
                         cx.notify();
                     }))
                     .into_any_element(),
@@ -133,7 +146,35 @@ pub fn launch(cx: &mut App) {
     let opened = cx.open_window(options, |_, cx| {
         cx.new(|cx| Hello {
             colour: 0,
-            field: cx.new(|cx| TextField::new("Type here", cx)),
+            // Prose: the keyboard may suggest, correct and capitalize (GPUI's default turns all of that off).
+            prose: cx.new(|cx| {
+                TextField::new(
+                    "Type here",
+                    TextInputConfiguration {
+                        autocorrect: true,
+                        autocapitalize: Autocapitalize::Sentences,
+                        suggestions: true,
+                        input_action: TextInputAction::Done,
+                        ..TextInputConfiguration::default()
+                    },
+                    cx,
+                )
+            }),
+            // The platform's autofill may offer the user's addresses. Suggestions on, as Flutter's default: Android
+            // turns a field without suggestions into a visible-password one, which drops the email layout.
+            email: cx.new(|cx| {
+                TextField::new(
+                    "Email",
+                    TextInputConfiguration {
+                        keyboard_type: KeyboardType::Email,
+                        suggestions: true,
+                        autofill: Some(AutofillHint::Email),
+                        input_action: TextInputAction::Done,
+                        ..TextInputConfiguration::default()
+                    },
+                    cx,
+                )
+            }),
             grid: None,
         })
     });

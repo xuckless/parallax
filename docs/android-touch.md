@@ -18,19 +18,19 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    Activity does not own the window are dropped ([android-lifecycle.md](android-lifecycle.md#several-activities)).
 2. **JNI.** The native is a row in `natives` in [host.rs](../crates/android/src/host.rs). It borrows the buffer's
    first `position` bytes for the length of the call (main thread; the buffer is fresh per event) and hands them to
-   `Shell::touch`.
+   `Shell::pointer`.
 3. **Decoder.** [pointer.rs](../crates/android/src/pointer.rs) reads the packet with Flutter's own layout: the
    `Field` enum lists `PointerData` from Flutter's `pointer_data.h` in order, so a field's offset is its position.
    `PointerChange` and `PointerDeviceKind` values come from two tables indexed by Flutter's numbers
    (`POINTER_CHANGES`, `DEVICE_KINDS`). A packet that is not whole records, or carries an unknown change or kind, is
-   rejected whole with a typed `Error` and logged.
-4. **TouchEvent.** `Touches` maps Flutter's `device` (Android pointer id and tool type) to a fresh upstream `TouchId`
-   per touch, since GPUI ids must never be reused and Android's are. The `TOUCH_PHASES` table says what each change
-   becomes: down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove, hover and trackpad
-   pan/zoom send nothing yet. Each `DEVICE_KINDS` row also names the `TouchEvent::device` its kind becomes: stylus
-   and eraser → `Pen`, mouse and trackpad → `Mouse`, finger and unknown → `Touch`. Positions are divided by the
-   display density (logical pixels); pressure becomes `force` when the device reports a range. A move or up for a
-   pointer that never went down is dropped.
+   rejected whole with a typed `Error` and logged. The signal kind (`SIGNAL_KINDS`) is read too: a wheel turn.
+4. **TouchEvent.** Each `DEVICE_KINDS` row names a route: finger and unknown → `TouchEvent { device: Touch }`,
+   stylus and eraser → `Pen`, mouse and trackpad → mouse and scroll events ([android-mouse.md](android-mouse.md)).
+   `Pointers` maps Flutter's `device` (Android pointer id and tool type) to a fresh upstream `TouchId` per touch,
+   since GPUI ids must never be reused and Android's are. The `TOUCH_PHASES` table says what each change becomes:
+   down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove and a pen's hover send nothing.
+   Positions are divided by the display density (logical pixels); pressure becomes `force` when the device reports a
+   range. A move or up for a pointer that never went down is dropped.
 5. **GPUI.** Each event goes to the window as `PlatformInput::Touch` through `Callbacks::input`, in packet order.
    Upstream's [gestures.rs](../upstream/gpui-pre/src/gestures.rs) recognizes taps (synthesized mouse down/up, so
    `on_click` fires), pans (scroll events with touch phases) and long presses, unless an `on_touch` element claims
@@ -39,11 +39,6 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 
 ## Not yet
 
-- **Mouse buttons as a mouse.** Every kind (finger, stylus, eraser, mouse button) still becomes a `TouchEvent`;
-  `DEVICE_KINDS` only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)). So a mouse
-  click arrives as a synthesized tap (`ClickEvent::Touch`) whose `pointer_source()` says `Mouse`.
-- **Mouse hover, wheel and trackpad.** `AndroidTouchProcessor.onGenericMotionEvent` is ported but the view does not
-  call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported
   [`MotionEventTracker`](../crates/android/java/io/github/xuckless/parallax/MotionEventTracker.java) is unused.
 
@@ -52,8 +47,8 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 - **Flutter changes the packet** (`scripts/flutter-diff.sh` shows a diff for `pointer_data.h` or
   `AndroidTouchProcessor.java`): port the Java change, then edit `Field` or the value tables in `pointer.rs` in
   Flutter's order. The decoder test rows build records from the same `Field` enum.
-- **Route a change elsewhere** (e.g. hover → mouse move): change its row in `TOUCH_PHASES` and add a decoder row.
-- **Check on the emulator:** `adb shell input tap` and `adb shell input swipe`; `Shell::touch` logs each
-  `TouchEvent` with `log::debug!`, below the `Info` level `on_load` sets, so raise that locally to see them.
-- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests`) and
+- **Route a change elsewhere** (e.g. a pen's hover → mouse move): change its row in `TOUCH_PHASES` and add a test row.
+- **Check on the emulator:** `adb shell input tap` and `adb shell input swipe`; `Shell::pointer` logs each
+  event with `log::debug!`, below the `Info` level `on_load` sets, so raise that locally to see them.
+- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests::touches`) and
   `scripts/java-test.sh` (Flutter's `AndroidTouchProcessorTest` on Robolectric, [android-tests.md](android-tests.md)).

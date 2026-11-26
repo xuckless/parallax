@@ -13,10 +13,11 @@
 use std::ops::Range;
 
 use gpui::{
-    Autocapitalize, FocusId, KeyboardType, TextInputAction, TextInputConfiguration,
-    TextInputStateChange,
+    Autocapitalize, AutofillHint, Bounds, FocusId, KeyboardType, Pixels, TextInputAction,
+    TextInputConfiguration, TextInputStateChange,
 };
 use serde_json::{Value, json};
+use slotmap::Key as _;
 
 /// One side's editing state, as Flutter's `TextEditState`: text, selection and composing (marked) range.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -380,21 +381,41 @@ impl Pending {
         }
     }
 
-    /// Flutter's `flutter/textinput` calls for Java (`TextInputChannel.handleFrameworkCalls`), in its order:
-    /// clear or set the client, then the editing state, then the keyboard. `None` when there is nothing to send.
+    /// Flutter's `flutter/textinput` calls for Java (`TextInputChannel.handleFrameworkCalls`), in the framework's
+    /// order: clear or set the client, then the editing state, then the keyboard. `None` when there is nothing to
+    /// send. A new client with autofill (a hint, and GPUI has named the `field`) also gets the field's `bounds`
+    /// right after `setClient` and `requestAutofill` last, as Flutter's `EditableText` attaches: Java's
+    /// `notifyViewEntered` needs the rect.
     fn calls(
         &self,
         configuration: &TextInputConfiguration,
+        field: Option<FocusId>,
+        bounds: Option<Bounds<Pixels>>,
         state: Option<&EditingState>,
     ) -> Option<Value> {
+        let autofill = match self.client {
+            Client::Set => {
+                state.and_then(|state| autofill_json(configuration.autofill, field, state))
+            }
+            Client::Keep { .. } | Client::Clear => None,
+        };
         let client = match self.client {
             Client::Keep { .. } => None,
             Client::Set => Some(json!({
                 "method": "TextInput.setClient",
-                "args": [0, configuration_json(configuration)],
+                "args": [0, configuration_json(configuration, autofill.clone())],
             })),
             Client::Clear => Some(json!({"method": "TextInput.clearClient"})),
         };
+        let size = autofill.as_ref().map(|_| {
+            json!({
+                "method": "TextInput.setEditableSizeAndTransform",
+                "args": size_and_transform(bounds.unwrap_or_default()),
+            })
+        });
+        let request = autofill
+            .as_ref()
+            .map(|_| json!({"method": "TextInput.requestAutofill"}));
         let sync = state
             .map(|state| json!({"method": "TextInput.setEditingState", "args": state.to_json()}));
         let keyboard = match self.keyboard {
@@ -402,7 +423,10 @@ impl Pending {
             Keyboard::Show => Some(json!({"method": "TextInput.show"})),
             Keyboard::Hide => Some(json!({"method": "TextInput.hide"})),
         };
-        let calls: Vec<Value> = [client, sync, keyboard].into_iter().flatten().collect();
+        let calls: Vec<Value> = [client, size, sync, keyboard, request]
+            .into_iter()
+            .flatten()
+            .collect();
         (!calls.is_empty()).then_some(Value::Array(calls))
     }
 }
@@ -444,8 +468,12 @@ impl Session {
     pub(crate) fn installed(&mut self, id: Option<FocusId>) {
         let (field, notice) = match (self.field, id) {
             (Field::Blurred, _) | (Field::Focused(_), None) => (self.field, None),
-            // The first id after FocusGained, which announced the field already.
-            (Field::Focused(None), Some(id)) => (Field::Focused(Some(id)), None),
+            // The first id after FocusGained, which announced the field already: again only for autofill, which
+            // needs the id (a `setClient` still pending takes it anyway).
+            (Field::Focused(None), Some(id)) => (
+                Field::Focused(Some(id)),
+                self.configuration.autofill.map(|_| Notice::Configured),
+            ),
             (Field::Focused(Some(previous)), Some(id)) => (
                 Field::Focused(Some(id)),
                 (previous != id).then_some(Notice::Focused),
@@ -516,14 +544,24 @@ impl Session {
     }
 
     /// `pending` as Flutter's calls, with GPUI's `state` where they carry it (empty for a new client when the field
-    /// is unreadable: Java still needs a state to restart the IME). Java's mirror becomes what is sent.
-    pub(crate) fn send(&mut self, pending: Pending, state: Option<EditingState>) -> Option<Value> {
+    /// is unreadable: Java still needs a state to restart the IME) and the field's text `bounds` for autofill (read
+    /// for a new client). Java's mirror becomes what is sent.
+    pub(crate) fn send(
+        &mut self,
+        pending: Pending,
+        state: Option<EditingState>,
+        bounds: Option<Bounds<Pixels>>,
+    ) -> Option<Value> {
         let state = match pending.client {
             Client::Set => Some(state.unwrap_or_default()),
             Client::Keep { sync: true } => state,
             Client::Keep { sync: false } | Client::Clear => None,
         };
-        let calls = pending.calls(&self.configuration, state.as_ref());
+        let field = match self.field {
+            Field::Focused(id) => id,
+            Field::Blurred => None,
+        };
+        let calls = pending.calls(&self.configuration, field, bounds, state.as_ref());
         match (pending.client, state) {
             (Client::Clear, _) => self.mirror = None,
             (Client::Set | Client::Keep { .. }, Some(state)) => self.mirror = Some(state),
@@ -602,11 +640,56 @@ fn input_type(keyboard_type: KeyboardType, secure: bool) -> Value {
     }
 }
 
-/// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration. A secure field is
-/// `obscureText` with personalized learning off, as the patch 0005 docs promise (kept out of dictionaries).
-/// GPUI's autofill hint is not sent: the ported Java has no autofill yet (ROADMAP).
-fn configuration_json(configuration: &TextInputConfiguration) -> Value {
+/// GPUI's autofill hint → Flutter's `AutofillHints` name (`autofill.dart`), which `Configuration.Autofill` turns into
+/// Android's `View.AUTOFILL_HINT_*` / androidx `HintConstants` value. Exhaustive: a new GPUI variant needs an arm.
+fn autofill_hint(hint: AutofillHint) -> &'static str {
+    match hint {
+        AutofillHint::Username => "username",
+        AutofillHint::Password => "password",
+        AutofillHint::NewPassword => "newPassword",
+        AutofillHint::OneTimeCode => "oneTimeCode",
+        AutofillHint::Email => "email",
+        AutofillHint::Phone => "telephoneNumber",
+        AutofillHint::Name => "name",
+        // GPUI's is a full street address (HTML `street-address`, iOS `fullStreetAddress`).
+        AutofillHint::PostalAddress => "fullStreetAddress",
+        AutofillHint::PostalCode => "postalCode",
+        AutofillHint::CreditCardNumber => "creditCardNumber",
+    }
+}
+
+/// Flutter's `Configuration.Autofill` JSON for the focused field: `None` without a hint, or while GPUI has not named
+/// the field yet. `uniqueIdentifier` is the field's `FocusId`, so it stays the same while the field lives (Java keys
+/// the field's virtual autofill view by its hash); `editingValue` is the state sent with it.
+fn autofill_json(
+    hint: Option<AutofillHint>,
+    field: Option<FocusId>,
+    state: &EditingState,
+) -> Option<Value> {
+    let (hint, field) = (hint?, field?);
+    Some(json!({
+        "uniqueIdentifier": format!("parallax.field.{}", field.data().as_ffi()),
+        "hints": [autofill_hint(hint)],
+        "editingValue": state.to_json(),
+    }))
+}
+
+/// Flutter's `setEditableSizeAndTransform` arguments for the field's `bounds` (logical pixels; the view fills the
+/// window): its size and a column-major 4x4 translation to its origin. Java turns them into the autofill rect.
+fn size_and_transform(bounds: Bounds<Pixels>) -> Value {
+    let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     json!({
+        "width": f32::from(bounds.size.width),
+        "height": f32::from(bounds.size.height),
+        "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, 0.0, 1.0],
+    })
+}
+
+/// Flutter's `TextInputConfiguration` JSON (`Configuration.fromJson`) for GPUI's configuration, with the field's
+/// `autofill` ([`autofill_json`]) when it has one. A secure field is `obscureText` with personalized learning off,
+/// as the patch 0005 docs promise (kept out of dictionaries).
+fn configuration_json(configuration: &TextInputConfiguration, autofill: Option<Value>) -> Value {
+    let mut out = json!({
         "inputType": input_type(configuration.keyboard_type, configuration.secure),
         "obscureText": configuration.secure,
         "autocorrect": configuration.autocorrect,
@@ -614,7 +697,11 @@ fn configuration_json(configuration: &TextInputConfiguration) -> Value {
         "enableIMEPersonalizedLearning": !configuration.secure,
         "textCapitalization": capitalization(configuration.autocapitalize),
         "inputAction": action(configuration.input_action),
-    })
+    });
+    if let (Some(autofill), Value::Object(fields)) = (autofill, &mut out) {
+        fields.insert("autofill".to_string(), autofill);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1258,6 +1345,8 @@ mod tests {
         // (name, field before, what GPUI does) → field after, pending calls (from none).
         enum Step {
             Installed(Option<FocusId>),
+            /// Installed, the field configured with an autofill hint.
+            InstalledAutofill(Option<FocusId>),
             Changed(TextInputStateChange),
             Configured,
         }
@@ -1275,6 +1364,20 @@ mod tests {
                 "focused, first id: no new client",
                 Field::Focused(None),
                 Step::Installed(Some(a)),
+                Field::Focused(Some(a)),
+                EMPTY,
+            ),
+            (
+                "focused, first id, autofill: new client with the id",
+                Field::Focused(None),
+                Step::InstalledAutofill(Some(a)),
+                Field::Focused(Some(a)),
+                EMPTY.next(Notice::Configured),
+            ),
+            (
+                "same field reinstalled, autofill: no new client",
+                Field::Focused(Some(a)),
+                Step::InstalledAutofill(Some(a)),
                 Field::Focused(Some(a)),
                 EMPTY,
             ),
@@ -1349,6 +1452,10 @@ mod tests {
             };
             match step {
                 Step::Installed(id) => session.installed(id),
+                Step::InstalledAutofill(id) => {
+                    session.configuration.autofill = Some(AutofillHint::Email);
+                    session.installed(id)
+                }
                 Step::Changed(change) => session.state_changed(change),
                 Step::Configured => session.configure(TextInputConfiguration::default()),
             }
@@ -1555,7 +1662,7 @@ mod tests {
             };
             let calls = session
                 .take()
-                .and_then(|pending| session.send(pending, read));
+                .and_then(|pending| session.send(pending, read, None));
             assert_eq!(calls, want.and_then(json), "{name}: calls");
             assert_eq!(session.mirror, want_mirror, "{name}: mirror");
             assert_eq!(session.pending, EMPTY, "{name}: emptied");
@@ -1584,11 +1691,166 @@ mod tests {
         assert_eq!(
             EMPTY
                 .next(Notice::Focused)
-                .calls(&configuration, Some(&gpui)),
+                .calls(&configuration, None, None, Some(&gpui)),
             json(want),
             "focus: client, state, show"
         );
-        assert_eq!(EMPTY.calls(&configuration, None), None, "nothing");
+        assert_eq!(
+            EMPTY.calls(&configuration, None, None, None),
+            None,
+            "nothing"
+        );
+    }
+
+    #[test]
+    fn autofill_for_java() {
+        // (name, hint, GPUI's field id, field bounds) → the calls for a new focused client.
+        let a = focus_id(1);
+        let gpui = state("a@b", (3, 3), (-1, -1));
+        let bounds = Bounds::new(
+            gpui::point(gpui::px(16.), gpui::px(40.)),
+            gpui::size(gpui::px(200.), gpui::px(24.)),
+        );
+        let set_client = |autofill: Option<Value>| {
+            json!({"method": "TextInput.setClient", "args": [0, configuration_json(&TextInputConfiguration {
+                autofill: Some(AutofillHint::Email),
+                ..TextInputConfiguration::default()
+            }, autofill)]})
+        };
+        let sync = json!({"method": "TextInput.setEditingState", "args": gpui.to_json()});
+        let show = json!({"method": "TextInput.show"});
+        let autofill = json!({
+            "uniqueIdentifier": format!("parallax.field.{}", a.data().as_ffi()),
+            "hints": ["email"],
+            "editingValue": gpui.to_json(),
+        });
+        let size = |x: f32, y: f32, width: f32, height: f32| {
+            json!({"method": "TextInput.setEditableSizeAndTransform", "args": {
+                "width": width, "height": height,
+                "transform": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, 0.0, 1.0],
+            }})
+        };
+        let request = json!({"method": "TextInput.requestAutofill"});
+        let rows = [
+            (
+                "hint and id: autofill, rect, request last",
+                Some(AutofillHint::Email),
+                Some(a),
+                Some(bounds),
+                vec![
+                    set_client(Some(autofill.clone())),
+                    size(16., 40., 200., 24.),
+                    sync.clone(),
+                    show.clone(),
+                    request,
+                ],
+            ),
+            (
+                "no bounds: an empty rect at the origin",
+                Some(AutofillHint::Email),
+                Some(a),
+                None,
+                vec![
+                    set_client(Some(autofill)),
+                    size(0., 0., 0., 0.),
+                    sync.clone(),
+                    show.clone(),
+                    json!({"method": "TextInput.requestAutofill"}),
+                ],
+            ),
+            (
+                // installed() announces the field again once GPUI names it.
+                "hint, no id yet: no autofill",
+                Some(AutofillHint::Email),
+                None,
+                Some(bounds),
+                vec![set_client(None), sync.clone(), show.clone()],
+            ),
+            (
+                "no hint: no autofill",
+                None,
+                Some(a),
+                Some(bounds),
+                vec![
+                    json!({"method": "TextInput.setClient", "args": [0, configuration_json(&TextInputConfiguration::default(), None)]}),
+                    sync,
+                    show,
+                ],
+            ),
+        ];
+        for (name, hint, field, bounds, want) in rows {
+            let configuration = TextInputConfiguration {
+                autofill: hint,
+                ..TextInputConfiguration::default()
+            };
+            assert_eq!(
+                EMPTY
+                    .next(Notice::Focused)
+                    .calls(&configuration, field, bounds, Some(&gpui)),
+                Some(Value::Array(want)),
+                "{name}"
+            );
+        }
+        let update = EMPTY.next(Notice::Changed).calls(
+            &TextInputConfiguration {
+                autofill: Some(AutofillHint::Email),
+                ..TextInputConfiguration::default()
+            },
+            Some(a),
+            Some(bounds),
+            Some(&gpui),
+        );
+        assert_eq!(
+            update,
+            Some(json!([{"method": "TextInput.setEditingState", "args": gpui.to_json()}])),
+            "same client: only the state"
+        );
+    }
+
+    #[test]
+    fn autofill_hints() {
+        // GPUI's hint → Flutter's AutofillHints name (Configuration.Autofill translates it for Android).
+        let rows = [
+            (AutofillHint::Username, "username"),
+            (AutofillHint::Password, "password"),
+            (AutofillHint::NewPassword, "newPassword"),
+            (AutofillHint::OneTimeCode, "oneTimeCode"),
+            (AutofillHint::Email, "email"),
+            (AutofillHint::Phone, "telephoneNumber"),
+            (AutofillHint::Name, "name"),
+            (AutofillHint::PostalAddress, "fullStreetAddress"),
+            (AutofillHint::PostalCode, "postalCode"),
+            (AutofillHint::CreditCardNumber, "creditCardNumber"),
+        ];
+        let field = focus_id(7);
+        for (hint, want) in rows {
+            let out = autofill_json(Some(hint), Some(field), &EditingState::default());
+            assert_eq!(
+                out.as_ref().map(|out| &out["hints"]),
+                Some(&json!([want])),
+                "{hint:?}"
+            );
+            assert_eq!(
+                out.as_ref().map(|out| &out["uniqueIdentifier"]),
+                autofill_json(Some(hint), Some(field), &state("x", (1, 1), (-1, -1)))
+                    .as_ref()
+                    .map(|out| &out["uniqueIdentifier"]),
+                "{hint:?}: the id depends on the field only"
+            );
+        }
+        assert_ne!(
+            autofill_json(
+                Some(AutofillHint::Email),
+                Some(focus_id(1)),
+                &EditingState::default()
+            ),
+            autofill_json(
+                Some(AutofillHint::Email),
+                Some(focus_id(2)),
+                &EditingState::default()
+            ),
+            "another field, another id"
+        );
     }
 
     #[test]
@@ -1668,7 +1930,7 @@ mod tests {
             ),
         ];
         for (name, configuration, input_type) in rows {
-            let out = configuration_json(&configuration);
+            let out = configuration_json(&configuration, None);
             assert_eq!(
                 Some(&out["inputType"]),
                 json(input_type).as_ref(),
@@ -1687,7 +1949,8 @@ mod tests {
 
     #[test]
     fn configuration_names() {
-        // One row per capitalization and per action → the whole JSON. GPUI's autofill hint is not sent.
+        // One row per capitalization and per action → the whole JSON. A hint without autofill JSON (GPUI has not
+        // named the field) sends no autofill.
         let configuration = |autocapitalize, input_action| TextInputConfiguration {
             autocapitalize,
             input_action,
@@ -1744,10 +2007,10 @@ mod tests {
         ];
         for (autocapitalize, input_action, tail) in rows {
             assert_eq!(
-                Some(configuration_json(&configuration(
-                    autocapitalize,
-                    input_action
-                ))),
+                Some(configuration_json(
+                    &configuration(autocapitalize, input_action),
+                    None
+                )),
                 json(&format!("{head}{tail}")),
                 "{autocapitalize:?}, {input_action:?}"
             );

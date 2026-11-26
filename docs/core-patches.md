@@ -29,7 +29,7 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
   - Web touches are `Touch`.
   - Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
-    are `Pen`, mouse and trackpad are `Mouse`.
+    are `Pen`; a mouse and trackpad send real mouse events instead ([android-mouse.md](android-mouse.md)).
   - Later patches that build a `TouchEvent` or `BackGestureEvent` literal must set the new field (0006's test does).
 - **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
   `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
@@ -68,7 +68,8 @@ fields from `TextInputConfiguration` in `set_text_input_configuration`.
 | `autofill` | `Option<AutofillHint>` | `Username`, `Password`, `NewPassword`, `OneTimeCode`, `Email`, `Phone`, `Name`, `PostalAddress`, `PostalCode`, `CreditCardNumber` |
 
 Each `AutofillHint` maps to an HTML `autocomplete` token, an Android `AUTOFILL_HINT_*` and an iOS
-`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)). iOS and web don't read them yet.
+`UITextContentType`. Android reads the fields in the text-input port ([android-text-input.md](android-text-input.md#configuration)),
+autofill included ([android-autofill.md](android-autofill.md)). iOS and web don't read them yet.
 
 ## Tests
 
