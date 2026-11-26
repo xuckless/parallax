@@ -13,8 +13,9 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    each `MotionEvent` to [`AndroidTouchProcessor`](../crates/android/java/io/github/xuckless/parallax/AndroidTouchProcessor.java),
    Flutter's file nearly verbatim. It packs one record per pointer into a little-endian direct `ByteBuffer`, exactly as
    for Flutter's engine: 36 fields of 8 bytes, a synthesized remove after every touch up, batched moves for the other
-   pointers on `ACTION_POINTER_UP`. Only the last call changed: `renderer.dispatchPointerDataPacket` became the static
-   native `ParallaxSurfaceView.nativeDispatchPointerDataPacket(buffer, position)`.
+   pointers on `ACTION_POINTER_UP`. Only the sink changed: the constructor takes the view's Activity id in place of the renderer, and
+   `renderer.dispatchPointerDataPacket` became the static native `ParallaxSurfaceView.nativeDispatchPointerDataPacket(activity, buffer, position)`; touches from a view whose
+   Activity does not own the window are dropped ([android-lifecycle.md](android-lifecycle.md#several-activities)).
 2. **JNI.** The native is a row in `natives` in [host.rs](../crates/android/src/host.rs). It borrows the buffer's
    first `position` bytes for the length of the call (main thread; the buffer is fresh per event) and hands them to
    `Shell::touch`.
@@ -41,8 +42,6 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported
   [`MotionEventTracker`](../crates/android/java/io/github/xuckless/parallax/MotionEventTracker.java) is unused.
-- **Java tests.** Flutter's `AndroidTouchProcessorTest` needs Robolectric (a later Phase 1 task). It mocks the
-  renderer; here the seam is the static native, which a Robolectric shadow of `ParallaxSurfaceView` can capture.
 
 ## Changing it
 
@@ -52,4 +51,5 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 - **Route a change elsewhere** (e.g. hover → mouse move): change its row in `TOUCH_PHASES` and add a decoder row.
 - **Check on the emulator:** `adb shell input tap` and `adb shell input swipe`; `Shell::touch` logs each
   `TouchEvent` with `log::debug!`, below the `Info` level `on_load` sets, so raise that locally to see them.
-- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests`).
+- Tests: `cargo test -p parallax-android` (one named row per packet case in `pointer::tests`) and
+  `scripts/java-test.sh` (Flutter's `AndroidTouchProcessorTest` on Robolectric, [android-tests.md](android-tests.md)).

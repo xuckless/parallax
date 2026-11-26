@@ -19,18 +19,26 @@ Background: [android-spike.md](android-spike.md).
   [patch 0001](../patches/0001-export-priority-queue-android.patch) lands upstream ([patches.md](patches.md#published-crates)); an eventfd
   registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
 - **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty.
-- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Lost}`,
-  one `next(state, event) → (state, action)` for `Created`, `Resized`, `Destroyed` and `DeviceLost`. The shell applies
-  the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android destroys it,
-  upstream `recover` after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
+- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
+  one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
+  The shell applies the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android
+  destroys it, device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
 - **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
-  that configures the surface seeds the shared `GpuContext`. Created on the main thread; the time is logged.
+  that configures the surface seeds the shared `GpuContext`, at startup and after device loss
+  ([android-surface.md](android-surface.md#device-loss)). Created on the main thread; the time is logged.
+- **Lifecycle.** Activity callbacks, focus and trim-memory go through one state machine
+  ([lifecycle.rs](../crates/android/src/lifecycle.rs)) to upstream's `on_app_lifecycle`, `on_memory_warning`, window
+  activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
 - **Rotation** does not recreate the Activity (manifest `configChanges`, as Flutter): `surfaceChanged` resizes.
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).
+- **Fonts.** At startup the platform reads `/system/etc/fonts.xml`, memory-maps the system fonts into upstream's
+  `CosmicTextSystem` and orders CJK by the app locale (sent over JNI). Details: [android-fonts.md](android-fonts.md).
+- **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →
+  `nativeDispatchKeyData` → [keys.rs](../crates/android/src/keys.rs): key, modifier and back events. Details: [android-keys.md](android-keys.md).
 
 ## The app entry point
 
@@ -49,24 +57,21 @@ Apps that pick a platform themselves call `parallax_platform::current_platform`,
 ## Stubs (not yet on Android)
 
 Each is marked `Not yet on Android` in the source with where it will come from: a no-op, a fixed value, or a typed
-`Error::NotYet`. 53 in all:
+`Error::NotYet`. 45 in all:
 
 | Area | Stubs | Comes with |
 |---|---|---|
-| Lifecycle | `quit`, `on_quit`, `on_reopen`, `on_system_sleep/wake`, `is_active`, `visibility`, `on_active_status_change`, `on_visibility_change`, `on_should_close`, `on_close` | Full Android lifecycle |
-| Input | `is_hovered`, `modifiers`, `capslock`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | mouse and stylus hover, keys, text input |
+| Lifecycle | `quit`, `on_reopen`, `on_system_sleep/wake`, `on_should_close`, `on_close` | `Activity.finish()`, back (keys), screen off/on |
+| Input | `is_hovered`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | mouse and stylus hover, keyboard layout, text input |
 | Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
 | System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |
 | Display | `on_displays_changed`, `on_display_changed`, display `uuid`, window raw handle | multi-display |
-| Other | text system has no system fonts; `spawn_realtime` without realtime priority; `prompt` (GPUI draws its own) | Fonts (Phase 1) |
+| Other | `spawn_realtime` without realtime priority; `prompt` (GPUI draws its own) | later |
 
 Methods with no Android meaning (`restart`, `minimize`, `zoom`, `set_title`, menus, dock, `on_moved`, window
-controls) are no-ops with a one-line reason, not stubs. Density changes without a resize are not tracked yet.
+controls, `on_quit`: Android announces no process death) are no-ops with a one-line reason, not stubs. Density changes without a resize are not tracked yet.
 
-## Run it on the emulator today
+## Run it on the emulator
 
-`cargo parallax run android` is coming; until then build an APK by hand as in [android-spike.md](android-spike.md):
-NDK linker for `x86_64-linux-android`, `javac --release 11` on `crates/android/java/` + `d8`, `aapt2 link` with a
-manifest declaring `ParallaxActivity`, the `parallax.lib_name` meta-data and `configChanges`, `zipalign`,
-`apksigner`. Start the emulator with `-gpu host`, `adb install`, then `adb logcat -s parallax` shows the renderer
-backend and creation time, surface events and insets.
+`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then
+`adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events and insets.

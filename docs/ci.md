@@ -14,7 +14,7 @@ cancels the older run.
 
 | Target | Runner | Runs |
 |---|---|---|
-| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package` of the published crates |
+| linux | ubuntu-latest | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo package` of the published crates, [`scripts/java-test.sh`](android-tests.md) (JDK 21, Gradle and Robolectric jars cached) |
 | windows | windows-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | macos | macos-latest | clippy (`-D warnings`), `cargo test --workspace` |
 | ios | macos-latest | `cargo check --workspace` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` |
@@ -51,6 +51,7 @@ scripts/apply-patches.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+scripts/java-test.sh
 cargo package -p parallax-android -p parallax-platform -p parallax -p cargo-parallax
 cargo check --workspace --target wasm32-unknown-unknown
 ```

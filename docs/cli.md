@@ -3,8 +3,8 @@
 `cargo parallax run android [--release] [--device <serial>]` builds the app crate in the current directory, wraps it
 in a generated Gradle project, installs the APK and launches it. Source: [main.rs](../crates/cli/src/main.rs) (args),
 [config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (the run),
-[error.rs](../crates/cli/src/error.rs) (every failure and its fix), [templates/android/](../crates/cli/templates/android/).
-Install: `cargo install --path crates/cli`.
+[icon.rs](../crates/cli/src/icon.rs) (launcher icon), [error.rs](../crates/cli/src/error.rs) (every failure and its fix),
+[templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
 
 ## parallax.toml
 
@@ -15,6 +15,7 @@ Next to the app's `Cargo.toml`. Unknown keys and tables are errors. Defaults are
 |---|---|---|---|
 | `app.name` | yes | | Launcher label |
 | `app.id` | yes | | Android application id and Gradle namespace, e.g. `io.github.xuckless.parallax.hello` |
+| `app.icon` | no | none: Android's default icon | SVG path relative to `parallax.toml`, rendered fresh each run with `resvg`: `mipmap-<density>/ic_launcher.png` at 48dp (`DENSITIES` in [icon.rs](../crates/cli/src/icon.rs)) and an adaptive icon in `mipmap-anydpi-v26/` (background: the SVG's top-left pixel colour, white if not opaque; foreground: the whole SVG in the centre 72dp of the 108dp layer) |
 | `android.min_sdk` | no | `28` | `minSdk`; below 28 is an error ([AGENTS.md](../AGENTS.md), Minimum OS) |
 | `android.target_sdk` | no | `35` | `targetSdk` and `compileSdk`; must be ≥ `min_sdk` |
 | `android.abis` | no | `["arm64-v8a", "x86_64"]` | ABIs to build; rows of the `ABIS` table in [android.rs](../crates/cli/src/android.rs) (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`) |
@@ -55,7 +56,7 @@ installs without a keystore.
 
 | File | Notes |
 |---|---|
-| [AndroidManifest.xml](../crates/cli/templates/android/AndroidManifest.xml) | Launcher activity `io.github.xuckless.parallax.ParallaxActivity`; `<application>` carries `<meta-data android:name="parallax.lib_name" android:value="<cdylib name>"/>` |
+| [AndroidManifest.xml](../crates/cli/templates/android/AndroidManifest.xml) | Launcher activity `io.github.xuckless.parallax.ParallaxActivity`; `<application>` carries `<meta-data android:name="parallax.lib_name" android:value="<cdylib name>"/>`, plus `android:icon="@mipmap/ic_launcher"` only when `app.icon` is set |
 | [build.gradle](../crates/cli/templates/android/build.gradle) | AGP 9.3.1 (Flutter's `test_runner` uses the same), Java toolchain 17, `ndkPath`/`ndkVersion`, Java sources from `parallax-android/java` |
 | [settings.gradle](../crates/cli/templates/android/settings.gradle) | `google()`/`mavenCentral()`; the foojay toolchain resolver downloads JDK 17 when none is installed |
 | [gradle-wrapper.properties](../crates/cli/templates/android/gradle/wrapper/gradle-wrapper.properties) | Gradle 9.8.2, pinned with `distributionSha256Sum` |

@@ -1,0 +1,8 @@
+<!-- Parallax app icon, from the "Parallax Brand" design (Logo system board, "App icon · 64 · 32 · 16").
+     Square, no radius: black tile, the three-bar mark at 116/160 of the tile. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-22.76 -22.76 165.52 165.52" width="512" height="512">
+  <rect x="-22.76" y="-22.76" width="165.52" height="165.52" fill="#000000"/>
+  <polygon points="72.00,88.00 94.00,88.00 110.00,8.00 88.00,8.00" fill="#3D3D3D"/>
+  <polygon points="40.00,100.00 62.00,100.00 78.00,20.00 56.00,20.00" fill="#8A8A8A"/>
+  <polygon points="8.00,112.00 30.00,112.00 46.00,32.00 24.00,32.00" fill="#FFFFFF"/>
+</svg>

@@ -12,13 +12,12 @@ use std::{
 
 use futures::channel::oneshot;
 use gpui::{
-    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
-    DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, OperatingSystem,
-    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformInfo, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem, PlatformWindow, Task, ThermalState,
-    WindowAppearance, WindowParams,
+    Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, Bounds,
+    ClipboardItem, CursorStyle, DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu,
+    MenuItem, OperatingSystem, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformInfo,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem,
+    PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
 };
-use gpui_wgpu::CosmicTextSystem;
 
 use crate::{
     Error, dispatcher::AndroidDispatcher, host::Metrics, host::Shell, window::AndroidWindow,
@@ -33,14 +32,15 @@ pub(crate) struct AndroidPlatform {
 }
 
 impl AndroidPlatform {
-    pub(crate) fn new(shell: Rc<Shell>) -> Result<Self, Error> {
+    /// `locales`: the app's BCP-47 tags in preference order, for the per-language font order.
+    pub(crate) fn new(shell: Rc<Shell>, locales: &[String]) -> Result<Self, Error> {
         let dispatcher = Arc::new(AndroidDispatcher::new()?);
+        let text_system = crate::text_system::load(locales);
         Ok(Self {
             shell,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
-            // Not yet on Android: system fonts (Phase 1 "Fonts"); text renders only with fonts the app adds.
-            text_system: Arc::new(CosmicTextSystem::new_without_system_fonts("sans-serif")),
+            text_system,
             active_window: Cell::new(None),
         })
     }
@@ -215,7 +215,7 @@ impl Platform for AndroidPlatform {
     }
 
     fn on_quit(&self, _callback: Box<dyn FnMut() -> bool>) {
-        // Not yet on Android: onDestroy has no mapping yet (Full Android lifecycle).
+        // Android never announces process death, and onDestroy is `Disconnected`, not quit (docs/android-lifecycle.md).
     }
 
     fn on_reopen(&self, _callback: Box<dyn FnMut()>) {
@@ -228,6 +228,14 @@ impl Platform for AndroidPlatform {
 
     fn on_system_wake(&self, _callback: Box<dyn FnMut()>) {
         // Not yet on Android: screen on (Full Android lifecycle).
+    }
+
+    fn on_app_lifecycle(&self, callback: Box<dyn FnMut(AppLifecyclePhase)>) {
+        self.shell.callbacks.app_lifecycle.set(callback);
+    }
+
+    fn on_memory_warning(&self, callback: Box<dyn FnMut()>) {
+        self.shell.callbacks.memory_warning.set(callback);
     }
 
     fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {

@@ -1,5 +1,7 @@
 //! `parallax.toml`: the app's declarative build description. Reference: docs/cli.md.
 
+use std::path::PathBuf;
+
 use serde::Deserialize;
 
 use crate::android::{ABIS, Abi};
@@ -13,12 +15,15 @@ const ANDROID_DEFAULTS: AndroidDefaults = AndroidDefaults {
     min_sdk: 28,
     target_sdk: 35,
     abis: &["arm64-v8a", "x86_64"],
+    // No app.icon → Android's default launcher icon.
+    icon: None,
 };
 
 struct AndroidDefaults {
     min_sdk: u32,
     target_sdk: u32,
     abis: &'static [&'static str],
+    icon: Option<&'static str>,
 }
 
 /// `parallax.toml` as written; `None` means "take the default".
@@ -35,6 +40,7 @@ struct ConfigToml {
 struct AppToml {
     name: String,
     id: String,
+    icon: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -52,6 +58,8 @@ pub struct Config {
     pub name: String,
     /// Android application id (also the Gradle namespace).
     pub id: String,
+    /// Launcher icon SVG, relative to `parallax.toml`.
+    pub icon: Option<PathBuf>,
     pub android: Android,
 }
 
@@ -108,6 +116,12 @@ impl Config {
         Ok(Config {
             name: raw.app.name,
             id: raw.app.id,
+            icon: raw
+                .app
+                .icon
+                .as_deref()
+                .or(ANDROID_DEFAULTS.icon)
+                .map(PathBuf::from),
             android: Android {
                 min_sdk,
                 target_sdk,
@@ -140,6 +154,7 @@ mod tests {
         Config {
             name: "Hello".into(),
             id: "io.github.xuckless.parallax.hello".into(),
+            icon: None,
             android: Android {
                 min_sdk,
                 target_sdk,
@@ -169,6 +184,19 @@ mod tests {
                 "one key set, rest default",
                 format!("{APP}[android]\ntarget_sdk = 36\n"),
                 Ok(config(28, 36, &[ARM64, X86_64])),
+            ),
+            (
+                "icon set",
+                format!("{APP}icon = \"../../assets/icon.svg\"\n"),
+                Ok(Config {
+                    icon: Some("../../assets/icon.svg".into()),
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "icon not a string",
+                format!("{APP}icon = 1\n"),
+                Err("ConfigSyntax"),
             ),
             (
                 "missing [app]",

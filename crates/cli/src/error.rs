@@ -31,6 +31,13 @@ pub enum CliError {
     NoAbis,
     #[error("parallax.toml: unknown ABI {0:?}; supported: {supported}", supported = ABIS.map(|a| a.name).join(", "))]
     UnknownAbi(String),
+    #[error("cannot read app.icon {path}: {source}. app.icon is relative to parallax.toml")]
+    IconRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("app.icon {path} is not a usable SVG: {reason}")]
+    IconInvalid { path: PathBuf, reason: String },
     #[error("{var} is not set. Set it to {what}")]
     EnvMissing {
         var: &'static str,

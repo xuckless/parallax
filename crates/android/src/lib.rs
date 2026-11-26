@@ -5,8 +5,14 @@
 
 #[cfg(target_os = "android")]
 mod dispatcher;
+#[cfg(any(target_os = "android", test))]
+mod fonts;
 #[cfg(target_os = "android")]
 mod host;
+#[cfg(any(target_os = "android", test))]
+mod keys;
+#[cfg(any(target_os = "android", test))]
+mod lifecycle;
 #[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]
@@ -25,6 +31,8 @@ mod renderer;
 mod queue;
 #[cfg(any(target_os = "android", test))]
 mod surface;
+#[cfg(target_os = "android")]
+mod text_system;
 #[cfg(target_os = "android")]
 mod window;
 
@@ -95,14 +103,40 @@ pub enum Error {
     PointerChange(i64),
     #[error("pointer data packet has an unknown PointerDeviceKind {0}")]
     PointerKind(i64),
+    #[error("fonts.xml: {0}")]
+    FontsXml(#[source] roxmltree::Error),
+    #[error("fonts.xml: root element is <{0}>, not <familyset>")]
+    FontsXmlRoot(String),
+    #[error("fonts.xml: <{element} {attribute}> is missing or invalid: {value:?}")]
+    FontsXmlAttribute {
+        element: String,
+        attribute: &'static str,
+        value: Option<String>,
+    },
+    #[error("no system font: the font list names no font file that is on disk")]
+    NoSystemFont,
+    #[error("cannot add the system fonts: {0}")]
+    AddFonts(String),
+    #[error("no readable font list (tried {0:?})")]
+    NoFontList(&'static [&'static str]),
+    #[error(
+        "key data packet of {0} bytes does not match its header (7 fields of 8 bytes, then the character)"
+    )]
+    KeyPacketLength(usize),
+    #[error("key data packet has an unknown KeyEventType {0}")]
+    KeyEventType(i64),
+    #[error("key data packet's character is not UTF-8")]
+    KeyCharacter,
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,
-/// after `JNI_OnLoad` (parallax-android does this itself on the first surface). Apps pick platforms through
-/// `parallax_platform::current_platform`, which routes Android here.
+/// after `JNI_OnLoad`. Apps pick platforms through `parallax_platform::current_platform`, which routes Android here.
+/// parallax-android starts its own platform on the first surface, with the app's locales from the view; this entry
+/// has no view to ask, so its CJK fonts keep fonts.xml order (docs/android-fonts.md).
 #[cfg(target_os = "android")]
 pub fn current_platform() -> Result<std::rc::Rc<dyn gpui::Platform>, Error> {
     Ok(std::rc::Rc::new(platform::AndroidPlatform::new(
         host::shell()?,
+        &[],
     )?))
 }

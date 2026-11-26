@@ -702,6 +702,7 @@ name = "cargo-parallax"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "resvg",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3632,15 +3633,18 @@ version = "0.1.1"
 dependencies = [
  "android_logger",
  "anyhow",
+ "fontdb",
  "futures",
  "gpui-pre",
  "gpui-pre-wgpu",
  "jni",
  "libc",
  "log",
+ "memmap2",
  "ndk-sys",
  "rand 0.9.5",
  "raw-window-handle",
+ "roxmltree 0.21.2",
  "thiserror 2.0.21",
  "uuid",
 ]

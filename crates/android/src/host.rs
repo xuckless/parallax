@@ -10,18 +10,21 @@ use std::{
 };
 
 use gpui::{
-    App, Application, ApplicationHandle, Bounds, DevicePixels, DispatchEventResult, Edges, Pixels,
-    PlatformAtlas, PlatformInput, RequestFrameOptions, Size, WindowInsets, point, px, size,
+    App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
+    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, RequestFrameOptions, Size,
+    WindowInsets, WindowVisibility, point, px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JByteBuffer, JClass, JObject},
-    sys::{JNI_ERR, JNI_VERSION_1_6, jfloat, jint},
+    objects::{JByteBuffer, JClass, JObject, JString},
+    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint},
 };
 
 use crate::{
-    Error, pointer,
+    Error, keys,
+    lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
+    pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
 };
@@ -31,7 +34,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 6] {
+fn natives() -> [NativeMethod; 9] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -40,25 +43,40 @@ fn natives() -> [NativeMethod; 6] {
     [
         row(
             "nativeSurfaceCreated",
-            "(Landroid/view/Surface;FF)V",
+            "(ILandroid/view/Surface;FFLjava/lang/String;)V",
             surface_created as *mut c_void,
         ),
         row(
             "nativeSurfaceChanged",
-            "(IIF)V",
+            "(IIIF)V",
             surface_changed as *mut c_void,
         ),
         row(
             "nativeSurfaceDestroyed",
-            "()V",
+            "(I)V",
             surface_destroyed as *mut c_void,
         ),
-        row("nativeFrame", "()V", frame as *mut c_void),
-        row("nativeInsets", "(IIIIIIII)V", insets as *mut c_void),
+        row("nativeFrame", "(I)V", frame as *mut c_void),
+        row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
-            "(Ljava/nio/ByteBuffer;I)V",
+            "(ILjava/nio/ByteBuffer;I)V",
             dispatch_pointer_data_packet as *mut c_void,
+        ),
+        row(
+            "nativeActivityCreated",
+            "()I",
+            activity_created as *mut c_void,
+        ),
+        row(
+            "nativeActivityEvent",
+            "(III)V",
+            activity_event as *mut c_void,
+        ),
+        row(
+            "nativeDispatchKeyData",
+            "(ILjava/nio/ByteBuffer;Z)Z",
+            dispatch_key_data as *mut c_void,
         ),
     ]
 }
@@ -135,13 +153,39 @@ fn with_host(f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
+/// [`with_host`] for an event from `activity`'s view: dropped unless that Activity owns the window
+/// ([`Lifecycle::accepts`], the one rule for surface, frame, inset, touch and key events).
+fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
+    with_host(|host| {
+        if host.shell.lifecycle.borrow().accepts(ActivityId(activity)) {
+            f(host)
+        } else {
+            log::warn!(
+                "parallax: event from Activity {activity}, which does not own the window, ignored"
+            );
+        }
+    });
+}
+
+/// `tags` are the app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`):
+/// per-app locales on API 33+, which the system property cosmic-text reads does not have. The first surface starts
+/// the platform with them; runtime per-app locale changes are not followed yet (a later item).
 extern "system" fn surface_created(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
+    activity: jint,
     surface: JObject,
     density: jfloat,
     refresh_rate: jfloat,
+    tags: JString,
 ) {
+    let locales: Vec<String> = match env.get_string(&tags) {
+        Ok(tags) => String::from(tags).split(',').map(str::to_string).collect(),
+        Err(error) => {
+            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
+            Vec::new()
+        }
+    };
     // SAFETY: `env` and `surface` are this call's live JNI arguments; fromSurface returns a new reference or null.
     let raw = unsafe {
         ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast())
@@ -150,17 +194,30 @@ extern "system" fn surface_created(
         log::error!("parallax: surfaceCreated without a native window");
         return;
     };
-    with_host(|host| {
+    // A stale view's window is released on return, unused.
+    with_owner(activity, |host| {
         host.shell.set_display(window.size(), density, refresh_rate);
-        host.shell.handle(SurfaceEvent::Created(window));
+        host.shell.handle(SurfaceEvent::Created {
+            window,
+            activity: ActivityId(activity),
+        });
         let launch = match &*host.app.borrow() {
             AppState::Loaded { launch } => *launch,
             AppState::Running(_) => return,
         };
-        match crate::current_platform() {
+        match crate::platform::AndroidPlatform::new(host.shell.clone(), &locales) {
             Ok(platform) => {
+                let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running(app);
+                // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
+                let phases = host.shell.lifecycle.borrow().launch_phases();
+                for &phase in phases {
+                    host.shell
+                        .callbacks
+                        .app_lifecycle
+                        .with(|callback| callback(phase));
+                }
             }
             Err(error) => log::error!("parallax: cannot start the app: {error}"),
         }
@@ -170,11 +227,12 @@ extern "system" fn surface_created(
 extern "system" fn surface_changed(
     _env: JNIEnv,
     _class: JClass,
+    activity: jint,
     width: jint,
     height: jint,
     density: jfloat,
 ) {
-    with_host(|host| {
+    with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
         host.shell.set_display(
             size(DevicePixels(width), DevicePixels(height)),
@@ -185,22 +243,64 @@ extern "system" fn surface_changed(
     });
 }
 
-extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass) {
+/// Not [`with_owner`]: a view whose Activity no longer owns the window may still hold the current surface, and
+/// the surface state machine releases it only for that view.
+extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jint) {
     with_host(|host| {
-        host.shell
-            .handle(SurfaceEvent::Destroyed { at: Instant::now() })
+        host.shell.handle(SurfaceEvent::Destroyed {
+            activity: ActivityId(activity),
+            at: Instant::now(),
+        })
     });
 }
 
-extern "system" fn frame(_env: JNIEnv, _class: JClass) {
-    with_host(|host| host.shell.frame());
+/// `ParallaxActivity.onCreate`: a new live Activity, which owns the window once it starts; Java tags its events
+/// with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
+extern "system" fn activity_created(mut env: JNIEnv, _class: JClass) -> jint {
+    let created = shell().map(|shell| {
+        shell.lifecycle(ActivityEvent::Create);
+        shell.lifecycle.borrow().newest()
+    });
+    let why = match created {
+        Ok(Some(activity)) => return activity.0,
+        Ok(None) => "the lifecycle handed out no id".to_string(),
+        Err(error) => error.to_string(),
+    };
+    log::error!("parallax: cannot create the Activity: {why}");
+    if let Err(error) = env.throw_new("java/lang/IllegalStateException", &why) {
+        log::error!("parallax: cannot throw to onCreate: {error}");
+    }
+    0
+}
+
+/// `ParallaxActivity`'s lifecycle, focus and memory callbacks: its id, an `EVENT_*` code and its value. The
+/// lifecycle itself decides what a callback from a covered or destroyed Activity does.
+extern "system" fn activity_event(
+    _env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    code: jint,
+    value: jint,
+) {
+    match Callback::from_java(code, value) {
+        Some(callback) => with_host(|host| {
+            host.shell
+                .lifecycle(ActivityEvent::From(ActivityId(activity), callback))
+        }),
+        None => log::error!("parallax: unknown Activity event {code} ({value})"),
+    }
+}
+
+extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
+    with_owner(activity, |host| host.shell.frame());
 }
 
 /// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
-/// a direct `ByteBuffer`.
+/// a direct `ByteBuffer`, from `activity`'s view.
 extern "system" fn dispatch_pointer_data_packet(
     env: JNIEnv,
     _class: JClass,
+    activity: jint,
     buffer: JByteBuffer,
     position: jint,
 ) {
@@ -220,16 +320,50 @@ extern "system" fn dispatch_pointer_data_packet(
     // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
-    with_host(|host| host.shell.touch(packet));
+    with_owner(activity, |host| host.shell.touch(packet));
+}
+
+/// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
+/// direct `ByteBuffer`, and the Android event's `isCanceled()` (Parallax's addition: key data has no field for it).
+/// Returns whether GPUI handled it; Java then redispatches unhandled keys (and a non-owner's) to Android.
+extern "system" fn dispatch_key_data(
+    env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    packet: JByteBuffer,
+    canceled: jboolean,
+) -> jboolean {
+    let (address, length) = match (
+        env.get_direct_buffer_address(&packet),
+        env.get_direct_buffer_capacity(&packet),
+    ) {
+        (Ok(address), Ok(length)) => (address, length),
+        (address, length) => {
+            log::error!(
+                "parallax: unreadable key data packet: capacity {length:?}, address {:?}",
+                address.map(|_| ())
+            );
+            return JNI_FALSE;
+        }
+    };
+    // SAFETY: `packet` is a live direct buffer for this call, `length` is its capacity, and Java does not touch
+    // it until this call returns (KeyData.toBytes allocates one per event).
+    let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
+    let mut handled = false;
+    with_owner(activity, |host| {
+        handled = host.shell.key(packet, canceled != JNI_FALSE)
+    });
+    if handled { JNI_TRUE } else { JNI_FALSE }
 }
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the JNI signature: two edge sets"
+    reason = "the JNI signature: the Activity and two edge sets"
 )]
 extern "system" fn insets(
     _env: JNIEnv,
     _class: JClass,
+    activity: jint,
     safe_left: jint,
     safe_top: jint,
     safe_right: jint,
@@ -245,7 +379,7 @@ extern "system" fn insets(
         bottom: DevicePixels(bottom),
         left: DevicePixels(left),
     };
-    with_host(|host| {
+    with_owner(activity, |host| {
         host.shell.set_insets(
             edges(safe_left, safe_top, safe_right, safe_bottom),
             edges(ime_left, ime_top, ime_right, ime_bottom),
@@ -323,12 +457,12 @@ impl<F: ?Sized> Slot<F> {
         *self.0.borrow_mut() = Some(callback);
     }
 
-    fn with(&self, call: impl FnOnce(&mut F)) {
-        let taken = self.0.borrow_mut().take();
-        if let Some(mut callback) = taken {
-            call(&mut callback);
-            self.0.borrow_mut().get_or_insert(callback);
-        }
+    /// Runs `call` on the callback; `None` when GPUI has not registered one.
+    fn with<R>(&self, call: impl FnOnce(&mut F) -> R) -> Option<R> {
+        let mut callback = self.0.borrow_mut().take()?;
+        let result = call(&mut callback);
+        self.0.borrow_mut().get_or_insert(callback);
+        Some(result)
     }
 }
 
@@ -341,32 +475,42 @@ impl<F: ?Sized> Default for Slot<F> {
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]).
+    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]), keys as key, modifier and back events
+    /// ([`Shell::key`]).
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
+    pub(crate) active_status: Slot<dyn FnMut(bool)>,
+    pub(crate) visibility: Slot<dyn FnMut(WindowVisibility)>,
+    /// The platform's, not the window's: `Platform::on_app_lifecycle` and `on_memory_warning`.
+    pub(crate) app_lifecycle: Slot<dyn FnMut(AppLifecyclePhase)>,
+    pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     surface: RefCell<Surface<NativeWindow>>,
+    pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) touches: RefCell<pointer::Touches>,
+    pub(crate) keyboard: RefCell<keys::Keyboard>,
 }
 
 impl Shell {
     fn new() -> Self {
         Self {
             surface: RefCell::new(Surface::None),
+            lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
             touches: RefCell::new(pointer::Touches::default()),
+            keyboard: RefCell::new(keys::Keyboard::default()),
         }
     }
 
@@ -392,10 +536,12 @@ impl Shell {
             .with(|callback| callback(metrics.insets()));
     }
 
-    /// The current native window, when the surface is ready.
-    fn ready_window(&self) -> Option<NativeWindow> {
+    /// The current native window: ready, or waiting for the renderer to be rebuilt on it.
+    fn current_window(&self) -> Option<NativeWindow> {
         match &*self.surface.borrow() {
-            Surface::Ready(window) => Some(window.clone()),
+            Surface::Ready { window, .. } | Surface::Recovering { window, .. } => {
+                Some(window.clone())
+            }
             Surface::None | Surface::Lost { .. } => None,
         }
     }
@@ -405,7 +551,7 @@ impl Shell {
         if self.renderer.borrow().is_some() {
             return Err(Error::OneWindow);
         }
-        let window = self.ready_window().ok_or(Error::NoSurface)?;
+        let window = self.current_window().ok_or(Error::NoSurface)?;
         let renderer = renderer::create(&self.gpu, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
         *self.renderer.borrow_mut() = Some(renderer);
@@ -416,13 +562,16 @@ impl Shell {
     fn handle(&self, event: SurfaceEvent<NativeWindow>) {
         let state = self.surface.replace(Surface::None);
         let (next, action) = state.next(event);
-        log::info!("parallax: surface {next:?}, {action:?}");
+        // Not every vsync: Draw and Wait are the quiet steady states.
+        if !matches!(action, Action::Draw | Action::Wait) {
+            log::info!("parallax: surface {next:?}, {action:?}");
+        }
         *self.surface.borrow_mut() = next;
         let size = self.metrics.get().size;
         match action {
             Action::Attach { previous } => {
                 if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.ready_window())
+                    (self.renderer.borrow_mut().as_mut(), self.current_window())
                 {
                     let instance = self
                         .gpu
@@ -456,16 +605,63 @@ impl Shell {
                 drop(window);
             }
             Action::RecoverDevice => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.ready_window())
-                    && let Err(error) = renderer.recover(&window)
-                {
-                    // The next frame sees the device still lost and tries again.
-                    log::error!("parallax: GPU device recovery failed: {error:#}");
+                let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
+                    (Some(renderer), Some(window)) => {
+                        renderer::recover(&self.gpu, renderer, &window, size)
+                    }
+                    (None, _) | (_, None) => Err(Error::NoSurface),
+                };
+                match recovered {
+                    Ok(()) => self.handle(SurfaceEvent::Recovered),
+                    Err(error) => {
+                        // The state machine waits longer before the next try.
+                        log::error!("parallax: GPU device recovery failed: {error}");
+                        self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
+                    }
                 }
-                self.redraw();
             }
+            Action::Draw => {
+                self.callbacks
+                    .request_frame
+                    .with(|callback| callback(RequestFrameOptions::default()));
+            }
+            Action::Wait => {}
             Action::Reject { why } => log::warn!("parallax: surface event ignored: {why}"),
+        }
+    }
+
+    /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: the window first, then the
+    /// app's observers, in the order `gpui_ios` uses.
+    fn lifecycle(&self, event: ActivityEvent) {
+        let before = self.lifecycle.replace(Lifecycle::Loaded);
+        let (was_active, was_visible) = (before.is_active(), before.visibility());
+        let (next, effect) = before.next(event);
+        log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
+        let (active, visibility) = (next.is_active(), next.visibility());
+        *self.lifecycle.borrow_mut() = next;
+        if was_active != active {
+            self.callbacks
+                .active_status
+                .with(|callback| callback(active));
+        }
+        if was_visible != visibility {
+            self.callbacks
+                .visibility
+                .with(|callback| callback(visibility));
+        }
+        match effect {
+            Effect::Phases(phases) => {
+                for &phase in phases {
+                    self.callbacks
+                        .app_lifecycle
+                        .with(|callback| callback(phase));
+                }
+            }
+            Effect::MemoryWarning => {
+                self.callbacks.memory_warning.with(|callback| callback());
+            }
+            Effect::Nothing => {}
+            Effect::Reject { why } => log::warn!("parallax: lifecycle event ignored: {why}"),
         }
     }
 
@@ -509,22 +705,53 @@ impl Shell {
         }
     }
 
-    /// Every vsync (Choreographer): lets GPUI draw if anything changed.
-    fn frame(&self) {
-        if !matches!(*self.surface.borrow(), Surface::Ready(_)) {
-            return;
+    /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
+    /// so the window can read modifiers during dispatch.
+    fn key(&self, packet: &[u8], canceled: bool) -> bool {
+        let data = match keys::decode(packet) {
+            Ok(data) => data,
+            Err(error) => {
+                log::error!("parallax: key dropped: {error}");
+                return false;
+            }
+        };
+        // GPUI hit-tests back gestures; Android's back key has none, so it starts at the left edge, mid-height,
+        // where an edge swipe would (iOS's back gesture comes from the leading edge).
+        let back_at = point(px(0.), self.metrics.get().bounds().size.height / 2.);
+        let step = self.keyboard.borrow_mut().input(&data, canceled, back_at);
+        log::debug!("parallax: {data:?} → {step:?}");
+        match step {
+            keys::Step::Answer { input, handled } => {
+                if let Some(input) = input {
+                    self.callbacks.input.with(|callback| callback(input));
+                }
+                handled
+            }
+            keys::Step::Ask(input) => {
+                // No window yet: nothing handled it, so Android gets the key.
+                let result = self
+                    .callbacks
+                    .input
+                    .with(|callback| callback(input))
+                    .unwrap_or(DispatchEventResult {
+                        propagate: true,
+                        default_prevented: false,
+                    });
+                self.keyboard.borrow_mut().reply(result)
+            }
         }
+    }
+
+    /// Every vsync (Choreographer): GPUI draws if anything changed, or device recovery moves on.
+    fn frame(&self) {
         let device_lost = self
             .renderer
             .borrow()
             .as_ref()
             .is_some_and(WgpuRenderer::device_lost);
-        if device_lost {
-            self.handle(SurfaceEvent::DeviceLost);
-            return;
-        }
-        self.callbacks
-            .request_frame
-            .with(|callback| callback(RequestFrameOptions::default()));
+        self.handle(SurfaceEvent::Frame {
+            at: Instant::now(),
+            device_lost,
+        });
     }
 }
