@@ -77,4 +77,4 @@ controls, `on_quit`: Android announces no process death) are no-ops with a one-l
 
 ## Run it on the emulator
 
-`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then `adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events and insets.
+`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then `adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events, insets and `parallax: first frame drawn` (once, when the first scene reaches the screen).
