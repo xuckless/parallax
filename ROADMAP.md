@@ -85,7 +85,7 @@ Skeleton (0.1.1):
 - [ ] Publish 0.1.1.
 
 **Milestone 0.1.1:** the example app opens, draws and reacts to a tap on desktop, web and the Android emulator
-(owner decision: emulator-verified; real devices from Gate 1).
+(owner decision: releases are emulator-verified until real devices are available).
 
 Core patches (needed by Android from the start; iOS and web get them too):
 
@@ -120,8 +120,9 @@ Full Android:
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge, fonts.xml parser.
 - [ ] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
 
-**Gate 1:** the example app runs on an Android device (API 28+) with Gboard and Samsung Keyboard: typing, autocorrect,
-composing, selection, emoji, rotation, background/resume.
+**Gate 1:** the example app runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect,
+composing, selection, emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner
+has devices to test on (until then, releases are emulator-verified).
 
 ## Phase 2: Gestures, physics and platform behaviour
 
