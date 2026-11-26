@@ -124,7 +124,7 @@ enum AppState {
     /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
     /// change; `fonts` is `None` when the system fonts did not load (logged), then there is no order to change.
     Running {
-        app: ApplicationHandle,
+        app: Rc<ApplicationHandle>,
         fonts: Option<Arc<AndroidTextSystem>>,
     },
 }
@@ -134,25 +134,19 @@ impl MainThreadHost {
     /// order follows them. If it moved, GPUI drops the font ids and line layouts it cached with the old order and
     /// redraws. Before launch there is nothing to do: the first surface brings the locales.
     fn follow_locales(&self, locales: &[String]) {
-        match &*self.app.borrow() {
-            AppState::Loaded { .. } | AppState::Running { fonts: None, .. } => {}
+        // Cloned so the borrow ends before GPUI runs: code inside `update` may reach `self.app` again.
+        let (app, fonts) = match &*self.app.borrow() {
+            AppState::Loaded { .. } | AppState::Running { fonts: None, .. } => return,
             AppState::Running {
                 app,
                 fonts: Some(fonts),
-            } => {
-                if fonts.set_locales(locales) {
-                    app.update(|cx| {
-                        // No fonts added: `add_fonts` is GPUI's one public way to clear its font-id cache and bump
-                        // the font generation its line-layout caches check.
-                        if let Err(error) = cx.text_system().add_fonts(Vec::new()) {
-                            log::error!(
-                                "parallax: fonts: cached layouts kept the old order: {error}"
-                            );
-                        }
-                        cx.refresh_windows();
-                    });
-                }
-            }
+            } => (app.clone(), fonts.clone()),
+        };
+        if fonts.set_locales(locales) {
+            app.update(|cx| {
+                cx.text_system().invalidate_fonts();
+                cx.refresh_windows();
+            });
         }
     }
 }
@@ -271,16 +265,23 @@ extern "system" fn surface_created(
             window,
             activity: ActivityId(activity),
         });
-        let launch = match &*host.app.borrow() {
-            AppState::Loaded { launch } => *launch,
-            AppState::Running { .. } => return host.follow_locales(&locales),
+        // Read first, so the borrow ends before `follow_locales` runs GPUI.
+        let loaded = match &*host.app.borrow() {
+            AppState::Loaded { launch } => Some(*launch),
+            AppState::Running { .. } => None,
+        };
+        let Some(launch) = loaded else {
+            return host.follow_locales(&locales);
         };
         let fonts = crate::text_system::load(&host.shell.vm, &locales);
         match crate::platform::AndroidPlatform::new(host.shell.clone(), fonts.clone()) {
             Ok(platform) => {
                 let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
-                *host.app.borrow_mut() = AppState::Running { app, fonts };
+                *host.app.borrow_mut() = AppState::Running {
+                    app: Rc::new(app),
+                    fonts,
+                };
                 // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
                 let phases = host.shell.lifecycle.borrow().launch_phases();
                 for &phase in phases {

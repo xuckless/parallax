@@ -52,8 +52,8 @@ system or per-app language change reaches the view's `onConfigurationChanged`, a
    `by_locale_table`: `ja-JP`, `zh-CN`, `ko-KR`, `zh-TW` each put a different CJK face first) and reports whether
    the order moved. An unchanged order (`en-US` → `de-DE`) does nothing.
 3. **Act.** `MainThreadHost::follow_locales` ([host.rs](../crates/android/src/host.rs)) then calls GPUI's
-   `TextSystem::add_fonts` with no fonts, its one public way to drop cached font ids and bump the font generation
-   that line-layout caches check, and `refresh_windows`. cosmic-text keys fonts by their fallback list, so the new
+   `TextSystem::invalidate_fonts` ([patch 0009](../patches/0009-text-system-invalidate-fonts.patch)), which drops
+   cached font ids and bumps the font generation that line-layout caches check, and `refresh_windows`. cosmic-text keys fonts by their fallback list, so the new
    order gets new font ids; nothing is reloaded.
 
 Verified on the API 35 emulator while hello runs, same process: `cmd locale set-app-locales <pkg> --locales ja-JP`,
