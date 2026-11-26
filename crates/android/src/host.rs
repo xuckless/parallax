@@ -126,14 +126,15 @@ pub unsafe fn on_load(vm: *mut jni::sys::JavaVM, launch: fn(&mut App)) -> jint {
     let registered = unsafe { JavaVM::from_raw(vm) }
         .and_then(|vm| {
             vm.get_env()?
-                .register_native_methods(VIEW_CLASS, &natives())
+                .register_native_methods(VIEW_CLASS, &natives())?;
+            Ok(vm)
         })
         .map_err(Error::Jni);
     match registered {
-        Ok(()) => {
+        Ok(vm) => {
             HOST.with(|host| {
                 host.get_or_init(|| MainThreadHost {
-                    shell: Rc::new(Shell::new()),
+                    shell: Rc::new(Shell::new(vm)),
                     app: RefCell::new(AppState::Loaded { launch }),
                 });
             });
@@ -489,6 +490,8 @@ pub(crate) struct Callbacks {
 
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
+    /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
+    pub(crate) vm: JavaVM,
     surface: RefCell<Surface<NativeWindow>>,
     pub(crate) lifecycle: RefCell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
@@ -501,8 +504,9 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
-    fn new() -> Self {
+    fn new(vm: JavaVM) -> Self {
         Self {
+            vm,
             surface: RefCell::new(Surface::None),
             lifecycle: RefCell::new(Lifecycle::Loaded),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
