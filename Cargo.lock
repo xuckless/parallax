@@ -3238,6 +3238,8 @@ dependencies = [
  "parallax-gpui-wgpu",
  "raw-window-handle",
  "roxmltree 0.21.2",
+ "serde_json",
+ "slotmap",
  "thiserror 2.0.21",
  "uuid",
 ]

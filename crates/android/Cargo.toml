@@ -35,6 +35,8 @@ memmap2 = "0.9"
 ndk-sys = "0.6"
 raw-window-handle = "0.6"
 roxmltree = "0.21"
+# Flutter's `flutter/textinput` calls are JSON (src/text_input.rs); already in GPUI's dependency graph.
+serde_json = "1"
 thiserror.workspace = true
 uuid = "1"
 
@@ -42,4 +44,7 @@ uuid = "1"
 [dev-dependencies]
 gpui.workspace = true
 roxmltree = "0.21"
+serde_json = "1"
+# Distinct `FocusId`s (GPUI's slotmap keys) for the text-input session's tests.
+slotmap = "1"
 thiserror.workspace = true
