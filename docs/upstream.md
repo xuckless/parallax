@@ -6,7 +6,8 @@ How Parallax gets GPUI, changes it, and moves to newer snapshots. The rules behi
 ## upstream/: the pristine snapshot
 
 [`upstream/`](../upstream/) holds the [`gpui-pre-*`](https://crates.io/crates/gpui-pre) crates from crates.io:
-weekly, unmodified snapshots of GPUI from [zed-industries/zed](https://github.com/zed-industries/zed).
+weekly snapshots of GPUI from [zed-industries/zed](https://github.com/zed-industries/zed). A few files are adapted
+so the crates build standalone; each starts with `// Modified for gpui-pre` (`grep -rl "Modified for gpui-pre" upstream/`).
 [`upstream/UPSTREAM`](../upstream/UPSTREAM) records the version, the Zed commit it snapshots, Zed's toolchain and
 the crate list.
 
