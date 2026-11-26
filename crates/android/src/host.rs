@@ -741,29 +741,35 @@ impl Shell {
         let size = self.metrics.get().size;
         match action {
             Action::Attach { previous } => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.borrow_mut().as_mut(), self.current_window())
-                {
-                    // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow once,
-                    // and the window may be the same one (a resize).
-                    renderer.unconfigure_surface();
-                    let instance = self
-                        .gpu
-                        .borrow()
-                        .as_ref()
-                        .map(|context| context.instance.clone());
-                    let replaced = instance.ok_or(Error::NoBackend).and_then(|instance| {
-                        renderer
-                            .replace_surface(&window, renderer::surface_config(size), &instance)
-                            .map_err(|error| Error::Renderer(format!("{error:#}")))
-                    });
-                    if let Err(error) = replaced {
-                        log::error!("parallax: cannot attach the new surface: {error}");
+                let attached = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
+                    (Some(renderer), Some(window)) => {
+                        // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow
+                        // once, and the window may be the same one (a resize).
+                        renderer.unconfigure_surface();
+                        let instance = self
+                            .gpu
+                            .borrow()
+                            .as_ref()
+                            .map(|context| context.instance.clone());
+                        instance.ok_or(Error::NoBackend).and_then(|instance| {
+                            renderer
+                                .replace_surface(&window, renderer::surface_config(size), &instance)
+                                .map_err(|error| Error::Renderer(format!("{error:#}")))
+                        })
                     }
-                }
+                    // Before GPUI opens the window there is no renderer: it is created on this window then.
+                    (None, _) | (_, None) => Ok(()),
+                };
                 // Released only now: the renderer has dropped its surface on the previous window.
                 drop(previous);
-                self.resized();
+                match attached {
+                    Ok(()) => self.resized(),
+                    Err(error) => {
+                        // The state machine rebuilds the renderer after the backoff.
+                        log::error!("parallax: cannot attach the new surface: {error}");
+                        self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
+                    }
+                }
             }
             Action::Detach { window } => {
                 if let Some(renderer) = self.renderer.borrow_mut().as_mut() {

@@ -24,7 +24,9 @@ the old one: wgpu's GL backend keeps its EGL window surface, whose next buffer w
 (no BLAST) drops a buffer of the wrong size, so the old frame stayed until the next input. Flutter does the same
 ([`OnScreenSurfaceResize`](https://github.com/flutter/flutter/blob/master/engine/src/flutter/shell/platform/android/android_surface_gl_skia.cc)
 destroys and recreates the EGL surface). The old surface goes first because Vulkan and EGL connect to an
-`ANativeWindow` only once. `Recovered` attaches the same way, at the current size.
+`ANativeWindow` only once. If `replace_surface` fails, the shell sends `AttachFailed`: the renderer has no surface,
+so the state moves to `Recovering` and the rebuild below retries after the backoff, instead of drawing black until
+the next surface event. `Recovered` attaches the same way, at the current size.
 
 ## Device loss
 

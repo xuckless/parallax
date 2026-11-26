@@ -26,8 +26,9 @@ pub enum Surface<W> {
     None,
     /// A native window the renderer draws into.
     Ready { window: W, activity: ActivityId },
-    /// The GPU device was lost at `since` (or the last rebuild failed then, after `failures` failed rebuilds). The
-    /// renderer is torn down; it is rebuilt on `window` once the delay for `failures` has passed.
+    /// The GPU device was lost at `since`, a new surface could not be attached then, or the last rebuild failed then
+    /// (after `failures` failed rebuilds). The renderer is rebuilt on `window` once the delay for `failures` has
+    /// passed.
     Recovering {
         window: W,
         activity: ActivityId,
@@ -54,6 +55,8 @@ pub enum SurfaceEvent<W> {
     Recovered,
     /// Rebuilding the renderer failed at `at`.
     RecoveryFailed { at: Instant },
+    /// The renderer could not make a surface on the window at `at` (after `Attach`); it draws nothing until rebuilt.
+    AttachFailed { at: Instant },
 }
 
 /// What the shell does to the renderer after a transition.
@@ -230,6 +233,24 @@ impl<W> Surface<W> {
                     why: "recovery failed while not recovering",
                 },
             ),
+            // Without a surface the renderer draws black; a rebuild after the backoff retries, like device loss.
+            (S::Ready { window, activity }, E::AttachFailed { at }) => (
+                S::Recovering {
+                    window,
+                    activity,
+                    since: at,
+                    failures: 0,
+                },
+                A::Wait,
+            ),
+            (state @ (S::None | S::Recovering { .. } | S::Lost { .. }), E::AttachFailed { .. }) => {
+                (
+                    state,
+                    A::Reject {
+                        why: "attach failed while not attached",
+                    },
+                )
+            }
         }
     }
 }
@@ -274,7 +295,7 @@ mod tests {
             Action<u8>,
         );
         #[rustfmt::skip]
-        let cases: [Row; 36] = [
+        let cases: [Row; 40] = [
             ("none_created_attaches", Surface::None, created(1), ready(1), Action::Attach { previous: None }),
             ("ready_created_replaces", ready(1), created(2), ready(2), Action::Attach { previous: Some(1) }),
             ("recovering_created_swaps_window", recovering(1, t0, 2), created(2), recovering(2, t0, 2), Action::Detach { window: 1 }),
@@ -313,6 +334,10 @@ mod tests {
             ("other_view_created_after_destroyed", Surface::Lost { since: ms(1) }, SurfaceEvent::Created { window: 2, activity: B }, Surface::Ready { window: 2, activity: B }, Action::Attach { previous: None }),
             ("recovering_other_view_destroyed_rejected", recovering(1, t0, 0), SurfaceEvent::Destroyed { activity: B, at: ms(1) }, recovering(1, t0, 0), no("destroyed another view's surface")),
             ("lost_recovery_failed_rejected", lost(), SurfaceEvent::RecoveryFailed { at: ms(1) }, lost(), no("recovery failed while not recovering")),
+            ("none_attach_failed_rejected", Surface::None, SurfaceEvent::AttachFailed { at: ms(1) }, Surface::None, no("attach failed while not attached")),
+            ("ready_attach_failed_retries_after_backoff", ready(1), SurfaceEvent::AttachFailed { at: ms(5) }, recovering(1, ms(5), 0), Action::Wait),
+            ("recovering_attach_failed_rejected", recovering(1, t0, 2), SurfaceEvent::AttachFailed { at: ms(1) }, recovering(1, t0, 2), no("attach failed while not attached")),
+            ("lost_attach_failed_rejected", lost(), SurfaceEvent::AttachFailed { at: ms(1) }, lost(), no("attach failed while not attached")),
         ];
         for (name, state, event, expected_state, expected_action) in cases {
             assert_eq!(
