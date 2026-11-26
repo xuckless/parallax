@@ -6,7 +6,8 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 |---|---|
 | [flutter.md](flutter.md) | Recording Flutter ports in the ledger, port vs oracle, bumping the pinned tag with flutter-diff.sh |
 | [upstream.md](upstream.md) | upstream/ snapshot, apply-patches.sh, sync-upstream.sh, fixing patches that stop applying |
-| [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch, rebuilding it with sync-fork.sh, and why apps can't opt in to it |
+| [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch on xuckless/zed (patches in Zed's layout, for upstream PRs), rebuilding it with sync-fork.sh, and how it differs from the published fork crates |
+| [gpui-fork-crates.md](gpui-fork-crates.md) | The published `parallax-gpui*` fork crates: naming, versioning and content hash, fork-crates.sh, fork-version.sh, publish-fork.sh, CI checks |
 | [patches.md](patches.md) | Writing, numbering and making patches; translating them to Zed's layout with patch-paths.sh; the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
@@ -19,9 +20,8 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent, what is not yet wired, following Flutter packet changes |
 | [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
-| [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch, rebuilding it with sync-fork.sh, and why apps can't opt in to it |
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, porting the next Flutter test |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
-| [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, patch 0002 workaround |
+| [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, the FontSystem from patch 0002 |
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
