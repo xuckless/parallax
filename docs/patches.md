@@ -61,3 +61,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0006](../patches/0006-claim-back-gesture-after-key-input.patch) | `on_back_gesture` claims after key input ([android-keys.md](android-keys.md#back)) |
 | [0007](../patches/0007-cosmic-text-system-font-database-id.patch) | `CosmicTextSystem::font_database_id`, so Android can draw emoji ([android-emoji.md](android-emoji.md)) |
 | [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
+| [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
