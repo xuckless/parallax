@@ -1,0 +1,81 @@
+# Six builds, one per target, no feature variants (ROADMAP Phase 0). See docs/ci.md.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # System libraries gpui_linux links (wayland, x11/xcb, xkbcommon, fontconfig, freetype); subset of Zed's script/linux.
+  LINUX_PACKAGES: libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # One row per target. To add a target: add a row here and its rustup target in rust-toolchain.toml.
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-latest
+            checks: |
+              cargo fmt --all --check
+              cargo clippy --workspace --all-targets -- -D warnings
+              cargo test --workspace
+          - target: windows
+            os: windows-latest
+            checks: |
+              cargo clippy --workspace --all-targets -- -D warnings
+              cargo test --workspace
+          - target: macos
+            os: macos-latest
+            checks: |
+              cargo clippy --workspace --all-targets -- -D warnings
+              cargo test --workspace
+          - target: ios
+            os: macos-latest
+            checks: |
+              cargo check --workspace --target aarch64-apple-ios
+              cargo check --workspace --target aarch64-apple-ios-sim
+          # Excludes the `parallax` facade: gpui_platform's current_platform() has no Android arm
+          # (cfg_select! fails to compile). gpui core itself compiles, so it is checked on its own.
+          - target: android
+            os: ubuntu-latest
+            checks: |
+              ndk_bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+              export CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android28-clang"
+              export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android28-clang"
+              cargo check --workspace --exclude parallax --target aarch64-linux-android
+              cargo check -p gpui-pre --target aarch64-linux-android
+          # Excludes the `parallax` facade: gpui on wasm needs nightly (wasm_thread uses #![feature],
+          # gpui_web enables parking_lot/nightly), and our toolchain is upstream's stable channel.
+          - target: wasm
+            os: ubuntu-latest
+            checks: |
+              cargo check --workspace --exclude parallax --target wasm32-unknown-unknown
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # rustup reads channel, components and targets from rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES
+      # build/ is generated, never committed: every job rebuilds build/gpui-patched from upstream/ + patches/.
+      - run: scripts/apply-patches.sh
+      - run: ${{ matrix.checks }}
