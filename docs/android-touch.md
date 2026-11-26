@@ -8,7 +8,9 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
 ## The path
 
 1. **Java, ported.** [`ParallaxSurfaceView.onTouchEvent`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java)
-   hands each `MotionEvent` to [`AndroidTouchProcessor`](../crates/android/java/io/github/xuckless/parallax/AndroidTouchProcessor.java),
+   calls `requestUnbufferedDispatch(event)` (as Flutter's `FlutterView` does, for every event once it has an
+   engine; this view always has one) so moves arrive as the OS reads them instead of batched to vsync, then hands
+   each `MotionEvent` to [`AndroidTouchProcessor`](../crates/android/java/io/github/xuckless/parallax/AndroidTouchProcessor.java),
    Flutter's file nearly verbatim. It packs one record per pointer into a little-endian direct `ByteBuffer`, exactly as
    for Flutter's engine: 36 fields of 8 bytes, a synthesized remove after every touch up, batched moves for the other
    pointers on `ACTION_POINTER_UP`. Only the last call changed: `renderer.dispatchPointerDataPacket` became the static
