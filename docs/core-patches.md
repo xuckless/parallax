@@ -76,8 +76,4 @@ Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_devic
 (window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
 gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs).
 
-The packaged crate can't run its own lib tests as shipped: `svg_renderer.rs` includes two fonts from Zed's
-`assets/`, and `style.rs` tests use `util_macros`, which is not vendored. To run them, copy `build/parallax-gpui/`,
-add any two `.ttf` files at the font paths, drop the `#[perf]` lines, then run
-`cargo test -p parallax-gpui --features test-support --lib` (the three `svg_renderer` font tests fail on stand-in
-fonts).
+Run them with [`scripts/patch-test.sh`](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)); CI does too.
