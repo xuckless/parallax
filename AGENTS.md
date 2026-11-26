@@ -107,7 +107,7 @@ third_party/
 3. **Add, don't modify.** New behaviour goes in a Parallax crate or an extension trait first. A patch needs a written reason why neither works.
 4. **Patches are small and gated.** One concern each, about 200 lines max, behind a target `cfg` when the code is platform-specific. No feature flags for behaviour.
 5. **Each patch has a header:** what it changes, why, and the upstream PR link once filed.
-6. **Upstream what you can.** Every patch is meant to be filed upstream. When upstream merges it, delete it at the next sync.
+6. **Upstream what you can.** Every patch is written so it could be filed upstream (filing is paused, see rule 14). When upstream merges it, delete it at the next sync.
 7. **No editor code.** Never copy Zed's editor or text stack crates (GPL). Only Apache-licensed GPUI crates.
 8. **Licenses.** Every vendored dependency keeps its license file. Flag anything not Apache-compatible before it lands. Keep `NOTICE` current.
 9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a crate or product name.
@@ -122,10 +122,11 @@ third_party/
     wrapper over upstream's API.
 13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `docs/upstream-drafts/`
     and shown to the owner before they are opened.
-14. **Our Zed fork carries the patches until Zed replies.** `xuckless/zed` keeps a `parallax` branch: the snapshot
-    commit from `upstream/UPSTREAM` plus every patch (translated with `scripts/patch-paths.sh`), rebased at each sync.
-    Upstream PRs are cut from it. Apps that want unmerged backend patches (desktop touch, iOS fixes) can opt in with a
-    documented `[patch]` pointing at that branch; published crates still build on stock upstream (rule 11).
+14. **Our Zed fork carries the patches; upstreaming is paused.** `xuckless/zed` keeps a `parallax` branch: the snapshot
+    commit from `upstream/UPSTREAM` plus every patch, rebuilt by `scripts/sync-fork.sh` at each sync. The owner has
+    paused contacting Zed (2026-11-26): Zed's AI policy wants PRs and posts written and opened by a person, so agents
+    only keep patches, the fork branch and notes in `docs/upstream-drafts/` ready. There is no app opt-in to the fork
+    (its crate names differ from `gpui-pre`); apps get backend patches only when Zed merges them.
 
 ## Coding style: Caveman Code
 

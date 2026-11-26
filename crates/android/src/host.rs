@@ -17,11 +17,11 @@ use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
     objects::{JByteBuffer, JClass, JObject, JString},
-    sys::{JNI_ERR, JNI_VERSION_1_6, jfloat, jint},
+    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint},
 };
 
 use crate::{
-    Error, pointer,
+    Error, keys, pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
 };
@@ -31,7 +31,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 7] {
+fn natives() -> [NativeMethod; 8] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -64,6 +64,11 @@ fn natives() -> [NativeMethod; 7] {
             "nativeLocales",
             "(Ljava/lang/String;)V",
             locales as *mut c_void,
+        ),
+        row(
+            "nativeDispatchKeyData",
+            "(Ljava/nio/ByteBuffer;)Z",
+            dispatch_key_data as *mut c_void,
         ),
     ]
 }
@@ -244,6 +249,30 @@ extern "system" fn locales(mut env: JNIEnv, _class: JClass, tags: JString) {
     });
 }
 
+/// The ported `KeyEmbedderResponder` hands over one Flutter key data packet: the whole direct `ByteBuffer`.
+/// Returns whether GPUI handled it; Java then redispatches unhandled keys to Android.
+extern "system" fn dispatch_key_data(env: JNIEnv, _class: JClass, packet: JByteBuffer) -> jboolean {
+    let (address, length) = match (
+        env.get_direct_buffer_address(&packet),
+        env.get_direct_buffer_capacity(&packet),
+    ) {
+        (Ok(address), Ok(length)) => (address, length),
+        (address, length) => {
+            log::error!(
+                "parallax: unreadable key data packet: capacity {length:?}, address {:?}",
+                address.map(|_| ())
+            );
+            return JNI_FALSE;
+        }
+    };
+    // SAFETY: `packet` is a live direct buffer for this call, `length` is its capacity, and Java does not touch
+    // it until this call returns (KeyData.toBytes allocates one per event).
+    let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
+    let mut handled = false;
+    with_host(|host| handled = host.shell.key(packet));
+    if handled { JNI_TRUE } else { JNI_FALSE }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the JNI signature: two edge sets"
@@ -344,12 +373,12 @@ impl<F: ?Sized> Slot<F> {
         *self.0.borrow_mut() = Some(callback);
     }
 
-    fn with(&self, call: impl FnOnce(&mut F)) {
-        let taken = self.0.borrow_mut().take();
-        if let Some(mut callback) = taken {
-            call(&mut callback);
-            self.0.borrow_mut().get_or_insert(callback);
-        }
+    /// Runs `call` on the callback; `None` when GPUI has not registered one.
+    fn with<R>(&self, call: impl FnOnce(&mut F) -> R) -> Option<R> {
+        let mut callback = self.0.borrow_mut().take()?;
+        let result = call(&mut callback);
+        self.0.borrow_mut().get_or_insert(callback);
+        Some(result)
     }
 }
 
@@ -362,7 +391,8 @@ impl<F: ?Sized> Default for Slot<F> {
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]).
+    /// Touch arrives here as `PlatformInput::Touch` ([`Shell::touch`]), keys as key, modifier and back events
+    /// ([`Shell::key`]).
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
@@ -379,6 +409,7 @@ pub(crate) struct Shell {
     pub(crate) touches: RefCell<pointer::Touches>,
     /// The app's locales (BCP-47), preference order; the fonts read them once, when the platform starts.
     pub(crate) locales: RefCell<Vec<String>>,
+    pub(crate) keyboard: RefCell<keys::Keyboard>,
 }
 
 impl Shell {
@@ -391,6 +422,7 @@ impl Shell {
             callbacks: Callbacks::default(),
             touches: RefCell::new(pointer::Touches::default()),
             locales: RefCell::new(Vec::new()),
+            keyboard: RefCell::new(keys::Keyboard::default()),
         }
     }
 
@@ -530,6 +562,43 @@ impl Shell {
             self.callbacks.input.with(|callback| {
                 callback(PlatformInput::Touch(event));
             });
+        }
+    }
+
+    /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
+    /// so the window can read modifiers during dispatch.
+    fn key(&self, packet: &[u8]) -> bool {
+        let data = match keys::decode(packet) {
+            Ok(data) => data,
+            Err(error) => {
+                log::error!("parallax: key dropped: {error}");
+                return false;
+            }
+        };
+        // GPUI hit-tests back gestures; Android's back key has none, so it starts at the left edge, mid-height,
+        // where an edge swipe would (iOS's back gesture comes from the leading edge).
+        let back_at = point(px(0.), self.metrics.get().bounds().size.height / 2.);
+        let step = self.keyboard.borrow_mut().input(&data, back_at);
+        log::debug!("parallax: {data:?} → {step:?}");
+        match step {
+            keys::Step::Answer { input, handled } => {
+                if let Some(input) = input {
+                    self.callbacks.input.with(|callback| callback(input));
+                }
+                handled
+            }
+            keys::Step::Ask(input) => {
+                // No window yet: nothing handled it, so Android gets the key.
+                let result = self
+                    .callbacks
+                    .input
+                    .with(|callback| callback(input))
+                    .unwrap_or(DispatchEventResult {
+                        propagate: true,
+                        default_prevented: false,
+                    });
+                self.keyboard.borrow_mut().reply(result)
+            }
         }
     }
 

@@ -56,6 +56,14 @@ counterpart in Zed's tree:
 Every other file is byte-identical. Zed's tree also has files the package drops (e.g. `crates/gpui_web/examples/`);
 patches touching them translate but will not apply to `upstream/`.
 
+## Our Zed fork
+
+[`scripts/sync-fork.sh`](../scripts/sync-fork.sh) rebuilds the `parallax` branch of
+[`xuckless/zed`](https://github.com/xuckless/zed/tree/parallax): the UPSTREAM commit plus every patch, translated as
+above, one commit each. Run it whenever a patch is added or changed. Apps can't `[patch]` onto that branch (Zed's
+crate names differ from crates.io's `gpui-pre-*`); they opt in through a Parallax checkout instead. Both are in
+[zed-fork.md](zed-fork.md).
+
 ## The crate table
 
 One row per vendored crate in the `crates` table at the top of [`patch-paths.sh`](../scripts/patch-paths.sh):
