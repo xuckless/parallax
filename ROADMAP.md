@@ -1,13 +1,28 @@
 # ROADMAP
 
-Parallax ships in six phases, in order. Each one ends with a gate, and the next phase starts only after the gate passes.
-Each phase uses only what earlier phases produced.
+Parallax ships in seven phases, in order, across two rolling release lines. Each phase ends with a gate, and the
+next phase starts only after the gate passes. Each phase uses only what earlier phases produced.
 No dates are set. Tick a box only when the work is merged and verified (see `AGENTS.md`).
 
 Upstream GPUI already ships iOS, touch and gestures, web touch and IME, and a core accessibility tree.
 Flutter has a decade of fixes for exactly these problems. So Parallax's work is: **Android built on Flutter's
 ported embedding, desktop touch, Flutter's tests as the oracle for upstream, platform behaviour, accessibility
 adapters and build tooling.**
+
+## Releases
+
+Two rolling release lines on crates.io. A release goes out whenever `main` is green and holds something new; there is
+no fixed schedule and no planned last number.
+
+| Line | Phases | First release |
+|---|---|---|
+| v0.1.x | 0–5: foundation, Android, gestures and behaviour, desktop touch, text input, tooling | 0.1.1: the working prototype skeleton (Phase 1) |
+| v0.2.x | 6: accessibility | the first accessibility adapter that lands |
+
+- Every gate that passes ships a release. Merged, verified work between gates may ship one too.
+- The v0.1.x line ends when Gate 5 passes; v0.2.x starts then.
+- Every release: CI green on all six targets, `NOTICE` and `third_party/flutter/PORTED.md` current, crate license
+  fields right, no GPL editor code, a `CHANGELOG.md` entry.
 
 ## Phase 0: Foundation, gap audit and Flutter oracle
 
@@ -39,14 +54,25 @@ oracle inventory exists.
 
 GPUI runs on the Android main (UI) thread, so IME queries are answered synchronously. Flutter's self-contained input
 files are ported as Java in `crates/android/java/`; `MethodChannel` calls become JNI calls into Rust. The Activity and
-View are Parallax's own, small, written with Flutter's as reference.
+View are Parallax's own, small, written with Flutter's as reference. The phase opens with the skeleton that ships as 0.1.1.
 
+Skeleton (0.1.1):
+
+- [ ] `parallax` facade crate: one dependency for apps, re-exporting GPUI and the Parallax crates.
 - [ ] Activity and View: write a small Parallax Activity and `SurfaceView`, using `FlutterActivity`, `FlutterView` and
       `FlutterSurfaceView` as reference for lifecycle, surface and insets.
 - [ ] Main-thread dispatcher: GPUI's foreground executor on the Android main `Looper`.
 - [ ] Rendering: `gpui_wgpu` on the ported view's `Surface`, Vulkan with GL fallback. The backend choice is one visible table.
-- [ ] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss.
 - [ ] Touch: port `AndroidTouchProcessor` and `MotionEventTracker`; emit upstream `TouchEvent`.
+- [ ] `cargo-parallax`: `parallax.toml` schema and `cargo parallax run android` (generates the Gradle project around the Java port).
+- [ ] Example app: one window with a box that changes colour on tap, built for desktop, web and Android.
+- [ ] Publish 0.1.1.
+
+**Milestone 0.1.1:** the example app opens, draws and reacts to a tap on desktop, web and an Android device.
+
+Full Android:
+
+- [ ] Surface lifecycle as one Rust state enum (none, ready, lost); recover from surface and device loss.
 - [ ] Keys: port `KeyboardManager`; Android key code → GPUI key as one Rust table. Back button → `BackGestureEvent`.
 - [ ] Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`,
       `ImeSyncDeferringInsetsCallback` and the input parts of `TextInputPlugin`. On the same thread, the Rust side
@@ -55,7 +81,6 @@ View are Parallax's own, small, written with Flutter's as reference.
 - [ ] Text: Android system fonts and fallback for cosmic-text, sized by the Phase 0 font audit.
 - [ ] Port the matching Flutter Android tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, …) as tests of the Java port.
 - [ ] Lifecycle: pause, resume, low memory, mapped to upstream observers (patch if upstream lacks them on Android).
-- [ ] `cargo-parallax`: `parallax.toml` schema and `cargo parallax run android` (generates the Gradle project around the Java port).
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge.
 - [ ] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
 
@@ -93,33 +118,40 @@ fake mouse events the OS makes from touch, so a tap fires once.
 **Gate 3:** the touchscreen laptop traces replay to the same gestures and scroll outcomes as the phone and browser
 traces, on each desktop OS.
 
-## Phase 4: Text input oracle, selection and accessibility
+## Phase 4: Text input oracle and selection
 
-Flutter's text-input and accessibility tests check upstream GPUI. Where upstream fails, Flutter's fix goes in as a
+Flutter's text-input tests check upstream GPUI. Where upstream fails, Flutter's fix goes in as a
 small patch and is filed upstream.
 
 - [ ] iOS text input: `FlutterTextInputPluginTest.mm` cases → table-driven tests against `gpui_ios`; patch the failures.
       Limit: once these patches total about 800 lines or Zed rejects 3, move iOS text input into its own Parallax crate.
 - [ ] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`; patch or `parallax-web`.
 - [ ] Text selection behaviour: selection handles, magnifier, text toolbar, ported from Flutter's behaviour (no Material/Cupertino look).
-- [ ] Accessibility: `accesskit_android` in `parallax-android`; `parallax-web` semantics DOM; iOS and macOS per the
-      audit. Flutter's `AccessibilityBridge` and `SemanticsObject` tests as the oracle.
 - [ ] Remaining lifecycle and safe-area gaps from the audit, as patches.
 - [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`).
 
-**Gate 4:** the ported Flutter text-input tables pass on every target, and VoiceOver, TalkBack and a desktop screen
-reader can operate the example app.
+**Gate 4:** the ported Flutter text-input tables pass on every target.
 
-## Phase 5: Tooling, docs and v0.1
+## Phase 5: Tooling and docs
 
 - [ ] `cargo parallax run ios` (generates the Xcode project) and `cargo parallax run web`.
-- [ ] `parallax` facade crate: one dependency for apps.
 - [ ] Docs: getting started per target, the touch → mouse rule and its opt-out, the behaviour table, Flutter credits.
 - [ ] Example app polished for every target.
-- [ ] License review: `NOTICE`, `third_party/flutter/PORTED.md` complete, crate license fields, no GPL editor code.
-- [ ] Publish to crates.io.
 
-**Gate 5:** Parallax v0.1 published.
+**Gate 5:** a fresh clone runs the example app on every target through `cargo parallax`, and the docs cover each one.
+Closes the v0.1.x line.
+
+## Phase 6: Accessibility (v0.2.x)
+
+Each adapter ships as the next 0.2.x release when it lands. Flutter's `AccessibilityBridge` and `SemanticsObject`
+tests are the oracle.
+
+- [ ] Android: `accesskit_android` in `parallax-android`.
+- [ ] Web: `parallax-web` semantics DOM.
+- [ ] iOS and macOS: the gaps found by the Phase 0 audit, as patches.
+- [ ] Desktop screen readers on Windows and Linux: the gaps found by the Phase 0 audit, as patches.
+
+**Gate 6:** VoiceOver, TalkBack and a desktop screen reader can operate the example app.
 
 ## Open questions
 
