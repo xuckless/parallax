@@ -8,3 +8,18 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# Off Android the crate is only the `android_main!` macro (it expands to nothing there), so apps build for every target.
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+anyhow = "1"
+futures = "0.3"
+gpui.workspace = true
+gpui_wgpu.workspace = true
+jni = "0.21"
+libc = "0.2"
+log = "0.4"
+ndk-sys = "0.6"
+raw-window-handle = "0.6"
+thiserror.workspace = true
+uuid = "1"
