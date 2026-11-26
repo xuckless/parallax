@@ -7,3 +7,5 @@ Sync rule: when a new stable tag ships, diff each source path between the old an
 
 | Flutter path | Flutter tag | Parallax path | Kind (port / oracle) | Dropped parts |
 |---|---|---|---|---|
+| `engine/src/flutter/shell/platform/android/io/flutter/embedding/android/AndroidTouchProcessor.java` | `3.50.1` | `crates/android/java/io/github/xuckless/parallax/AndroidTouchProcessor.java` | port | `FlutterRenderer` (the packet goes to `ParallaxSurfaceView.nativeDispatchPointerDataPacket`); androidx annotations (`@IntDef`, `@NonNull`, `@VisibleForTesting`, `@RequiresApi`); `io.flutter.Build.API_LEVELS` (→ `Build.VERSION_CODES.O`). `onGenericMotionEvent` kept but not wired |
+| `engine/src/flutter/shell/platform/android/io/flutter/embedding/android/MotionEventTracker.java` | `3.50.1` | `crates/android/java/io/github/xuckless/parallax/MotionEventTracker.java` | port | androidx annotations (`@NonNull`, `@Nullable`). Unused while `trackMotionEvents` is false (no platform views) |
