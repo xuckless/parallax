@@ -284,10 +284,14 @@ fn language(tag: &str) -> &str {
     subtags(tag).next().unwrap_or("")
 }
 
+/// The script subtag a tag names itself (`zh-Hant-TW`): the one four letters long.
+fn explicit_script(tag: &str) -> Option<&str> {
+    subtags(tag).skip(1).find(|subtag| subtag.len() == 4)
+}
+
 /// The script subtag (`zh-Hant-TW`), else the likely one for the language and region.
 fn script(tag: &str) -> Option<&str> {
-    let explicit = subtags(tag).skip(1).find(|subtag| subtag.len() == 4);
-    explicit.or_else(|| {
+    explicit_script(tag).or_else(|| {
         let region = subtags(tag)
             .skip(1)
             .find(|subtag| subtag.len() == 2 || subtag.len() == 3)
@@ -305,12 +309,9 @@ fn script(tag: &str) -> Option<&str> {
 /// A family's `lang` serves a locale when the languages match and, if the family names a script, so does the locale.
 fn matches(family_lang: &str, locale: &str) -> bool {
     language(family_lang).eq_ignore_ascii_case(language(locale))
-        && subtags(family_lang)
-            .skip(1)
-            .find(|subtag| subtag.len() == 4)
-            .is_none_or(|wanted| {
-                script(locale).is_some_and(|script| script.eq_ignore_ascii_case(wanted))
-            })
+        && explicit_script(family_lang).is_none_or(|wanted| {
+            script(locale).is_some_and(|script| script.eq_ignore_ascii_case(wanted))
+        })
 }
 
 #[cfg(test)]
