@@ -28,6 +28,7 @@ use crate::{
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
     text_input::{self, Edit, EditingState},
+    text_system::AndroidTextSystem,
 };
 
 /// The Java class whose static `native` methods [`natives`] binds.
@@ -35,7 +36,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 13] {
+fn natives() -> [NativeMethod; 14] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -58,6 +59,11 @@ fn natives() -> [NativeMethod; 13] {
             surface_destroyed as *mut c_void,
         ),
         row("nativeFrame", "(I)V", frame as *mut c_void),
+        row(
+            "nativeLocalesChanged",
+            "(ILjava/lang/String;)V",
+            locales_changed as *mut c_void,
+        ),
         row(
             "nativeTextInputCalls",
             "(I)Ljava/lang/String;",
@@ -115,8 +121,57 @@ struct MainThreadHost {
 enum AppState {
     /// `JNI_OnLoad` ran; the app launches on the first surface (GPUI needs one to open its window).
     Loaded { launch: fn(&mut App) },
-    /// GPUI is running; the handle keeps it alive for the life of the process.
-    Running(#[allow(dead_code, reason = "held only to keep GPUI alive")] ApplicationHandle),
+    /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
+    /// change; `fonts` is `None` when the system fonts did not load (logged), then there is no order to change.
+    Running {
+        app: ApplicationHandle,
+        fonts: Option<Arc<AndroidTextSystem>>,
+    },
+}
+
+impl MainThreadHost {
+    /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
+    /// order follows them. If it moved, GPUI drops the font ids and line layouts it cached with the old order and
+    /// redraws. Before launch there is nothing to do: the first surface brings the locales.
+    fn follow_locales(&self, locales: &[String]) {
+        match &*self.app.borrow() {
+            AppState::Loaded { .. } | AppState::Running { fonts: None, .. } => {}
+            AppState::Running {
+                app,
+                fonts: Some(fonts),
+            } => {
+                if fonts.set_locales(locales) {
+                    app.update(|cx| {
+                        // No fonts added: `add_fonts` is GPUI's one public way to clear its font-id cache and bump
+                        // the font generation its line-layout caches check.
+                        if let Err(error) = cx.text_system().add_fonts(Vec::new()) {
+                            log::error!(
+                                "parallax: fonts: cached layouts kept the old order: {error}"
+                            );
+                        }
+                        cx.refresh_windows();
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The app's locales from Java: BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`),
+/// per-app locales on API 33+ included, which the system property cosmic-text reads lacks. Unreadable: none (logged),
+/// so the fonts keep fonts.xml order.
+fn locales(env: &mut JNIEnv, tags: &JString) -> Vec<String> {
+    match env.get_string(tags) {
+        Ok(tags) => String::from(tags)
+            .split(',')
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(error) => {
+            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
+            Vec::new()
+        }
+    }
 }
 
 thread_local! {
@@ -189,9 +244,8 @@ fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
-/// `tags` are the app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`):
-/// per-app locales on API 33+, which the system property cosmic-text reads does not have. The first surface starts
-/// the platform with them; runtime per-app locale changes are not followed yet (a later item).
+/// `tags`: the app's locales ([`locales`]). The first surface starts the platform with them; a later one (a recreated
+/// Activity) brings the current ones ([`MainThreadHost::follow_locales`]).
 extern "system" fn surface_created(
     mut env: JNIEnv,
     _class: JClass,
@@ -201,13 +255,7 @@ extern "system" fn surface_created(
     refresh_rate: jfloat,
     tags: JString,
 ) {
-    let locales: Vec<String> = match env.get_string(&tags) {
-        Ok(tags) => String::from(tags).split(',').map(str::to_string).collect(),
-        Err(error) => {
-            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
-            Vec::new()
-        }
-    };
+    let locales = locales(&mut env, &tags);
     // SAFETY: `env` and `surface` are this call's live JNI arguments; fromSurface returns a new reference or null.
     let raw = unsafe {
         ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast())
@@ -225,13 +273,14 @@ extern "system" fn surface_created(
         });
         let launch = match &*host.app.borrow() {
             AppState::Loaded { launch } => *launch,
-            AppState::Running(_) => return,
+            AppState::Running { .. } => return host.follow_locales(&locales),
         };
-        match crate::platform::AndroidPlatform::new(host.shell.clone(), &locales) {
+        let fonts = crate::text_system::load(&host.shell.vm, &locales);
+        match crate::platform::AndroidPlatform::new(host.shell.clone(), fonts.clone()) {
             Ok(platform) => {
                 let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
-                *host.app.borrow_mut() = AppState::Running(app);
+                *host.app.borrow_mut() = AppState::Running { app, fonts };
                 // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
                 let phases = host.shell.lifecycle.borrow().launch_phases();
                 for &phase in phases {
@@ -311,6 +360,19 @@ extern "system" fn activity_event(
         }),
         None => log::error!("parallax: unknown Activity event {code} ({value})"),
     }
+}
+
+/// The view's `onConfigurationChanged` (the manifest handles `locale|layoutDirection` itself, as Flutter's does):
+/// the app's locales, which may not have changed. From any live Activity's view: locales are the app's, not one
+/// Activity's, and an unchanged order costs nothing.
+extern "system" fn locales_changed(
+    mut env: JNIEnv,
+    _class: JClass,
+    _activity: jint,
+    tags: JString,
+) {
+    let locales = locales(&mut env, &tags);
+    with_host(|host| host.follow_locales(&locales));
 }
 
 /// Every vsync: GPUI draws if anything changed. Java then asks for the text-input calls ([`text_input_calls`]) and

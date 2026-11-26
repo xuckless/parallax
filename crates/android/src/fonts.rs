@@ -154,6 +154,13 @@ pub(crate) struct Generic {
     pub(crate) weight: Option<u16>,
 }
 
+/// A language-tagged fallback family (CJK): its `lang` tags and its face, or, once loaded, its family name.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Tagged<T> {
+    pub(crate) langs: Vec<String>,
+    pub(crate) face: T,
+}
+
 /// What the shell loads.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FontPlan {
@@ -162,9 +169,8 @@ pub(crate) struct FontPlan {
     /// The first family's face ("first font is default"): GPUI's `.SystemUIFont`.
     pub(crate) default: Face,
     pub(crate) generics: Vec<Generic>,
-    /// Language-tagged fallbacks (CJK), those matching the app's locales first, then XML order: per-language glyphs
-    /// for Han text, as Android picks them.
-    pub(crate) by_locale: Vec<Face>,
+    /// Language-tagged fallbacks (CJK) in XML order; [`by_locale`] orders them for the app's locales.
+    pub(crate) tagged: Vec<Tagged<Face>>,
     /// The colour emoji faces (`EMOJI_SCRIPT` families), in XML order.
     pub(crate) emoji: Vec<Face>,
     /// Listed files not on disk (OEM images drop some) or not readable.
@@ -177,7 +183,6 @@ pub(crate) struct FontPlan {
 pub(crate) fn plan(
     config: &FontConfig,
     dir: &Path,
-    locales: &[String],
     readable: impl Fn(&Path) -> bool,
 ) -> Result<FontPlan, Error> {
     let path = |file: &str| dir.join(file);
@@ -244,7 +249,7 @@ pub(crate) fn plan(
     });
     let generics = families.chain(aliases).collect();
 
-    let mut tagged: Vec<(usize, Face)> = config
+    let tagged = config
         .families
         .iter()
         .filter(|family| {
@@ -253,15 +258,12 @@ pub(crate) fn plan(
                 && family.langs.iter().any(|lang| language(lang) != "und")
         })
         .filter_map(|family| {
-            let rank = locales
-                .iter()
-                .position(|locale| family.langs.iter().any(|lang| matches(lang, locale)))
-                .unwrap_or(locales.len());
-            Some((rank, face(family)?))
+            Some(Tagged {
+                langs: family.langs.clone(),
+                face: face(family)?,
+            })
         })
         .collect();
-    tagged.sort_by_key(|(rank, _)| *rank); // stable: ties keep XML order
-    let by_locale = tagged.into_iter().map(|(_, face)| face).collect();
 
     let emoji = config
         .families
@@ -285,10 +287,27 @@ pub(crate) fn plan(
         files,
         default,
         generics,
-        by_locale,
+        tagged,
         emoji,
         missing,
     })
+}
+
+/// The tagged faces in the order Han text tries them: those serving the app's `locales` first, in locale order, then
+/// XML order, as Android picks per-language glyphs. Pure: run at start and again on every locale change.
+pub(crate) fn by_locale<'a, T>(tagged: &'a [Tagged<T>], locales: &[String]) -> Vec<&'a T> {
+    let mut ranked: Vec<(usize, &T)> = tagged
+        .iter()
+        .map(|tagged| {
+            let rank = locales
+                .iter()
+                .position(|locale| tagged.langs.iter().any(|lang| matches(lang, locale)))
+                .unwrap_or(locales.len());
+            (rank, &tagged.face)
+        })
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank); // stable: ties keep XML order
+    ranked.into_iter().map(|(_, face)| face).collect()
 }
 
 fn subtags(tag: &str) -> impl Iterator<Item = &str> {
@@ -619,11 +638,21 @@ mod tests {
             .collect()
     }
 
-    /// `(name, xml, locales, files on disk, expected by_locale)`.
     /// `(name, xml, files on disk, expected plan or error message)`.
     type PlanRow<'a> = (&'a str, &'a str, Vec<&'a str>, Result<FontPlan, &'a str>);
 
+    /// `(name, xml, locales, expected by_locale)`.
     type LocaleRow<'a> = (&'a str, &'a str, &'a [&'a str], Vec<Face>);
+
+    /// API 28's tagged CJK families, XML order: Hans, Hant, ja, ko (one collection, one face each).
+    fn tagged_28() -> Vec<Tagged<Face>> {
+        [("zh-Hans", 2), ("zh-Hant zh-Bopo", 3), ("ja", 0), ("ko", 1)]
+            .map(|(langs, index)| Tagged {
+                langs: langs.split(' ').map(str::to_string).collect(),
+                face: face("NotoSansCJK-Regular.ttc", index),
+            })
+            .to_vec()
+    }
 
     #[test]
     fn by_locale_table() -> Result<(), Error> {
@@ -691,8 +720,12 @@ mod tests {
         ];
         for (name, xml, locales, expected) in rows {
             let locales: Vec<String> = locales.iter().map(|locale| locale.to_string()).collect();
-            let plan = plan(&parse(xml)?, Path::new("/f"), &locales, |_| true)?;
-            assert_eq!(&plan.by_locale, expected, "{name}");
+            let plan = plan(&parse(xml)?, Path::new("/f"), |_| true)?;
+            let ordered: Vec<Face> = by_locale(&plan.tagged, &locales)
+                .into_iter()
+                .cloned()
+                .collect();
+            assert_eq!(&ordered, expected, "{name}");
         }
         Ok(())
     }
@@ -730,9 +763,7 @@ mod tests {
                     files: paths(all),
                     default: face("Roboto-Regular.ttf", 0),
                     generics: generics_28.clone(),
-                    by_locale: [2, 3, 0, 1]
-                        .map(|index| face("NotoSansCJK-Regular.ttc", index))
-                        .to_vec(),
+                    tagged: tagged_28(),
                     emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: vec![],
                 }),
@@ -750,7 +781,7 @@ mod tests {
                         generic("sans-serif-medium", "Roboto-Bold.ttf", Some(500)),
                         generic("arial", "Roboto-Bold.ttf", None),
                     ],
-                    by_locale: vec![],
+                    tagged: vec![],
                     emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: paths(&[
                         "Roboto-Regular.ttf",
@@ -782,9 +813,7 @@ mod tests {
                         generic("sans-serif-medium", "Roboto-Regular.ttf", Some(500)),
                         generic("arial", "Roboto-Regular.ttf", None),
                     ],
-                    by_locale: [2, 3, 0, 1]
-                        .map(|index| face("NotoSansCJK-Regular.ttc", index))
-                        .to_vec(),
+                    tagged: tagged_28(),
                     emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: paths(&["DroidSansMono.ttf"]),
                 }),
@@ -813,7 +842,10 @@ mod tests {
                         generic("sans-serif", "Roboto-Regular.ttf", None),
                         generic("sans-serif-thin", "Roboto-Regular.ttf", Some(100)),
                     ],
-                    by_locale: vec![face("NotoSansCJK-Regular.ttc", 0)],
+                    tagged: vec![Tagged {
+                        langs: vec!["ja".into()],
+                        face: face("NotoSansCJK-Regular.ttc", 0),
+                    }],
                     emoji: vec![
                         face("NotoColorEmoji.ttf", 0),
                         face("NotoColorEmojiFlags.ttf", 0),
@@ -840,7 +872,10 @@ mod tests {
                         generic("sans-serif", "Roboto-Regular.ttf", None),
                         generic("sans-serif-thin", "Roboto-Regular.ttf", Some(100)),
                     ],
-                    by_locale: vec![face("NotoSansCJK-Regular.ttc", 0)],
+                    tagged: vec![Tagged {
+                        langs: vec!["ja".into()],
+                        face: face("NotoSansCJK-Regular.ttc", 0),
+                    }],
                     emoji: vec![face("NotoColorEmoji.ttf", 0)],
                     missing: paths(&[
                         "NotoColorEmojiFlags.ttf",
@@ -863,7 +898,7 @@ mod tests {
         ];
         for (name, xml, readable, expected) in rows {
             let readable = paths(&readable);
-            let planned = plan(&parse(xml)?, Path::new("/f"), &[], |path| {
+            let planned = plan(&parse(xml)?, Path::new("/f"), |path| {
                 readable.iter().any(|file| file == path)
             });
             let planned = planned.map_err(|error| error.to_string());

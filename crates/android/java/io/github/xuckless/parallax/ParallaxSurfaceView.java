@@ -3,6 +3,7 @@
 package io.github.xuckless.parallax;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.os.Build;
 import android.view.Choreographer;
@@ -37,6 +38,10 @@ final class ParallaxSurfaceView extends SurfaceView
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
       int activity, Surface surface, float density, float refreshRate, String languageTags);
+
+  // The app's locales after a configuration change (system or per-app language), as above; the
+  // per-language font order follows them. Named after Flutter's LocalizationPlugin.sendLocalesToFlutter.
+  private static native void nativeLocalesChanged(int activity, String languageTags);
 
   private static native void nativeSurfaceChanged(
       int activity, int width, int height, float density);
@@ -166,6 +171,15 @@ final class ParallaxSurfaceView extends SurfaceView
         density(),
         getDisplay().getRefreshRate(),
         getResources().getConfiguration().getLocales().toLanguageTags());
+  }
+
+  // As FlutterView.onConfigurationChanged: send the locales on every configuration change (the
+  // manifest's configChanges includes locale|layoutDirection, so the Activity is not recreated);
+  // Rust ignores an unchanged list.
+  @Override
+  protected void onConfigurationChanged(Configuration newConfig) {
+    super.onConfigurationChanged(newConfig);
+    nativeLocalesChanged(activity, newConfig.getLocales().toLanguageTags());
   }
 
   @Override

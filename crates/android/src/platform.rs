@@ -19,8 +19,11 @@ use gpui::{
     PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
 };
 
+use gpui_wgpu::CosmicTextSystem;
+
 use crate::{
-    Error, dispatcher::AndroidDispatcher, host::Metrics, host::Shell, window::AndroidWindow,
+    Error, dispatcher::AndroidDispatcher, host::Metrics, host::Shell,
+    text_system::AndroidTextSystem, window::AndroidWindow,
 };
 
 pub(crate) struct AndroidPlatform {
@@ -32,10 +35,18 @@ pub(crate) struct AndroidPlatform {
 }
 
 impl AndroidPlatform {
-    /// `locales`: the app's BCP-47 tags in preference order, for the per-language font order.
-    pub(crate) fn new(shell: Rc<Shell>, locales: &[String]) -> Result<Self, Error> {
+    /// `fonts`: the system fonts ([`crate::text_system::load`]); the host keeps a handle to follow locale changes.
+    /// `None` (they did not load, logged): upstream's text system without system fonts, so text still renders with
+    /// fonts the app adds.
+    pub(crate) fn new(
+        shell: Rc<Shell>,
+        fonts: Option<Arc<AndroidTextSystem>>,
+    ) -> Result<Self, Error> {
         let dispatcher = Arc::new(AndroidDispatcher::new()?);
-        let text_system = crate::text_system::load(&shell.vm, locales);
+        let text_system: Arc<dyn PlatformTextSystem> = match fonts {
+            Some(fonts) => fonts,
+            None => Arc::new(CosmicTextSystem::new_without_system_fonts("sans-serif")),
+        };
         Ok(Self {
             shell,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),

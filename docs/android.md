@@ -35,7 +35,7 @@
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).
 - **Fonts.** At startup the platform reads `/system/etc/fonts.xml`, memory-maps the system fonts into upstream's
-  `CosmicTextSystem` and orders CJK by the app locale (sent over JNI). Details: [android-fonts.md](android-fonts.md).
+  `CosmicTextSystem` and orders CJK by the app's current locales. Details: [android-fonts.md](android-fonts.md).
 - **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →
   `nativeDispatchKeyData` → [keys.rs](../crates/android/src/keys.rs): key, modifier and back events. Details: [android-keys.md](android-keys.md).
 - **Text input.** Flutter's `TextInputPlugin` and `InputConnectionAdaptor` (ported Java) serve the IME; GPUI's `InputHandler` answers on the same thread
