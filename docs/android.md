@@ -56,8 +56,7 @@ nothing elsewhere. `launch` runs when the first surface exists, because GPUI nee
 Apps that pick a platform themselves call `parallax_platform::current_platform`, which routes Android to
 `parallax_android::current_platform` ([platform.md](platform.md)).
 
-`Error` is public and exhaustive on 0.1.x, so variants are only added or deprecated (`AddFonts`, unused since
-patch 0002); it becomes `#[non_exhaustive]`, and deprecated variants go, on the next breaking line.
+`Error` is public and exhaustive on 0.1.x, so variants are only added or deprecated (`AddFonts`, unused since patch 0002); it becomes `#[non_exhaustive]`, and deprecated variants go, on the next breaking line.
 
 ## Stubs (not yet on Android)
 
