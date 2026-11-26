@@ -178,20 +178,6 @@ const KEYS: &[(u64, Key)] = &[
 /// Flutter's `KeyboardMap.kValueMask`: the bits of a logical key below its plane.
 const VALUE_MASK: u64 = 0x000ffffffff;
 
-fn key_for(logical: u64) -> Option<Key> {
-    KEYS.iter()
-        .find(|(value, _)| *value == logical)
-        .map(|(_, key)| *key)
-        .or_else(|| {
-            // Flutter's Unicode plane is plane 0; KeyboardMap only puts printable ASCII there.
-            (logical & !VALUE_MASK == 0)
-                .then(|| char::from_u32(logical as u32))
-                .flatten()
-                .filter(|character| !character.is_control())
-                .map(Key::Character)
-        })
-}
-
 /// Android's back key as GPUI's back gesture: one press is offered once and claimed (or not) as a whole.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Back {
@@ -256,7 +242,19 @@ impl Keyboard {
             input: None,
             handled: false,
         };
-        let Some(key) = key_for(data.logical) else {
+        let key = KEYS
+            .iter()
+            .find(|(value, _)| *value == data.logical)
+            .map(|(_, key)| *key)
+            .or_else(|| {
+                // Flutter's Unicode plane is plane 0; KeyboardMap only puts printable ASCII there.
+                (data.logical & !VALUE_MASK == 0)
+                    .then(|| char::from_u32(data.logical as u32))
+                    .flatten()
+                    .filter(|character| !character.is_control())
+                    .map(Key::Character)
+            });
+        let Some(key) = key else {
             return unhandled;
         };
         match key {
