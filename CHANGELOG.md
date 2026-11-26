@@ -6,8 +6,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased] (0.1.4)
 
-Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 0.3.14 plus Parallax's patches (fork
-`0.3.14-parallax.5`). Checked by unit, JVM and patch tests; no real-device testing yet.
+Wave 10: Android mouse, autofill and locale; touch labels; Gate 1 fixes. Built on `gpui-pre` 0.3.14 plus Parallax's
+patches (fork `0.3.14-parallax.6`). Checked by unit, JVM and patch tests and an API 35 emulator smoke test in CI; Gate 1
+run on API 28, 33 and 35 emulators; no real-device testing yet.
 
 ### Added
 
@@ -25,8 +26,13 @@ Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 
 - `parallax-android`: runtime locale changes. Changing the app's or system language reorders the font fallback (for
   example Chinese vs Japanese glyphs for the same Han characters) without a restart.
 
+- CI runs an Android emulator smoke test (API 35): `examples/hello` launches, takes taps and typing, rotates,
+  backgrounds and resumes.
+
 ### Changed
 
+- `parallax-android`: emulators try GL before Vulkan (the API 33 emulator's Vulkan drew black, then garbled glyphs);
+  devices still try Vulkan first.
 - A gesture recognized from touches (tap, pan, long press) reports the device of its own touch in
   `Window::pointer_source()`, not of the latest touch, so a pen and a finger down together no longer mislabel each
   other. A fling's momentum keeps the device that flung it, its closing scroll included when another touch catches
@@ -39,11 +45,17 @@ Wave 10a: Android mouse, autofill and locale; touch labels. Built on `gpui-pre` 
 - `parallax-android`: autofill's anchor rect follows the field when it scrolls or resizes under the keyboard.
 - `parallax-android`: an email, URL or search field keeps its keyboard layout when suggestions are off (GPUI's
   default); a secure one is a plain password field.
+- `parallax-android`: after a rotation on API 28 the app redraws at the new size (it kept the old frame until the
+  next input); a resize now makes a new surface.
+- `parallax-android`: colours are no longer dimmed: Android's default focus highlight greyed the whole view.
+- A field's composition (an underlined IME range) ends when focus leaves it (patch 0010), so the next IME session
+  doesn't get a stale range back and replace typed text.
 
 ### Known limits
 
 - Android mouse: no hover enter/exit (`is_hovered` stays false), no pointer icons. Android autofill sees one field at
   a time and never offers to save (GPUI has no API to end an autofill context).
+- Gboard's select mode (Shift + arrows) moves the caret instead of extending the selection.
 
 ## [0.1.3] - 2026-11-26
 

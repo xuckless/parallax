@@ -174,11 +174,21 @@ Full Android:
       emoji); load fonts by path and prefer the CBDT `NotoColorEmojiLegacy.ttf` (swash can't draw COLRv1; superseded in Wave 9: Android draws emoji itself via Canvas/Typeface over JNI, patch 0007, [docs/android-emoji.md](docs/android-emoji.md)); pass the
       app locale over JNI. Fonts load on the main thread at startup; measure startup and move them off it only if it
       exceeds the budget.
-- [ ] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35.
+- [x] Multi-script example screen (Latin, CJK, Arabic, emoji) checked on API 28, 33 and 35 ([gate-1.md](docs/gate-1.md)).
 - [x] Lifecycle: implement upstream's existing lifecycle, memory-warning, inset and back hooks for Android. Map
       `onDestroy` to an explicit choice (upstream has no terminate phase).
 - [ ] Rust unit tests: key-code table, surface state machine, editing-state bridge, fonts.xml parser.
 - [x] Ledger rows in `third_party/flutter/PORTED.md` for every ported file.
+- [x] CI emulator smoke (Wave 10): the `android-smoke` job runs `scripts/android-smoke.sh` on an API 35 emulator
+      ([docs/android-smoke.md](docs/android-smoke.md)).
+- [x] Gate 1 run on API 28, 33 and 35 with Gboard, recorded in [docs/gate-1.md](docs/gate-1.md) (Wave 10).
+- [x] Gate 1 fix: GL first on emulators (API 33 Vulkan drew black, then garbled glyphs).
+- [x] Gate 1 fix: a resize makes a new surface (API 28 kept the old-size frame after rotation).
+- [x] Gate 1 fix: Android's default focus highlight is off (it dimmed every colour).
+- [x] Gate 1 fix: a composition left behind when focus moves is ended (patch 0010, `Pending::commit`).
+- [ ] Gboard select mode (Shift + arrows) doesn't extend the selection — Phase 4 (owner deferred).
+- [ ] Patch 0010 ends GPUI's composition but doesn't tell the native IME on macOS/iOS/web; check and patch.
+- [ ] Emulator GL uses RGB565 (wgpu-hal `choose_config` without sRGB): dark colours are quantized on emulators only.
 
 **Gate 1:** the example app runs on the Android emulator (API 28, 33 and 35 images) with Gboard: typing, autocorrect,
 composing, selection, emoji, rotation, background/resume. Samsung Keyboard and real devices are added once the owner
