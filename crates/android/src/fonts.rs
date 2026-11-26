@@ -224,6 +224,14 @@ pub(crate) fn plan(
         .and_then(face)
         .ok_or(Error::NoSystemFont)?;
 
+    let families = config.families.iter().filter_map(|family| {
+        Some(Generic {
+            name: family.name.clone()?,
+            face: face(family)?,
+            weight: None,
+        })
+    });
+    // An alias names its family; one to a family that is not listed (OEM edits) is dropped, as Android does.
     let named = |name: &str| {
         config
             .families
@@ -231,15 +239,6 @@ pub(crate) fn plan(
             .find(|family| family.name.as_deref() == Some(name))
             .and_then(face)
     };
-    let families = config.families.iter().filter_map(|family| {
-        let name = family.name.clone()?;
-        Some(Generic {
-            face: named(&name)?,
-            name,
-            weight: None,
-        })
-    });
-    // An alias to a family that is not listed (OEM edits) is dropped, as Android does.
     let aliases = config.aliases.iter().filter_map(|alias| {
         Some(Generic {
             name: alias.name.clone(),
