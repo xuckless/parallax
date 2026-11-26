@@ -99,6 +99,9 @@ fail() {
   exit 1
 }
 
+# A slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no crash or ANR
+# dialogs at all (the logcat lines that catch our own crashes stay).
+on_device settings put global hide_error_dialogs 1
 on_device logcat -b all -c
 : >"$log"  # exists before the first step reads it, however late logcat starts
 "$adb" -s "$serial" logcat -b main,system,crash -v time >"$log" &
