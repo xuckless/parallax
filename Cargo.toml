@@ -11,7 +11,8 @@ publish = false
 
 [workspace.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14" }
+# No default features: `multithreaded` (gpui_web threads) needs nightly and affects only wasm32. See AGENTS.md, Web threading.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
 parallax-platform = { path = "crates/platform" }
 thiserror = "2"
 

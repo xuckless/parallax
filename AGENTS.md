@@ -58,6 +58,7 @@ Rules for ported code:
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
 | Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |
 | Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
+| Web threading | Single-threaded on stable: `gpui_platform` without its `multithreaded` feature on wasm32. Revisit when upstream threads work on stable. |
 | Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
 | Minimum OS | iOS 17. Android API 28 (Android 9). |
 | Android glue | Own small Activity and View; Flutter's self-contained touch, keyboard and text-input files ported as Java; Rust over JNI. No GameActivity. |
