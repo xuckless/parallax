@@ -29,6 +29,10 @@ const FONT_LISTS: &[&str] = &["/system/etc/font_fallback.xml", "/system/etc/font
 /// The files both lists name.
 const FONT_DIR: &str = "/system/fonts";
 
+/// cosmic-text's locale when the surface sent none (an empty `LocaleList`): what upstream's
+/// `new_without_system_fonts` uses, so behaviour matches upstream's default.
+const FALLBACK_LOCALE: &str = "en-US";
+
 /// GPUI's text system with Android's system fonts. Every method but `font_id` is upstream's.
 pub(crate) struct AndroidTextSystem {
     cosmic: CosmicTextSystem,
@@ -130,7 +134,10 @@ impl AndroidTextSystem {
 
         // cosmic-text's Android fallback table is empty, so its locale changes nothing yet; the per-language order
         // stays GPUI fallbacks on every font (`font_id`). The app's locale is still the right one to hand over.
-        let locale = locales.first().map_or("en-US", String::as_str).to_string();
+        let locale = locales
+            .first()
+            .map_or(FALLBACK_LOCALE, String::as_str)
+            .to_string();
         Ok(Self {
             cosmic: CosmicTextSystem::new_with_font_system(
                 FontSystem::new_with_locale_and_db(locale, db),
