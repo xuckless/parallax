@@ -33,13 +33,18 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    pointer that never went down is dropped.
 5. **GPUI.** Each event goes to the window as `PlatformInput::Touch` through `Callbacks::input`, in packet order.
    Upstream's [gestures.rs](../upstream/gpui-pre/src/gestures.rs) recognizes taps (synthesized mouse down/up, so
-   `on_click` fires), pans (scroll events with touch phases) and long presses. `mouse_position` reports the last
-   touch.
+   `on_click` fires), pans (scroll events with touch phases) and long presses, unless an `on_touch` element claims
+   the touch (deepest handler wins, [core-patches.md](core-patches.md#0004-touch-opt-out)). The platform's
+   `mouse_position` reports the last touch.
 
 ## Not yet
 
 - **Mouse buttons as a mouse.** Every kind (finger, stylus, eraser, mouse button) still becomes a `TouchEvent`;
-  `DEVICE_KINDS` only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)).
+  `DEVICE_KINDS` only tags it (`TouchEvent::device`, patch 0003, [core-patches.md](core-patches.md)). So a mouse
+  click arrives as a synthesized tap (`ClickEvent::Touch`), and `pointer_source()` is window-wide per latest touch, so
+  a pen and a finger down together can mislabel each other's gestures.
+- **Back key source.** Android's Back key arrives as a `BackGestureEvent`, which patch 0003's table tags as the latest
+  touch's device, synthesized.
 - **Mouse hover, wheel and trackpad.** `AndroidTouchProcessor.onGenericMotionEvent` is ported but the view does not
   call it yet; hover and pan/zoom rows in `TOUCH_PHASES` send nothing.
 - **Platform views.** `trackMotionEvents` is false, as in Flutter's `FlutterView`, so the ported
