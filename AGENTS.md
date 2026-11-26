@@ -14,12 +14,38 @@ Upstream GPUI already covers a lot. Parallax fills only the gaps:
 | iOS | `gpui_ios` (UIKit, Metal, CoreText, text input, safe area) | Nothing new. Patches only for gaps found. |
 | Touch + gestures | `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag), `ScrollPhysics` | Nothing new. Uses upstream. |
 | Web | `gpui_web` (WebGPU/WebGL2, touch, IME mirror) | `parallax-web`: semantics DOM for screen readers, other gaps |
-| Android | Nothing | `parallax-android`: whole backend |
+| Android | Nothing | `parallax-android`: whole backend, built on Flutter's ported Android embedding |
 | Desktop touch | Nothing on Windows, Linux, macOS | Patches feeding `TouchEvent` from each OS |
 | Accessibility | AccessKit tree in core, Windows adapter | Android adapter, web semantics DOM, gaps elsewhere |
 | Tooling | Nothing for mobile builds | `cargo-parallax` CLI |
 
 Re-check this table against upstream at every sync. Upstream moves fast; never assume a gap is still a gap.
+
+## Flutter is the second source of truth
+
+Flutter has spent a decade fixing touch, text input, IME and accessibility bugs on every platform. Parallax
+does not reinvent that. It ports Flutter's work, credits it, and keeps tracking it.
+
+| Flutter asset | How Parallax uses it |
+|---|---|
+| Android embedding (Java): `FlutterView`, `FlutterActivity`, `AndroidTouchProcessor`, `KeyboardManager`, `TextInputPlugin`, `InputConnectionAdaptor`, `ListenableEditingState` | **Ported as Java**, near-verbatim, in `crates/android/java/`. `MethodChannel` calls become JNI calls into Rust. |
+| iOS text input (`FlutterTextInputPlugin.mm` and its tests) | **Test oracle.** Its test cases become table-driven tests against upstream `gpui_ios`; failures get Flutter's fix as a patch, filed upstream. |
+| Web text editing (`text_editing.dart`: per-browser strategies) | Test oracle for upstream `gpui_web`; fixes as patches or in `parallax-web`. |
+| Framework algorithms (`velocity_tracker.dart`, `lsq_solver.dart`, `scroll_physics.dart`, `friction_simulation.dart`, `arena.dart`) | Test oracle for upstream `gestures.rs` and `ScrollPhysics`. Port a Flutter algorithm only where upstream fails its cases. |
+| Platform behaviour (`TargetPlatform` defaults, selection handles, magnifier, text toolbar, haptics, touch-target minimums) | Ported as behaviour plus one target → behaviour table. No Material or Cupertino widgets. |
+| Accessibility (`AccessibilityBridge.java`, `SemanticsObject.mm`) | Oracle only. Adapters come from AccessKit (`accesskit_android`, others). |
+
+Rules for ported code:
+
+1. **Upstream GPUI first, Flutter second.** Never build a parallel system next to upstream's. Flutter fixes go in as small patches to upstream and get filed with Zed.
+2. **Port, don't paraphrase.** Java stays Java with Flutter's structure, names and comments, so later Flutter fixes can be diffed in. Code translated to Rust keeps Flutter's names, constants and comments (see rule 9).
+3. **Header on every ported file:** `Ported from flutter/flutter <path> @ <commit>. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.`
+4. **Ledger:** add a row to `third_party/flutter/PORTED.md` for every ported file or test table.
+5. **Licenses:** a crate with ported code declares `license = "Apache-2.0 AND BSD-3-Clause"`. Keep `NOTICE` current.
+6. **Ported tests are the spec.** A Flutter test case that encodes a bug fix becomes a named row in a Parallax test table, with the Flutter test name in the row.
+7. **Naming:** "ports code from Flutter" is fine. Never use "Flutter" or Google marks in a crate or product name.
+8. **Pinned Flutter commit:** recorded in `third_party/flutter/PORTED.md`. Bump it at the upstream sync and port the diffs.
+9. **Caveman Code applies to Rust translations.** Flutter's state becomes explicit enums and its rules become tables, with behaviour identical (its ported tests prove it). Ported Java is exempt; don't restyle it.
 
 ## Decisions (settled, do not reopen without the owner)
 
@@ -32,7 +58,8 @@ Re-check this table against upstream at every sync. Upstream moves fast; never a
 | Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
 | Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
 | Minimum OS | iOS 17. Android API 28 (Android 9). |
-| Android glue | `android-activity` crate with GameActivity (needed for IME). |
+| Android glue | Flutter's Android embedding ported as Java (Activity, View, touch, keyboard, text input) talking to Rust over JNI. No GameActivity. |
+| Flutter | Second source of truth: port its platform glue and behaviour, use its tests as the oracle for upstream (see below). Pinned commit in `third_party/flutter/PORTED.md`. |
 | App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
 | Touch → mouse | On by default (upstream behaviour), explicit opt-out per element. Documented, never silent. |
 | Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
@@ -51,10 +78,13 @@ crates/
   parallax/    facade: re-exports GPUI + Parallax crates
   platform/    parallax-platform: one table maps target → platform
   android/     parallax-android: Platform + PlatformWindow for Android
+    java/      Flutter's Android embedding, ported as Java
   web/         parallax-web: gaps on top of gpui_web
   ext/         parallax-ext: extension traits on GPUI elements
   cli/         cargo-parallax: build/run on iOS, Android, web
 examples/      one app, built for every target
+third_party/
+  flutter/     Flutter's LICENSE and PORTED.md (ledger of every ported file + pinned commit)
 ```
 
 ## Upstream and patch rules

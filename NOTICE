@@ -6,3 +6,8 @@ https://github.com/zed-industries/zed), licensed under the Apache License 2.0.
 Copyright 2022 - 2025 Zed Industries, Inc.
 
 Parallax is built on GPUI. It is not affiliated with or endorsed by Zed Industries.
+
+This product includes code ported from Flutter (https://github.com/flutter/flutter),
+licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE.
+Copyright 2014 The Flutter Authors. All rights reserved.
+Parallax is not affiliated with or endorsed by Google or the Flutter project.
