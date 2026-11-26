@@ -8,3 +8,4 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [upstream.md](upstream.md) | upstream/ snapshot, apply-patches.sh, sync-upstream.sh, fixing patches that stop applying |
 | [patches.md](patches.md) | Writing, numbering and making patches; translating them to Zed's layout with patch-paths.sh; the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
+| [ci.md](ci.md) | The six CI jobs, what each checks, running the checks locally, adding a target |

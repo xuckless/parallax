@@ -36,7 +36,7 @@ no fixed schedule and no planned last number.
       show the Flutter source diff between the pinned tag and a newer stable tag.
 - [x] `scripts/patch-paths.sh`: translate a patch between the vendored `gpui-pre` layout and Zed's `crates/gpui*` layout,
       so one patch applies to both.
-- [ ] CI matrix: iOS, Android, wasm, macOS, Windows, Linux (six builds; no feature variants).
+- [x] CI matrix: iOS, Android, wasm, macOS, Windows, Linux (six builds; no feature variants).
 - [ ] Gap audit: run upstream's iOS and web examples, then write down what is missing for touch, IME,
       lifecycle (background, active, low memory), safe area and accessibility. The results go into the phases below.
 - [ ] Android font audit: cosmic-text on Android needs system font discovery (`/system/etc/fonts.xml`), emoji and CJK
