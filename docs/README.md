@@ -20,3 +20,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent, what is not yet wired, following Flutter packet changes |
 | [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
 | [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch, rebuilding it with sync-fork.sh, and why apps can't opt in to it |
+| [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, porting the next Flutter test |
+| [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
+| [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, patch 0002 workaround |
+| [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; device-loss recovery |
