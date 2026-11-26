@@ -1,0 +1,73 @@
+// JVM tests for crates/android/java on Robolectric. Versions mirror Flutter 3.50.1's engine test_runner
+// (shell/platform/android/test_runner/build.gradle), where the ported tests come from. See docs/android-tests.md.
+plugins {
+    id 'com.android.library' version '9.3.1'
+}
+
+// Robolectric 4.17 needs Java 21 to emulate SDK 37; the sources stay at Java 17 (compileOptions).
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+configurations {
+    mockitoAgent
+}
+
+android {
+    namespace = 'io.github.xuckless.parallax'
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 28
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        // The code under test: the parallax-android crate's Java, compiled as is.
+        main.java.srcDirs = ['../java']
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+        unitTests.all {
+            // The flag set Robolectric 4.17 asks for on JDK 17+, copied from Flutter's test_runner.
+            jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED',
+                    '--add-opens=java.base/java.util=ALL-UNNAMED',
+                    '--add-opens=java.base/java.io=ALL-UNNAMED',
+                    '--add-opens=java.base/java.net=ALL-UNNAMED',
+                    '--add-opens=java.base/java.security=ALL-UNNAMED',
+                    '--add-opens=java.base/java.text=ALL-UNNAMED',
+                    '--add-opens=java.base/jdk.internal.access=ALL-UNNAMED',
+                    '--add-opens=java.desktop/java.awt.font=ALL-UNNAMED',
+                    '--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED'
+            // Mockito's inline mock maker (MotionEvent is final) loads as an agent, as in Flutter's test_runner.
+            def agent = configurations.mockitoAgent
+            jvmArgumentProviders.add({ ["-javaagent:${agent.asPath}".toString()] } as CommandLineArgumentProvider)
+            // One sandbox per emulated SDK stays loaded; the default 512 MB runs out (Flutter uses 8g).
+            maxHeapSize = '2g'
+            testLogging {
+                events 'failed'
+                exceptionFormat 'full'
+            }
+        }
+    }
+}
+
+dependencies {
+    testImplementation 'androidx.test:core:1.6.1'
+    testImplementation 'androidx.test.ext:junit:1.2.1'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.17'
+    testImplementation 'org.mockito:mockito-core:5.20.0'
+    mockitoAgent('org.mockito:mockito-core:5.20.0') {
+        transitive = false
+    }
+}

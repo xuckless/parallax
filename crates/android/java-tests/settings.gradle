@@ -1,0 +1,19 @@
+// JVM tests for the ported Java in ../java (Robolectric, no device). See docs/android-tests.md.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+plugins {
+    // Downloads the JDK 21 toolchain (build.gradle) when none is installed, as in the cargo-parallax template.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'parallax-java-tests'
