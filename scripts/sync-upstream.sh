@@ -15,14 +15,18 @@ version="${1:-$(cargo search gpui-pre --limit 20 | sed -n 's/^gpui-pre = "\([^"]
 [[ -n "$version" ]] || die "could not find the latest gpui-pre on crates.io; pass VERSION"
 echo "syncing upstream/ to gpui-pre $version"
 
-# Vendor roots: every gpui-pre-* crate Parallax builds is reachable from these. To add a platform crate, add a row
-# here and to the "How:" line of UPSTREAM below.
+# Vendor roots: every gpui-pre-* crate a vendored manifest names, optional deps included, is reachable from these, so
+# the fork crates are complete (fork-crates.sh fails on a missing one). bench-metrics and zlog are optional deps
+# (gpui's bench-support; ztracing's tracing-tracy and web). To add a crate, add a row here and to the "How:" line
+# of UPSTREAM below.
 roots=(
     'gpui-pre = "=VERSION"'
     'gpui-pre-platform = { version = "=VERSION", features = ["gpui_wgpu"] }'
     'gpui-pre-wgpu = "=VERSION"'
     'gpui-pre-ios = "=VERSION"'
     'gpui-pre-web = "=VERSION"'
+    'gpui-pre-bench-metrics = "=VERSION"'
+    'gpui-pre-zlog = "=VERSION"'
 )
 
 # Scratch space lives under build/ (generated, git-ignored) so `git apply --directory` can reach it.
@@ -80,9 +84,9 @@ Zed toolchain:    $zed_toolchain (rust-toolchain.toml at that commit)
 Vendored on:      $(date +%F)
 
 How: \`cargo vendor\` of a scratch crate depending on gpui-pre, gpui-pre-platform (feature gpui_wgpu),
-gpui-pre-wgpu, gpui-pre-ios and gpui-pre-web, all =$version, for all targets. Only the gpui-pre-* directories
-were copied here, unmodified (.cargo-checksum.json kept as a pristine check). Third-party deps resolve
-from crates.io.
+gpui-pre-wgpu, gpui-pre-ios, gpui-pre-web, gpui-pre-bench-metrics and gpui-pre-zlog, all =$version, for all
+targets. Only the gpui-pre-* directories were copied here, unmodified (.cargo-checksum.json kept as a pristine
+check). Third-party deps resolve from crates.io.
 
 Crates (crates.io name, version, Zed crate):
 $(printf '%s\n' "${crate_rows[@]}")

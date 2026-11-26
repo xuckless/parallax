@@ -40,7 +40,9 @@ scripts/sync-upstream.sh 0.3.15   # a specific version
 [`scripts/sync-upstream.sh`](../scripts/sync-upstream.sh):
 
 1. `cargo vendor`s a scratch crate on the vendor roots listed in the script (`gpui-pre`, `gpui-pre-platform`,
-   `gpui-pre-wgpu`, `gpui-pre-ios`, `gpui-pre-web`) and replaces `upstream/` wholesale with the `gpui-pre-*` crates.
+   `gpui-pre-wgpu`, `gpui-pre-ios`, `gpui-pre-web`, and the optional deps `gpui-pre-bench-metrics`, `gpui-pre-zlog`)
+   and replaces `upstream/` wholesale with the `gpui-pre-*` crates. Every `gpui-pre-*` crate any vendored manifest
+   names must be vendored, optional ones too, or the fork crates could not be published.
 2. Rewrites `upstream/UPSTREAM` (Zed commit from each crate's `[package.metadata.gpui-pre] zed-rev`), prints crates
    added or removed, bumps the version in `Cargo.toml` and regenerates its `[patch.crates-io]` rows.
 3. Warns if Zed's toolchain differs from [`rust-toolchain.toml`](../rust-toolchain.toml). Bumping it is a manual step.

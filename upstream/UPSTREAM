@@ -4,16 +4,17 @@ gpui-pre version: 0.3.14
 Zed commit:       f126950f9d3b62666f97437ae5d4ccac2272c4db (zed-industries/zed, 2026-11-22)
                   Read from [package.metadata.gpui-pre] zed-rev in every vendored Cargo.toml.
 Zed toolchain:    1.98.1 (rust-toolchain.toml at that commit)
-Vendored on:      2026-11-25
+Vendored on:      2026-11-26
 
 How: `cargo vendor` of a scratch crate depending on gpui-pre, gpui-pre-platform (feature gpui_wgpu),
-gpui-pre-wgpu, gpui-pre-ios and gpui-pre-web, all =0.3.14, for all targets. Only the gpui-pre-* directories
-were copied here, unmodified (.cargo-checksum.json kept as a pristine check). Third-party deps resolve
-from crates.io.
+gpui-pre-wgpu, gpui-pre-ios, gpui-pre-web, gpui-pre-bench-metrics and gpui-pre-zlog, all =0.3.14, for all
+targets. Only the gpui-pre-* directories were copied here, unmodified (.cargo-checksum.json kept as a pristine
+check). Third-party deps resolve from crates.io.
 
 Crates (crates.io name, version, Zed crate):
   gpui-pre                     0.3.14  gpui
   gpui-pre-apple               0.3.14  gpui_apple
+  gpui-pre-bench-metrics       0.3.14  bench_metrics
   gpui-pre-collections         0.3.14  collections
   gpui-pre-derive-refineable   0.3.14  derive_refineable
   gpui-pre-http-client         0.3.14  http_client
@@ -30,5 +31,6 @@ Crates (crates.io name, version, Zed crate):
   gpui-pre-web                 0.3.14  gpui_web
   gpui-pre-wgpu                0.3.14  gpui_wgpu
   gpui-pre-windows             0.3.14  gpui_windows
+  gpui-pre-zlog                0.3.14  zlog
   gpui-pre-ztracing            0.3.14  ztracing
   gpui-pre-ztracing-macro      0.3.14  ztracing_macro
