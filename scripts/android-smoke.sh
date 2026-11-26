@@ -108,8 +108,7 @@ fail() {
 # A slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no crash or ANR
 # dialogs at all (the logcat lines that catch our own crashes stay).
 on_device settings put global hide_error_dialogs 1
-# Portrait, auto-rotate off. Set well before the rotate steps: turning auto-rotate off makes Android store the current
-# rotation as user_rotation a moment later, which would undo a user_rotation written right after it.
+# Portrait with auto-rotate off: tap_colour expects portrait, and the rotate steps are the only rotations.
 on_device settings put system accelerometer_rotation 0
 on_device settings put system user_rotation 0
 start=$(log_mark)
