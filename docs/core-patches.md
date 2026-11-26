@@ -37,15 +37,18 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 
 [0004-touch-opt-out.patch](../patches/0004-touch-opt-out.patch). It needs 0003.
 
-- **API:** `.on_touch(|event: &TouchEvent, window, cx| …)` on any interactive element (`InteractiveElement` /
-  `Interactivity`). Touches that start over the element reach this listener in every phase. They never become mouse,
-  click, scroll or long-press events, even after the finger moves off the element.
-- **Mechanism:** `TouchEvent` is now a `MouseEvent`, so `Window::on_mouse_event::<TouchEvent>` works for custom
-  elements too. Each started touch goes to those listeners first. One that calls `window.prevent_default()` claims
-  the touch, the same rule touch drag and long press use (`on_touch` does it for you). The window keeps one
-  `TouchRoute` per touch id:
-  - `Gestures`: the upstream recognizer handles it;
-  - `Listeners { start }`: every later event is hit-tested at `start`.
+- **API:** `.on_touch(|event: &TouchEvent, window, cx| …)` on an element with an id (`StatefulInteractiveElement` /
+  `Interactivity`). A touch it claims reaches this listener in every phase, even after the finger or the element
+  moves, and never becomes mouse, click, scroll or long-press events.
+- **Deepest wins** (Flutter's gesture arena, simplified): the frontmost element under a starting touch that handles
+  touches, taps, presses, drags or scrolls decides. `on_touch` claims it; the others leave it to the upstream
+  recognizer. A button or scroll container inside an `on_touch` canvas still works; nested `on_touch`: inner wins.
+- **Mechanism:** `TouchEvent` is a `MouseEvent` now. One `TouchRoute` per touch id: `Deciding` during `Started`
+  (first decision wins; bubble order visits the frontmost element first), then `Gestures` or
+  `Claimed(GlobalElementId)`. Later phases of a claimed touch reach the owner by `Window::touch_owner`, not by hit
+  test. Custom elements claim with `Window::claim_touch` from a `TouchEvent` listener. The window's mouse position
+  does not move. After a claimed touch ends the window draws if dirty, as after a tap, so the web keyboard opens for
+  a field focused in an `Ended` handler.
 - **Taps click as touches:** div's `on_click` now receives the declared `ClickEvent::Touch(TouchClickEvent)` when the
   press and release were synthesized from a tap. `ClickEvent::Mouse` is only for real mouse clicks.
 
@@ -65,10 +68,9 @@ Each `AutofillHint` maps to an HTML `autocomplete` token, an Android `AUTOFILL_H
 
 ## Tests
 
-Each patch carries table-driven tests on GPUI's test platform:
-- 0003: `pointer_source_names_the_device_and_synthesis_of_each_event` (window.rs);
-- 0004: `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs);
-- 0005: the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs).
+Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_device_and_synthesis_of_each_event`
+(window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
+gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs).
 
 The packaged crate can't run its own lib tests as shipped: `svg_renderer.rs` includes two fonts from Zed's
 `assets/`, and `style.rs` tests use `util_macros`, which is not vendored. To run them, copy `build/parallax-gpui/`,
