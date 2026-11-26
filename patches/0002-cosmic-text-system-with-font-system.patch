@@ -1,0 +1,59 @@
+Let CosmicTextSystem take a caller-built FontSystem.
+
+What: add `CosmicTextSystem::new_with_font_system(FontSystem, &str)` in gpui_wgpu; `new` and
+`new_without_system_fonts` become one-line calls to it. No behaviour change for existing callers.
+
+Why: fontdb has no system font discovery on Android, so `new` finds no fonts, and `new_without_system_fonts`
+fixes the locale to en-US and cosmic-text's empty Android fallback table. Parallax's Android backend
+(parallax-android) reads /system/etc/fonts.xml itself and wants to hand over a `FontSystem` built with
+`FontSystem::new_with_locale_and_db_and_fallback`: fonts loaded by path (fontdb memory-maps them), the app's
+locale, and a per-script fallback table (CJK by locale, emoji). Today the only other way in is `add_fonts`
+with bytes, which keeps cosmic-text's empty fallback table and en-US locale. Until this lands, the published
+parallax-android works around it on stock gpui_wgpu (docs/patches.md, "Published crates").
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-wgpu/src/cosmic_text_system.rs b/gpui-pre-wgpu/src/cosmic_text_system.rs
+index eafe974..392c05c 100644
+--- a/gpui-pre-wgpu/src/cosmic_text_system.rs
++++ b/gpui-pre-wgpu/src/cosmic_text_system.rs
+@@ -129,27 +129,22 @@ impl CosmicTextSystem {
+     }
+ 
+     pub fn new(system_font_fallback: &str) -> Self {
+-        let font_system = FontSystem::new();
+-
+-        Self(RwLock::new(CosmicTextSystemState {
+-            font_system,
+-            scratch: ShapeBuffer::default(),
+-            swash_scale_context: ScaleContext::new(),
+-            pending_glyph_images: HashMap::default(),
+-            loaded_fonts: Vec::new(),
+-            loaded_font_ids_by_key: HashMap::default(),
+-            font_ids_by_family_cache: HashMap::default(),
+-            system_font_fallback: system_font_fallback.to_string(),
+-            missing_glyph_sink: None,
+-        }))
++        Self::new_with_font_system(FontSystem::new(), system_font_fallback)
+     }
+ 
+     pub fn new_without_system_fonts(system_font_fallback: &str) -> Self {
+-        let font_system = FontSystem::new_with_locale_and_db(
+-            "en-US".to_string(),
+-            cosmic_text::fontdb::Database::new(),
+-        );
++        Self::new_with_font_system(
++            FontSystem::new_with_locale_and_db(
++                "en-US".to_string(),
++                cosmic_text::fontdb::Database::new(),
++            ),
++            system_font_fallback,
++        )
++    }
+ 
++    /// Uses a caller-built `FontSystem`: its font database, locale and fallback lists. For platforms
++    /// where fontdb finds no system fonts (Android) or where the caller picks the fonts and their order.
++    pub fn new_with_font_system(font_system: FontSystem, system_font_fallback: &str) -> Self {
+         Self(RwLock::new(CosmicTextSystemState {
+             font_system,
+             scratch: ShapeBuffer::default(),
