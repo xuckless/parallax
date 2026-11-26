@@ -7,7 +7,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 ## [Unreleased] (0.1.4)
 
 Wave 10: Android mouse, autofill and locale; touch labels; Gate 1 fixes. Built on `gpui-pre` 0.3.14 plus Parallax's
-patches (fork `0.3.14-parallax.6`). Checked by unit, JVM and patch tests and an API 35 emulator smoke test in CI; Gate 1
+patches (fork `0.3.14-parallax.7`). Checked by unit, JVM and patch tests and an API 35 emulator smoke test in CI; Gate 1
 run on API 28, 33 and 35 emulators; no real-device testing yet.
 
 ### Added
