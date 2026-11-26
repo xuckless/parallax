@@ -5,6 +5,17 @@ How [`parallax-android`](../crates/android/src/lib.rs) keeps the renderer on the
 `Surface::{None, Ready, Recovering, Lost}`, one `next(state, event) → (state, action)`, tested row by row on the host.
 The Activity side: [android-lifecycle.md](android-lifecycle.md). Rules: [AGENTS.md](../AGENTS.md) (Explicit state).
 
+## Whose surface
+
+`Ready` and `Recovering` record the Activity whose view created the window. Only the owning Activity's view may
+create or resize it ([android-lifecycle.md](android-lifecycle.md#several-activities)), but `surfaceDestroyed` is
+always taken from the window's own view, owner or not: Android needs the `ANativeWindow` released before that
+callback returns, and nothing may draw into it after. Both orders of two views are rows in `surface::tests`:
+
+- **New `surfaceCreated` first:** `Attach` releases the old window at once; the old view's late `surfaceDestroyed`
+  is rejected, since the current window is not its own.
+- **Old `surfaceDestroyed` first:** `Detach` releases it and the state is `Lost` until the new view's surface.
+
 ## Device loss
 
 Each vsync, `Shell::frame` sends the surface state machine ([surface.rs](../crates/android/src/surface.rs)) a `Frame`

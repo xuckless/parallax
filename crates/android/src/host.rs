@@ -197,7 +197,10 @@ extern "system" fn surface_created(
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
         host.shell.set_display(window.size(), density, refresh_rate);
-        host.shell.handle(SurfaceEvent::Created(window));
+        host.shell.handle(SurfaceEvent::Created {
+            window,
+            activity: ActivityId(activity),
+        });
         let launch = match &*host.app.borrow() {
             AppState::Loaded { launch } => *launch,
             AppState::Running(_) => return,
@@ -240,10 +243,14 @@ extern "system" fn surface_changed(
     });
 }
 
+/// Not [`with_owner`]: a view whose Activity no longer owns the window may still hold the current surface, and
+/// the surface state machine releases it only for that view.
 extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jint) {
-    with_owner(activity, |host| {
-        host.shell
-            .handle(SurfaceEvent::Destroyed { at: Instant::now() })
+    with_host(|host| {
+        host.shell.handle(SurfaceEvent::Destroyed {
+            activity: ActivityId(activity),
+            at: Instant::now(),
+        })
     });
 }
 
@@ -524,7 +531,9 @@ impl Shell {
     /// The current native window: ready, or waiting for the renderer to be rebuilt on it.
     fn current_window(&self) -> Option<NativeWindow> {
         match &*self.surface.borrow() {
-            Surface::Ready(window) | Surface::Recovering { window, .. } => Some(window.clone()),
+            Surface::Ready { window, .. } | Surface::Recovering { window, .. } => {
+                Some(window.clone())
+            }
             Surface::None | Surface::Lost { .. } => None,
         }
     }
