@@ -34,7 +34,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 10] {
+fn natives() -> [NativeMethod; 9] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -43,7 +43,7 @@ fn natives() -> [NativeMethod; 10] {
     [
         row(
             "nativeSurfaceCreated",
-            "(ILandroid/view/Surface;FF)V",
+            "(ILandroid/view/Surface;FFLjava/lang/String;)V",
             surface_created as *mut c_void,
         ),
         row(
@@ -72,11 +72,6 @@ fn natives() -> [NativeMethod; 10] {
             "nativeActivityEvent",
             "(III)V",
             activity_event as *mut c_void,
-        ),
-        row(
-            "nativeLocales",
-            "(Ljava/lang/String;)V",
-            locales as *mut c_void,
         ),
         row(
             "nativeDispatchKeyData",
@@ -169,14 +164,25 @@ fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
+/// `tags` are the app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`):
+/// per-app locales on API 33+, which the system property cosmic-text reads does not have. The first surface starts
+/// the platform with them; runtime per-app locale changes are not followed yet (a later item).
 extern "system" fn surface_created(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     activity: jint,
     surface: JObject,
     density: jfloat,
     refresh_rate: jfloat,
+    tags: JString,
 ) {
+    let locales: Vec<String> = match env.get_string(&tags) {
+        Ok(tags) => String::from(tags).split(',').map(str::to_string).collect(),
+        Err(error) => {
+            log::error!("parallax: unreadable locales, fonts keep fonts.xml order: {error}");
+            Vec::new()
+        }
+    };
     // SAFETY: `env` and `surface` are this call's live JNI arguments; fromSurface returns a new reference or null.
     let raw = unsafe {
         ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast())
@@ -193,8 +199,9 @@ extern "system" fn surface_created(
             AppState::Loaded { launch } => *launch,
             AppState::Running(_) => return,
         };
-        match crate::current_platform() {
+        match crate::platform::AndroidPlatform::new(host.shell.clone(), &locales) {
             Ok(platform) => {
+                let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running(app);
                 // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
@@ -293,22 +300,6 @@ extern "system" fn dispatch_pointer_data_packet(
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
     with_host(|host| host.shell.touch(packet));
-}
-
-/// The app's locales as BCP-47 tags, comma-separated, preference order (`LocaleList.toLanguageTags()`): per-app
-/// locales on API 33+, which the system property cosmic-text reads does not have. Sent from `onCreate`, before the
-/// first surface starts the platform and loads the fonts.
-extern "system" fn locales(mut env: JNIEnv, _class: JClass, tags: JString) {
-    let tags: String = match env.get_string(&tags) {
-        Ok(tags) => tags.into(),
-        Err(error) => {
-            log::error!("parallax: unreadable locales: {error}");
-            return;
-        }
-    };
-    with_host(|host| {
-        *host.shell.locales.borrow_mut() = tags.split(',').map(str::to_string).collect();
-    });
 }
 
 /// The ported `KeyEmbedderResponder` hands over one Flutter key data packet: the whole direct `ByteBuffer`.
@@ -476,8 +467,6 @@ pub(crate) struct Shell {
     pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) touches: RefCell<pointer::Touches>,
-    /// The app's locales (BCP-47), preference order; the fonts read them once, when the platform starts.
-    pub(crate) locales: RefCell<Vec<String>>,
     pub(crate) keyboard: RefCell<keys::Keyboard>,
 }
 
@@ -491,7 +480,6 @@ impl Shell {
             renderer: RefCell::new(None),
             callbacks: Callbacks::default(),
             touches: RefCell::new(pointer::Touches::default()),
-            locales: RefCell::new(Vec::new()),
             keyboard: RefCell::new(keys::Keyboard::default()),
         }
     }

@@ -28,8 +28,10 @@ final class ParallaxSurfaceView extends SurfaceView
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
   // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops events
   // from a replaced Activity, whose callbacks can still arrive after its successor started.
+  // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
+  // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
-      int activity, Surface surface, float density, float refreshRate);
+      int activity, Surface surface, float density, float refreshRate, String languageTags);
 
   private static native void nativeSurfaceChanged(
       int activity, int width, int height, float density);
@@ -60,10 +62,6 @@ final class ParallaxSurfaceView extends SurfaceView
   // ParallaxActivity's lifecycle, focus and memory callbacks: its id, one of its EVENT_* codes and a
   // value (focus flag or trim level).
   static native void nativeActivityEvent(int activity, int event, int value);
-
-  // The app's locales, BCP-47 tags joined by commas, preference order (LocaleList.toLanguageTags()).
-  // ParallaxActivity sends them before the first surface; the fonts read them when the app starts.
-  static native void nativeLocales(String languageTags);
 
   // Flutter's key data packet (KeyData.toBytes, the whole direct buffer), read before the call
   // returns. Returns whether GPUI handled it: the reply Flutter's framework sends asynchronously.
@@ -112,7 +110,13 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void surfaceCreated(SurfaceHolder holder) {
-    nativeSurfaceCreated(activity, holder.getSurface(), density(), getDisplay().getRefreshRate());
+    // Per-app locales (API 33+) are in the Activity's configuration, not the system property.
+    nativeSurfaceCreated(
+        activity,
+        holder.getSurface(),
+        density(),
+        getDisplay().getRefreshRate(),
+        getResources().getConfiguration().getLocales().toLanguageTags());
   }
 
   @Override

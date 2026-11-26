@@ -6,9 +6,10 @@ itself. Rules: [AGENTS.md](../AGENTS.md) (Decisions: Android fonts; patch rule 1
 
 ## How fonts are found
 
-1. **Locale.** [`ParallaxActivity`](../crates/android/java/io/github/xuckless/parallax/ParallaxActivity.java) sends
-   `LocaleList.toLanguageTags()` from `onCreate` (`nativeLocales`, [host.rs](../crates/android/src/host.rs)): per-app
-   locales on API 33+ included, which the `persist.sys.locale` property cosmic-text reads lacks. Read once at startup.
+1. **Locale.** [`ParallaxSurfaceView`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java)
+   sends `LocaleList.toLanguageTags()` with each surface (`nativeSurfaceCreated`, [host.rs](../crates/android/src/host.rs)):
+   per-app locales on API 33+ included, which the `persist.sys.locale` property cosmic-text reads lacks. The first
+   surface passes them straight into the platform start; later changes are not followed yet.
 2. **List.** [text_system.rs](../crates/android/src/text_system.rs) reads the first readable of `FONT_LISTS`:
    `/system/etc/font_fallback.xml` (API 35+), then `/system/etc/fonts.xml`. On the API 35 emulator image the first is
    not readable by apps (SELinux), so `fonts.xml`, which API 35 still ships, is used.
