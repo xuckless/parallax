@@ -1,7 +1,6 @@
 # Android backend
 
-[`parallax-android`](../crates/android/src/lib.rs) runs GPUI on Android: the 0.1.1 skeleton of
-[ROADMAP.md](../ROADMAP.md) Phase 1. Rules: [AGENTS.md](../AGENTS.md) (Android glue, Android threading, Renderer). Background: [android-spike.md](android-spike.md).
+[`parallax-android`](../crates/android/src/lib.rs) runs GPUI on Android: the 0.1.1 skeleton of [ROADMAP.md](../ROADMAP.md) Phase 1. Rules: [AGENTS.md](../AGENTS.md) (Android glue, Android threading, Renderer). Background: [android-spike.md](android-spike.md).
 
 ## How it fits together
 
@@ -31,8 +30,7 @@
   activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
-- **Rotation** keeps the Activity (manifest `configChanges`, as Flutter); [a new surface](android-surface.md#resize).
-- **No focus highlight.** Android's default one greyed the whole frame out of touch mode (white read 224 of 255).
+- **Rotation** keeps the Activity (manifest `configChanges`, as Flutter); [a new surface](android-surface.md#resize). Android's default focus highlight is off: it greyed the whole frame out of touch mode.
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).

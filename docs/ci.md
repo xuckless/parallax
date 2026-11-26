@@ -9,9 +9,11 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-Eight jobs run on every push, every pull request and on manual `workflow_dispatch`; `android-smoke` runs on pushes to
-`main`, pull requests and `workflow_dispatch` only ([why](#android-smoke)). A newer push to the same ref cancels the
-older run.
+Eight jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
+builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs only where a merge is decided: pull
+requests, pushes to `main` and manual runs; start it on a branch with `gh workflow run ci.yml --ref <branch>`
+(emulator setup, GPU mode, caching: [android-smoke.md](android-smoke.md#in-ci)). A newer push to the same ref cancels
+the older run.
 
 | Target | Runner | Runs |
 |---|---|---|
@@ -25,25 +27,15 @@ older run.
 | patch-tests | ubuntu-latest | [`scripts/patch-test.sh`](../scripts/patch-test.sh): GPUI's own lib tests on the patched fork crate, every patch's tests among them ([patch-tests.md](patch-tests.md)). Its own job, not a matrix row |
 | android-smoke | ubuntu-latest + KVM | [`scripts/android-smoke.sh`](android-smoke.md) on an API 35 `google_apis` x86_64 emulator (Pixel 7 profile). Its own job, not a matrix row |
 
-The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml`
-(a subset of Zed's `script/linux`).
+The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml` (a subset of Zed's `script/linux`).
 
 ## Android and wasm
 
 Both check the whole workspace, nothing excluded.
-
 - **Android:** `parallax-platform` depends on upstream `gpui_platform` only off Android (it has no Android arm), so
   every crate compiles there. See [platform.md](platform.md).
 - **wasm:** single-threaded on stable (AGENTS.md "Web threading"). The workspace takes `gpui_platform` without its
   default `multithreaded` feature, whose `wasm_thread` needs nightly.
-
-A target that cannot build a crate gets an explicit `--exclude` with a comment in `ci.yml`, never `continue-on-error`.
-
-## android-smoke
-
-It boots an emulator and builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs where a merge is
-decided: pull requests, pushes to `main` and manual runs. Other branch pushes skip it; start it on a branch with
-`gh workflow run ci.yml --ref <branch>`. Emulator setup, GPU mode and caching: [android-smoke.md](android-smoke.md#in-ci).
 
 ## Published crates
 
@@ -83,5 +75,6 @@ iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-appl
 
 1. Add its rustup target to [rust-toolchain.toml](../rust-toolchain.toml).
 2. Add one row to the `matrix.include` table in [ci.yml](../.github/workflows/ci.yml): `target`, `os`, `checks`.
-   Anything a target cannot build yet is an explicit `--exclude` with a comment saying why.
+   Anything a target cannot build yet is an explicit `--exclude` with a comment saying why, never
+   `continue-on-error`.
 3. Add a row to the table above in the same change.
