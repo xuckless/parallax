@@ -3,6 +3,8 @@
 //!
 //! Off Android this crate holds only [`android_main!`], which expands to nothing there.
 
+#[cfg(any(target_os = "android", test))]
+mod backend;
 #[cfg(target_os = "android")]
 mod dispatcher;
 #[cfg(any(target_os = "android", test))]

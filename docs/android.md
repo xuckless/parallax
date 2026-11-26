@@ -22,9 +22,10 @@
   one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
   The shell applies the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android
   destroys it, device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
-- **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
-  that configures the surface seeds the shared `GpuContext`, at startup and after device loss
-  ([android-surface.md](android-surface.md#device-loss)). Created on the main thread; the time is logged.
+- **Renderer table.** `Device::backends` ([backend.rs](../crates/android/src/backend.rs)): Vulkan then GL; GL first on
+  the emulator (`ro.hardware` `ranchu`, `goldfish`: its Vulkan drew black on API 33; its GL is 16-bit, wgpu's EGL
+  config). The first that configures the surface seeds the shared `GpuContext`, at startup and after device loss
+  ([android-surface.md](android-surface.md#device-loss)). Made on the main thread ([renderer.rs](../crates/android/src/renderer.rs)).
 - **Lifecycle.** Activity callbacks, focus and trim-memory go through one state machine
   ([lifecycle.rs](../crates/android/src/lifecycle.rs)) to upstream's `on_app_lifecycle`, `on_memory_warning`, window
   activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).

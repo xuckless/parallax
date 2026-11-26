@@ -7,7 +7,7 @@ and 35, with Gboard. Last run: 2026-11-26 on `wave-10` (10e6361). **Not passed**
 
 | Check | API 28 (Gboard 7.1, GL) | API 33 (Gboard 12.4) | API 35 (Gboard 14.2, Vulkan) |
 |---|---|---|---|
-| 1. Launch, draw, tap the box | pass | **fail**: Vulkan draws black, then garbled glyphs; GL (forced locally) draws | pass |
+| 1. Launch, draw, tap the box | pass | pass (fixed: GL first on emulators; Vulkan drew black, then garbled glyphs) | pass |
 | 2. Typing, backspace | pass | pass | pass |
 | 2. Autocorrect | pass (worl → world) | pass (teh → The) | not testable: Gboard corrects nothing, in Messages either |
 | 2. Suggestion / candidate pick | pass (Pinyin 你好) | pass (world, backspace reopens it) | pass (Teh → The) |
@@ -33,8 +33,8 @@ crash or ANR in logcat.
 
 ## Failures, worst first
 
-1. **API 33 Vulkan.** First launch black, relaunch draws boxes with glyphs missing. `BACKENDS` in
-   [renderer.rs](../crates/android/src/renderer.rs) picks Vulkan; GL first draws correctly.
+1. ~~**API 33 Vulkan.**~~ Fixed: emulators try GL first ([backend.rs](../crates/android/src/backend.rs)); cold start
+   and relaunch draw on API 33.
 2. **Composing kept after focus moves.** Compose (Korean ㅏ), tap Email: the prose field keeps its underline; on
    refocus the IME gets that range back and the next jamo replaces it (typed text lost). No `finishComposingText`
    reaches GPUI before the new client; see the sync protocol in [android-text-input.md](android-text-input.md).

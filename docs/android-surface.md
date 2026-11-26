@@ -25,7 +25,7 @@ Looper as upstream's sleep does), the action is `RecoverDevice`, and [`renderer:
 rebuilds it:
 
 1. `WgpuRenderer::destroy` drops the surface and the renderer's hold on the lost device.
-2. `seed` replaces the lost shared `GpuContext` with one from the first backend in `BACKENDS` that can drive the
+2. `seed` replaces the lost shared `GpuContext` with one from the first backend in the backend table that can drive the
    surface: the same table, in the same order, as at startup.
 3. Upstream's `WgpuRenderer::recover` finds a live context, so it adopts ours instead of picking a backend itself, and
    refills the same atlas GPUI holds.

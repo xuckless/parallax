@@ -1,16 +1,29 @@
-//! The native window and the `gpui_wgpu` renderer on it. The GPU backend comes from [`BACKENDS`], tried in order.
+//! The native window and the `gpui_wgpu` renderer on it. The GPU backends, tried in order, come from the device's
+//! row in the backend table ([`Device::backends`]).
 
-use std::{ptr::NonNull, time::Instant};
+use std::{ffi::CStr, ptr::NonNull, time::Instant};
 
 use gpui::{DevicePixels, Size, size};
 use gpui_wgpu::{GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 use raw_window_handle as rwh;
 
-use crate::Error;
+use crate::{
+    Error,
+    backend::{Backend, Device},
+};
 
-/// GPU backends in order of preference; the first that can drive the surface wins, at startup and after device
-/// loss ([`recover`]). To change the order or add a backend, edit this table.
-const BACKENDS: [wgpu::Backends; 2] = [wgpu::Backends::VULKAN, wgpu::Backends::GL];
+/// This device, from `ro.hardware` (Java's `Build.HARDWARE`); unreadable counts as real hardware.
+fn device() -> Device {
+    let mut value = [0u8; libc::PROP_VALUE_MAX as usize];
+    // SAFETY: the name is NUL-terminated and `value` holds PROP_VALUE_MAX bytes, the most the call writes
+    // (NUL included).
+    unsafe { libc::__system_property_get(c"ro.hardware".as_ptr(), value.as_mut_ptr().cast()) };
+    let hardware = CStr::from_bytes_until_nul(&value)
+        .ok()
+        .and_then(|hardware| hardware.to_str().ok())
+        .unwrap_or_default();
+    Device::from_hardware(hardware)
+}
 
 /// An `ANativeWindow` reference. Each clone holds its own reference; drop releases it.
 #[derive(Debug)]
@@ -87,8 +100,8 @@ pub(crate) fn surface_config(size: Size<DevicePixels>) -> WgpuSurfaceConfig {
     }
 }
 
-/// Seeds `gpu` with a context from the first backend in [`BACKENDS`] that can configure the surface, unless it
-/// already holds a live one.
+/// Seeds `gpu` with a context from the first of this device's backends ([`Device::backends`]) that can configure
+/// the surface, unless it already holds a live one.
 fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Result<(), Error> {
     if gpu
         .borrow()
@@ -99,9 +112,15 @@ fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Re
     }
     // A lost context goes first, so its device is released before the next one is made (as upstream's recover).
     *gpu.borrow_mut() = None;
-    let context = BACKENDS
-        .iter()
-        .find_map(|&backends| {
+    let device = device();
+    let context = device
+        .backends()
+        .into_iter()
+        .find_map(|backend| {
+            let backends = match backend {
+                Backend::Vulkan => wgpu::Backends::VULKAN,
+                Backend::Gl => wgpu::Backends::GL,
+            };
             let attempt = || -> anyhow::Result<WgpuContext> {
                 let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                     backends,
@@ -120,7 +139,9 @@ fn seed(gpu: &GpuContext, window: &NativeWindow, size: Size<DevicePixels>) -> Re
             };
             attempt()
                 .inspect_err(|error| {
-                    log::warn!("parallax: {backends:?} cannot drive the surface: {error:#}")
+                    log::warn!(
+                        "parallax: {backend:?} cannot drive the surface on {device:?}: {error:#}"
+                    )
                 })
                 .ok()
         })
@@ -151,7 +172,7 @@ pub(crate) fn create(
 }
 
 /// Rebuilds `renderer` after GPU device loss, keeping its atlas. Upstream's `WgpuRenderer::recover` would pick the
-/// backend itself when the shared context is lost; seeding a live context from [`BACKENDS`] first makes it adopt
+/// backend itself when the shared context is lost; seeding a live context from the backend table first makes it adopt
 /// ours instead. The surface state machine decides when to call it (after upstream's 350 ms, backing off on error).
 pub(crate) fn recover(
     gpu: &GpuContext,

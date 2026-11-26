@@ -58,7 +58,7 @@ Rules for ported code:
 | Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/`, which `scripts/fork-crates.sh` turns into the `parallax-gpui*` fork crates in `build/parallax-gpui/` (both generated, git-ignored). Parallax crates depend on the fork crates, published to crates.io as `parallax-gpui*`; for local builds the workspace points at `build/parallax-gpui/` via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
 | Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |
-| Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
+| Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback; GL first on emulators. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
 | Web threading | Single-threaded on stable: `gpui_platform` without its `multithreaded` feature on wasm32. Revisit when upstream threads work on stable. |
 | Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
 | Minimum OS | iOS 17. Android API 28 (Android 9). |
