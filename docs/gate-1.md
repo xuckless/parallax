@@ -21,7 +21,7 @@ and 35, with Gboard. Last run: 2026-11-26 on `wave-10` (10e6361). **Not passed**
 | 4. Select all + replace via IME | pass | pass | pass |
 | 5. Emoji panel inserts colour emoji, backspace | pass | pass | pass |
 | 5. Multi-script line (Latin, CJK, Arabic, emoji) | pass | pass (GL only) | pass |
-| 6. Rotation with keyboard open | **fail**: stale frame | pass (GL) | pass |
+| 6. Rotation with keyboard open | pass (fixed: was a stale frame) | pass (GL) | pass |
 | 6. Home + resume, recents switch | pass | pass | pass |
 | 7. Email field: email layout | pass (0x21, @ key) | pass | pass |
 | 8. Back hides keyboard, then exits | pass | pass | pass |
@@ -38,8 +38,8 @@ crash or ANR in logcat.
 2. **Composing kept after focus moves.** Compose (Korean ㅏ), tap Email: the prose field keeps its underline; on
    refocus the IME gets that range back and the next jamo replaces it (typed text lost). No `finishComposingText`
    reaches GPUI before the new client; see the sync protocol in [android-text-input.md](android-text-input.md).
-3. **API 28 rotation.** After each rotation the old-size frame stays until the next input event, though
-   `Action::Resize` requests a redraw ([host.rs](../crates/android/src/host.rs)).
+3. ~~**API 28 rotation.**~~ Fixed: a resize makes a new surface ([android-surface.md](android-surface.md#resize));
+   wgpu's GL kept the EGL surface, whose next buffer had the old size, and API 28 drops such a buffer.
 4. **Dimmed colours** on every level (above).
 5. **Gboard select mode** sends Shift down/up, then plain arrows; a `TextView` keeps Shift as sticky meta state, the
    ported `KeyboardManager` path does not, so the caret moves instead of extending.

@@ -16,6 +16,16 @@ callback returns, and nothing may draw into it after. Both orders of two views a
   is rejected, since the current window is not its own.
 - **Old `surfaceDestroyed` first:** `Detach` releases it and the state is `Lost` until the new view's surface.
 
+## Resize
+
+`surfaceChanged` (rotation, split screen) is `Attach { previous: None }`, like a new window: the shell unconfigures the
+renderer's surface, then `replace_surface` makes a new one on the same window at the new size. Not `configure` on
+the old one: wgpu's GL backend keeps its EGL window surface, whose next buffer was dequeued at the old size, and API 28
+(no BLAST) drops a buffer of the wrong size, so the old frame stayed until the next input. Flutter does the same
+([`OnScreenSurfaceResize`](https://github.com/flutter/flutter/blob/master/engine/src/flutter/shell/platform/android/android_surface_gl_skia.cc)
+destroys and recreates the EGL surface). The old surface goes first because Vulkan and EGL connect to an
+`ANativeWindow` only once. `Recovered` attaches the same way, at the current size.
+
 ## Device loss
 
 Each vsync, `Shell::frame` sends the surface state machine ([surface.rs](../crates/android/src/surface.rs)) a `Frame`
@@ -30,5 +40,5 @@ rebuilds it:
 3. Upstream's `WgpuRenderer::recover` finds a live context, so it adopts ours instead of picking a backend itself, and
    refills the same atlas GPUI holds.
 
-`Recovered` returns to `Ready` and resizes to the current surface; `RecoveryFailed` restarts the wait. No patch is needed: stock
+`Recovered` returns to `Ready` and attaches a surface at the current size; `RecoveryFailed` restarts the wait. No patch is needed: stock
 `gpui-pre` exposes `destroy`, `recover` and `WgpuContext::device_lost`.

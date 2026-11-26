@@ -31,7 +31,7 @@
   activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
-- **Rotation** does not recreate the Activity (manifest `configChanges`, as Flutter): `surfaceChanged` resizes.
+- **Rotation** keeps the Activity (manifest `configChanges`, as Flutter); [a new surface](android-surface.md#resize).
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).

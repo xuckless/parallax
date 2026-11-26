@@ -744,6 +744,9 @@ impl Shell {
                 if let (Some(renderer), Some(window)) =
                     (self.renderer.borrow_mut().as_mut(), self.current_window())
                 {
+                    // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow once,
+                    // and the window may be the same one (a resize).
+                    renderer.unconfigure_surface();
                     let instance = self
                         .gpu
                         .borrow()
@@ -760,12 +763,6 @@ impl Shell {
                 }
                 // Released only now: the renderer has dropped its surface on the previous window.
                 drop(previous);
-                self.resized();
-            }
-            Action::Resize => {
-                if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
-                    renderer.update_drawable_size(size);
-                }
                 self.resized();
             }
             Action::Detach { window } => {

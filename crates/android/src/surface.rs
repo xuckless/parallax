@@ -59,10 +59,10 @@ pub enum SurfaceEvent<W> {
 /// What the shell does to the renderer after a transition.
 #[derive(Debug, PartialEq)]
 pub enum Action<W> {
-    /// Point the renderer at the new window. `previous`, if any, is released once the renderer has let go of it.
+    /// Give the renderer a new surface on the current window at its current size, and redraw. `previous`, if any,
+    /// is released once the renderer has let go of it. A resize makes a new surface too: an EGL window surface
+    /// keeps buffers of its old size (docs/android-surface.md#resize).
     Attach { previous: Option<W> },
-    /// Resize the renderer to the current surface size and redraw.
-    Resize,
     /// Unconfigure the renderer, then release `window`.
     Detach { window: W },
     /// Let GPUI draw if anything changed.
@@ -118,9 +118,9 @@ impl<W> Surface<W> {
                 A::Detach { window: previous },
             ),
             (S::Ready { window, activity }, E::Resized) => {
-                (S::Ready { window, activity }, A::Resize)
+                (S::Ready { window, activity }, A::Attach { previous: None })
             }
-            // The size is applied when recovery ends (`Recovered` → `Resize`).
+            // The size is applied when recovery ends (`Recovered` → `Attach`).
             (state @ S::Recovering { .. }, E::Resized) => (state, A::Wait),
             // Its own view's surfaceDestroyed always releases the window, even once another Activity owns the
             // lifecycle (the old surface destroyed before the new one is created).
@@ -188,7 +188,7 @@ impl<W> Surface<W> {
                     window, activity, ..
                 },
                 E::Recovered,
-            ) => (S::Ready { window, activity }, A::Resize),
+            ) => (S::Ready { window, activity }, A::Attach { previous: None }),
             (
                 S::Recovering {
                     window,
@@ -280,7 +280,7 @@ mod tests {
             ("recovering_created_swaps_window", recovering(1, t0, 2), created(2), recovering(2, t0, 2), Action::Detach { window: 1 }),
             ("lost_created_reattaches", lost(), created(2), ready(2), Action::Attach { previous: None }),
             ("none_resized_rejected", Surface::None, SurfaceEvent::Resized, Surface::None, no("resized without a surface")),
-            ("ready_resized_resizes", ready(1), SurfaceEvent::Resized, ready(1), Action::Resize),
+            ("ready_resized_makes_new_surface", ready(1), SurfaceEvent::Resized, ready(1), Action::Attach { previous: None }),
             ("recovering_resized_waits", recovering(1, t0, 0), SurfaceEvent::Resized, recovering(1, t0, 0), Action::Wait),
             ("lost_resized_rejected", lost(), SurfaceEvent::Resized, lost(), no("resized without a surface")),
             ("none_destroyed_rejected", Surface::None, destroyed(ms(1)), Surface::None, no("destroyed without a surface")),
@@ -299,7 +299,7 @@ mod tests {
             ("lost_frame_waits", lost(), frame(ms(1), true), lost(), Action::Wait),
             ("none_recovered_rejected", Surface::None, SurfaceEvent::Recovered, Surface::None, no("recovered while not recovering")),
             ("ready_recovered_rejected", ready(1), SurfaceEvent::Recovered, ready(1), no("recovered while not recovering")),
-            ("recovering_recovered_resizes", recovering(1, t0, 3), SurfaceEvent::Recovered, ready(1), Action::Resize),
+            ("recovering_recovered_makes_new_surface", recovering(1, t0, 3), SurfaceEvent::Recovered, ready(1), Action::Attach { previous: None }),
             ("lost_recovered_rejected", lost(), SurfaceEvent::Recovered, lost(), no("recovered while not recovering")),
             ("none_recovery_failed_rejected", Surface::None, SurfaceEvent::RecoveryFailed { at: ms(1) }, Surface::None, no("recovery failed while not recovering")),
             ("ready_recovery_failed_rejected", ready(1), SurfaceEvent::RecoveryFailed { at: ms(1) }, ready(1), no("recovery failed while not recovering")),
