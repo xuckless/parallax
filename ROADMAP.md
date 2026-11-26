@@ -82,7 +82,7 @@ Skeleton (0.1.1):
 - [x] Insets: `targetSdk` 35 forces edge-to-edge, so the window draws under the system bars; report safe-area insets.
 - [x] Touch: port `AndroidTouchProcessor` and `MotionEventTracker`; emit upstream `TouchEvent`.
 - [x] Example app: one window with a box that changes colour on tap, built for desktop, web and Android.
-- [ ] Publish 0.1.1.
+- [x] Publish 0.1.1.
 
 **Milestone 0.1.1:** the example app opens, draws and reacts to a tap on desktop, web and the Android emulator
 (owner decision: releases are emulator-verified until real devices are available).
