@@ -38,6 +38,9 @@ Background: [android-spike.md](android-spike.md).
   `CosmicTextSystem` and orders CJK by the app locale (sent over JNI). Details: [android-fonts.md](android-fonts.md).
 - **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →
   `nativeDispatchKeyData` → [keys.rs](../crates/android/src/keys.rs): key, modifier and back events. Details: [android-keys.md](android-keys.md).
+- **Text input.** Flutter's `TextInputPlugin` and `InputConnectionAdaptor` (ported Java) serve the IME; GPUI's
+  `InputHandler` answers on the same thread ([text_input.rs](../crates/android/src/text_input.rs)): IME edits go to
+  GPUI synchronously, GPUI's changes go back at the end of each frame. Details: [android-text-input.md](android-text-input.md).
 
 ## The app entry point
 
@@ -59,12 +62,12 @@ patch 0002); it becomes `#[non_exhaustive]`, and deprecated variants go, on the 
 ## Stubs (not yet on Android)
 
 Each is marked `Not yet on Android` in the source with where it will come from: a no-op, a fixed value, or a typed
-`Error::NotYet`. 45 in all:
+`Error::NotYet`. 44 in all:
 
 | Area | Stubs | Comes with |
 |---|---|---|
 | Lifecycle | `quit`, `on_reopen`, `on_system_sleep/wake`, `on_should_close`, `on_close` | `Activity.finish()`, back (keys), screen off/on |
-| Input | `is_hovered`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | mouse and stylus hover, keyboard layout, text input |
+| Input | `is_hovered`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change` | mouse and stylus hover, keyboard layout |
 | Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
 | System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |
 | Display | `on_displays_changed`, `on_display_changed`, display `uuid`, window raw handle | multi-display |
