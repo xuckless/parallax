@@ -12,19 +12,30 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fork="$root/build/parallax-gpui"
 target_dir="$root/target/parallax-gpui"
-mode="${1:-publish}"
 
 die() { echo "publish-fork: $*" >&2; exit 1; }
+
+# Arguments first, before any work.
+[[ $# -le 1 ]] || die "takes at most one option (see the usage at the top)"
+case "${1:-}" in
+    "") mode=publish ;;
+    --dry-run) mode=dry-run ;;
+    --published) mode=published ;;
+    *) die "unknown option '$1' (see the usage at the top)" ;;
+esac
 
 [[ -f $fork/Cargo.toml ]] || die "no $fork; run scripts/apply-patches.sh"
 cd "$fork"
 
-if [[ $mode == --dry-run ]]; then
+if [[ $mode == dry-run ]]; then
     cargo package --workspace --target-dir "$target_dir"
     echo "packaged and verified every fork crate; nothing published"
     exit 0
 fi
-[[ $mode == publish || $mode == --published ]] || die "unknown option '$mode' (see the usage at the top)"
+
+# Scratch files (index answers, publish logs) live here and go on every exit path.
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
 
 # Crate → version, and the publish order: a topological sort of every fork-crate dependency edge (all kinds), so a
 # crate goes up only after what it names. tsort fails loudly on a cycle.
@@ -38,8 +49,7 @@ mapfile -t order < <(jq -r '.packages[] | .name as $crate | "\($crate) \($crate)
 
 # Is name@version on crates.io? Asks the sparse index (what cargo reads): 200 lists the versions, 404 means a new name.
 on_crates_io() {
-    local name=$1 version=$2 body status found=1
-    body="$(mktemp)"
+    local name=$1 version=$2 body="$scratch/index" status found=1
     status="$(curl -sS -o "$body" -w '%{http_code}' "https://index.crates.io/${name:0:2}/${name:2:2}/$name")" \
         || die "cannot reach index.crates.io"
     case $status in
@@ -47,11 +57,10 @@ on_crates_io() {
         404) ;;
         *) die "index.crates.io answered $status for $name" ;;
     esac
-    rm -f "$body"
     return $found
 }
 
-if [[ $mode == --published ]]; then
+if [[ $mode == published ]]; then
     missing=0
     for name in "${order[@]}"; do
         on_crates_io "$name" "${versions[$name]}" || { echo "not on crates.io: $name ${versions[$name]}"; missing=1; }
@@ -64,11 +73,10 @@ for name in "${order[@]}"; do
     if on_crates_io "$name" "${versions[$name]}"; then echo "skip $name ${versions[$name]}: already on crates.io"; continue; fi
     while true; do
         echo "publishing $name ${versions[$name]}"
-        log="$(mktemp)"
-        if cargo publish -p "$name" --target-dir "$target_dir" 2>&1 | tee "$log"; then rm -f "$log"; break; fi
+        log="$scratch/publish.log"
+        if cargo publish -p "$name" --target-dir "$target_dir" 2>&1 | tee "$log"; then break; fi
         # crates.io's new-crate rate limit: "... Please try again after <HTTP date> or email help@crates.io ...".
         retry_at="$(sed -n 's/.*try again after \(.*\) or email.*/\1/p' "$log" | head -n1)"
-        rm -f "$log"
         [[ -n $retry_at ]] || die "cargo publish failed for $name (not a rate limit; see above)"
         wait_s=$(( $(date -d "$retry_at" +%s) - $(date +%s) + 5 ))
         echo "rate limited: waiting $wait_s s, until $retry_at"
