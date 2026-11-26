@@ -12,7 +12,8 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 
 - **API:** `Window::pointer_source() -> Option<PointerSource>`, where `PointerSource { device: PointerDevice,
   synthesized: bool }` and `PointerDevice` is `Mouse`, `Touch` or `Pen`. It is `Some` only while a pointer event is
-  being dispatched, and `None` during key events, render, and after the event returns. Read it inside a listener.
+  being dispatched, and `None` during key events, render (even the draw a tap runs before its dispatch returns), and
+  after the event returns. Read it inside a listener.
 - **How core sets it:** in `Window::dispatch_event`, from the `pointer_source` table that the patch adds to
   `window.rs`, with one arm per `PlatformInput` variant:
   - backend mouse, scroll, pinch and file-drop input: `Mouse`, not synthesized;
