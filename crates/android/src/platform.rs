@@ -18,7 +18,6 @@ use gpui::{
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem,
     PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
 };
-use gpui_wgpu::CosmicTextSystem;
 
 use crate::{
     Error, dispatcher::AndroidDispatcher, host::Metrics, host::Shell, window::AndroidWindow,
@@ -35,12 +34,12 @@ pub(crate) struct AndroidPlatform {
 impl AndroidPlatform {
     pub(crate) fn new(shell: Rc<Shell>) -> Result<Self, Error> {
         let dispatcher = Arc::new(AndroidDispatcher::new()?);
+        let text_system = crate::text_system::load(&shell.locales.borrow());
         Ok(Self {
             shell,
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
-            // Not yet on Android: system fonts (Phase 1 "Fonts"); text renders only with fonts the app adds.
-            text_system: Arc::new(CosmicTextSystem::new_without_system_fonts("sans-serif")),
+            text_system,
             active_window: Cell::new(None),
         })
     }

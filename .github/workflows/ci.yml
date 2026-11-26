@@ -80,3 +80,18 @@ jobs:
       # build/ is generated, never committed: every job rebuilds build/gpui-patched from upstream/ + patches/.
       - run: scripts/apply-patches.sh
       - run: ${{ matrix.checks }}
+      # JVM tests of the ported Android Java (docs/android-tests.md). JDK 21: Robolectric needs it for SDK 37.
+      - if: matrix.target == 'linux'
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13+9
+          cache: gradle
+      # Robolectric's android-all jars (one per emulated SDK, ~1.5 GB) download outside Gradle's cache.
+      - if: matrix.target == 'linux'
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ hashFiles('crates/android/java-tests/build.gradle') }}
+      - if: matrix.target == 'linux'
+        run: scripts/java-test.sh

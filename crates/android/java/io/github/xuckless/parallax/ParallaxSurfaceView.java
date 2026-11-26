@@ -7,6 +7,7 @@ import android.graphics.Insets;
 import android.os.Build;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -19,10 +20,11 @@ import java.nio.ByteBuffer;
  * to Rust (parallax-android, crates/android/src/host.rs); everything runs on the main thread.
  *
  * <p>Touch: onTouchEvent → the ported AndroidTouchProcessor → nativeDispatchPointerDataPacket (see
- * docs/android-touch.md).
+ * docs/android-touch.md). Keys: dispatchKeyEvent → the ported KeyboardManager →
+ * nativeDispatchKeyData (see docs/android-keys.md).
  */
 final class ParallaxSurfaceView extends SurfaceView
-    implements SurfaceHolder.Callback, Choreographer.FrameCallback {
+    implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
   private static native void nativeSurfaceCreated(Surface surface, float density, float refreshRate);
 
@@ -50,9 +52,19 @@ final class ParallaxSurfaceView extends SurfaceView
   // (focus flag or trim level). Declared here so one class holds every native JNI_OnLoad binds.
   static native void nativeActivityEvent(int event, int value);
 
+  // The app's locales, BCP-47 tags joined by commas, preference order (LocaleList.toLanguageTags()).
+  // ParallaxActivity sends them before the first surface; the fonts read them when the app starts.
+  static native void nativeLocales(String languageTags);
+
+  // Flutter's key data packet (KeyData.toBytes, the whole direct buffer), read before the call
+  // returns. Returns whether GPUI handled it: the reply Flutter's framework sends asynchronously.
+  static native boolean nativeDispatchKeyData(ByteBuffer packet);
+
   // As FlutterView: no platform views, so motion events are not tracked.
   private final AndroidTouchProcessor touchProcessor =
       new AndroidTouchProcessor(/* trackMotionEvents= */ false);
+
+  private final KeyboardManager keyboardManager = new KeyboardManager(this);
 
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
@@ -60,6 +72,9 @@ final class ParallaxSurfaceView extends SurfaceView
   ParallaxSurfaceView(Context context) {
     super(context);
     getHolder().addCallback(this);
+    // As FlutterView: focusable, so key events (and later the IME) reach this view.
+    setFocusable(true);
+    setFocusableInTouchMode(true);
   }
 
   void startFrames() {
@@ -103,6 +118,41 @@ final class ParallaxSurfaceView extends SurfaceView
     // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
     requestUnbufferedDispatch(event);
     return touchProcessor.onTouchEvent(event);
+  }
+
+  // The app's only view takes focus as soon as it is in the window: without it, key events stop at
+  // the DecorView. (FlutterView relies on Android's initial focus, which this view did not get on
+  // the API 35 emulator.)
+  @Override
+  protected void onAttachedToWindow() {
+    super.onAttachedToWindow();
+    requestFocus();
+  }
+
+  // As FlutterView.dispatchKeyEvent: KeyboardManager answers every event it has not redispatched
+  // itself; a redispatched one goes on to Android (back → the Activity, volume → the system).
+  @Override
+  public boolean dispatchKeyEvent(KeyEvent event) {
+    if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+      // Tell Android to start tracking this event.
+      getKeyDispatcherState().startTracking(event, this);
+    } else if (event.getAction() == KeyEvent.ACTION_UP) {
+      // Stop tracking the event.
+      getKeyDispatcherState().handleUpEvent(event);
+    }
+    return keyboardManager.handleEvent(event) || super.dispatchKeyEvent(event);
+  }
+
+  // The text-input seam: keys GPUI did not handle are offered here before Android gets them.
+  // FlutterView calls TextInputPlugin.handleKeyEvent; the text-input port fills this in.
+  @Override
+  public boolean onTextInputKeyEvent(KeyEvent keyEvent) {
+    return false;
+  }
+
+  @Override
+  public void redispatch(KeyEvent keyEvent) {
+    getRootView().dispatchKeyEvent(keyEvent);
   }
 
   @Override

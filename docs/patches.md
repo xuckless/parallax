@@ -56,6 +56,14 @@ counterpart in Zed's tree:
 Every other file is byte-identical. Zed's tree also has files the package drops (e.g. `crates/gpui_web/examples/`);
 patches touching them translate but will not apply to `upstream/`.
 
+## Our Zed fork
+
+[`scripts/sync-fork.sh`](../scripts/sync-fork.sh) rebuilds the `parallax` branch of
+[`xuckless/zed`](https://github.com/xuckless/zed/tree/parallax): the UPSTREAM commit plus every patch, translated as
+above, one commit each. Run it whenever a patch is added or changed. Apps can't `[patch]` onto that branch (Zed's
+crate names differ from crates.io's `gpui-pre-*`); they opt in through a Parallax checkout instead. Both are in
+[zed-fork.md](zed-fork.md).
+
 ## The crate table
 
 One row per vendored crate in the `crates` table at the top of [`patch-paths.sh`](../scripts/patch-paths.sh):
@@ -78,3 +86,4 @@ copy until Zed merges it. CI's `cargo package` step proves the packages build wi
 | Patch | Published crate | Local copy |
 |---|---|---|
 | [0001](../patches/0001-export-priority-queue-android.patch) | `parallax-android` | [queue.rs](../crates/android/src/queue.rs): `PriorityQueueSender`/`Receiver`, trimmed to what the dispatcher uses |
+| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `parallax-android` | No copy (the text system is too big): [text_system.rs](../crates/android/src/text_system.rs) feeds stock `CosmicTextSystem` memory-mapped files through `add_fonts` and appends the per-locale CJK fallbacks to every font ([android-fonts.md](android-fonts.md#stock-upstream-workaround-patch-0002)) |
