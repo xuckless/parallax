@@ -223,7 +223,7 @@ public class TextInputPluginTest {
             false,
             false,
             true,
-            true, // Delta model is disabled.
+            true, // Parallax: Flutter's next argument, enableDeltaModel (false: disabled), is dropped.
             TextInputChannel.TextCapitalization.NONE,
             new TextInputChannel.InputType(
                 TextInputChannel.TextInputType.TEXT, false, false, false),
