@@ -25,6 +25,9 @@ Background: [android-spike.md](android-spike.md).
   upstream `recover` after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
 - **Renderer table.** `BACKENDS` in [renderer.rs](../crates/android/src/renderer.rs): Vulkan, then GL. The first
   that configures the surface seeds the shared `GpuContext`. Created on the main thread; the time is logged.
+- **Lifecycle.** Activity callbacks, focus and trim-memory go through one state machine
+  ([lifecycle.rs](../crates/android/src/lifecycle.rs)) to upstream's `on_app_lifecycle`, `on_memory_warning`, window
+  activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).
 - **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
   cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
 - **Rotation** does not recreate the Activity (manifest `configChanges`, as Flutter): `surfaceChanged` resizes.
@@ -49,11 +52,11 @@ Apps that pick a platform themselves call `parallax_platform::current_platform`,
 ## Stubs (not yet on Android)
 
 Each is marked `Not yet on Android` in the source with where it will come from: a no-op, a fixed value, or a typed
-`Error::NotYet`. 53 in all:
+`Error::NotYet`. 48 in all:
 
 | Area | Stubs | Comes with |
 |---|---|---|
-| Lifecycle | `quit`, `on_quit`, `on_reopen`, `on_system_sleep/wake`, `is_active`, `visibility`, `on_active_status_change`, `on_visibility_change`, `on_should_close`, `on_close` | Full Android lifecycle |
+| Lifecycle | `quit`, `on_reopen`, `on_system_sleep/wake`, `on_should_close`, `on_close` | `Activity.finish()`, back (keys), screen off/on |
 | Input | `is_hovered`, `modifiers`, `capslock`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change`, `update_ime_position` | mouse and stylus hover, keys, text input |
 | Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
 | System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |
@@ -61,7 +64,7 @@ Each is marked `Not yet on Android` in the source with where it will come from: 
 | Other | text system has no system fonts; `spawn_realtime` without realtime priority; `prompt` (GPUI draws its own) | Fonts (Phase 1) |
 
 Methods with no Android meaning (`restart`, `minimize`, `zoom`, `set_title`, menus, dock, `on_moved`, window
-controls) are no-ops with a one-line reason, not stubs. Density changes without a resize are not tracked yet.
+controls, `on_quit`: Android announces no process death) are no-ops with a one-line reason, not stubs. Density changes without a resize are not tracked yet.
 
 ## Run it on the emulator today
 

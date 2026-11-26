@@ -20,6 +20,17 @@ import android.view.WindowManager;
 public class ParallaxActivity extends Activity {
   private static final String LIB_NAME_KEY = "parallax.lib_name";
 
+  // Event codes for ParallaxSurfaceView.nativeActivityEvent; must match ActivityEvent::from_java in
+  // crates/android/src/lifecycle.rs. To add a callback: a constant here, a row there.
+  private static final int EVENT_START = 0;
+  private static final int EVENT_RESUME = 1;
+  private static final int EVENT_PAUSE = 2;
+  private static final int EVENT_STOP = 3;
+  private static final int EVENT_DESTROY = 4;
+  private static final int EVENT_FOCUS = 5;
+  private static final int EVENT_TRIM_MEMORY = 6;
+  private static final int EVENT_LOW_MEMORY = 7;
+
   private ParallaxSurfaceView view;
 
   @Override
@@ -34,15 +45,54 @@ public class ParallaxActivity extends Activity {
   }
 
   @Override
+  protected void onStart() {
+    super.onStart();
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_START, 0);
+  }
+
+  @Override
   protected void onResume() {
     super.onResume();
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_RESUME, 0);
     view.startFrames();
   }
 
   @Override
   protected void onPause() {
     view.stopFrames();
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_PAUSE, 0);
     super.onPause();
+  }
+
+  @Override
+  protected void onStop() {
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_STOP, 0);
+    super.onStop();
+  }
+
+  // Not quit: the process and GPUI may outlive this Activity, and a new one reattaches (docs/android-lifecycle.md).
+  @Override
+  protected void onDestroy() {
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_DESTROY, 0);
+    super.onDestroy();
+  }
+
+  @Override
+  public void onWindowFocusChanged(boolean hasFocus) {
+    super.onWindowFocusChanged(hasFocus);
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_FOCUS, hasFocus ? 1 : 0);
+  }
+
+  @Override
+  public void onTrimMemory(int level) {
+    super.onTrimMemory(level);
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_TRIM_MEMORY, level);
+  }
+
+  @Override
+  public void onLowMemory() {
+    super.onLowMemory();
+    ParallaxSurfaceView.nativeActivityEvent(EVENT_LOW_MEMORY, 0);
   }
 
   // The manifest declares configChanges, so rotation and density changes arrive here instead of

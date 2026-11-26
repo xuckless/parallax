@@ -10,8 +10,9 @@ use std::{
 };
 
 use gpui::{
-    App, Application, ApplicationHandle, Bounds, DevicePixels, DispatchEventResult, Edges, Pixels,
-    PlatformAtlas, PlatformInput, RequestFrameOptions, Size, WindowInsets, point, px, size,
+    App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
+    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, RequestFrameOptions, Size,
+    WindowInsets, WindowVisibility, point, px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
@@ -21,7 +22,9 @@ use jni::{
 };
 
 use crate::{
-    Error, pointer,
+    Error,
+    lifecycle::{ActivityEvent, Effect, Lifecycle},
+    pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
 };
@@ -31,7 +34,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 6] {
+fn natives() -> [NativeMethod; 7] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -59,6 +62,11 @@ fn natives() -> [NativeMethod; 6] {
             "nativeDispatchPointerDataPacket",
             "(Ljava/nio/ByteBuffer;I)V",
             dispatch_pointer_data_packet as *mut c_void,
+        ),
+        row(
+            "nativeActivityEvent",
+            "(II)V",
+            activity_event as *mut c_void,
         ),
     ]
 }
@@ -161,6 +169,13 @@ extern "system" fn surface_created(
             Ok(platform) => {
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running(app);
+                // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
+                for &phase in host.shell.lifecycle.get().launch_phases() {
+                    host.shell
+                        .callbacks
+                        .app_lifecycle
+                        .with(|callback| callback(phase));
+                }
             }
             Err(error) => log::error!("parallax: cannot start the app: {error}"),
         }
@@ -190,6 +205,14 @@ extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass) {
         host.shell
             .handle(SurfaceEvent::Destroyed { at: Instant::now() })
     });
+}
+
+/// `ParallaxActivity`'s lifecycle, focus and memory callbacks: an `EVENT_*` code and its value.
+extern "system" fn activity_event(_env: JNIEnv, _class: JClass, code: jint, value: jint) {
+    match ActivityEvent::from_java(code, value) {
+        Some(event) => with_host(|host| host.shell.lifecycle(event)),
+        None => log::error!("parallax: unknown Activity event {code} ({value})"),
+    }
 }
 
 extern "system" fn frame(_env: JNIEnv, _class: JClass) {
@@ -345,11 +368,17 @@ pub(crate) struct Callbacks {
     pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
     pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
+    pub(crate) active_status: Slot<dyn FnMut(bool)>,
+    pub(crate) visibility: Slot<dyn FnMut(WindowVisibility)>,
+    /// The platform's, not the window's: `Platform::on_app_lifecycle` and `on_memory_warning`.
+    pub(crate) app_lifecycle: Slot<dyn FnMut(AppLifecyclePhase)>,
+    pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
 /// The app's one window as Android sees it. Main thread only.
 pub(crate) struct Shell {
     surface: RefCell<Surface<NativeWindow>>,
+    pub(crate) lifecycle: Cell<Lifecycle>,
     pub(crate) metrics: Cell<Metrics>,
     gpu: GpuContext,
     /// `None` until GPUI opens the window; then the renderer for the rest of the process.
@@ -362,6 +391,8 @@ impl Shell {
     fn new() -> Self {
         Self {
             surface: RefCell::new(Surface::None),
+            // JNI_OnLoad runs inside onCreate.
+            lifecycle: Cell::new(Lifecycle::Created { focused: false }),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
             renderer: RefCell::new(None),
@@ -466,6 +497,34 @@ impl Shell {
                 self.redraw();
             }
             Action::Reject { why } => log::warn!("parallax: surface event ignored: {why}"),
+        }
+    }
+
+    /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: the window first, then the
+    /// app's observers, in the order `gpui_ios` uses.
+    fn lifecycle(&self, event: ActivityEvent) {
+        let before = self.lifecycle.get();
+        let (next, effect) = before.next(event);
+        self.lifecycle.set(next);
+        log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
+        if before.is_active() != next.is_active() {
+            self.callbacks
+                .active_status
+                .with(|callback| callback(next.is_active()));
+        }
+        if before.visibility() != next.visibility() {
+            self.callbacks
+                .visibility
+                .with(|callback| callback(next.visibility()));
+        }
+        match effect {
+            Effect::Phase(phase) => self
+                .callbacks
+                .app_lifecycle
+                .with(|callback| callback(phase)),
+            Effect::MemoryWarning => self.callbacks.memory_warning.with(|callback| callback()),
+            Effect::Nothing => {}
+            Effect::Reject { why } => log::warn!("parallax: lifecycle event ignored: {why}"),
         }
     }
 

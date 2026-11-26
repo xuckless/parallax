@@ -46,6 +46,10 @@ final class ParallaxSurfaceView extends SurfaceView
   // read before the call returns. Named after FlutterJNI.nativeDispatchPointerDataPacket.
   static native void nativeDispatchPointerDataPacket(ByteBuffer buffer, int position);
 
+  // ParallaxActivity's lifecycle, focus and memory callbacks: one of its EVENT_* codes and a value
+  // (focus flag or trim level). Declared here so one class holds every native JNI_OnLoad binds.
+  static native void nativeActivityEvent(int event, int value);
+
   // As FlutterView: no platform views, so motion events are not tracked.
   private final AndroidTouchProcessor touchProcessor =
       new AndroidTouchProcessor(/* trackMotionEvents= */ false);

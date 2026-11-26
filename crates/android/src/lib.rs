@@ -7,6 +7,8 @@
 mod dispatcher;
 #[cfg(target_os = "android")]
 mod host;
+#[cfg(any(target_os = "android", test))]
+mod lifecycle;
 #[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]

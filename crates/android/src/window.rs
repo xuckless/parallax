@@ -102,11 +102,11 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn is_active(&self) -> bool {
-        true // Not yet on Android: onResume/onPause (Full Android lifecycle).
+        self.shell.lifecycle.get().is_active()
     }
 
     fn visibility(&self) -> WindowVisibility {
-        WindowVisibility::Visible // Not yet on Android: onStart/onStop (Full Android lifecycle).
+        self.shell.lifecycle.get().visibility()
     }
 
     fn is_hovered(&self) -> bool {
@@ -149,12 +149,12 @@ impl PlatformWindow for AndroidWindow {
         self.shell.callbacks.input.set(callback);
     }
 
-    fn on_active_status_change(&self, _callback: Box<dyn FnMut(bool)>) {
-        // Not yet on Android: onResume/onPause (Full Android lifecycle).
+    fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        self.shell.callbacks.active_status.set(callback);
     }
 
-    fn on_visibility_change(&self, _callback: Box<dyn FnMut(WindowVisibility)>) {
-        // Not yet on Android: onStart/onStop (Full Android lifecycle).
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        self.shell.callbacks.visibility.set(callback);
     }
 
     fn on_hover_status_change(&self, _callback: Box<dyn FnMut(bool)>) {
@@ -182,7 +182,7 @@ impl PlatformWindow for AndroidWindow {
     }
 
     fn on_close(&self, _callback: Box<dyn FnOnce()>) {
-        // Not yet on Android: onDestroy (Full Android lifecycle).
+        // Not yet on Android: comes with `quit` (Activity.finish()); onDestroy is Disconnected, the window lives on.
     }
 
     fn on_appearance_changed(&self, _callback: Box<dyn FnMut()>) {
