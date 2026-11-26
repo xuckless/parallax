@@ -189,6 +189,54 @@ enum Back {
     Claimed,
 }
 
+/// What happens to the back press: a back key event, or GPUI's answer to the last [`Step::Ask`] (for any key).
+#[derive(Clone, Debug, PartialEq)]
+enum BackEvent {
+    Key(KeyEventType),
+    Answer(DispatchEventResult),
+}
+
+/// What one back event leads to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Outcome {
+    /// Send GPUI this phase, then feed its answer back as [`BackEvent::Answer`].
+    Ask(BackGesturePhase),
+    /// Send GPUI `phase` if there is one, and answer Android with `handled`.
+    Answer {
+        phase: Option<BackGesturePhase>,
+        handled: bool,
+    },
+}
+
+impl Back {
+    /// The only place the back press changes: state × event → next state and its outcome.
+    /// To add an event: add the variant, and the compiler lists the arms to write here.
+    fn next(self, event: BackEvent) -> (Back, Outcome) {
+        use BackEvent::{Answer, Key};
+        use KeyEventType::{Down, Repeat, Up};
+        let answer = |phase, handled| Outcome::Answer { phase, handled };
+        match (self, event) {
+            (Back::Idle | Back::Offered | Back::Claimed, Key(Down)) => {
+                (Back::Offered, Outcome::Ask(BackGesturePhase::Started))
+            }
+            (Back::Claimed, Key(Repeat)) => (Back::Claimed, answer(None, true)),
+            (Back::Claimed, Key(Up)) => {
+                (Back::Idle, answer(Some(BackGesturePhase::Committed), true))
+            }
+            (Back::Idle | Back::Offered, Key(Repeat | Up)) => (Back::Idle, answer(None, false)),
+            // An element with a back listener prevents default: it claims the press.
+            (Back::Offered, Answer(result)) => match result.default_prevented {
+                true => (Back::Claimed, answer(None, true)),
+                false => (Back::Idle, answer(None, false)),
+            },
+            // Any other key's answer: handled when GPUI stopped its propagation.
+            (state @ (Back::Idle | Back::Claimed), Answer(result)) => {
+                (state, answer(None, !result.propagate))
+            }
+        }
+    }
+}
+
 /// What the shell does with one packet.
 #[derive(Debug)]
 pub(crate) enum Step {
@@ -258,35 +306,30 @@ impl Keyboard {
             return unhandled;
         };
         match key {
-            Key::Back => match (data.kind, self.back) {
-                (KeyEventType::Down, Back::Idle | Back::Offered | Back::Claimed) => {
-                    self.back = Back::Offered;
-                    Step::Ask(PlatformInput::BackGesture(BackGestureEvent {
-                        phase: BackGesturePhase::Started,
+            Key::Back => {
+                let (back, outcome) = self.back.next(BackEvent::Key(data.kind));
+                self.back = back;
+                // A started press has made no progress; a committed one is complete.
+                let gesture = |phase| {
+                    PlatformInput::BackGesture(BackGestureEvent {
+                        phase,
                         start_position: back_at,
-                        progress: 0.,
-                    }))
+                        progress: match phase {
+                            BackGesturePhase::Committed => 1.,
+                            BackGesturePhase::Started
+                            | BackGesturePhase::Progressed
+                            | BackGesturePhase::Cancelled => 0.,
+                        },
+                    })
+                };
+                match outcome {
+                    Outcome::Ask(phase) => Step::Ask(gesture(phase)),
+                    Outcome::Answer { phase, handled } => Step::Answer {
+                        input: phase.map(gesture),
+                        handled,
+                    },
                 }
-                (KeyEventType::Repeat, Back::Claimed) => Step::Answer {
-                    input: None,
-                    handled: true,
-                },
-                (KeyEventType::Up, Back::Claimed) => {
-                    self.back = Back::Idle;
-                    Step::Answer {
-                        input: Some(PlatformInput::BackGesture(BackGestureEvent {
-                            phase: BackGesturePhase::Committed,
-                            start_position: back_at,
-                            progress: 1.,
-                        })),
-                        handled: true,
-                    }
-                }
-                (KeyEventType::Repeat | KeyEventType::Up, Back::Idle | Back::Offered) => {
-                    self.back = Back::Idle;
-                    unhandled
-                }
-            },
+            }
             Key::Modifier(modifier) => {
                 match data.kind {
                     KeyEventType::Down => {
@@ -313,17 +356,12 @@ impl Keyboard {
 
     /// GPUI's answer to an [`Step::Ask`] → whether Android counts the key as handled (Flutter's reply).
     pub(crate) fn reply(&mut self, result: DispatchEventResult) -> bool {
-        match self.back {
-            // An element with a back listener prevents default: it claims the press.
-            Back::Offered => {
-                self.back = if result.default_prevented {
-                    Back::Claimed
-                } else {
-                    Back::Idle
-                };
-                result.default_prevented
-            }
-            Back::Idle | Back::Claimed => !result.propagate,
+        let (back, outcome) = self.back.next(BackEvent::Answer(result));
+        self.back = back;
+        match outcome {
+            Outcome::Answer { handled, .. } => handled,
+            // `Back::next` never asks on an answer: its table has a row per state.
+            Outcome::Ask(_) => false,
         }
     }
 
@@ -623,6 +661,45 @@ mod tests {
             assert_eq!(got, expected, "{name}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn back_transitions() {
+        use Back::{Claimed, Idle, Offered};
+        use BackEvent::{Answer, Key};
+        use BackGesturePhase::{Committed, Started};
+        use KeyEventType::{Down, Repeat, Up};
+        let answer = |phase, handled| Outcome::Answer { phase, handled };
+        // (row name, state, event, expected state, expected outcome). One row per (state, event); the answers are
+        // GPUI's: handled, unhandled, and claimed by a back listener.
+        #[rustfmt::skip]
+        let cases: [(&str, Back, BackEvent, Back, Outcome); 18] = [
+            ("idle_down_offers", Idle, Key(Down), Offered, Outcome::Ask(Started)),
+            ("idle_repeat_unhandled", Idle, Key(Repeat), Idle, answer(None, false)),
+            ("idle_up_unhandled", Idle, Key(Up), Idle, answer(None, false)),
+            ("idle_handled_answer", Idle, Answer(HANDLED), Idle, answer(None, true)),
+            ("idle_unhandled_answer", Idle, Answer(UNHANDLED), Idle, answer(None, false)),
+            ("idle_claimed_answer_is_handled", Idle, Answer(CLAIMED), Idle, answer(None, true)),
+            ("offered_down_offers_again", Offered, Key(Down), Offered, Outcome::Ask(Started)),
+            ("offered_repeat_unhandled", Offered, Key(Repeat), Idle, answer(None, false)),
+            ("offered_up_unhandled", Offered, Key(Up), Idle, answer(None, false)),
+            ("offered_handled_is_no_claim", Offered, Answer(HANDLED), Idle, answer(None, false)),
+            ("offered_unhandled", Offered, Answer(UNHANDLED), Idle, answer(None, false)),
+            ("offered_claimed", Offered, Answer(CLAIMED), Claimed, answer(None, true)),
+            ("claimed_down_offers_again", Claimed, Key(Down), Offered, Outcome::Ask(Started)),
+            ("claimed_repeat_swallowed", Claimed, Key(Repeat), Claimed, answer(None, true)),
+            ("claimed_up_commits", Claimed, Key(Up), Idle, answer(Some(Committed), true)),
+            ("claimed_handled_answer", Claimed, Answer(HANDLED), Claimed, answer(None, true)),
+            ("claimed_unhandled_answer", Claimed, Answer(UNHANDLED), Claimed, answer(None, false)),
+            ("claimed_claimed_answer", Claimed, Answer(CLAIMED), Claimed, answer(None, true)),
+        ];
+        for (name, state, event, expected_state, expected_outcome) in cases {
+            assert_eq!(
+                state.next(event),
+                (expected_state, expected_outcome),
+                "{name}"
+            );
+        }
     }
 
     #[test]

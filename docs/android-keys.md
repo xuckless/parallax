@@ -38,7 +38,9 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
 [`BackGestureEvent`](../upstream/gpui-pre/src/gestures.rs): `Started` on the press, at the window's left edge,
 mid-height (GPUI hit-tests back gestures; a key has no position). An element with `on_back_gesture` claims it
 (`default_prevented`); then repeats are swallowed and the release sends `Committed`. Unclaimed, the press and release
-go to Android, whose default finishes the Activity. One state enum, `Back::{Idle, Offered, Claimed}`.
+go to Android, whose default finishes the Activity. One state enum, `Back::{Idle, Offered, Claimed}`, and one
+`Back::next(state, BackEvent) → (state, Outcome)` that both `Keyboard::input` (back key events) and `Keyboard::reply`
+(GPUI's answers) call; `keys::tests::back_transitions` has a row per (state, event).
 
 Upstream surprise: `on_back_gesture` tests `hitbox.is_hovered`, which is false while the last input was a key, so
 after typing no element can claim a back press until the next touch.
