@@ -1,9 +1,9 @@
 # Code ported from Flutter
 
 Flutter is BSD-3-Clause (see `LICENSE` here). Every file that ports or adapts Flutter code gets one row.
-Pinned Flutter commit: `322dfd0771` (master, 2026-11-25).
+Pinned Flutter stable tag: `3.50.1` (stable branch `ae9b586f34`, 2026-11-19). Track stable tags only, never master.
 
-Sync rule: at each Flutter bump, diff each source path between the old and new commit and port the fixes.
+Sync rule: when a new stable tag ships, diff each source path between the old and new tag and port the fixes.
 
-| Flutter path | Flutter commit | Parallax path | Kind |
-|---|---|---|---|
+| Flutter path | Flutter tag | Parallax path | Kind (port / oracle) | Dropped parts |
+|---|---|---|---|---|

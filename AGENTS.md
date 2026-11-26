@@ -28,7 +28,8 @@ does not reinvent that. It ports Flutter's work, credits it, and keeps tracking 
 
 | Flutter asset | How Parallax uses it |
 |---|---|
-| Android embedding (Java): `FlutterView`, `FlutterActivity`, `AndroidTouchProcessor`, `KeyboardManager`, `TextInputPlugin`, `InputConnectionAdaptor`, `ListenableEditingState` | **Ported as Java**, near-verbatim, in `crates/android/java/`. `MethodChannel` calls become JNI calls into Rust. |
+| Android embedding, self-contained files (Java): `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `AndroidTouchProcessor`, `MotionEventTracker`, `KeyboardManager` (plus the input parts of `TextInputPlugin`) | **Ported as Java**, near-verbatim, in `crates/android/java/`. `MethodChannel` calls become JNI calls into Rust. |
+| Android embedding, engine-bound files: `FlutterActivity`, `FlutterView`, `FlutterSurfaceView` | **Reference only.** Parallax writes its own small Activity and View, reading Flutter's for lifecycle, surface and inset handling. |
 | iOS text input (`FlutterTextInputPlugin.mm` and its tests) | **Test oracle.** Its test cases become table-driven tests against upstream `gpui_ios`; failures get Flutter's fix as a patch, filed upstream. |
 | Web text editing (`text_editing.dart`: per-browser strategies) | Test oracle for upstream `gpui_web`; fixes as patches or in `parallax-web`. |
 | Framework algorithms (`velocity_tracker.dart`, `lsq_solver.dart`, `scroll_physics.dart`, `friction_simulation.dart`, `arena.dart`) | Test oracle for upstream `gestures.rs` and `ScrollPhysics`. Port a Flutter algorithm only where upstream fails its cases. |
@@ -44,8 +45,9 @@ Rules for ported code:
 5. **Licenses:** a crate with ported code declares `license = "Apache-2.0 AND BSD-3-Clause"`. Keep `NOTICE` current.
 6. **Ported tests are the spec.** A Flutter test case that encodes a bug fix becomes a named row in a Parallax test table, with the Flutter test name in the row.
 7. **Naming:** "ports code from Flutter" is fine. Never use "Flutter" or Google marks in a crate or product name.
-8. **Pinned Flutter commit:** recorded in `third_party/flutter/PORTED.md`. Bump it at the upstream sync and port the diffs.
+8. **Pinned Flutter stable tag:** recorded in `third_party/flutter/PORTED.md`. Track stable release tags, never master. When a new stable tag ships, diff every ledger row and port the fixes.
 9. **Caveman Code applies to Rust translations.** Flutter's state becomes explicit enums and its rules become tables, with behaviour identical (its ported tests prove it). Ported Java is exempt; don't restyle it.
+10. **Ledger records what was dropped.** A ported file that leaves parts of Flutter's original out (engine, plugin or channel code) lists them in its ledger row.
 
 ## Decisions (settled, do not reopen without the owner)
 
@@ -58,12 +60,15 @@ Rules for ported code:
 | Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
 | Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
 | Minimum OS | iOS 17. Android API 28 (Android 9). |
-| Android glue | Flutter's Android embedding ported as Java (Activity, View, touch, keyboard, text input) talking to Rust over JNI. No GameActivity. |
+| Android glue | Own small Activity and View; Flutter's self-contained touch, keyboard and text-input files ported as Java; Rust over JNI. No GameActivity. |
+| Android threading | GPUI runs on the Android main (UI) thread, like `gpui_ios` on UIKit's. IME queries are answered synchronously. No second UI thread. |
 | Flutter | Second source of truth: port its platform glue and behaviour, use its tests as the oracle for upstream (see below). Pinned commit in `third_party/flutter/PORTED.md`. |
 | App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
-| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element. Documented, never silent. |
+| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element. Every pointer event carries its device (mouse, touch, pen) and whether it was synthesized; the rule is a row in the platform behaviour table. |
 | Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
-| Desktop touch | First-class. Gated by cargo feature `touch`, never by OS checks. Behaviour depends on pointer type, never on OS. |
+| Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
+| Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |
+| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines or Zed rejects 3. Past that, iOS text input moves into its own Parallax crate. |
 | Accessibility | AccessKit adapters plus a web semantics DOM. Required for v0.1. |
 | Errors | Typed errors, no panics in library code (see below). |
 | Tests | Pure-logic unit tests plus example smoke runs (see below). |
@@ -92,12 +97,13 @@ third_party/
 1. **Upstream is read-only.** Never edit `upstream/` or `build/`. Change upstream only by adding a patch.
 2. **Dependencies point one way.** Parallax depends on GPUI. GPUI never depends on Parallax.
 3. **Add, don't modify.** New behaviour goes in a Parallax crate or an extension trait first. A patch needs a written reason why neither works.
-4. **Patches are small and gated.** One concern each, about 200 lines max, behind a `cfg` (target or feature `touch`).
+4. **Patches are small and gated.** One concern each, about 200 lines max, behind a target `cfg` when the code is platform-specific. No feature flags for behaviour.
 5. **Each patch has a header:** what it changes, why, and the upstream PR link once filed.
 6. **Upstream what you can.** Every patch is meant to be filed upstream. When upstream merges it, delete it at the next sync.
 7. **No editor code.** Never copy Zed's editor or text stack crates (GPL). Only Apache-licensed GPUI crates.
 8. **Licenses.** Every vendored dependency keeps its license file. Flag anything not Apache-compatible before it lands. Keep `NOTICE` current.
 9. **Naming.** "Parallax, built on GPUI". Never "Zed" or "GPUI" in a crate or product name.
+10. **One patch, two layouts.** Patches are written against the vendored `gpui-pre` layout; `scripts/patch-paths.sh` translates them to Zed's `crates/gpui*` layout for filing upstream.
 
 ## Coding style: Caveman Code
 
@@ -146,6 +152,6 @@ Hard rules:
 
 - Work from `ROADMAP.md`. Tick a box only when its work is merged and verified. A phase ends only when its gate passes.
 - Before finishing a change: `cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
-- New targets or features get a CI row (see ROADMAP Phase 0) in the same change.
+- New targets get a CI row (see ROADMAP Phase 0) in the same change.
 - Commits: one concern each, imperative subject line.
 - When upstream behaviour surprises you, write it down in `ROADMAP.md` under "Upstream notes" with the upstream commit.
