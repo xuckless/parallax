@@ -2,6 +2,7 @@
 name = "parallax-web"
 description = "Gaps on top of upstream gpui_web: semantics DOM for screen readers and anything gpui_web lacks."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

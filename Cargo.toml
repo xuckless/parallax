@@ -4,6 +4,7 @@ members = ["crates/*", "examples/*"]
 exclude = ["upstream", "build"]
 
 [workspace.package]
+authors = ["Syed Ali (xuckless)"]
 version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"

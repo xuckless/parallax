@@ -2,6 +2,7 @@
 name = "parallax-platform"
 description = "Picks the GPUI platform for the current target (desktop, web, iOS, Android) from one table."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

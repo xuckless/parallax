@@ -2,6 +2,7 @@
 name = "parallax"
 description = "Facade crate: re-exports GPUI and the Parallax crates an app needs."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

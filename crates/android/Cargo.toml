@@ -2,6 +2,7 @@
 name = "parallax-android"
 description = "GPUI Platform and PlatformWindow for Android, built on Flutter's ported Android embedding: wgpu (Vulkan, GL fallback), IME, AccessKit."
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license = "Apache-2.0 AND BSD-3-Clause"
 publish.workspace = true
