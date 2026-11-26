@@ -27,7 +27,7 @@ use crate::{
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
-    text_input::{self, Edit, EditingState, Origin, Pending},
+    text_input::{self, Edit, EditingState},
 };
 
 /// The Java class whose static `native` methods [`natives`] binds.
@@ -35,7 +35,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 12] {
+fn natives() -> [NativeMethod; 13] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -57,7 +57,12 @@ fn natives() -> [NativeMethod; 12] {
             "(I)V",
             surface_destroyed as *mut c_void,
         ),
-        row("nativeFrame", "(I)Ljava/lang/String;", frame as *mut c_void),
+        row("nativeFrame", "(I)V", frame as *mut c_void),
+        row(
+            "nativeTextInputCalls",
+            "(I)Ljava/lang/String;",
+            text_input_calls as *mut c_void,
+        ),
         row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
@@ -308,14 +313,18 @@ extern "system" fn activity_event(
     }
 }
 
-/// Every vsync. Returns GPUI's text-input calls for `TextInputChannel.handleFrameworkCalls` (Flutter's JSON),
-/// or null: Java runs them after this returns, outside GPUI's draw.
-extern "system" fn frame(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
+/// Every vsync: GPUI draws if anything changed. Java then asks for the text-input calls ([`text_input_calls`]) and
+/// runs them after this returns, outside GPUI's draw.
+extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
+    with_owner(activity, |host| host.shell.frame());
+}
+
+/// GPUI's pending text-input calls for `TextInputChannel.handleFrameworkCalls` (Flutter's JSON), or null. Java asks
+/// after each frame and right after `KeyboardManager` handled a key event: a key GPUI edits the field with reaches
+/// Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit text before the next vsync).
+extern "system" fn text_input_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
     let mut calls = None;
-    with_owner(activity, |host| {
-        host.shell.frame();
-        calls = host.shell.text_input_calls();
-    });
+    with_owner(activity, |host| calls = host.shell.text_input_calls());
     match calls.map(|calls| env.new_string(calls)) {
         Some(Ok(calls)) => calls.into_raw(),
         Some(Err(error)) => {
@@ -349,21 +358,13 @@ extern "system" fn update_editing_state(
         (selection_start, selection_end),
         (composing_start, composing_end),
     );
-    with_owner(activity, |host| host.shell.update_editing_state(&state));
+    with_owner(activity, |host| host.shell.update_editing_state(state));
 }
 
-/// `TextInputChannel`'s performAction family: the IME's editor action, by Flutter's name.
-extern "system" fn perform_action(
-    mut env: JNIEnv,
-    _class: JClass,
-    activity: jint,
-    action: JString,
-) {
-    let action = env
-        .get_string(&action)
-        .map(String::from)
-        .unwrap_or_else(|error| format!("unreadable ({error})"));
-    with_owner(activity, |host| host.shell.perform_action(&action));
+/// `TextInputChannel`'s performAction family: the IME's editor action, by Flutter's name. One rule for every
+/// action until GPUI has an action table: it is Enter ([`Shell::perform_action`]), so the name is not read.
+extern "system" fn perform_action(_env: JNIEnv, _class: JClass, activity: jint, _action: JString) {
+    with_owner(activity, |host| host.shell.perform_action());
 }
 
 /// `TextInputChannel.boundsForRange`: GPUI's bounds of a UTF-16 range in view pixels, into `ltrb`.
@@ -741,11 +742,15 @@ impl Shell {
     /// app's observers, in the order `gpui_ios` uses.
     fn lifecycle(&self, event: ActivityEvent) {
         let before = self.lifecycle.replace(Lifecycle::Loaded);
-        let (was_active, was_visible) = (before.is_active(), before.visibility());
+        let (was_active, was_visible, was_owner) =
+            (before.is_active(), before.visibility(), before.owner());
         let (next, effect) = before.next(event);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
-        let (active, visibility) = (next.is_active(), next.visibility());
+        let (active, visibility, owner) = (next.is_active(), next.visibility(), next.owner());
         *self.lifecycle.borrow_mut() = next;
+        if owner.is_some() && owner != was_owner {
+            self.text_input.borrow_mut().owner_changed();
+        }
         if was_active != active {
             self.callbacks
                 .active_status
@@ -850,6 +855,8 @@ impl Shell {
     }
 
     /// Runs `call` on the focused field's handler, taken out so GPUI can re-enter the window; `None` without one.
+    /// Re-entrancy: if GPUI installs a new handler during `call` (`set_input_handler`), the newer one is kept and
+    /// this one dropped.
     fn with_input_handler<R>(
         &self,
         call: impl FnOnce(&mut PlatformInputHandler) -> R,
@@ -860,35 +867,49 @@ impl Shell {
         Some(result)
     }
 
-    /// The pending text-input calls for Java, as Flutter's JSON; empties them.
+    /// The pending text-input calls for Java, as Flutter's JSON; empties them. Never logs the text (password
+    /// fields included): the calls carry it.
     fn text_input_calls(&self) -> Option<String> {
-        let pending = std::mem::take(&mut self.text_input.borrow_mut().pending);
-        if pending == Pending::default() {
-            return None;
+        let pending = self.text_input.borrow_mut().take()?;
+        let state = if pending.sends_state() {
+            self.with_input_handler(read_state).flatten()
+        } else {
+            None
+        };
+        if pending.sets_client() && state.is_none() {
+            // Once per focus: each focus sets a new client.
+            log::error!(
+                "parallax: the focused field's text is unreadable (no text_length_utf16 or text_for_range): \
+                 the IME sees it empty"
+            );
         }
-        let state = pending
-            .sync
-            .then(|| self.with_input_handler(read_state).flatten())
-            .flatten();
-        let calls = pending.calls(&self.text_input.borrow().configuration, state.as_ref());
-        log::info!("parallax: text input {pending:?} → {calls:?}");
-        calls
+        log::debug!(
+            "parallax: text input {pending:?}, state: {}",
+            state.as_ref().map_or("none".to_string(), describe)
+        );
+        let calls = self.text_input.borrow_mut().send(pending, state)?;
+        Some(calls.to_string())
     }
 
-    /// Java's editing state after an IME edit → GPUI, synchronously. Stale while Java has not seen GPUI's
-    /// latest change: then GPUI wins and Java gets GPUI's state at the end of the frame.
-    fn update_editing_state(&self, java: &EditingState) {
-        if self.text_input.borrow().pending.behind() {
-            log::info!("parallax: IME edit on a stale state dropped: {java:?}");
-            return;
-        }
+    /// Java's editing state after an IME edit → GPUI, synchronously: merged onto GPUI's state when GPUI changed
+    /// since Java's mirror was last current ([`text_input::Session::java_edit`]).
+    fn update_editing_state(&self, java: EditingState) {
         self.with_input_handler(|handler| {
             let Some(gpui) = read_state(handler) else {
+                log::debug!("parallax: IME edit on an unreadable field dropped");
                 return;
             };
-            let edits = text_input::edits(&gpui, java);
-            log::info!("parallax: IME {java:?} over {gpui:?} → {edits:?}");
-            self.text_input.borrow_mut().origin = Origin::Java;
+            let Some(target) = self.text_input.borrow_mut().java_edit(&java, &gpui) else {
+                log::debug!("parallax: IME edit for a client GPUI is replacing dropped");
+                return;
+            };
+            let edits = text_input::edits(&gpui, &target);
+            log::debug!(
+                "parallax: IME {} over {} → {} calls",
+                describe(&java),
+                describe(&gpui),
+                edits.len()
+            );
             for edit in edits {
                 match edit {
                     Edit::Replace { range, text } => {
@@ -903,19 +924,15 @@ impl Shell {
                     Edit::Select(range) => handler.set_selected_text_range(range),
                 }
             }
-            self.text_input.borrow_mut().origin = Origin::Gpui;
-            // The app may refuse or change the edit (a filter, a length limit): Java must take GPUI's state.
-            if read_state(handler).as_ref() != Some(java) {
-                self.text_input
-                    .borrow_mut()
-                    .notice(text_input::Notice::Changed);
-            }
+            // The app may refuse or change the edit (a filter, a length limit): the session decides whether Java
+            // must take GPUI's state.
+            let after = read_state(handler).unwrap_or(target);
+            self.text_input.borrow_mut().java_edited(java, &after);
         });
     }
 
     /// The IME's editor action: GPUI gets Enter, as a hardware key (see [`keys::Keyboard::press`]).
-    fn perform_action(&self, action: &str) {
-        log::debug!("parallax: IME action {action}");
+    fn perform_action(&self) {
         let inputs = self.keyboard.borrow().press("enter");
         for input in inputs {
             self.callbacks.input.with(|callback| callback(input));
@@ -950,23 +967,32 @@ impl Shell {
     }
 }
 
-/// The focused field's whole editing state, in UTF-16. Needs `text_length_utf16` (as UIKit does); the editable
-/// range is not honoured yet: Java mirrors the whole document.
+/// The focused field's whole editing state, in UTF-16, clamped to its text ([`EditingState::clamped`]). The
+/// editable range is not honoured yet: Java mirrors the whole document. A handler without `text_length_utf16`
+/// (GPUI's default is `None`) is asked for everything; the range it adjusts to must start at 0.
 fn read_state(handler: &mut PlatformInputHandler) -> Option<EditingState> {
-    let length = handler.text_length_utf16()?;
-    let text = handler.text_for_range(0..length, &mut None)?;
+    let mut adjusted = None;
+    let text = match handler.text_length_utf16() {
+        Some(length) => handler.text_for_range(0..length, &mut adjusted),
+        None => handler.text_for_range(0..usize::MAX, &mut adjusted),
+    }
+    .filter(|_| adjusted.as_ref().is_none_or(|range| range.start == 0))?;
     let selection = handler
         .selected_text_range(false)
         .map(|selection| match selection.reversed {
             true => (selection.range.end, selection.range.start),
             false => (selection.range.start, selection.range.end),
         });
-    let composing = handler
-        .marked_text_range()
-        .filter(|range| !range.is_empty());
-    Some(EditingState {
-        text,
-        selection,
-        composing,
-    })
+    let composing = handler.marked_text_range();
+    Some(EditingState::clamped(text, selection, composing))
+}
+
+/// An editing state for the log: its length and ranges, never its text (it may be a password).
+fn describe(state: &EditingState) -> String {
+    format!(
+        "{} UTF-16 units, selection {:?}, composing {:?}",
+        state.text.encode_utf16().count(),
+        state.selection,
+        state.composing
+    )
 }

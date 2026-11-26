@@ -21,25 +21,37 @@ ported ([AGENTS.md](../AGENTS.md#flutter-is-the-second-source-of-truth); ledger 
 
 ## The sync protocol
 
-GPUI is the truth; Java's `ListenableEditingState` is a mirror. All on the main thread:
+GPUI is the truth; Java's `ListenableEditingState` is a mirror. All on the main thread. The `Session` keeps the
+mirror as Rust last knew it: the state Java was sent, or the state Java sent.
 
 1. **Java → GPUI, synchronous.** After each IME batch edit, `TextInputPlugin.didChangeEditingState` sends the full
-   state (`nativeUpdateEditingState`: text, selection, composing). `text_input::edits` diffs it against GPUI's state
-   and makes the calls: one `replace_text_in_range`, or `replace_and_mark_text_in_range` when the new text is the
-   composing range (`setComposingText`), then `unmark_text` / a mark / `set_selected_text_range` only where still
-   different. Notices GPUI sends meanwhile are the edit's echo (`Origin::Java`) and dropped. If GPUI then differs from
-   Java (the app filtered the edit), Java gets GPUI's state at the frame's end.
-2. **GPUI → Java, at the frame's end.** `text_input_state_changed`, `set_text_input_configuration`, a new focused
-   field (`FocusId`) and `show`/`hide_soft_keyboard` fold into one `Pending` (`Pending::next`, a row per notice).
-   `nativeFrame` returns it as Flutter's `flutter/textinput` calls in JSON (`clearClient`, `setClient` with
-   `Configuration.fromJson`'s keys, `setEditingState`, `show`/`hide`); Java runs them after GPUI's draw, so
-   `restartInput` → `onCreateInputConnection` re-enters Rust with GPUI free.
-3. **Conflict.** While a `Pending` holds a change Java has not seen, an IME edit is based on a stale state: it is
-   dropped and the frame's `setEditingState` (with Flutter's composing-restart rule) brings the IME up to date.
+   state (`nativeUpdateEditingState`: text, selection, composing). `Session::java_edit` carries it onto GPUI's state
+   (`merge`, below); `text_input::edits` diffs the result against GPUI's state and makes the calls: one
+   `replace_text_in_range`, or `replace_and_mark_text_in_range` when the new text is the composing range
+   (`setComposingText`), then `unmark_text` / a mark / `set_selected_text_range` only where still different. Notices
+   GPUI sends meanwhile are the edit's echo (`Origin::Java`) and dropped. Then `differs` decides whether Java must
+   take GPUI's state: when the app changed the edit (a filter, a moved caret) or a GPUI change was merged in. What
+   GPUI does not report (a reversed selection kept forward, no selection, no composing range) is not news, so the
+   IME is not restarted every keystroke.
+2. **GPUI → Java, at the frame's end and after each key.** `text_input_state_changed`, `set_text_input_configuration`,
+   a new focused field (`FocusId`) and `show`/`hide_soft_keyboard` fold into one `Pending` (`Pending::next`, a row per
+   notice). `nativeTextInputCalls` returns it as Flutter's `flutter/textinput` calls in JSON (`clearClient`,
+   `setClient` with `Configuration.fromJson`'s keys, `setEditingState`, `show`/`hide`). Java asks after
+   `nativeFrame` and right after `KeyboardManager` handled a key event (hardware or the IME's `sendKeyEvent`): Gboard
+   sends DEL as a key, then may `commitText` before vsync, and the mirror must already hold GPUI's deletion. Java
+   runs the calls outside GPUI's draw, so `restartInput` → `onCreateInputConnection` re-enters Rust with GPUI free. A
+   new client always gets a `setEditingState`, empty if the field is unreadable (logged once per focus).
+3. **Race: merge, don't drop.** An IME edit made while a GPUI change is on its way is based on the old mirror.
+   `merge(mirror, java, gpui)` takes Java's change as one span of the mirror and lands it where that span is in
+   GPUI's state; an offset inside the span GPUI changed moves to its end (GPUI's change stays whole, Java's lands
+   next to it). Selection and composing move the same way. Java then gets the merged state at the next delivery. An
+   edit for a client GPUI is replacing (a new field or none pending) is dropped: it belongs to the field GPUI left.
 
-Focus shows the keyboard, blur hides it (as `gpui_ios`). Editor actions (`performEditorAction`) reach GPUI as an
-Enter press; GPUI's `TextInputAction` only labels the key. `CursorAnchorInfo` gets GPUI's caret
-(`nativeBoundsForRange`); `update_ime_position` is not used.
+Focus shows the keyboard, blur hides it (as `gpui_ios`). Only a field that takes text input counts (between GPUI's
+`FocusGained` and `FocusLost`). When another Activity takes the window, its view's `TextInputPlugin` has no client,
+so a focused field is announced again (`Session::owner_changed`). Editor actions (`performEditorAction`) reach GPUI
+as an Enter press, every action alike until GPUI has an action table; GPUI's `TextInputAction` only labels the key.
+`CursorAnchorInfo` gets GPUI's caret (`nativeBoundsForRange`); `update_ime_position` is not used.
 
 ## Keys
 
@@ -49,19 +61,22 @@ action), as in Flutter. The IME's `sendKeyEvent` goes back through `KeyboardMana
 
 ## Configuration
 
-`configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys: `CAPITALIZATION` and
-`ACTIONS` (row tables), `input_type` (`KeyboardType` → `TextInputType`; Search is `webSearch`) and `autofill_hint`
-(`AutofillHint` → Flutter's `AutofillHints`), exhaustive matches so a new variant of patch 0005 fails to compile until
-it gets an arm. `secure` is `obscureText` with personalized learning off. `autofill` is sent in Flutter's shape; the
-ported Java drops it until autofill is ported.
+`configuration_json` maps GPUI's `TextInputConfiguration` to `Configuration.fromJson`'s keys: `capitalization`,
+`action` and `input_type` (`KeyboardType` and `secure` → `TextInputType`; Search is `webSearch`), exhaustive matches
+so a new variant of patch 0005 fails to compile until it gets an arm. `secure` is `obscureText` with personalized
+learning off. Flutter's number branch returns before `obscureText`, so a secure Number or Decimal sends
+`"password": true`; Android has no phone password, so a secure Phone field is a number password. GPUI's autofill
+hint is not sent: the ported Java has no autofill yet ([ROADMAP.md](../ROADMAP.md)).
 
 ## Limits
 
-- Java mirrors the whole document (`text_length_utf16` required, as on iOS); `text_input_editable_range` is not used.
+- Java mirrors the whole document; `text_input_editable_range` is not used. A handler without `text_length_utf16`
+  is asked for `text_for_range(0..usize::MAX)`.
 - No autofill, deltas, private commands or `commitContent` (images) yet; see the ledger rows.
 
 ## Check it
 
 `examples/hello` has a field ([examples.md](examples.md)). On the emulator: tap it, `adb shell input text hello`,
-`adb shell input keyevent 67` (backspace); `adb logcat -s parallax` shows each IME state, the
-calls it became and the frame's calls. Tests: `cargo test -p parallax-android text_input`.
+`adb shell input keyevent 67` (backspace). Each IME edit and each delivery of calls is logged at debug level as
+lengths and ranges, never the text (a field may be a password); `on_load`'s logger stops at info, so raise its level
+in [host.rs](../crates/android/src/host.rs) to see them. Tests: `cargo test -p parallax-android text_input`.

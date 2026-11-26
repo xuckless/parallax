@@ -60,7 +60,9 @@ pub(crate) struct AndroidTextSystem {
     emoji: Option<Emoji>,
 }
 
-/// Android's half of colour emoji. Used on the main thread only (GPUI lays out and paints there), like the JNI calls.
+/// Android's half of colour emoji. Main thread only: GPUI runs on Android's main thread (AGENTS.md, Decisions:
+/// Android threading), and each call reaches Java through that thread's `JNIEnv` ([`Self::call`]). A call from
+/// another thread finds no attached `JNIEnv` and returns an error (the glyph is not drawn), never a crash.
 struct Emoji {
     vm: JavaVM,
     /// `EmojiRasterizer`, looked up once while a Java frame is on the stack (so the app's class loader finds it).
@@ -195,8 +197,12 @@ impl AndroidTextSystem {
         })
     }
 
-    /// Android's drawing of `params`, or `None` for upstream's path ([`emoji::route`]).
-    fn emoji_raster(&self, params: &RenderGlyphParams) -> Option<(&Emoji, &GlobalRef, String)> {
+    /// Android's drawing of `params` and its size in device pixels, or `None` for upstream's path
+    /// ([`emoji::route`]).
+    fn emoji_raster(
+        &self,
+        params: &RenderGlyphParams,
+    ) -> Option<(&Emoji, &GlobalRef, String, f32)> {
         let emoji = self.emoji.as_ref()?;
         let face = self
             .cosmic
@@ -209,7 +215,12 @@ impl AndroidTextSystem {
             .text(params.glyph_id)
             .map(str::to_string);
         match emoji::route(params.is_emoji, face, cluster) {
-            Raster::Android { face, cluster } => Some((emoji, face, cluster)),
+            Raster::Android { face, cluster } => Some((
+                emoji,
+                face,
+                cluster,
+                f32::from(params.font_size) * params.scale_factor,
+            )),
             Raster::Upstream => None,
         }
     }
@@ -271,6 +282,38 @@ impl Emoji {
         Ok(result?)
     }
 
+    /// `EmojiRasterizer.<method>(typeface, cluster, size_px, ints…)` into `out`, which holds as many ints as the
+    /// returned `int[]` must (a shorter one is an error): the shape [`Self::bounds`] and [`Self::draw`] share.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Java method's name, signature and arguments"
+    )]
+    fn ints(
+        &self,
+        method: &str,
+        signature: &str,
+        typeface: &GlobalRef,
+        cluster: &str,
+        size_px: f32,
+        ints: &[i32],
+        out: &mut [i32],
+    ) -> Result<(), Error> {
+        self.call(|env, class| {
+            let text = env.new_string(cluster)?;
+            let mut args = vec![
+                JValue::Object(typeface.as_obj()),
+                JValue::Object(&text),
+                JValue::Float(size_px),
+            ];
+            args.extend(ints.iter().map(|&value| JValue::Int(value)));
+            let array = JIntArray::from(
+                env.call_static_method(class, method, signature, &args)?
+                    .l()?,
+            );
+            env.get_int_array_region(&array, 0, out)
+        })
+    }
+
     /// The pixels `cluster` covers at `size_px` device pixels, from the glyph origin, y down.
     fn bounds(
         &self,
@@ -278,25 +321,17 @@ impl Emoji {
         cluster: &str,
         size_px: f32,
     ) -> Result<Bounds<DevicePixels>, Error> {
-        let [left, top, right, bottom] = self.call(|env, class| {
-            let text = env.new_string(cluster)?;
-            let bounds = JIntArray::from(
-                env.call_static_method(
-                    class,
-                    "bounds",
-                    "(Landroid/graphics/Typeface;Ljava/lang/String;F)[I",
-                    &[
-                        JValue::Object(typeface.as_obj()),
-                        JValue::Object(&text),
-                        JValue::Float(size_px),
-                    ],
-                )?
-                .l()?,
-            );
-            let mut out = [0; 4];
-            env.get_int_array_region(&bounds, 0, &mut out)?;
-            Ok(out)
-        })?;
+        let mut ltrb = [0; 4];
+        self.ints(
+            "bounds",
+            "(Landroid/graphics/Typeface;Ljava/lang/String;F)[I",
+            typeface,
+            cluster,
+            size_px,
+            &[],
+            &mut ltrb,
+        )?;
+        let [left, top, right, bottom] = ltrb;
         Ok(Bounds {
             origin: point(DevicePixels(left), DevicePixels(top)),
             size: size(DevicePixels(right - left), DevicePixels(bottom - top)),
@@ -312,33 +347,19 @@ impl Emoji {
         bounds: Bounds<DevicePixels>,
     ) -> Result<Vec<u8>, Error> {
         let started = Instant::now();
-        let pixels = self.call(|env, class| {
-            let text = env.new_string(cluster)?;
-            let pixels = JIntArray::from(
-                env.call_static_method(
-                    class,
-                    "draw",
-                    "(Landroid/graphics/Typeface;Ljava/lang/String;FIIII)[I",
-                    &[
-                        JValue::Object(typeface.as_obj()),
-                        JValue::Object(&text),
-                        JValue::Float(size_px),
-                        JValue::Int(bounds.origin.x.0),
-                        JValue::Int(bounds.origin.y.0),
-                        JValue::Int(bounds.size.width.0),
-                        JValue::Int(bounds.size.height.0),
-                    ],
-                )?
-                .l()?,
-            );
-            let mut out = vec![0; env.get_array_length(&pixels)? as usize];
-            env.get_int_array_region(&pixels, 0, &mut out)?;
-            Ok(out)
-        })?;
+        let (width, height) = (bounds.size.width.0, bounds.size.height.0);
+        let mut pixels = vec![0; width.max(0) as usize * height.max(0) as usize];
+        self.ints(
+            "draw",
+            "(Landroid/graphics/Typeface;Ljava/lang/String;FIIII)[I",
+            typeface,
+            cluster,
+            size_px,
+            &[bounds.origin.x.0, bounds.origin.y.0, width, height],
+            &mut pixels,
+        )?;
         log::debug!(
-            "parallax: emoji: drew {cluster:?} at {size_px} px ({}x{}) in {:?}",
-            bounds.size.width.0,
-            bounds.size.height.0,
+            "parallax: emoji: drew {cluster:?} at {size_px} px ({width}x{height}) in {:?}",
             started.elapsed()
         );
         // Java's ARGB ints as little-endian bytes are B, G, R, A.
@@ -409,11 +430,9 @@ impl PlatformTextSystem for AndroidTextSystem {
         params: &RenderGlyphParams,
     ) -> anyhow::Result<Bounds<DevicePixels>> {
         match self.emoji_raster(params) {
-            Some((emoji, typeface, cluster)) => Ok(emoji.bounds(
-                typeface,
-                &cluster,
-                f32::from(params.font_size) * params.scale_factor,
-            )?),
+            Some((emoji, typeface, cluster, size_px)) => {
+                Ok(emoji.bounds(typeface, &cluster, size_px)?)
+            }
             None => self.cosmic.glyph_raster_bounds(params),
         }
     }
@@ -424,14 +443,9 @@ impl PlatformTextSystem for AndroidTextSystem {
         raster_bounds: Bounds<DevicePixels>,
     ) -> anyhow::Result<(Size<DevicePixels>, Vec<u8>)> {
         match self.emoji_raster(params) {
-            Some((emoji, typeface, cluster)) => Ok((
+            Some((emoji, typeface, cluster, size_px)) => Ok((
                 raster_bounds.size,
-                emoji.draw(
-                    typeface,
-                    &cluster,
-                    f32::from(params.font_size) * params.scale_factor,
-                    raster_bounds,
-                )?,
+                emoji.draw(typeface, &cluster, size_px, raster_bounds)?,
             )),
             None => self.cosmic.rasterize_glyph(params, raster_bounds),
         }
@@ -441,6 +455,11 @@ impl PlatformTextSystem for AndroidTextSystem {
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
         let mut layout = self.cosmic.layout_line(text, font_size, runs);
         if let Some(emoji) = &self.emoji {
+            // Locked once per line, not per glyph.
+            let mut clusters = emoji
+                .clusters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             emoji::mark(
                 &mut layout,
                 text,
@@ -449,13 +468,7 @@ impl PlatformTextSystem for AndroidTextSystem {
                         .font_database_id(font_id)
                         .is_some_and(|id| emoji.faces.contains_key(&id))
                 },
-                |cluster| {
-                    emoji
-                        .clusters
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .id(cluster)
-                },
+                |cluster| clusters.id(cluster),
             );
         }
         layout

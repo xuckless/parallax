@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the JVM tests of the ported Android Java (crates/android/java-tests, Robolectric, no device).
 # Usage: scripts/java-test.sh [gradle args...]   (default: test). See docs/android-tests.md.
-# Needs Java 17+ to start Gradle and an Android SDK (ANDROID_HOME); Gradle fetches JDK 17 and android-37.
+# Needs Java 17+ to start Gradle and an Android SDK (ANDROID_HOME); Gradle fetches JDK 21 and android-37.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

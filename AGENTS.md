@@ -66,7 +66,7 @@ Rules for ported code:
 | Android threading | GPUI runs on the Android main (UI) thread, like `gpui_ios` on UIKit's. IME queries are answered synchronously. No second UI thread. |
 | Flutter | Second source of truth: port its platform glue and behaviour, use its tests as the oracle for upstream (see below). Pinned commit in `third_party/flutter/PORTED.md`. |
 | App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
-| Touch → mouse | On by default (upstream behaviour). `TouchEvent::device` is a `PointerDevice` (`Mouse`, `Touch`, `Pen`); during pointer dispatch `Window::pointer_source()` returns `Some(PointerSource { device, synthesized })`. `.on_touch(...)` on an element is its opt-out: it gets raw touches instead of synthesized mouse events. The rule is a row in the platform behaviour table. |
+| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element (`.on_touch`). Every pointer event's device (mouse, touch, pen) and whether it was synthesized are queryable; the API is in [core-patches.md](docs/core-patches.md). The rule is a row in the platform behaviour table. |
 | Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
 | Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
 | Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |

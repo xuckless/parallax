@@ -43,9 +43,12 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private static native void nativeSurfaceDestroyed(int activity);
 
-  // Every vsync. Returns GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a
-  // JSON array, for TextInputChannel.handleFrameworkCalls), or null when there are none.
-  private static native String nativeFrame(int activity);
+  // Every vsync: GPUI draws if anything changed.
+  private static native void nativeFrame(int activity);
+
+  // GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a JSON array, for
+  // TextInputChannel.handleFrameworkCalls), or null when there are none.
+  private static native String nativeTextInputCalls(int activity);
 
   private static native void nativeInsets(
       int activity,
@@ -113,7 +116,18 @@ final class ParallaxSurfaceView extends SurfaceView
     this.activity = activity;
     // As FlutterView: no platform views, so motion events are not tracked.
     touchProcessor = new AndroidTouchProcessor(activity, /* trackMotionEvents= */ false);
-    keyboardManager = new KeyboardManager(this);
+    // A key GPUI handles may edit the field: the IME's mirror takes GPUI's state before the IME's
+    // next call (Gboard sends DEL as a key event, then may commit text before the next vsync). Both
+    // hardware keys and the IME's sendKeyEvent come through here.
+    keyboardManager =
+        new KeyboardManager(this) {
+          @Override
+          public boolean handleEvent(KeyEvent keyEvent) {
+            boolean handled = super.handleEvent(keyEvent);
+            runTextInputCalls();
+            return handled;
+          }
+        };
     textInputChannel = new TextInputChannel(activity);
     textInputPlugin = new TextInputPlugin(this, textInputChannel);
     getHolder().addCallback(this);
@@ -136,7 +150,8 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void doFrame(long frameTimeNanos) {
-    handleTextInputCalls(nativeFrame(activity));
+    nativeFrame(activity);
+    runTextInputCalls();
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -206,9 +221,10 @@ final class ParallaxSurfaceView extends SurfaceView
     return textInputPlugin.createInputConnection(this, keyboardManager, outAttrs);
   }
 
-  // GPUI's text-input calls from the last frame: run after nativeFrame returns, so the IME's
-  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust outside GPUI's draw.
-  private void handleTextInputCalls(String calls) {
+  // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's
+  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free.
+  private void runTextInputCalls() {
+    String calls = nativeTextInputCalls(activity);
     if (calls != null) {
       textInputChannel.handleFrameworkCalls(calls);
     }

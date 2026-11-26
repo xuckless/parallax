@@ -127,6 +127,8 @@ Full Android:
 
 - [ ] Runtime locale changes (Wave 10): follow per-app / system locale changes after start (today only the first surface's
       locales are used).
+- [ ] Android autofill (Wave 10): port `TextInputChannel.Configuration.Autofill` and emit GPUI's autofill hints (today
+      the hint is not sent; [android-text-input.md](docs/android-text-input.md)).
 - [ ] Multi-window (after Gate 1, Wave 12): one GPUI window per process, so in split-screen only the most recently started Activity draws;
       decide whether to support a window per Activity.
 - [x] Device loss: recovery uses upstream's `recover`, which re-picks Vulkan or GL itself; make it follow the
