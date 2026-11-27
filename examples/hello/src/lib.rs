@@ -299,9 +299,22 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
         .into_any_element()
 }
 
-/// Opens the one window. Android and the web size it themselves and ignore the bounds.
+/// Once per process, as on desktop: binds the keys, logs the app's lifecycle and opens the window. On Android each
+/// later Activity opens its own window with `open_window` (docs/android-multi-window.md).
 pub fn launch(cx: &mut App) {
     text_field::bind_keys(cx);
+    cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
+        .detach();
+    #[cfg(target_os = "android")]
+    if let Err(error) = parallax::parallax_android::on_activity_window(open_window) {
+        log::error!("later Activities get no window: {error}");
+    }
+    open_window(cx);
+    cx.activate(true);
+}
+
+/// Opens one window. Android and the web size it themselves and ignore the bounds.
+fn open_window(cx: &mut App) {
     // Tall enough for record-traces.sh's gestures (logical y up to 650) on desktop harnesses (docs/traces.md).
     let bounds = Bounds::centered(None, size(px(400.), px(700.)), cx);
     let options = WindowOptions {
@@ -344,14 +357,11 @@ pub fn launch(cx: &mut App) {
             keyboard: px(0.),
         })
     });
-    cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
-        .detach();
     match opened {
         // One per Android Activity (docs/android-multi-window.md): the count shows a destroyed one's window closed.
         Ok(_) => log::info!("window open, {} in all", cx.windows().len()),
         Err(error) => log::error!("cannot open the window: {error:#}"),
     }
-    cx.activate(true);
 }
 
 parallax::android_main!(launch);

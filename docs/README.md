@@ -60,7 +60,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-emoji.md](android-emoji.md) | Android colour emoji: fonts.xml emoji faces drawn by Android over JNI, one glyph per cluster, metrics, emoji-picker cost |
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
-| [android-multi-window.md](android-multi-window.md) | Android multi-window: one GPUI window per Activity, routing by Activity id, launch per Activity, the split-screen check |
+| [android-multi-window.md](android-multi-window.md) | Android multi-window: one GPUI window per Activity, routing by Activity id, launch once and `on_activity_window` per later Activity, the split-screen check |
 | [gate-1.md](gate-1.md) | Gate 1 on the Android emulator (API 28, 33, 35, Gboard): the results matrix, the failures found, and how to rerun it |
 | [traces-desktop.md](traces-desktop.md) | Gate 3's desktop trace fixtures: the folders the replay reads, what a Windows, Wayland, X11 or macOS harness must write, the device column, the Weston headless harness for Wayland and X11, checking a harness |
 | [traces.md](traces.md) | Touch traces for Gate 2: hello's trace pad recorder, record-traces.sh on the Android emulator, headless Chromium (CDP) and the iOS simulator (idb), the replay test and its tolerance |

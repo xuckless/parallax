@@ -37,14 +37,9 @@ pub fn set_gesture_tuning(cx: &mut gpui::App, tuning: gpui::GestureTuning) {
 }
 
 /// [`set_platform_gesture_tuning`], logging why when the platform keeps its own tuning (no row for this target).
-/// Once per app: a tuning that already has an owner stays, since Android runs the launch once per Activity
-/// ([`android_main!`]) and a later Activity must not undo the app's own tuning. What [`run`] and [`android_main!`]
-/// call; public only for the macro.
+/// What [`run`] and [`android_main!`] call; public only for the macro.
 #[doc(hidden)]
 pub fn apply_platform_behaviour(cx: &mut gpui::App) {
-    if cx.has_global::<TuningOwner>() {
-        return;
-    }
     if let Err(error) = set_platform_gesture_tuning(cx) {
         log::warn!("keeping the platform's gesture tuning: {error}");
     }
@@ -100,18 +95,30 @@ pub fn run(launch: impl FnOnce(&mut gpui::App) + 'static) -> Result<(), parallax
     Ok(())
 }
 
-/// Android entry point: `parallax_android::android_main!`, applying the platform behaviour row before the first
-/// `launch` (it runs once per Activity, opening that Activity's window) and again, per window, when the device's touch
-/// slop changes (the facade's job: `parallax_android`'s own macro can't read the table,
-/// which `parallax_platform` builds on it).
+/// What [`android_main!`] runs once per process: the behaviour row, `launch` as the default way to open a later
+/// Activity's window (`launch` may replace it), then `launch`. Public only for the macro.
+#[doc(hidden)]
+#[cfg(target_os = "android")]
+pub fn android_launch(cx: &mut gpui::App, launch: fn(&mut gpui::App)) {
+    apply_platform_behaviour(cx);
+    if let Err(error) = parallax_android::on_activity_window(launch) {
+        log::error!("parallax: later Activities get no window: {error}");
+    }
+    launch(cx)
+}
+
+/// Android entry point: `parallax_android::android_main!`, applying the platform behaviour row before `launch` (once
+/// per process: it opens the first Activity's window) and again, per window, when the device's touch slop changes
+/// (the facade's job: `parallax_android`'s own macro can't read the table, which `parallax_platform` builds on it).
+///
+/// Each later Activity's window comes from `parallax_android::on_activity_window`. The default is `launch` itself,
+/// so an app written for one window keeps working, but binds its keys again per Activity; an app that calls
+/// `on_activity_window` in `launch` replaces it (docs/android-multi-window.md).
 #[macro_export]
 macro_rules! android_main {
     ($launch:expr) => {
         $crate::parallax_android::android_main!(
-            |cx: &mut $crate::gpui::App| {
-                $crate::apply_platform_behaviour(cx);
-                ($launch)(cx)
-            },
+            |cx: &mut $crate::gpui::App| $crate::android_launch(cx, $launch),
             $crate::device_touch_slop_changed
         );
     };

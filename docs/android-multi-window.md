@@ -24,21 +24,27 @@ surface: [android-surface.md](android-surface.md). Rules: [AGENTS.md](../AGENTS.
 
 ## Opening a window
 
-The app's `launch` (`android_main!`) runs once per Activity, on its first surface, and opens one window:
+The app's `launch` (`android_main!`) runs once per process, as desktop GPUI's launch does: it binds keys, sets
+globals and opens the first Activity's window. Each later Activity (split screen, a deep link, a relaunch after the
+last Activity was destroyed in the same process) gets its window from the callback the app gave
+`parallax_android::on_activity_window` in `launch`, as a desktop app opens a window from a reopen callback:
 
-1. The first Activity's surface starts GPUI (`run_embedded(launch)`) and replays the phases it missed.
-2. A later Activity's first surface (split screen, a deep link, a relaunch after the last Activity was destroyed in
-   the same process) runs `launch` in the running app.
+1. The first Activity's first surface starts GPUI (`run_embedded(launch)`) and replays the phases it missed.
+2. A later Activity's first surface runs the `on_activity_window` callback in the running app.
 
-Before running it the window moves `Waiting → Launched`; `Platform::open_window` binds the newest `Launched` window
-(`Launched → Open`) and builds its renderer on the Activity's surface. A launch that opens no window leaves the
-Activity black (logged); opening a window with no Activity waiting is `Error::NoActivityForWindow`, since Android
-opens windows only through Activities. The facade applies the behaviour table before the first launch only
-([behaviour.md](behaviour.md)), so a later Activity keeps the app's own tuning. A launch that binds keys binds them
-again per Activity; GPUI tolerates the duplicate bindings.
+Before either the window moves `Waiting → Requested`; `Platform::open_window` binds the newest `Requested` window
+(`Requested → Open`) and builds its renderer on the Activity's surface. A callback that opens no window, or no
+callback, leaves the Activity black (logged); opening a window with no Activity waiting is
+`Error::NoActivityForWindow`, since Android opens windows only through Activities.
 
-`onDestroy` closes the window: its view state goes with it, as a desktop window's does. Rotation and other handled
-configuration changes keep the Activity (manifest `configChanges`), so they keep the window.
+The facade's `parallax::android_main!` applies the behaviour table before `launch` ([behaviour.md](behaviour.md))
+and sets `launch` itself as the default callback, so an app written for one window keeps working; it binds its keys
+again per Activity, which GPUI tolerates. hello sets its own (`open_window`), so it binds them once.
+
+## Closing a window
+
+`onDestroy` closes the Activity's window: its view state goes with it, as a desktop window's does. Rotation and other
+handled configuration changes keep the Activity (manifest `configChanges`), so they keep the window.
 
 ## Touch slop
 
@@ -49,7 +55,7 @@ retuned.
 ## Check it
 
 On an emulator with API 33+ (split screen through the WM shell; `hello` logs `window open, N in all` and
-`Activity N destroyed: its window closes`):
+`Activity N destroyed: its window closes`, and `lifecycle …` lines once per phase, not once per window):
 
 1. `cargo parallax run android --device <serial>` in `examples/hello`, then `adb shell input keyevent KEYCODE_HOME`.
 2. A second instance in its own task (the template's `singleTop` only reuses the shown one):

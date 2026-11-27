@@ -46,7 +46,7 @@ mod text_system;
 mod window;
 
 #[cfg(target_os = "android")]
-pub use host::{TouchSlopChanged, on_load};
+pub use host::{TouchSlopChanged, on_activity_window, on_load};
 #[doc(hidden)]
 #[cfg(target_os = "android")]
 pub use jni;
@@ -59,13 +59,14 @@ pub use jni;
 /// ```
 ///
 /// On Android it defines `JNI_OnLoad`, which `ParallaxActivity`'s `System.loadLibrary` calls; GPUI then runs
-/// `launch` on the main thread when the first surface exists. Each `ParallaxActivity` has its own GPUI window, so
-/// `launch` runs once per Activity, on its first surface, and must open one window: the first run starts GPUI, a
-/// later Activity (split screen, a deep link, a relaunch after the last one was destroyed) runs it in the same app.
-/// On other targets it expands to nothing.
+/// `launch` on the main thread when the first Activity's surface exists, once per process, as desktop GPUI runs its
+/// launch: it binds keys, sets globals and opens that Activity's window. Each `ParallaxActivity` has its own GPUI
+/// window; a later Activity (split screen, a deep link, a relaunch after the last one was destroyed) gets its window
+/// from the callback `launch` gives [`on_activity_window`]. On other targets it expands to nothing.
 ///
 /// Use the facade's `parallax::android_main!`, as above: it applies the platform behaviour table (Android's
-/// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`. This crate's own
+/// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`, and makes `launch` the
+/// default [`on_activity_window`] callback. This crate's own
 /// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
 /// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
 ///

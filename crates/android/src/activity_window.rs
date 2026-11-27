@@ -78,10 +78,11 @@ pub(crate) enum FirstFrame {
 
 /// Where the Activity's GPUI window is. One per Activity; the renderer lives only in `Open`.
 pub(crate) enum Gpui {
-    /// No GPUI window yet: the app's `launch` runs on the Activity's first surface.
+    /// No GPUI window yet: the Activity's first surface asks the app for one.
     Waiting,
-    /// `launch` ran for this Activity; the window it opens (`Platform::open_window`) binds here.
-    Launched,
+    /// The app was asked for this Activity's window (its `launch`, or `on_activity_window` for a later Activity);
+    /// the window it opens (`Platform::open_window`) binds here.
+    Requested,
     /// GPUI's window for this Activity, drawn by its renderer.
     Open {
         handle: AnyWindowHandle,
@@ -136,7 +137,7 @@ impl ActivityWindow {
     pub(crate) fn gpui_handle(&self) -> Option<AnyWindowHandle> {
         match &*self.gpui.borrow() {
             Gpui::Open { handle, .. } => Some(*handle),
-            Gpui::Waiting | Gpui::Launched => None,
+            Gpui::Waiting | Gpui::Requested => None,
         }
     }
 
@@ -144,7 +145,7 @@ impl ActivityWindow {
     pub(crate) fn with_renderer<R>(&self, call: impl FnOnce(&mut WgpuRenderer) -> R) -> Option<R> {
         match &mut *self.gpui.borrow_mut() {
             Gpui::Open { renderer, .. } => Some(call(renderer)),
-            Gpui::Waiting | Gpui::Launched => None,
+            Gpui::Waiting | Gpui::Requested => None,
         }
     }
 
@@ -182,10 +183,10 @@ impl ActivityWindow {
         }
     }
 
-    /// Whether the app's `launch` waits for this Activity: it ran for it, and GPUI has not opened its window.
-    pub(crate) fn is_launched(&self) -> bool {
+    /// Whether this Activity waits for the window the app was asked for: GPUI has not opened it yet.
+    pub(crate) fn is_requested(&self) -> bool {
         match &*self.gpui.borrow() {
-            Gpui::Launched => true,
+            Gpui::Requested => true,
             Gpui::Waiting | Gpui::Open { .. } => false,
         }
     }
