@@ -6,6 +6,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's
+device touch slop, touch time stamps and Gate 2's trace replay.
+
 ### Added
 
 - Touch pinch (patch 0016): two or more fingers on an element with an id and `on_pinch` pinch it, through
@@ -15,54 +18,60 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   listener zooms for both. The deepest `on_pinch` element under the fingers gets it; one finger still taps and pans,
   and a second turns a pan into a pinch, as in Flutter's arena. `Window::join_pinch` and `Window::pinch_owner` let
   custom elements take part ([docs/pinch.md](docs/pinch.md)).
-- hello: the box zooms with a two-finger or trackpad pinch and shows the zoom and rotation.
-
-### Changed
-
-- `PinchEvent` has a new public field, `touch` (`None` for trackpad pinches): struct literals need `touch: None`.
-- An element with `on_pinch` and an id now decides its touches like one with `on_click`: an ancestor's `on_touch`
-  no longer takes them.
-- Overscroll in scroll containers (patch 0017, fork `parallax-gpui*` 0.3.14-parallax.9): a touch dragged or flung past
-  a `div` scroll container's edge bounces (iOS, macOS: Flutter's friction and spring), stretches (Android: Material 3's
-  stretch, recedes on release) or stops hard (Windows, Linux), per the behaviour table; `Glow` (Material 2) on request.
-  Mouse wheels and trackpads stay clamped, as in Flutter. `gpui::overscroll::Overscroll`, `GestureTuning::overscroll`
-  (default `None`: GPUI unchanged) and a per-container `.overscroll(..)`; `Overscroll::None` opts a container out
+- Overscroll in scroll containers (patch 0017): a touch dragged or flung past a `div` scroll container's edge bounces
+  (iOS, macOS: Flutter's friction and spring), stretches (Android: Material 3's stretch, recedes on release) or stops
+  hard (Windows, Linux), per the behaviour table; `Glow` (Material 2) on request. Mouse wheels and trackpads stay
+  clamped, as in Flutter. `gpui::overscroll::Overscroll`, `GestureTuning::overscroll` (default `None`: GPUI
+  unchanged) and a per-container `.overscroll(..)`; `Overscroll::None` opts a container out
   ([docs/overscroll.md](docs/overscroll.md)). `uniform_list` and `list` don't overscroll yet.
-- `examples/hello`: the emoji grid scrolls and shows the platform's overscroll.
-
-### Changed
-
-- `parallax-platform`: `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants), and
-  `Behaviour::gesture_tuning()` now fills `GestureTuning::overscroll` from the row.
-- Haptics (patch 0018, [docs/haptics.md](docs/haptics.md)): `gpui::Haptic` (Flutter's `HapticFeedback` calls),
+- Haptics (patch 0018, [docs/haptics.md](docs/haptics.md)): `gpui::Haptic` (Flutter's eight `HapticFeedback` calls),
   `Window::perform_haptic(kind)` and `PlatformWindow::perform_haptic` (no-op by default, as on desktops), and
   `GestureTuning::long_press_haptic`, which the window plays once when an element claims a long press. The behaviour
-  table's `haptics.long_press` row now fills it (Android vibrate, iOS heavy impact), so a long press that shows a
-  tooltip, or any element that claims one, plays the platform's haptic with no app code.
-- Android plays every kind with Flutter's ported `PlatformPlugin.vibrateHapticFeedback` (`View.performHapticFeedback`);
-  iOS (gpui_ios) with `UIImpactFeedbackGenerator`, `UISelectionFeedbackGenerator`, `UINotificationFeedbackGenerator`
-  and the vibrate system sound, as Flutter's `FlutterPlatformPlugin.mm`; the web (gpui_web) with `navigator.vibrate`
-  and Flutter web's durations, where the browser has it.
-- hello: the box shows its colour as a tooltip on hover or long press; the long press plays the haptic.
-
-### Changed
-
-- `parallax_platform::behaviour::Haptic` is now `gpui::Haptic`, re-exported: Flutter's eight kinds, not three.
+  table's `haptics.long_press` fills it (Android vibrate, iOS heavy impact), so a long press that shows a tooltip, or
+  any element that claims one, plays the platform's haptic with no app code. Android plays every kind with Flutter's
+  ported `PlatformPlugin.vibrateHapticFeedback` (`View.performHapticFeedback`); iOS (gpui_ios) with
+  `UIImpactFeedbackGenerator`, `UISelectionFeedbackGenerator`, `UINotificationFeedbackGenerator` and the vibrate
+  system sound, as Flutter's `FlutterPlatformPlugin.mm`; the web (gpui_web) with `navigator.vibrate` and Flutter
+  web's durations, where the browser has it.
+- `Window::set_gesture_tuning` (patch 0019): retunes an open window in place.
 - Android reads its device touch slop at runtime: `ParallaxSurfaceView` sends `ViewConfiguration.getScaledTouchSlop()`
   with every density (as Flutter's FlutterView sends `physicalTouchSlop`), and `parallax_android::touch_slop()` gives
   it in logical pixels. The behaviour table's Android row uses it, with 8 dp as the fallback, and the facade's
   `android_main!` applies it again to the open window when a density change moves it (an app's own slop wins).
-- `Window::set_gesture_tuning` (patch 0019, fork `parallax-gpui*` 0.3.14-parallax.9): retunes an open window in place.
+- Touch time stamps (patch 0020, [docs/touch-time-stamps.md](docs/touch-time-stamps.md)): `TouchEvent::time_stamp`,
+  when the platform says the touch happened (Flutter's `PointerEvent.timeStamp`), on GPUI's executor clock. Android
+  fills it from `MotionEvent.getEventTime()`, iOS (gpui_ios) from `UITouch.timestamp`, the web (gpui_web) from
+  `PointerEvent.timeStamp`. Velocity tracking (flings, pinch velocity) samples at the time stamp, so touches a
+  platform delivers late or in bunches fling as fast as the finger moved; `None` is timed at dispatch, as before.
+- Trace replay for Gate 2 ([docs/traces.md](docs/traces.md)): hello's trace pad ("Record touches") logs every touch
+  in the trace format, timed by its time stamp; `scripts/record-traces.sh` records it on the web (headless Chromium
+  over CDP, `scripts/cdp-touch.mjs`), the iOS simulator (idb on the owner's Mac) and Android (`adb input`); the
+  `trace_replay` test replays every trace under every behaviour row and checks the platforms agree.
+  `scripts/locate-colour.py` finds a colour on a screenshot (PNG too) for it and `android-smoke.sh`.
+- hello: the box zooms with a two-finger or trackpad pinch and shows the zoom and rotation, shows its colour as a
+  tooltip on hover or long press (the long press plays the haptic); the emoji grid scrolls and shows the platform's
+  overscroll.
 
 ### Changed
 
-- **Breaking:** `Behaviour::touch_slop` is a `TouchSlop` (`Unset`, or `Device { fallback }`) in place of
-  `Option<Pixels>`, and `Behaviour::gesture_tuning` takes the reported slop (`gesture_tuning(None)` keeps the old
-  values). New `Behaviour::retune`. `parallax_android::on_load` takes a `TouchSlopChanged` hook, and
-  `parallax_android::android_main!` takes one as an optional second argument.
+- **Breaking:** `TouchEvent` has a new public field, `time_stamp`, and `PinchEvent` one, `touch` (`None` for
+  trackpad pinches): struct literals need `time_stamp: None` / `touch: None`. `GestureTuning` has two,
+  `overscroll` and `long_press_haptic`: literals without `..GestureTuning::default()` need them.
+- **Breaking** (`parallax-platform`): `Behaviour::gesture_tuning` takes the reported touch slop
+  (`gesture_tuning(None)` keeps the table's values) and now fills `overscroll` and `long_press_haptic` from the row;
+  `Behaviour::touch_slop` is a `TouchSlop` (`Unset`, or `Device { fallback }`) in place of `Option<Pixels>`; new
+  `Behaviour::retune`. `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants) and
+  `behaviour::Haptic` is `gpui::Haptic` (eight kinds, not three), both re-exported.
+- **Breaking** (`parallax-android`): `on_load` takes a `TouchSlopChanged` hook, and `android_main!` takes one as an
+  optional second argument.
+- An element with `on_pinch` and an id now decides its touches like one with `on_click`: an ancestor's `on_touch`
+  no longer takes them.
 
 ### Fixed
 
+- Flings from the web no longer fall short: GPUI timed touches when it received them, and least squares read the
+  browser's jittered frame-rate delivery as a slowing finger (the recorded web fling replayed ~40 % shorter than
+  iOS's; with time stamps the two agree within the replay's tolerance under every behaviour row).
 - Android: a density change (`wm density`, display size setting) now reaches GPUI's scale. The surface keeps its pixel
   size, so no `surfaceChanged` came; the density now also comes with the insets report the configuration change
   triggers.
