@@ -1,0 +1,3 @@
+# web long-press: tap 200 400 800
+touch(0, 1, Started, 200.00, 400.00)
+touch(803, 1, Ended, 200.00, 400.00)
