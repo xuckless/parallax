@@ -38,6 +38,10 @@ counts 2, another target 1). Each row is a recorded touch trace
 the window dispatched with their times (tap with click count, scroll steps, claimed long press and touch drag). Arena,
 button, device-kind, multi-pointer and velocity cases are not rows: docs/gesture-recognizers.md lists them.
 `fling_needs_flutters_velocity_and_distance` checks the fling rule (a 6 px slow drag doesn't fling, 30 px does).
+The trace player is `gpui::play_trace` (test.rs, `test-support`), public so recorded traces from any crate replay
+the same way: `(at_ms, PlatformInput)` pairs (touches, wheels, trackpads) dispatched on the test executor's clock,
+an optional frame period that runs the window's next-frame callbacks (fling momentum), and a callback after each
+input and frame (`TraceStep`).
 
 Ported code: constants.dart (`gestures/constants.rs`, whole), the slop functions (events.dart), the tap-count rule
 (multitap.dart), the fling rule (monodrag.dart), the fling limits (scroll_physics.dart), and the test rows (the four
@@ -1359,10 +1363,10 @@ index 0000000..8addabb
 +pub const kPrecisePointerScaleSlop: Pixels = kPrecisePointerHitSlop; // Logical pixels
 diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
 new file mode 100644
-index 0000000..fb3aa12
+index 0000000..54ed332
 --- /dev/null
 +++ b/gpui-pre/src/gestures/recognizer_tests.rs
-@@ -0,0 +1,886 @@
+@@ -0,0 +1,884 @@
 +// Ported from flutter/flutter packages/flutter/test/gestures/tap_test.dart, double_tap_test.dart,
 +// long_press_test.dart and drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
 +// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
@@ -1389,15 +1393,15 @@ index 0000000..fb3aa12
 +/// One touch event of a recorded trace: what the platform reported, and when,
 +/// in milliseconds from the trace's start. Wave 12's recorder emits these.
 +#[derive(Clone, Copy)]
-+struct TraceEvent {
-+    at_ms: u64,
++pub(crate) struct TraceEvent {
++    pub(crate) at_ms: u64,
 +    id: u64,
 +    phase: TouchPhase,
 +    x: f32,
 +    y: f32,
 +}
 +
-+const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
++pub(crate) const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
 +    TraceEvent {
 +        at_ms,
 +        id,
@@ -1533,30 +1537,28 @@ index 0000000..fb3aa12
 +    window
 +        .update(cx, |_, window, _| window.set_gesture_tuning(tuning))
 +        .unwrap();
-+    let run_until = |cx: &mut TestAppContext, at_ms: u64| {
-+        let elapsed = cx.executor().now().duration_since(started_at);
-+        cx.executor()
-+            .advance_clock(Duration::from_millis(at_ms).saturating_sub(elapsed));
-+        cx.run_until_parked();
-+    };
-+    for event in row.trace {
-+        run_until(cx, event.at_ms);
-+        window
-+            .update(cx, |_, window, cx| {
-+                let touch = TouchEvent {
-+                    id: TouchId(event.id),
-+                    phase: event.phase,
-+                    position: point(px(event.x), px(event.y)),
-+                    predicted_position: None,
-+                    force: None,
-+                    device: PointerDevice::Touch,
-+                };
-+                window.dispatch_event(touch.to_platform_input(), cx);
-+            })
-+            .unwrap();
-+    }
-+    run_until(cx, row.until_ms);
++    let trace = row.trace.iter().map(|event| event.to_timed_input());
++    crate::play_trace(cx, window.into(), trace, None, row.until_ms, |_, _, _| {});
 +    seen.take()
++}
++
++impl TraceEvent {
++    /// The platform event this trace event replays.
++    pub(crate) fn to_touch_event(self) -> TouchEvent {
++        TouchEvent {
++            id: TouchId(self.id),
++            phase: self.phase,
++            position: point(px(self.x), px(self.y)),
++            predicted_position: None,
++            force: None,
++            device: PointerDevice::Touch,
++        }
++    }
++
++    /// The event as [`crate::play_trace`] input: its time and the platform input.
++    pub(crate) fn to_timed_input(self) -> (u64, crate::PlatformInput) {
++        (self.at_ms, self.to_touch_event().to_platform_input())
++    }
 +}
 +
 +/// Two side-by-side tap targets for the per-target rows.
@@ -2310,6 +2312,81 @@ index 2fedf54..819458e 100644
      /// The minimum amount of pixel distance drags must move by to start motion
      /// the first time or after each time the drag motion stopped.
      ///
+diff --git a/gpui-pre/src/test.rs b/gpui-pre/src/test.rs
+index c1c8e66..79e37b0 100644
+--- a/gpui-pre/src/test.rs
++++ b/gpui-pre/src/test.rs
+@@ -25,13 +25,17 @@
+ //!   assert!(true)
+ //! }
+ //! ```
+-use crate::{Entity, Subscription, TestAppContext, TestDispatcher, calculate_seeds};
++use crate::{
++    AnyWindowHandle, App, AppContext as _, Entity, PlatformInput, Subscription, TestAppContext,
++    TestDispatcher, Window, calculate_seeds,
++};
+ use futures::StreamExt as _;
+ use proptest::prelude::{Just, Strategy, any};
+ use std::{
+     env,
+     panic::{self, RefUnwindSafe, UnwindSafe},
+     pin::Pin,
++    time::Duration,
+ };
+ 
+ /// Strategy injected into `#[gpui::property_test]` tests to control the seed
+@@ -170,3 +174,51 @@ pub fn observe<T: 'static>(entity: &Entity<T>, cx: &mut TestAppContext) -> Obser
+ 
+     Observation { rx, _subscription }
+ }
++
++/// What [`play_trace`] just did, for its callback.
++#[derive(Debug)]
++pub enum TraceStep<'a> {
++    /// It dispatched this input.
++    Input(&'a PlatformInput),
++    /// It ran the window's next frame (its `on_next_frame` callbacks), this many ms after the trace started.
++    Frame(u64),
++}
++
++/// Plays a recorded input trace (touches, scroll wheels, any platform input) into `window` on the test executor's
++/// clock: each `(at_ms, input)` is dispatched `at_ms` after the call, timers (a long press) fire in between, and
++/// with `frame_ms` a frame runs every `frame_ms` (fling momentum, overscroll), until `until_ms` or the last input.
++/// `on_step` sees each input after its dispatch and each frame after it ran, in time order; at the same time, the
++/// frame comes first. The trace must be in time order.
++pub fn play_trace(
++    cx: &mut TestAppContext,
++    window: AnyWindowHandle,
++    trace: impl IntoIterator<Item = (u64, PlatformInput)>,
++    frame_ms: Option<u64>,
++    until_ms: u64,
++    mut on_step: impl FnMut(TraceStep<'_>, &mut Window, &mut App),
++) {
++    let mut now = 0;
++    let inputs = trace.into_iter().map(|(at_ms, input)| (at_ms, Some(input)));
++    for (at_ms, input) in inputs.chain([(until_ms, None)]) {
++        while now < at_ms {
++            let step = frame_ms.map_or(at_ms - now, |frame| (frame - now % frame).min(at_ms - now));
++            cx.executor().advance_clock(Duration::from_millis(step));
++            cx.run_until_parked();
++            now += step;
++            if frame_ms.is_some_and(|frame| now % frame == 0) {
++                cx.update_window(window, |_, window, cx| {
++                    window.simulate_next_frame(cx);
++                    on_step(TraceStep::Frame(now), window, cx);
++                })
++                .expect("the trace's window stays open");
++            }
++        }
++        if let Some(input) = input {
++            cx.update_window(window, |_, window, cx| {
++                window.dispatch_event(input.clone(), cx);
++                on_step(TraceStep::Input(&input), window, cx);
++            })
++            .expect("the trace's window stays open");
++        }
++    }
++}
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
 index aff770f..f43d430 100644
 --- a/gpui-pre/src/window.rs
