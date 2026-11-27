@@ -6,6 +6,13 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS direct touch (patches 0025, 0026), from the owner's Sidecar check: each finger keeps one id for its
+  whole life (a finger landing or lifting while another moved was handled twice: started, cancelled and started
+  again, or moved twice); a touch the system cancels is cancelled where it last
+  was, not at (0, -32). `hello` logs `trackpad pinch end`.
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`

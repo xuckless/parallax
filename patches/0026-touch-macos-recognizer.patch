@@ -3,8 +3,9 @@ Feed macOS 27 direct touches into GPUI through a gesture recognizer on GPUIView.
 What: a new `gpui_macos` module, `window/touch_recognizer.rs`: `GPUITouchRecognizer`, an `NSGestureRecognizer`
 subclass overriding `touches{Began,Moved,Ended,Cancelled}WithEvent:` and `reset` (Apple's custom-recognizer pattern,
 `NSGestureRecognizer (NSSubclassUse)`), added to every GPUIView when `isOperatingSystemAtLeastVersion(27.0)`, with
-`allowedTouchTypes` Direct. Per event it reads the changed touches (`touchesMatchingPhase:inView:` on the view),
-turns each into `TouchEvent`s through 0025's `PHASES` and `TouchIds` (position from `locationInView:`, y flipped as
+`allowedTouchTypes` Direct. Each callback (one handler per `NSTouchPhase`, `handle_touches::<PHASE>`) reads the
+event's changed touches (`touchesMatchingPhase:inView:` on the view) and turns those in its own phase into
+`TouchEvent`s through 0025's `TouchIds::track_callback` (position from `locationInView:`, y flipped as
 for mouse events; device `Touch`; `time_stamp` from `NSEvent.timestamp` by 0024's `uptime_instant`), hands them to
 GPUI through 0025's `TouchQueue`, and sets its state by 0025's `next_state`. Its `reset` calls super, then cancels
 every touch still live (where it last was) and forgets them. `window.rs`: the class is registered in
@@ -143,18 +144,18 @@ new file mode 100644
 index 0000000..87a8e5a
 --- /dev/null
 +++ b/gpui-pre-macos/src/window/touch_recognizer.rs
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,208 @@
 +//! `GPUITouchRecognizer`: the AppKit glue that hands direct touches to GPUI, from macOS 27.
 +//!
 +//! AppKit hands direct touches to gesture recognizers only, never to a view's responder methods, so every
 +//! GPUIView carries one `GPUITouchRecognizer`: an `NSGestureRecognizer` subclass overriding
 +//! `touches…WithEvent:` and `reset`, Apple's custom-recognizer pattern (`NSGestureRecognizer (NSSubclassUse)` in
-+//! the SDK headers). It reads each changed `NSTouch` and hands it to GPUI, whose own recognizers (taps, pans,
-+//! pinch) take it from there; the decisions are in `touch.rs`. Before macOS 27 no recognizer is added.
++//! the SDK headers). Each callback reads the event's touches in its own phase and hands them to GPUI, whose own
++//! recognizers (taps, pans, pinch) take it from there; the decisions are in `touch.rs`. Before macOS 27 no recognizer is added.
 +
 +use super::{
 +    MacWindowState, is_macos_version_at_least,
-+    touch::{CHANGED, Left, PHASES, RecognizerState, TOUCHING, next_state},
++    touch::{BEGAN, CANCELLED, CHANGED, ENDED, Left, MOVED, RecognizerState, TOUCHING, next_state},
 +    window_state_if_set,
 +};
 +use gpui::{PlatformInput, PointerDevice, TouchEvent, TouchPhase, point, px};
@@ -194,15 +195,20 @@ index 0000000..87a8e5a
 +pub(super) unsafe fn register_touch_recognizer_class() {
 +    let mut decl = ClassBuilder::new(c"GPUITouchRecognizer", class!(NSGestureRecognizer))
 +        .expect("GPUITouchRecognizer is registered once, by build_classes");
-+    // One handler for the four callbacks: each touch carries its own phase.
-+    for selector in [
-+        sel!(touchesBeganWithEvent:),
-+        sel!(touchesMovedWithEvent:),
-+        sel!(touchesEndedWithEvent:),
-+        sel!(touchesCancelledWithEvent:),
-+    ] {
++    // Callback → the `NSTouchPhase` it handles: AppKit calls each one that a touch of the event is in, all with the
++    // same event. Extend: one row per `touches…WithEvent:` callback.
++    let callbacks: [(Sel, extern "C" fn(&'static AnyObject, Sel, *mut AnyObject)); 4] = [
++        (sel!(touchesBeganWithEvent:), handle_touches::<BEGAN>),
++        (sel!(touchesMovedWithEvent:), handle_touches::<MOVED>),
++        (sel!(touchesEndedWithEvent:), handle_touches::<ENDED>),
++        (
++            sel!(touchesCancelledWithEvent:),
++            handle_touches::<CANCELLED>,
++        ),
++    ];
++    for (selector, handler) in callbacks {
 +        // SAFETY: the signature matches `- (void)touches…WithEvent:(NSEvent *)event`.
-+        unsafe { decl.add_method(selector, handle_touches as extern "C" fn(_, _, _)) };
++        unsafe { decl.add_method(selector, handler) };
 +    }
 +    // SAFETY: the signature matches `- (void)reset`.
 +    unsafe { decl.add_method(sel!(reset), handle_reset as extern "C" fn(_, _)) };
@@ -267,7 +273,13 @@ index 0000000..87a8e5a
 +    }
 +}
 +
-+extern "C" fn handle_touches(this: &AnyObject, _: Sel, native_event: *mut AnyObject) {
++/// One `touches…WithEvent:` callback, `CALLBACK` the `NSTouchPhase` bit it handles (`TouchIds::track_callback`
++/// takes the event's touches in that phase only).
++extern "C" fn handle_touches<const CALLBACK: NSUInteger>(
++    this: &AnyObject,
++    _: Sel,
++    native_event: *mut AnyObject,
++) {
 +    // SAFETY: AppKit calls this on the main thread with a live `NSEvent`, for a recognizer that
 +    // `add_touch_recognizer` put on a GPUIView, which owns the window-state ivar.
 +    unsafe {
@@ -282,41 +294,31 @@ index 0000000..87a8e5a
 +            msg_send![native_event, touchesMatchingPhase: CHANGED, inView: view];
 +        let changed: *mut AnyObject = msg_send![changed, allObjects];
 +        let count: NSUInteger = msg_send![changed, count];
-+        let mut cancelled = false;
++        let height = window_state.lock().content_size().height;
++        let mut touches = Vec::new();
 +        for index in 0..count {
 +            let touch: *mut AnyObject = msg_send![changed, objectAtIndex: index];
-+            let bits: NSUInteger = msg_send![touch, phase];
-+            let Some(phase) = PHASES
-+                .iter()
-+                .find(|(bit, _)| *bit == bits)
-+                .map(|(_, phase)| *phase)
-+            else {
-+                continue;
-+            };
-+            cancelled |= phase == TouchPhase::Cancelled;
++            let bit: NSUInteger = msg_send![touch, phase];
 +            let identity: *mut AnyObject = msg_send![touch, identity];
 +            let Some(identity) = Retained::retain(identity) else {
 +                continue;
 +            };
 +            let location: NSPoint = msg_send![touch, locationInView: view];
-+            let mut lock = window_state.lock();
 +            // GPUIView is not flipped: AppKit's y grows upward, as for mouse events.
-+            let position = point(
-+                px(location.x as f32),
-+                lock.content_size().height - px(location.y as f32),
-+            );
-+            let touches = lock
-+                .touch_ids
-+                .track(TouchIdentity(identity), phase, position);
-+            drop(lock);
-+            for touch in touches {
-+                dispatch_touch(&window_state, touch_event(touch, time_stamp));
-+            }
++            let position = point(px(location.x as f32), height - px(location.y as f32));
++            touches.push((TouchIdentity(identity), bit, position));
++        }
++        let touches = window_state
++            .lock()
++            .touch_ids
++            .track_callback(CALLBACK, touches);
++        for touch in touches {
++            dispatch_touch(&window_state, touch_event(touch, time_stamp));
 +        }
 +        let touching: *mut AnyObject =
 +            msg_send![native_event, touchesMatchingPhase: TOUCHING, inView: view];
 +        let touching: NSUInteger = msg_send![touching, count];
-+        let left = match (touching > 0, cancelled) {
++        let left = match (touching > 0, CALLBACK == CANCELLED) {
 +            (true, _) => Left::Touching,
 +            (false, true) => Left::Cancelled,
 +            (false, false) => Left::Lifted,

@@ -23,14 +23,17 @@ main bundle's Info.plist).
 ## The glue
 
 `GPUITouchRecognizer` (`gpui-pre-macos/src/window/touch_recognizer.rs`) is an `NSGestureRecognizer` subclass on
-every GPUIView, added only when `isOperatingSystemAtLeastVersion(27.0)`. Per event it reads the changed touches
-(stationary ones skipped) and sends, through the tables in `window/touch.rs`:
+every GPUIView, added only when `isOperatingSystemAtLeastVersion(27.0)`. AppKit calls each `touches…WithEvent:`
+callback that a touch of the event is in, all with the same event (a finger landing while another moves calls
+`touchesBegan` and `touchesMoved`), so each callback (`handle_touches::<PHASE>`) takes only the event's touches in
+its own phase (`TouchIds::track_callback`); read whole, the Sidecar check saw every landing finger start, cancel and
+start again, and every other finger move twice. It sends, through the tables in `window/touch.rs`:
 
 | `TouchEvent` field | From |
 |---|---|
 | `phase` | `PHASES` table: Began → `Started`, Moved, Ended, Cancelled |
-| `id` | `TouchIds`: the next id (from 0, wrapping) per live `NSTouch.identity` (`isEqual:`), given up when it ends; a move or end with no live begin is dropped, a begin of a live identity cancels the stale touch first |
-| `position` | `locationInView:` on GPUIView, y flipped like mouse events |
+| `id` | `TouchIds`: the next id (from 0 per window, wrapping) per live `NSTouch.identity` (`isEqual:`), given up when it ends; a move or end with no live begin is dropped, a begin of a live identity cancels the stale touch first |
+| `position` | `locationInView:` on GPUIView, y flipped like mouse events; a cancel is where the touch last was (AppKit puts one the system took at (0, -32)) |
 | `device` | `Touch` (allowed types are Direct only) |
 | `time_stamp` | `NSEvent.timestamp` by its age against `systemUptime` (gpui_apple `uptime_instant`, shared with iOS; [touch-time-stamps.md](touch-time-stamps.md)) |
 
@@ -53,14 +56,19 @@ pinch / rotate → magnify / rotate, hold and move → drag. An app with its own
 
 in `Contents/Info.plist` of its `.app` (cargo-parallax does not bundle macOS apps yet; add the key to your bundler's
 plist, e.g. cargo-bundle's `osx_info_plist_exts`). Then touches arrive only as `TouchEvent`s and GPUI's touch →
-mouse ([pointer-source.md](pointer-source.md)) makes the clicks. Without the key, whether AppKit still emulates
-after the recognizer claims the touches is unverified; the copies AppKit marks are dropped (above), so a tap should
-click once either way. The owner's Sidecar check settles it.
+mouse ([pointer-source.md](pointer-source.md)) makes the clicks. Without the key, the owner's Sidecar check (Wave
+13, macOS 27.3) saw one `touch click` per tap and no double scroll in both bundles. Its two `pinch end` lines 9 ms
+apart were not AppKit's magnify (a trackpad pinch has no `TouchPinch`) but Flutter's scale: a lift ends it, the
+finger still down restarts it once it moves, and its lift ends it again. The zero velocities fit
+Flutter's fling rule (`_isFlingGesture`): an end slower than `kMinFlingVelocity` has none, and the touch-native
+end with one was a two-finger flick (zoom 1.00). `hello` logs a
+`trackpad pinch end` line, so a rerun shows if magnify copies ever leak past the drop.
 
 ## Limits
 
-- Not run on touch hardware yet: verified by `cargo clippy -D warnings`, the unit tests and a build on macOS 27.3.
-  The live check (both bundles, Sidecar steps) is in `/Users/Shared/parallax/w13-macos-touch/` on the owner's Mac.
+- Run on touch hardware once: the owner's Sidecar check (Wave 13; logs and report in
+  `/Users/Shared/parallax/w13-macos-touch/` on the owner's Mac). Its fixes (one id per finger, cancels where the
+  finger was) wait for the re-check in `/Users/Shared/parallax/w14-macos-touch/`.
 - `NSScreen.touchCapabilities` says `.multiTouch` for every display while a Sidecar touch iPad is connected, so it
   can't tell which screen takes touch; GPUI reads the device per event instead.
 - No force (direct `NSTouch` has none) or predicted position; coalesced touches (`coalescedTouchesForTouch:`) are
@@ -71,5 +79,7 @@ click once either way. The owner's Sidecar check settles it.
 
 ## Tests
 
-`touch_phases`, `recognizer_states`, `touch_ids`, `touch_queue` and `touch_copies` in `touch.rs`: `cargo test -p
+`touch_phases`, `recognizer_states`, `touch_ids`, `appkit_callbacks` (the Sidecar logs replayed, one row per
+callback: a finger landing or lifting while another moves, a Spotlight swipe's system cancel; every started id ends
+or is cancelled), `touch_queue` and `touch_copies` in `touch.rs`: `cargo test -p
 parallax-gpui-macos --features test-support --lib touch` inside `build/parallax-gpui/` on a Mac.
