@@ -34,6 +34,7 @@ deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, 
 - **The web** has no row. As in Flutter web, it takes its host OS's row (`detect_operating_system` ports
   `BrowserDetection.detectOperatingSystem`; unknown → Android), but with Flutter's slops (`web_behaviour`): Flutter
   web never sets `physicalTouchSlop`, so an Android browser keeps 18 / 36.
+- **Desktop touch:** touch slops, the row's physics, drags scroll: [desktop-touch-behaviour.md](desktop-touch-behaviour.md).
 - The same everywhere (Flutter's `constants.dart`, `gpui::constants`): long press 500 ms, double tap within 300 ms,
   at least 40 ms apart, 100 px apart at most; taps count per target ([gesture-recognizers.md](gesture-recognizers.md)).
 
@@ -73,8 +74,7 @@ are data GPUI doesn't take yet; the widgets that later waves wire read them (ROA
 
 - A target: a `Target` variant ([platform.md](platform.md)), its row in `TABLE`, a row in the `behaviour_table` test
   whose name cites the Flutter sources, and this page's table.
-- A field: add it to `Behaviour` with a comment naming the Flutter function it comes from, fill every row, assert it
-  in the test.
+- A field: add it to `Behaviour` with a comment naming its Flutter function, fill every row, assert it in the test.
 - A Flutter bump: diff the sources listed in PORTED.md and update the values.
 
 Never pick a value by `cfg` outside the table, and never change one without its Flutter source.
