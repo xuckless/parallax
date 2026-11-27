@@ -11,6 +11,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [patches.md](patches.md) | Writing, numbering and making patches; the patch table |
 | [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008 and 0010: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
+| [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer, bouncing physics and springs, glow and stretch overscroll state; how to drive them, and the traits the merge and Wave 12 plug into |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
