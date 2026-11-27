@@ -44,7 +44,8 @@ pen() {
 }
 click() { windows_inject click "$@"; }
 
-# The checks: name | screen (main or pad) | command (BOX: the box's centre) | assertions, each kind:argument:
+# The checks: name | screen (main or pad; pad@150: at 150 % display scale) | command (BOX: the box's centre) |
+# assertions, each kind:argument:
 #   lines:<regex>:<n>   log lines matching the regex (spaces written as .): exactly n, or n+ for at least n
 #   all:<regex>         every touch(…) line matches          near:<x>:<y>   the first touch is within 1 px of x y
 #   ids:<n>             n distinct touch ids                 unique         no touch line twice
@@ -63,7 +64,11 @@ checks=(
   "pen-hover|pad|pen hover 100 300 300 300 300|lines:touch\(:0 lines:mouse_move:5+ lines:mouse_down:0"
   "title-bar|pad|perform swipe 200 -14 300 -14 300|moved lines:touch\(:0"
   "mouse|pad|click 200 400|lines:mouse_down.*device:.Mouse,.synthesized:.false:1 lines:touch\(:0"
+  "tap-150|pad@150|perform tap 120 300 50|near:120:300 lines:Started,:1 lines:Ended,:1"
+  "drag-150|pad@150|perform swipe 100 200 300 500 300|near:100:200 rising"
 )
+# The resolution a scaled check runs at: Windows offers 150 % only from about 1920 × 1080 (touch-inject's `display`).
+scaled_display="1920 1080"
 
 # The touch lines as "at id phase x y device", one a line.
 touches() { grep -o 'touch([^)]*)' "$log" | sed 's/touch(\(.*\))/\1/; s/,//g' || true; }
@@ -120,10 +125,9 @@ failed=()
 for row in "${checks[@]}"; do
   IFS='|' read -r name screen command assertions <<<"$row"
   [[ $# == 0 || $wanted == *" $name "* ]] || continue
-  case $screen in
-    main) launch_main ;;
-    pad) launch_pad ;;
-  esac
+  IFS=@ read -r screen percent <<<"$screen"
+  [[ -z $percent ]] || display_was=$("$windows_bin/touch-inject.exe" display $scaled_display "$percent")
+  "launch_$screen"
   frame_before=$(windows_inject window-rect)
   read -ra words <<<"${command//BOX/$box}"
   "${words[@]}"
@@ -139,5 +143,7 @@ for row in "${checks[@]}"; do
   done
   echo "windows-touch-checks: $verdict $name ($(touches | wc -l) touches)"
   [[ $verdict == PASS ]] || failed+=("$name")
+  # Unquoted on purpose: "width height percent".
+  [[ -z $percent ]] || "$windows_bin/touch-inject.exe" display $display_was >/dev/null
 done
 ((${#failed[@]} == 0)) || { echo "windows-touch-checks: failed: ${failed[*]}"; exit 1; }

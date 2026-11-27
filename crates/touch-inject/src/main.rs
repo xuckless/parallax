@@ -5,6 +5,8 @@
 //! `WM_POINTER*` messages and Windows' own promoted mouse copies; the mouse goes through `SendInput`.
 //!
 //! Usage: touch-inject park                move the mouse cursor to the screen's top-left corner, off the window
+//!        touch-inject display <width> <height> <percent>
+//!                                        set the display's resolution and scale; prints the old "width height percent"
 //!        touch-inject <pid> <command>, every point in the process's window's logical px:
 //!   raise                  keep the window above all others (the CI runner's own console can cover it)
 //!   scale                  the window's scale factor (its DPI / 96)
@@ -21,6 +23,14 @@
     )
 )]
 mod frames;
+#[cfg_attr(
+    not(target_os = "windows"),
+    allow(
+        dead_code,
+        reason = "only the Windows tool and the host tests use the steps"
+    )
+)]
+mod scale;
 
 #[cfg(target_os = "windows")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +88,24 @@ mod windows_tool {
         },
     };
 
+    use windows::{
+        Win32::{
+            Devices::Display::{
+                DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_DEVICE_INFO_TYPE,
+                DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_PATH_SOURCE_INFO,
+                DisplayConfigGetDeviceInfo, DisplayConfigSetDeviceInfo,
+                GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+            },
+            Graphics::Gdi::{
+                CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_SUCCESSFUL,
+                DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW,
+            },
+        },
+        core::PCWSTR,
+    };
+
     use crate::frames::{self, Contact, Point, Pointers, parse_frame, to_screen};
+    use crate::scale;
 
     // frames.rs writes WinUser.h's values out so its tests build on any host; they must be the windows crate's.
     const _: () = {
@@ -107,12 +134,16 @@ mod windows_tool {
         // Physical px everywhere, whatever the display scale.
         // SAFETY: called once, before any window or DPI query.
         unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }?;
-        if let [command] = args.as_slice()
-            && command == "park"
-        {
-            // SAFETY: plain call, no pointers.
-            unsafe { SetCursorPos(0, 0) }?;
-            return Ok(());
+        match args.as_slice() {
+            [command] if command == "park" => {
+                // SAFETY: plain call, no pointers.
+                unsafe { SetCursorPos(0, 0) }?;
+                return Ok(());
+            }
+            [command, width, height, percent] if command == "display" => {
+                return display(width.parse()?, height.parse()?, percent.parse()?);
+            }
+            _ => {}
         }
         let [pid, command, rest @ ..] = args.as_slice() else {
             return Err("usage: touch-inject <pid> <command> (see src/main.rs)".into());
@@ -160,6 +191,120 @@ mod windows_tool {
             _ => return Err(format!("touch-inject: unknown command {command} {rest:?}").into()),
         }
         Ok(())
+    }
+
+    /// Sets the display's resolution, then its scale (the recommended scale can change with the resolution), and
+    /// prints what they were. Windows offers 150 % only from about 1920 × 1080; the CI runner starts smaller.
+    fn display(width: u32, height: u32, percent: u32) -> Result<(), Box<dyn Error>> {
+        let mut was = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        // SAFETY: `was` is a DEVMODEW with its size set, alive for the call.
+        unsafe { EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut was) }.ok()?;
+        let (current, min) = display_scale()?;
+        let was_percent =
+            scale::percent(current, min).ok_or("touch-inject: display scale off the steps")?;
+        let mode = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            dmPelsWidth: width,
+            dmPelsHeight: height,
+            dmFields: DM_PELSWIDTH | DM_PELSHEIGHT,
+            ..Default::default()
+        };
+        // SAFETY: `mode` is a DEVMODEW with its size set, alive for the call.
+        let changed = unsafe {
+            ChangeDisplaySettingsExW(PCWSTR::null(), Some(&mode), None, CDS_TYPE(0), None)
+        };
+        if changed != DISP_CHANGE_SUCCESSFUL {
+            return Err(format!("touch-inject: no {width} x {height} mode ({changed:?})").into());
+        }
+        let (source, (_, min)) = (display_source()?, display_scale()?);
+        let step = scale::relative_step(percent, min).ok_or("touch-inject: not a scale step")?;
+        let set = ScalePacket {
+            header: scale_header(source, SET_SCALE, size_of::<ScalePacket>()),
+            relative: step,
+        };
+        // SAFETY: `set` is a packet of the size its header names, alive for the call.
+        let result = unsafe { DisplayConfigSetDeviceInfo(&set.header) };
+        if result != 0 {
+            return Err(format!("touch-inject: {percent} % refused ({result})").into());
+        }
+        println!("{} {} {was_percent}", was.dmPelsWidth, was.dmPelsHeight);
+        Ok(())
+    }
+
+    // Undocumented DisplayConfig packet types for the source's scale (see scale.rs).
+    const GET_SCALE: i32 = -3;
+    const SET_SCALE: i32 = -4;
+
+    #[repr(C)]
+    struct ScaleRangePacket {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+        min: i32,
+        current: i32,
+        max: i32,
+    }
+
+    #[repr(C)]
+    struct ScalePacket {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+        relative: i32,
+    }
+
+    /// The first active display's source (the CI runner has one display).
+    fn display_source() -> Result<DISPLAYCONFIG_PATH_SOURCE_INFO, Box<dyn Error>> {
+        let (mut paths, mut modes) = (0, 0);
+        // SAFETY: the counts outlive the call.
+        unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths, &mut modes) }
+            .ok()?;
+        let mut path_infos = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
+        let mut mode_infos = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
+        // SAFETY: the arrays hold the counts passed with them.
+        unsafe {
+            QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut paths,
+                path_infos.as_mut_ptr(),
+                &mut modes,
+                mode_infos.as_mut_ptr(),
+                None,
+            )
+        }
+        .ok()?;
+        Ok(path_infos
+            .first()
+            .ok_or("touch-inject: no active display")?
+            .sourceInfo)
+    }
+
+    fn scale_header(
+        source: DISPLAYCONFIG_PATH_SOURCE_INFO,
+        kind: i32,
+        size: usize,
+    ) -> DISPLAYCONFIG_DEVICE_INFO_HEADER {
+        DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_TYPE(kind),
+            size: size as u32,
+            adapterId: source.adapterId,
+            id: source.id,
+        }
+    }
+
+    /// The display's scale step and its lowest step, both relative to the recommended one.
+    fn display_scale() -> Result<(i32, i32), Box<dyn Error>> {
+        let mut get = ScaleRangePacket {
+            header: scale_header(display_source()?, GET_SCALE, size_of::<ScaleRangePacket>()),
+            min: 0,
+            current: 0,
+            max: 0,
+        };
+        // SAFETY: `get` is a packet of the size its header names, alive for the call.
+        let result = unsafe { DisplayConfigGetDeviceInfo(&mut get.header) };
+        if result != 0 {
+            return Err(format!("touch-inject: display scale unreadable ({result})").into());
+        }
+        Ok((get.current, get.min))
     }
 
     /// The process's visible top-level window, waiting up to `WINDOW_WAIT` for it to open.
