@@ -6,37 +6,18 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased] (0.1.9)
 
+Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0035).
+
+Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
+window.
+
 ### Added
 
-- Web app lifecycle (patch 0035, fork `parallax-gpui*` 0.3.14-parallax.11): `App::on_app_lifecycle` now hears the
-  page's focus, visibility, freeze and resume, the back/forward cache and unloading, as Chrome's Page Lifecycle
-  states mapped to Flutter web's phases (docs/web-lifecycle.md).
-- Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
-  viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
-- Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
-  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
-
-### Fixed
-
-- Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
-  (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
-  and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
-- macOS direct touch (patches 0025, 0026), from the owner's Sidecar check: each finger keeps one id for its
-  whole life (a finger landing or lifting while another moved was handled twice: started, cancelled and started
-  again, or moved twice); a touch the system cancels is cancelled where it last
-  was, not at (0, -32). `hello` logs `trackpad pinch end`.
-
-- iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
-  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
-  4 standard edit actions stay open for the edit-menu work.
-- iOS: backspace deletes a Thai vowel, not its whole grapheme, and whole emoji; half an emoji from iOS no longer
-  aborts or corrupts the text; `textInRange:` clamps; line granularity of the tokenizer follows the text's line
-  breaks (Flutter's fixes, patch 0029).
-- iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
-  secure text entry (patch 0030). Fork `parallax-gpui*` 0.3.14-parallax.11.
-
-## Unreleased (0.1.9)
-
+- `parallax-ext::text_selection`: Flutter's text selection behaviour for Android and touch desktops as a pure state
+  machine (taps, double and triple taps, long press, shift-tap, mouse drags, handle drags, toolbar anchors, the
+  Material magnifier's position), with the per-platform rules as a new `text_selection` column of the behaviour
+  table (`TextSelectionControls`; iOS is `Native`). hello's text field uses it and draws plain handles, a loupe and
+  a Copy / Paste / Select all toolbar ([docs/text-selection.md](docs/text-selection.md)).
 - iOS hardware keyboard: presses reach GPUI as `KeyDown`, `KeyUp` and `ModifiersChanged` (shortcuts, arrows,
   Escape, Tab); keys GPUI leaves unhandled still type into the focused field, once; Caps Lock state is reported
   (patch 0031, ported from Flutter's iOS key responder).
@@ -44,6 +25,16 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   undocked iPad keyboards, Split View, Slide Over, Stage Manager) and follows the keyboard's animation instead of
   jumping (patch 0032, ported from Flutter's keyboard inset manager).
 - iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
+- iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
+  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
+  4 standard edit actions stay open for the edit-menu work.
+- Web app lifecycle (patch 0035): `App::on_app_lifecycle` now hears the page's focus, visibility, freeze and
+  resume, the back/forward cache and unloading, as Chrome's Page Lifecycle states mapped to Flutter web's phases
+  (docs/web-lifecycle.md).
+- Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
+  viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
+- Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
+  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
 
 ### Changed
 
@@ -67,14 +58,18 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Android: Gboard's select mode (text-editing panel, Select on) extends the selection: a key event's meta state now
   reaches GPUI's keystroke, since Flutter's responder synthesizes no Shift for a virtual keyboard
   (`parallax-android`; Gate 1's known limit 5).
-
-## Unreleased (0.1.9)
-
-- `parallax-ext::text_selection`: Flutter's text selection behaviour for Android and touch desktops as a pure state
-  machine (taps, double and triple taps, long press, shift-tap, mouse drags, handle drags, toolbar anchors, the
-  Material magnifier's position), with the per-platform rules as a new `text_selection` column of the behaviour
-  table (`TextSelectionControls`; iOS is `Native`). hello's text field uses it and draws plain handles, a loupe and
-  a Copy / Paste / Select all toolbar ([docs/text-selection.md](docs/text-selection.md)).
+- iOS: backspace deletes a Thai vowel, not its whole grapheme, and whole emoji; half an emoji from iOS no longer
+  aborts or corrupts the text; `textInRange:` clamps; line granularity of the tokenizer follows the text's line
+  breaks (Flutter's fixes, patch 0029).
+- iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
+  secure text entry (patch 0030).
+- Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
+  (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
+  and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
+- macOS direct touch (patches 0025, 0026), from the owner's Sidecar check: each finger keeps one id for its
+  whole life (a finger landing or lifting while another moved was handled twice: started, cancelled and started
+  again, or moved twice); a touch the system cancels is cancelled where it last was, not at (0, -32). `hello` logs
+  `trackpad pinch end`.
 
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
