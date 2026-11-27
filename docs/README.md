@@ -13,6 +13,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
 | [gesture-tuning.md](gesture-tuning.md) | Patches 0014 and 0019: `App::set_gesture_tuning` for new windows, `Window::set_gesture_tuning` retunes an open one (Android's device touch slop), their tests |
 | [velocity-tracking.md](velocity-tracking.md) | Patch 0011: Flutter's velocity trackers and least-squares solver ported into GPUI, the kinds, which platform gets which, the ported tests |
+| [desktop-touch-linux.md](desktop-touch-linux.md) | Linux touchscreens: patch 0022's Wayland `wl_touch` → `TouchEvent` (ported from winit), ids, positions, time stamps, seat handling, what's not yet done, tests |
 | [touch-time-stamps.md](touch-time-stamps.md) | Patch 0020: `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, how Android, iOS and the web fill it, what reads it (velocity tracking), the fallback to dispatch time |
 | [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer and glow and stretch overscroll state on 0012's physics; how to drive them, and what Wave 12 wires |
 | [pinch.md](pinch.md) | Patch 0016: touch pinch through upstream's `on_pinch` / `PinchEvent`, the pinch arena's states (which element and fingers pinch), each platform's multi-touch path, the trace tests |

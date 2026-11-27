@@ -6,6 +6,12 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Wayland touch (patch 0022, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreens on Wayland reach GPUI as
+  `TouchEvent`s (taps, pans, flings and pinches through GPUI's recognizer, as on mobile), with the compositor's event
+  time as `time_stamp`. Ported from winit's Wayland touch handling ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md)).
+
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
 Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's
