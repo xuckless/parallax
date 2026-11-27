@@ -24,6 +24,10 @@ parallax-gpui-windows includes code ported from winit (https://github.com/rust-w
 v0.30.13, its Windows touch and pen (WM_POINTER) handling (patch 0021), licensed under the Apache
 License 2.0. Copyright the winit contributors.
 
+parallax-gpui-web includes code ported from GoogleChromeLabs/page-lifecycle
+(https://github.com/GoogleChromeLabs/page-lifecycle) 0.1.2, its page lifecycle state machine
+(patch 0035, page_lifecycle.rs), licensed under the Apache License 2.0. Copyright 2018 Google Inc.
+
 parallax-gpui-linux includes code ported from winit (https://github.com/rust-windowing/winit)
 v0.30.13, licensed under the Apache License 2.0: its Wayland touch handling (patch 0022,
 wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the winit contributors.

@@ -76,3 +76,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0026](../patches/0026-touch-macos-recognizer.patch) | `GPUITouchRecognizer` on GPUIView feeds macOS 27 direct touches to GPUI; touch copies dropped, `mouseCancelled:` ([desktop-touch-macos.md](desktop-touch-macos.md)) |
 | [0027](../patches/0027-touch-ids-ios.patch) | iOS `TouchId` per `UITouch` lifetime, not its reused address, from Flutter's pointer identifiers ([traces-desktop.md](traces-desktop.md#touch-identity)) |
 | [0034](../patches/0034-web-text-input.patch) | web IME mirror: Flutter's `autocomplete`, `enterkeyhint` and `inputmode` rules, the mirror placed on the caret ([web-text-input.md](web-text-input.md)) |
+| [0035](../patches/0035-web-lifecycle-and-keyboard-inset.patch) | web `on_app_lifecycle` (Page Lifecycle states, Flutter's phases) and `WindowInsets::ime` from the visual viewport ([web-lifecycle.md](web-lifecycle.md)) |

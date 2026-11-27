@@ -4,15 +4,16 @@
 //! tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
 //! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how
 //! long the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as
-//! a `touch(…)` line, the recorder for gesture traces (docs/traces.md).
+//! a `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
+//! of the keyboard inset.
 //! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
 
 use parallax::gpui::{
     AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity,
-    KeyboardType, MouseButton, PinchEvent, TextInputAction, TextInputConfiguration, TouchEvent,
-    TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    KeyboardType, MouseButton, PinchEvent, Pixels, TextInputAction, TextInputConfiguration,
+    TouchEvent, TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use web_time::Instant;
 
@@ -49,6 +50,8 @@ struct Hello {
     prose: Entity<TextField>,
     email: Entity<TextField>,
     screen: Screen,
+    /// The keyboard's inset (`WindowInsets::ime`) last drawn, logged when it changes.
+    keyboard: Pixels,
 }
 
 /// What the window shows.
@@ -78,7 +81,12 @@ impl Render for Hello {
         };
         // Inside the status and navigation bars and any cutout on every side (in landscape the navigation bar sits
         // left or right); the keyboard covers the bottom, so the field sits at the top.
-        let safe = window.insets().safe_area;
+        let insets = window.insets();
+        let safe = insets.safe_area;
+        if insets.ime.bottom != self.keyboard {
+            self.keyboard = insets.ime.bottom;
+            log::info!("keyboard inset {}", f32::from(self.keyboard));
+        }
         div()
             .size_full()
             .flex()
@@ -327,8 +335,11 @@ pub fn launch(cx: &mut App) {
                 )
             }),
             screen: Screen::Main(Shown::Box),
+            keyboard: px(0.),
         })
     });
+    cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
+        .detach();
     match opened {
         Ok(_) => log::info!("window open"),
         Err(error) => log::error!("cannot open the window: {error:#}"),

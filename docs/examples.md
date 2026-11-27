@@ -19,7 +19,8 @@ Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the ap
 (`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them ([android-emoji.md](android-emoji.md#cost)).
 The grid scrolls in a box shorter than its rows, so a swipe past an edge shows the platform's overscroll (stretch on
 Android, bounce on iOS and macOS: [overscroll.md](overscroll.md)). "Record touches" swaps the window for a trace pad
-that logs every touch in the trace format ([traces.md](traces.md)).
+that logs every touch in the trace format ([traces.md](traces.md)). `hello: lifecycle …` logs each app lifecycle
+phase and `hello: keyboard inset …` each change of the keyboard's inset ([web-lifecycle.md](web-lifecycle.md)).
 
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local:
 upstream GPUI has no text field outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs`

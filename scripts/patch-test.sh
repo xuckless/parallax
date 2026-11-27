@@ -69,7 +69,7 @@ done
 # To add a module, add its file name to its backend's row.
 pure_rows=(
     "parallax-gpui-windows pointer"
-    "parallax-gpui-web text_editing"
+    "parallax-gpui-web text_editing page_lifecycle keyboard_inset"
 )
 for row in "${pure_rows[@]}"; do
     read -r backend modules <<<"$row"

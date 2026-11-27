@@ -45,8 +45,10 @@ password; it needs the mirror to swap to an `<input type=password>` (Phase 4 fol
 
 ## Checking it in a browser
 
-Build and serve hello ([examples-run.md](examples-run.md)), then drive headless Chromium over CDP
-(`Emulation.setTouchEmulationEnabled` and an Android user agent for the mobile rows) and read the mirror's
-attributes with `Runtime.evaluate`. Verified on Chromium 158 (2026-11-27): desktop attributes, placement at the
+Build and serve hello ([examples-run.md](examples-run.md)), start headless Chromium as
+[record-traces.sh](../scripts/record-traces.sh)'s `web_setup` does, then run
+`node scripts/web-checks.mjs <port> <url> desktop` and `… mobile` ([web-checks.mjs](../scripts/web-checks.mjs)):
+it taps each field, reads the mirror's attributes and position (`Runtime.evaluate`), composes with
+`Input.imeSetComposition`, and fakes an Android phone with touch emulation and its user agent. Verified on Chromium 158 (2026-11-27): desktop attributes, placement at the
 caret and none mid-composition (`Input.imeSetComposition`); Android `inputmode=email`, `enterkeyhint=done`. Firefox
 and Safari are left for the owner.

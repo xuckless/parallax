@@ -10,6 +10,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ### Added
 
+- Web app lifecycle (patch 0035, fork `parallax-gpui*` 0.3.14-parallax.11): `App::on_app_lifecycle` now hears the
+  page's focus, visibility, freeze and resume, the back/forward cache and unloading, as Chrome's Page Lifecycle
+  states mapped to Flutter web's phases (docs/web-lifecycle.md).
+- Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
+  viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
 - Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
   windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
 

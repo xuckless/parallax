@@ -26,6 +26,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [web-text-input.md](web-text-input.md) | Patch 0034: the web IME mirror, Flutter's per-field attribute rules, keyboard layout and IME placement on the caret, the ported test rows, checking in Chromium |
+| [web-lifecycle.md](web-lifecycle.md) | Patch 0035: the page lifecycle (focus, visibility, freeze, back/forward cache, unload) as `AppLifecyclePhase`s, the keyboard inset from the visual viewport, tests and web-checks.mjs |
 | [haptics.md](haptics.md) | Patch 0018 and Android: `Window::perform_haptic`, the long-press haptic from the behaviour table, each kind per platform (Android, iOS, web), the Android pull, the tests |
 | [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
 | [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |

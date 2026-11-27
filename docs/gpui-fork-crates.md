@@ -16,7 +16,7 @@ patches port Flutter code into (`flutter_crates` in the script: `parallax-gpui`,
 `parallax-gpui-ios`, `parallax-gpui-web`, `parallax-gpui-windows`, `parallax-gpui-macos`) is `Apache-2.0 AND BSD-3-Clause`, ships
 Flutter's licence as `LICENSE-FLUTTER` and credits Flutter in its README. A crate they port winit code into
 (`winit_crates`: `parallax-gpui-windows`, `parallax-gpui-linux`) credits winit in its README and keeps its licence,
-since winit is Apache-2.0 too.
+since winit is Apache-2.0 too; likewise page-lifecycle (`page_lifecycle_crates`: `parallax-gpui-web`).
 
 ## Versioning
 
