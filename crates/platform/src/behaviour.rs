@@ -59,13 +59,34 @@ pub struct Haptics {
     pub picker_item: Option<Haptic>,
 }
 
+/// Where a row's touch slop (the embedder's `DeviceGestureSettings.touchSlop`) comes from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchSlop {
+    /// The embedder sends none: `gpui::slops` falls back to Flutter's `kTouchSlop`.
+    Unset,
+    /// The platform reports its own at runtime, in logical pixels (Android's embedding sends
+    /// `ViewConfiguration.getScaledTouchSlop()` as `physicalTouchSlop`; `DeviceGestureSettings.fromView` divides it by
+    /// the density). `fallback` holds until the platform has reported one.
+    Device { fallback: Pixels },
+}
+
+impl TouchSlop {
+    /// The `touchSlop` `gpui::slops` takes, given what the platform reported (`None`: nothing yet).
+    pub fn resolve(self, reported: Option<Pixels>) -> Option<Pixels> {
+        match self {
+            TouchSlop::Unset => None,
+            TouchSlop::Device { fallback } => Some(reported.unwrap_or(fallback)),
+        }
+    }
+}
+
 /// One row of [`TABLE`]: everything Flutter decides from a `TargetPlatform`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Behaviour {
     pub target: Target,
-    /// The embedder's `DeviceGestureSettings.touchSlop`, `None` where it sends none (Flutter's `kTouchSlop`).
+    /// The embedder's `DeviceGestureSettings.touchSlop`, [`TouchSlop::resolve`]d with the platform's reported value.
     /// `gpui::slops` turns it into the hit, pan and scale slops per pointer kind.
-    pub touch_slop: Option<Pixels>,
+    pub touch_slop: TouchSlop,
     /// `ScrollBehavior.getScrollPhysics`.
     pub scroll_physics: ScrollPhysics,
     /// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from.
@@ -89,9 +110,9 @@ const NO_HAPTICS: Haptics = Haptics {
 pub const TABLE: [Behaviour; 5] = [
     Behaviour {
         target: Target::Android,
-        // Android's embedding sends `ViewConfiguration.getScaledTouchSlop()` (AOSP
-        // `config_viewConfigurationTouchSlop`, 8 dp).
-        touch_slop: Some(px(8.0)),
+        // Android's embedding sends `ViewConfiguration.getScaledTouchSlop()` (FlutterView.sendViewportMetricsToFlutter);
+        // parallax-android reports it. Until it has: AOSP's `config_viewConfigurationTouchSlop`, 8 dp.
+        touch_slop: TouchSlop::Device { fallback: px(8.0) },
         scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::Stretch,
@@ -104,7 +125,7 @@ pub const TABLE: [Behaviour; 5] = [
     },
     Behaviour {
         target: Target::Ios,
-        touch_slop: None,
+        touch_slop: TouchSlop::Unset,
         scroll_physics: ScrollPhysics::Bouncing {
             deceleration_rate: ScrollDecelerationRate::Normal,
         },
@@ -119,7 +140,7 @@ pub const TABLE: [Behaviour; 5] = [
     },
     Behaviour {
         target: Target::MacOs,
-        touch_slop: None,
+        touch_slop: TouchSlop::Unset,
         scroll_physics: ScrollPhysics::Bouncing {
             deceleration_rate: ScrollDecelerationRate::Fast,
         },
@@ -130,7 +151,7 @@ pub const TABLE: [Behaviour; 5] = [
     },
     Behaviour {
         target: Target::Windows,
-        touch_slop: None,
+        touch_slop: TouchSlop::Unset,
         scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
@@ -139,7 +160,7 @@ pub const TABLE: [Behaviour; 5] = [
     },
     Behaviour {
         target: Target::Linux,
-        touch_slop: None,
+        touch_slop: TouchSlop::Unset,
         scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
@@ -149,18 +170,43 @@ pub const TABLE: [Behaviour; 5] = [
 ];
 
 impl Behaviour {
-    /// The values GPUI's touch recognizer takes: the row's touch slop, physics and tracker; the rest are Flutter's
-    /// constants, which `GestureTuning::default()` holds. Pass it, or a changed copy, to `App::set_gesture_tuning`
-    /// (patch 0014) before opening a window.
-    pub fn gesture_tuning(&self) -> GestureTuning {
+    /// The values GPUI's touch recognizer takes: the row's touch slop (resolved with `reported_touch_slop`, what the
+    /// platform reported, `None` for nothing), physics and tracker; the rest are Flutter's constants, which
+    /// `GestureTuning::default()` holds. Pass it, or a changed copy, to `App::set_gesture_tuning` (patch 0014) before
+    /// opening a window.
+    pub fn gesture_tuning(&self, reported_touch_slop: Option<Pixels>) -> GestureTuning {
         GestureTuning {
-            touch_slop: slops(PointerDevice::Touch, self.touch_slop).hit,
+            touch_slop: self.hit_slop(reported_touch_slop),
             scroll_physics: self.scroll_physics,
             min_fling_velocity: self.scroll_physics.min_fling_velocity(),
             max_fling_velocity: self.scroll_physics.max_fling_velocity(),
             velocity_tracker: self.velocity_tracker,
             ..GestureTuning::default()
         }
+    }
+
+    /// `current` after the platform's reported touch slop moved from `old` to `new` (Android: a density change):
+    /// `current` with the new hit slop, or `None` when the hit slop stays or when `current`'s is not the one this row
+    /// gave for `old` (the app set its own, which wins).
+    pub fn retune(
+        &self,
+        current: GestureTuning,
+        old: Option<Pixels>,
+        new: Option<Pixels>,
+    ) -> Option<GestureTuning> {
+        let (old, new) = (self.hit_slop(old), self.hit_slop(new));
+        (current.touch_slop == old && old != new).then_some(GestureTuning {
+            touch_slop: new,
+            ..current
+        })
+    }
+
+    fn hit_slop(&self, reported_touch_slop: Option<Pixels>) -> Pixels {
+        slops(
+            PointerDevice::Touch,
+            self.touch_slop.resolve(reported_touch_slop),
+        )
+        .hit
     }
 }
 
@@ -176,7 +222,7 @@ pub fn behaviour(target: Option<Target>) -> Result<&'static Behaviour, Error> {
 /// `physicalTouchSlop`, so the slops are Flutter's (`kTouchSlop`, `kPanSlop`) even on Android.
 pub fn web_behaviour(host: Target) -> Result<Behaviour, Error> {
     Ok(Behaviour {
-        touch_slop: None,
+        touch_slop: TouchSlop::Unset,
         ..*behaviour(Some(host))?
     })
 }
@@ -267,18 +313,32 @@ mod tests {
             velocity_tracker: VelocityTrackerKind::LeastSquares,
             min_touch_target: 48.,
         };
-        // (row name with its Flutter sources, behaviour, expected values)
+        // (row name with its Flutter sources, behaviour, touch slop the platform reported, expected values)
         let rows = [
             (
-                "android: ViewConfiguration touch slop (FlutterView.java), getScrollPhysics clamping, least squares, \
-                 MaterialScrollBehavior stretch, Feedback.forLongPress vibrate, kMinInteractiveDimension",
+                "android before the device reports: config_viewConfigurationTouchSlop's 8 dp, getScrollPhysics \
+                 clamping, least squares, MaterialScrollBehavior stretch, Feedback.forLongPress vibrate, \
+                 kMinInteractiveDimension",
                 behaviour(Some(Target::Android)).copied(),
+                None,
                 android,
+            ),
+            (
+                "android with the device's slop: getScaledTouchSlop over the density (FlutterView.java, \
+                 DeviceGestureSettings.fromView), pan slop twice it",
+                behaviour(Some(Target::Android)).copied(),
+                Some(px(10.5)),
+                Expected {
+                    touch_slop: 10.5,
+                    pan_slop: 21.,
+                    ..android
+                },
             ),
             (
                 "web on an android host: the android row with Flutter's kTouchSlop and kPanSlop (Flutter web never \
                  sets physicalTouchSlop)",
                 web_behaviour(Target::Android),
+                None,
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
@@ -289,6 +349,7 @@ mod tests {
                 "ios: kTouchSlop, kPanSlop, BouncingScrollPhysics minFlingVelocity kMinFlingVelocity * 2, \
                  Feedback.forLongPress heavyImpact, kMinInteractiveDimensionCupertino",
                 behaviour(Some(Target::Ios)).copied(),
+                None,
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
@@ -305,6 +366,7 @@ mod tests {
                 "macos: kTouchSlop, BouncingScrollPhysics(fast) maxFlingVelocity kMaxFlingVelocity * 8, \
                  no Feedback, kMinInteractiveDimensionCupertino",
                 behaviour(Some(Target::MacOs)).copied(),
+                None,
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
@@ -320,6 +382,7 @@ mod tests {
             (
                 "windows: kTouchSlop, ClampingScrollPhysics, no overscroll indicator, kMinInteractiveDimension",
                 behaviour(Some(Target::Windows)).copied(),
+                None,
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
@@ -333,8 +396,9 @@ mod tests {
                 },
             ),
             (
-                "linux: kTouchSlop, ClampingScrollPhysics, no overscroll indicator, kMinInteractiveDimension",
+                "linux: kTouchSlop whatever is reported (its embedder sends none), ClampingScrollPhysics, no overscroll indicator, kMinInteractiveDimension",
                 behaviour(Some(Target::Linux)).copied(),
+                Some(px(8.)),
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
@@ -348,12 +412,12 @@ mod tests {
                 },
             ),
         ];
-        for (name, found, expected) in rows {
+        for (name, found, reported, expected) in rows {
             let row = found.expect("every row's target has a behaviour");
-            let tuning = row.gesture_tuning();
+            let tuning = row.gesture_tuning(reported);
             assert_eq!(tuning.touch_slop, px(expected.touch_slop), "{name}");
             assert_eq!(
-                slops(PointerDevice::Pen, row.touch_slop).pan,
+                slops(PointerDevice::Pen, row.touch_slop.resolve(reported)).pan,
                 px(expected.pan_slop),
                 "{name}"
             );
@@ -389,6 +453,85 @@ mod tests {
             matches!(behaviour(Some(Target::Web)), Err(Error::UnsupportedTarget)),
             "web: no row of its own"
         );
+    }
+
+    #[test]
+    fn retune_table() {
+        let android = behaviour(Some(Target::Android)).expect("android has a row");
+        let ios = behaviour(Some(Target::Ios)).expect("ios has a row");
+        let tuning = |touch_slop: f32| GestureTuning {
+            touch_slop: px(touch_slop),
+            ..android.gesture_tuning(None)
+        };
+        // (row name, behaviour, current tuning, reported slop before, after, expected touch slop or no change)
+        let rows = [
+            (
+                "android: the first report replaces the 8 dp fallback",
+                android,
+                tuning(8.),
+                None,
+                Some(10.5),
+                Some(10.5),
+            ),
+            (
+                "android: a density change moves the device slop",
+                android,
+                tuning(10.5),
+                Some(10.5),
+                Some(8.),
+                Some(8.),
+            ),
+            (
+                "android: the same logical slop after a density change, no change",
+                android,
+                tuning(8.),
+                Some(8.),
+                Some(8.),
+                None,
+            ),
+            (
+                "android: a report equal to the fallback, no change",
+                android,
+                tuning(8.),
+                None,
+                Some(8.),
+                None,
+            ),
+            (
+                "android: the app's own slop wins",
+                android,
+                tuning(12.),
+                Some(8.),
+                Some(10.5),
+                None,
+            ),
+            (
+                "ios: its embedder sends no slop, a report changes nothing",
+                ios,
+                ios.gesture_tuning(None),
+                None,
+                Some(8.),
+                None,
+            ),
+        ];
+        for (name, row, current, old, new, expected) in rows {
+            let retuned = row.retune(current, old.map(px), new.map(px));
+            assert_eq!(
+                retuned.map(|tuning| tuning.touch_slop),
+                expected.map(px),
+                "{name}"
+            );
+            if let Some(retuned) = retuned {
+                assert_eq!(
+                    GestureTuning {
+                        touch_slop: current.touch_slop,
+                        ..retuned
+                    },
+                    current,
+                    "{name}: only the touch slop changes"
+                );
+            }
+        }
     }
 
     #[test]
