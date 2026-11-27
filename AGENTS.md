@@ -5,14 +5,16 @@ Rules for any agent (or human) working in this repo. Read this first, then `ROAD
 ## What Parallax is
 
 Parallax takes GPUI to Android, touchscreen desktops and the web, Flutter-style: the same GPUI app runs on
-desktop, iOS, Android and browsers. It ships as add-on crates under Apache 2.0, on top of an untouched GPUI.
+desktop, iOS, Android and browsers. It ships as add-on crates on top of our patched GPUI fork (`parallax-gpui*`,
+patch rule 11). Its working rule: **port before write** — copy proven code (upstream GPUI, Flutter, mature crates such as
+winit) near-verbatim and write only the glue that joins the pieces.
 
 Upstream GPUI already covers a lot. Parallax fills only the gaps:
 
 | Area | Upstream GPUI has | Parallax adds |
 |---|---|---|
 | iOS | `gpui_ios` (UIKit, Metal, CoreText, text input, safe area) | Nothing new. Patches only for gaps found. |
-| Touch + gestures | `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, pinch, drag), `ScrollPhysics` | Nothing new. Uses upstream. |
+| Touch + gestures | `TouchEvent`, `gestures.rs` (tap→mouse, long press, pan, drag), `ScrollPhysics`, `SpringConfig` | Flutter's velocity tracker, scroll simulations, recognizer tuning, scale (pinch) and overscroll maths, ported into the fork; one platform behaviour table |
 | Web | `gpui_web` (WebGPU/WebGL2, touch, IME mirror) | `parallax-web`: semantics DOM for screen readers, other gaps |
 | Android | Nothing | `parallax-android`: whole backend, built on Flutter's ported Android embedding |
 | Desktop touch | Nothing on Windows, Linux, macOS | Patches feeding `TouchEvent` from each OS |
@@ -30,19 +32,20 @@ does not reinvent that. It ports Flutter's work, credits it, and keeps tracking 
 |---|---|
 | Android embedding, self-contained files (Java): `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `AndroidTouchProcessor`, `MotionEventTracker`, `KeyboardManager` (plus the input parts of `TextInputPlugin`) | **Ported as Java**, near-verbatim, in `crates/android/java/`. `MethodChannel` calls become JNI calls into Rust. |
 | Android embedding, engine-bound files: `FlutterActivity`, `FlutterView`, `FlutterSurfaceView` | **Reference only.** Parallax writes its own small Activity and View, reading Flutter's for lifecycle, surface and inset handling. |
-| iOS text input (`FlutterTextInputPlugin.mm` and its tests) | **Test oracle.** Its test cases become table-driven tests against upstream `gpui_ios`; failures get Flutter's fix as a patch, filed upstream. |
+| iOS text input (`FlutterTextInputPlugin.mm` and its tests) | **Test oracle.** Its test cases become table-driven tests against upstream `gpui_ios`; failures get Flutter's fix as a patch to our fork. |
 | Web text editing (`text_editing.dart`: per-browser strategies) | Test oracle for upstream `gpui_web`; fixes as patches or in `parallax-web`. |
-| Framework algorithms (`velocity_tracker.dart`, `lsq_solver.dart`, `scroll_physics.dart`, `friction_simulation.dart`, `arena.dart`) | Test oracle for upstream `gestures.rs` and `ScrollPhysics`. Port a Flutter algorithm only where upstream fails its cases. |
+| Framework algorithms (`velocity_tracker.dart`, `lsq_solver.dart`, `scroll_physics.dart`, `scroll_simulation.dart`, `friction_simulation.dart`, `scale.dart`, `overscroll_indicator.dart`, `constants.dart`) | Tests first run against upstream `gestures.rs` / `ScrollPhysics` / `SpringConfig`; where upstream fails or lacks the feature, Flutter's code is ported into the fork (Waves 11–12). Upstream's spring passed Flutter's cases, so it stays. |
 | Platform behaviour (`TargetPlatform` defaults, selection handles, magnifier, text toolbar, haptics, touch-target minimums) | Ported as behaviour plus one target → behaviour table. No Material or Cupertino widgets. |
 | Accessibility (`AccessibilityBridge.java`, `SemanticsObject.mm`) | Oracle only. Adapters come from AccessKit (`accesskit_android`, others). |
 
 Rules for ported code:
 
-1. **Upstream GPUI first, Flutter second.** Never build a parallel system next to upstream's. Flutter fixes go in as small patches to upstream and get filed with Zed.
+1. **Upstream GPUI first, Flutter second.** Never build a parallel system next to upstream's. Flutter fixes go in as patches to our fork (filing with Zed is paused, patch rule 14).
 2. **Port, don't paraphrase.** Java stays Java with Flutter's structure, names and comments, so later Flutter fixes can be diffed in. Code translated to Rust keeps Flutter's names, constants and comments (see rule 9).
 3. **Header on every ported file:** `Ported from flutter/flutter <path> @ <commit>. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.`
 4. **Ledger:** add a row to `third_party/flutter/PORTED.md` for every ported file or test table.
-5. **Licenses:** a crate with ported code declares `license = "Apache-2.0 AND BSD-3-Clause"`. Keep `NOTICE` current.
+5. **Licenses:** a crate with ported code declares `license = "Apache-2.0 AND BSD-3-Clause"` and ships `LICENSE-FLUTTER`
+   (fork crates: the `flutter_crates` row in `scripts/fork-crates.sh`). Keep `NOTICE` current.
 6. **Ported tests are the spec.** A Flutter test case that encodes a bug fix becomes a named row in a Parallax test table, with the Flutter test name in the row.
 7. **Naming:** "ports code from Flutter" is fine. Never use "Flutter" or Google marks in a crate or product name.
 8. **Pinned Flutter stable tag:** recorded in `third_party/flutter/PORTED.md`. Track stable release tags, never master. When a new stable tag ships, diff every ledger row and port the fixes.
@@ -55,25 +58,25 @@ Rules for ported code:
 |---|---|
 | Published GPUI | Our patched GPUI fork, published as `parallax-gpui*` crates; all Parallax crates depend on it (patch rule 11). Rebuilt from upstream + patches at each sync; patches upstream fixed are dropped. |
 | Upstream source | `gpui-pre-*` crates from crates.io: weekly snapshots of Zed's GPUI (a few files adapted to build standalone, each marked `// Modified for gpui-pre`), standalone-buildable, iOS and web included. Switch to `zed-industries/gpui` once it holds code. Not `gpui-ce`: it has no iOS and is diverging from Zed. |
-| Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/`, which `scripts/fork-crates.sh` turns into the `parallax-gpui*` fork crates in `build/parallax-gpui/` (both generated, git-ignored). Parallax crates depend on the fork crates, published to crates.io as `parallax-gpui*`; for local builds the workspace points at `build/parallax-gpui/` via `[patch]`. Patches are filed upstream against Zed (`zed-industries/zed`), never against the snapshot crates. |
+| Upstream handling | `upstream/` is a pristine copy (`cargo vendor` of the pinned `gpui-pre-*` version), never hand-edited. `patches/*.patch` are applied by script into `build/gpui-patched/`, which `scripts/fork-crates.sh` turns into the `parallax-gpui*` fork crates in `build/parallax-gpui/` (both generated, git-ignored). Parallax crates depend on the fork crates, published to crates.io as `parallax-gpui*`; for local builds the workspace points at `build/parallax-gpui/` via `[patch]`. Upstream filing (against `zed-industries/zed`, never the snapshot crates) is paused (patch rule 14). |
 | Sync cadence | Every two weeks: move to the latest `gpui-pre` snapshot. |
 | Toolchain | Same `rust-toolchain.toml` channel and edition as upstream. Bump only when upstream bumps. |
 | Renderer | iOS: upstream Metal (`gpui_apple`). Android: `gpui_wgpu` on Vulkan, GL fallback; GL first on emulators. Web: upstream `gpui_web`. Desktop: upstream renderers. No hand-written Vulkan or Metal backends. |
 | Web threading | Single-threaded on stable: `gpui_platform` without its `multithreaded` feature on wasm32. Revisit when upstream threads work on stable. |
-| Text | Upstream per platform: CoreText on Apple, cosmic-text on Android, Linux and web. |
+| Text | Upstream per platform: CoreText on Apple (macOS needs `gpui_platform`'s `font-kit` feature, set in the workspace), cosmic-text on Android, Linux and web. |
 | Minimum OS | iOS 17. Android API 28 (Android 9). |
 | Android glue | Own small Activity and View; Flutter's self-contained touch, keyboard and text-input files ported as Java; Rust over JNI. No GameActivity. |
 | Android threading | GPUI runs on the Android main (UI) thread, like `gpui_ios` on UIKit's. IME queries are answered synchronously. No second UI thread. |
 | Flutter | Second source of truth: port its platform glue and behaviour, use its tests as the oracle for upstream (see below). Pinned commit in `third_party/flutter/PORTED.md`. |
 | App build tooling | `cargo-parallax` CLI driven by a declarative `parallax.toml`. Generates Xcode/Gradle projects. |
-| Touch → mouse | On by default (upstream behaviour), explicit opt-out per element (`.on_touch`). Every pointer event's device (mouse, touch, pen) and whether it was synthesized are queryable; the API is in [core-patches.md](docs/core-patches.md). The rule is a row in the platform behaviour table. |
-| Platform feel | `ScrollPhysics` / `GestureTuning` chosen from one visible target→preset table. Apps can override. |
+| Touch → mouse | On by default (upstream behaviour) on every target, explicit opt-out per element (`.on_touch`, deepest wins). Every pointer event's device (mouse, touch, pen) and whether it was synthesized are queryable; see [pointer-source.md](docs/pointer-source.md). |
+| Platform feel | One visible target → behaviour table ([behaviour.md](docs/behaviour.md)), Flutter's per-platform values (they win over GPUI's until upstream matures on touch). Applied automatically by every Parallax entry point (`parallax::run`, the facade's `android_main!`) before app code; apps can override with `cx.set_gesture_tuning`. |
 | Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
-| Gesture parity | Checked by replaying recorded touch traces from each device through the gesture and physics test tables; outcomes must match on every platform. |
+| Gesture parity | Checked by replaying recorded touch traces (Android emulator, iOS simulator, browser until the owner has devices) through the gesture and physics test tables; outcomes must match on every platform. |
 | iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes). Past that, iOS text input moves into its own Parallax crate. |
 | Releases | Two rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. |
 | Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
-| Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). A small public-seam patch only for a case that can't be reached that way. |
+| Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). Pure maths (velocity, simulations) is tested in-crate inside its port patch; `scripts/patch-test.sh` runs them. |
 | Android fonts | Loaded on the main thread at startup. Measure; move off it only if startup exceeds the budget. |
 | Android renderer startup | The wgpu renderer is created on the main thread (about 0.5 s on the emulator). Same rule as fonts: measure, move only if over budget. |
 | Android emoji | Emoji glyphs are rasterized by Android itself (Canvas/Typeface over JNI) inside our Android text system and handed to GPUI's atlas, so every Android version draws its own colour emoji (COLRv1 included). |
@@ -85,19 +88,21 @@ Rules for ported code:
 
 ```
 upstream/      pristine GPUI copy (vendored gpui-pre-* snapshot), never hand-edited
-patches/       numbered small diffs against upstream (0001-….patch), applied in order
-build/         generated: upstream + patches. Git-ignored. Never edit.
+patches/       numbered diffs against upstream (0001-….patch), applied in order; FORK_REVISION pins the fork version
+build/         generated: gpui-patched/ (upstream + patches) and parallax-gpui/ (fork crates). Git-ignored. Never edit.
 crates/
-  parallax/    facade: re-exports GPUI + Parallax crates
-  platform/    parallax-platform: one table maps target → platform
+  parallax/    facade: re-exports GPUI + Parallax crates; `run` / `android_main!` entry points
+  platform/    parallax-platform: target → platform table and the platform behaviour table
   android/     parallax-android: Platform + PlatformWindow for Android
     java/      Flutter's Android embedding, ported as Java
+    java-tests/ Flutter's Android tests, ported (Robolectric)
   web/         parallax-web: gaps on top of gpui_web
   ext/         parallax-ext: extension traits on GPUI elements
   cli/         cargo-parallax: build/run on iOS, Android, web
 examples/      one app, built for every target
 docs/          how the code works: one lean file per topic, indexed in docs/README.md
-scripts/       upstream, patch and Flutter tooling (see docs/)
+scripts/       upstream, patch, fork, Flutter, test and smoke tooling (see docs/)
+drafts/        git-ignored, owner-only: upstream drafts (patch rule 13)
 third_party/
   flutter/     Flutter's LICENSE and PORTED.md (ledger of every ported file + pinned commit)
 ```
@@ -119,7 +124,8 @@ third_party/
 11. **We publish our own GPUI fork.** Published Parallax crates depend on our patched GPUI, published to crates.io as
     `parallax-gpui*` crates (one per `gpui-pre-*` crate), built from `upstream/` + `patches/` at each sync. Every patch
     therefore reaches crates.io users. When upstream fixes something a patch did, the patch is dropped at the next sync.
-    The fork crates keep upstream's code and licence (Apache-2.0) and credit Zed in their README and `NOTICE`.
+    The fork crates keep upstream's code and licence (Apache-2.0) and credit Zed in their README and `NOTICE`; a fork crate
+    that carries Flutter-ported code is `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` (porting rule 5).
 12. **Core-type changes are patches.** Changes to GPUI's own types (pointer device tags, touch opt-out, keyboard type)
     go in as patches to the fork like any other; no side-channel API is needed.
 13. **Drafts before anything public.** Upstream issues, PRs and discussions are drafted in `drafts/upstream/` (git-ignored, owner-only)
@@ -152,7 +158,8 @@ Hard rules:
   Platform-dependent defaults live in a visible table, and the docs say so.
 - **Decide in pure functions, act at the edges.** OS and FFI calls sit in a thin shell. Logic that decides
   what to do takes plain values and returns plain values, so it is testable without a device.
-- **Search before you write.** Reuse upstream GPUI types and helpers first, then Parallax ones.
+- **Search before you write; port before you write.** Reuse upstream GPUI types and helpers first, then Parallax ones;
+  for anything missing, port proven code (Flutter, mature crates) before writing new code. One source of truth per value.
 - **No duplication. No single-use helpers.** Inline a helper with one caller.
 - **Comments say why, not what.** Every table that drives behaviour gets a one-line comment on how to extend it.
 - **Unsafe / FFI:** every `unsafe` block has a `// SAFETY:` comment naming the invariant.
@@ -198,8 +205,10 @@ Hard rules:
   publish, tag). Internal-only waves (audits, CI, docs) don't.
 - **Memory budget** (the owner's machine has 31 GB; the Claude session is capped at 24 GB). Every agent runs builds
   with `CARGO_BUILD_JOBS=6` and Gradle with `-Dorg.gradle.workers.max=4 -Dorg.gradle.jvmargs=-Xmx2g`. At most two
-  emulators run at once, each started with `-memory 2048 -cores 2 -no-snapshot-save`, and each agent shuts its
-  emulator down as soon as its check is done. Over budget, wait for another agent to finish rather than start more.
-- **iOS simulator.** Waves that change iOS code run `examples/hello` on the iOS simulator on the owner's Mac, all files
-  under `/Users/Shared/parallax/`. Other waves rely on CI's iOS build.
+  emulators run at once (check `adb devices` first), each started with `-memory 2048 -cores 2 -no-snapshot-save -gpu host`,
+  and each agent shuts its emulator down as soon as its check is done and stops its Gradle daemon (`./gradlew --stop`).
+  Over budget, wait for another agent to finish rather than start more.
+- **Owner's Mac.** All files on `pixl-mac` live under `/Users/Shared/parallax/` (readable by the owner's account).
+  Waves that change iOS or macOS code `cargo check` there; once `cargo parallax run ios` exists they run `examples/hello`
+  on the iOS simulator. Interactive checks (IME, windows) are prepared there for the owner to run.
 - When upstream behaviour surprises you, write it down in `ROADMAP.md` under "Upstream notes" with the upstream commit.
