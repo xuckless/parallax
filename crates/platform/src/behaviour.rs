@@ -1,5 +1,5 @@
 // Ported from flutter/flutter @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): the per-TargetPlatform
-// defaults of (under packages/flutter/lib/src/) gestures/gesture_settings.dart, widgets/scroll_configuration.dart,
+// defaults of (under packages/flutter/lib/src/) widgets/scroll_configuration.dart,
 // widgets/feedback.dart, widgets/text_selection.dart, cupertino/picker.dart, material/app.dart, material/constants.dart,
 // cupertino/constants.dart; Android's touch slop from engine/src/flutter/shell/platform/android/io/flutter/embedding/
 // android/FlutterView.java; the browser OS detection of engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/
