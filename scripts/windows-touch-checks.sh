@@ -60,7 +60,7 @@ checks=(
   "pinch|pad|gesture pinch|ids:2 unique lines:Started,:2 lines:Ended,:2"
   "reused-id|pad|gesture double-tap|ids:2 lines:Started,:2 lines:Ended,:2"
   "cancel|pad|perform cancel 200 400 100|lines:Cancelled,:1 lines:Ended,:0"
-  "pen|pad|pen swipe 200 600 200 400 300|all:Pen\).force.0\.50 rising lines:Started,:1 lines:Ended,:1"
+  "pen|pad|pen swipe 200 600 200 400 300|all:Pen\) lines:Moved,.*Pen\).force.0\.50:15+ rising lines:Started,:1 lines:Ended,:1"
   "pen-hover|pad|pen hover 100 300 300 300 300|lines:touch\(:0 lines:mouse_move:5+ lines:mouse_down:0"
   "title-bar|pad|perform swipe 200 -14 300 -14 300|moved lines:touch\(:0"
   "mouse|pad|click 200 400|lines:mouse_down.*device:.Mouse,.synthesized:.false:1 lines:touch\(:0"
