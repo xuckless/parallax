@@ -198,13 +198,15 @@ Hard rules:
 - Before finishing a change: `cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
 - New targets get a CI row (see ROADMAP Phase 0) in the same change.
 - Commits: one concern each, imperative subject line.
-- **Waves.** Work runs in waves of up to 5 parallel agents, each in its own git worktree (and its own emulator port).
-  Every wave gets two independent reviews before merge: a Caveman Code review and a correctness review; their fixes
-  land before the merge.
+- **Waves.** Work runs in waves of parallel agents, each in its own git worktree (and its own emulator port). Through
+  Wave 12: up to 5 agents per wave. After Wave 12 (owner decision, 2026-11-26): one wave per phase, up to 8 agents,
+  split into two batches where running all at once looks unsafe or overloading. Every wave gets two independent
+  reviews before merge: a Caveman Code review and a correctness review; their fixes land before the merge.
 - **Releases.** Every wave that changes what an app can see ships the next 0.1.x (dry-run, CI green, changelog,
   publish, tag). Internal-only waves (audits, CI, docs) don't.
 - **Memory budget** (the owner's machine has 31 GB; the Claude session is capped at 24 GB). Every agent runs builds
-  with `CARGO_BUILD_JOBS=6` and Gradle with `-Dorg.gradle.workers.max=4 -Dorg.gradle.jvmargs=-Xmx2g`. At most two
+  with `CARGO_BUILD_JOBS=6` (`CARGO_BUILD_JOBS=4` in an 8-agent phase wave, where agents take turns on heavy builds)
+  and Gradle with `-Dorg.gradle.workers.max=4 -Dorg.gradle.jvmargs=-Xmx2g`. At most two
   emulators run at once (check `adb devices` first), each started with `-memory 2048 -cores 2 -no-snapshot-save -gpu host`,
   and each agent shuts its emulator down as soon as its check is done and stops its Gradle daemon (`./gradlew --stop`).
   Over budget, wait for another agent to finish rather than start more.
