@@ -55,7 +55,8 @@ mapfile -t tests < <("${test_cmd[@]}" --list --format terse | sed -n 's/: test$/
 skip_args=()
 for test in "${skips[@]}"; do
     matches="$(printf '%s\n' "${tests[@]}" | grep -cF -- "$test" || true)"
-    printf '%s\n' "${tests[@]}" | grep -qxF -- "$test" && [[ $matches == 1 ]] \
+    # Not grep -q: quitting at the first match can kill printf mid-write, which pipefail reads as no match.
+    printf '%s\n' "${tests[@]}" | grep -xF -- "$test" >/dev/null && [[ $matches == 1 ]] \
         || die "skip '$test' must name exactly one test; it matches $matches"
     skip_args+=(--skip "$test")
 done
