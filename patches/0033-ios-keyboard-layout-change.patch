@@ -49,7 +49,7 @@ index f1c5be7..b93aa1c 100644
          });
          let (sender, mut receiver) = mpsc::unbounded();
          let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
-@@ -456,8 +460,30 @@ impl Platform for IosPlatform {
+@@ -456,8 +460,31 @@ impl Platform for IosPlatform {
              .spawn(async move { Ok(keychain::delete_credentials(&url)?) })
      }
  
@@ -62,7 +62,8 @@ index f1c5be7..b93aa1c 100644
 +        let callback = Rc::new(RefCell::new(callback));
 +        let executor = self.0.foreground_executor.clone();
 +        let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
-+            let callback = callback.clone();            executor
++            let callback = callback.clone();
++            executor
 +                .spawn(async move { (callback.borrow_mut())() })
 +                .detach();
 +        });
@@ -82,7 +83,7 @@ index f1c5be7..b93aa1c 100644
      }
  
      fn thermal_state(&self) -> ThermalState {
-@@ -489,7 +515,12 @@ impl Platform for IosPlatform {
+@@ -489,7 +516,12 @@ impl Platform for IosPlatform {
  
  impl Drop for IosPlatformState {
      fn drop(&mut self) {
