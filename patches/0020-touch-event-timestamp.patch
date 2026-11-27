@@ -208,7 +208,7 @@ index d93b33d..dcdf695 100644
              .to_platform_input()
          };
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 300eafc..54b1812 100644
+index 300eafc..49f4be1 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -609,6 +609,10 @@ impl TouchGestureRecognizer {
@@ -231,25 +231,29 @@ index 300eafc..54b1812 100644
                      let touch = ActiveTouch {
                          id: event.id,
                          target,
-@@ -669,7 +673,7 @@ impl TouchGestureRecognizer {
+@@ -669,7 +673,9 @@ impl TouchGestureRecognizer {
                      long_press_offered,
                      touch_drag_offered,
                  } if touch.id == event.id => {
 -                    touch.velocity_tracker.add_position(now, event.position);
-+                    touch.velocity_tracker.add_position(sampled_at, event.position);
++                    touch
++                        .velocity_tracker
++                        .add_position(sampled_at, event.position);
                      touch.last_position = event.position;
                      let accumulated = event.position - touch.start_position;
                      if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
-@@ -721,7 +725,7 @@ impl TouchGestureRecognizer {
+@@ -721,7 +727,9 @@ impl TouchGestureRecognizer {
                      if raw_delta != Point::default() {
                          touch.last_movement = raw_delta;
                      }
 -                    touch.velocity_tracker.add_position(now, event.position);
-+                    touch.velocity_tracker.add_position(sampled_at, event.position);
++                    touch
++                        .velocity_tracker
++                        .add_position(sampled_at, event.position);
                      touch.last_position = event.position;
                      let mut target = event.predicted_position.unwrap_or(event.position);
                      let mut delta = target - touch.emitted_position;
-@@ -833,7 +837,7 @@ impl TouchGestureRecognizer {
+@@ -833,7 +841,7 @@ impl TouchGestureRecognizer {
                      let VelocityEstimate {
                          pixels_per_second: mut velocity,
                          mut offset,
@@ -258,7 +262,7 @@ index 300eafc..54b1812 100644
                      match axis {
                          Axis::Vertical => (velocity.x, offset.x) = (0., 0.),
                          Axis::Horizontal => (velocity.y, offset.y) = (0., 0.),
-@@ -1732,6 +1736,52 @@ mod tests {
+@@ -1732,6 +1740,54 @@ mod tests {
          }
      }
  
@@ -269,7 +273,9 @@ index 300eafc..54b1812 100644
 +    fn velocity_follows_event_time_stamps_not_dispatch() {
 +        let rows: [(&str, fn(u64) -> u64); 3] = [
 +            ("dispatched as they happen", |_| 0),
-+            ("dispatched at the next 33 ms frame", |ms| (33 - ms % 33) % 33),
++            ("dispatched at the next 33 ms frame", |ms| {
++                (33 - ms % 33) % 33
++            }),
 +            ("dispatched 50 ms late", |_| 50),
 +        ];
 +        let mut velocities = Vec::new();
@@ -311,7 +317,7 @@ index 300eafc..54b1812 100644
      /// A 20000 px/s flick flings at the tuning's `max_fling_velocity`:
      /// (row, max fling velocity).
      #[test]
-@@ -2453,6 +2503,7 @@ mod tests {
+@@ -2453,6 +2509,7 @@ mod tests {
              predicted_position: None,
              force: None,
              device: PointerDevice::Touch,

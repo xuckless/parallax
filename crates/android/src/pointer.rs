@@ -462,9 +462,10 @@ impl Pointers {
                     (None, Route::Mouse) => {
                         self.mouse(data.mouse, data, position, logical, modifiers)
                     }
-                    (None, Route::Touch(device)) => {
-                        self.touch(data, device, position, clock).into_iter().collect()
-                    }
+                    (None, Route::Touch(device)) => self
+                        .touch(data, device, position, clock)
+                        .into_iter()
+                        .collect(),
                 };
                 if !inputs.is_empty() {
                     self.last_position = position;
@@ -691,7 +692,12 @@ mod tests {
         // (row name, uptime at the clock read, the record's time stamp, how long before the read the touch was), in
         // microseconds.
         let cases = [
-            ("eight_ms_old_is_eight_ms_before_now", 1_008_000, 1_000_000i64, 8_000),
+            (
+                "eight_ms_old_is_eight_ms_before_now",
+                1_008_000,
+                1_000_000i64,
+                8_000,
+            ),
             ("stamped_at_the_read_is_now", 1_000_000, 1_000_000, 0),
             ("stamped_after_the_read_is_now", 1_000_000, 1_000_500, 0),
         ];
@@ -701,12 +707,17 @@ mod tests {
                 &[(Field::TimeStamp, time_stamp.to_le_bytes())],
             );
             let clock = clock(uptime);
-            let inputs = Pointers::default().events(&decode(&down)?, 2.0, Modifiers::default(), clock);
+            let inputs =
+                Pointers::default().events(&decode(&down)?, 2.0, Modifiers::default(), clock);
             let got = match inputs.first() {
                 Some(PlatformInput::Touch(event)) => event.time_stamp,
                 _ => None,
             };
-            assert_eq!(got, clock.now.checked_sub(Duration::from_micros(age)), "{name}");
+            assert_eq!(
+                got,
+                clock.now.checked_sub(Duration::from_micros(age)),
+                "{name}"
+            );
         }
         Ok(())
     }

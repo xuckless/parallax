@@ -12,8 +12,7 @@ mod text_field;
 use parallax::gpui::{
     AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity,
     KeyboardType, MouseButton, PinchEvent, TextInputAction, TextInputConfiguration, TouchEvent,
-    TouchPinch, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use web_time::Instant;
 
