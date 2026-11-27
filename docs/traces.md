@@ -10,8 +10,9 @@ each platform, [trace_replay.rs](../crates/platform/tests/trace_replay.rs) repla
 hello's purple "Record touches" button swaps the window for a trace pad ([lib.rs](../examples/hello/src/lib.rs),
 `trace_pad`). It takes every touch raw with `on_touch` (so nothing is turned into taps or scrolls) and logs one line
 per `TouchEvent` GPUI receives, in the [trace format](gesture-recognizers.md#trace-format):
-`trace: touch(at_ms, id, phase, x, y)`, ms since the pad's first touch (the executor clock: `TouchEvent` has no
-timestamp yet), window logical px. Only a relaunch leaves the pad. It logs no text.
+`trace: touch(at_ms, id, phase, x, y)`, ms since the pad's first touch by the platform's event time
+(`TouchEvent::time_stamp`, [touch-time-stamps.md](touch-time-stamps.md)), window logical px. Only a relaunch leaves
+the pad. It logs no text.
 
 ## Recording
 
@@ -46,13 +47,13 @@ the vertical scroll while a finger is down (pan) and after release (momentum), t
 - **Recognized:** each trace is its gesture under every row (`GESTURES`: tap, double tap, long press, drag that
   stops, fling).
 - **Same everywhere:** pan and momentum agree across platforms within `SCROLL_TOLERANCE` (35 % of the larger). Pans
-  differ only by a last move (iOS reports a lift 10 px past its last move, which GPUI's recognizer does not scroll);
-  a fling's momentum comes from a velocity estimate each platform samples at its own rate. `slow-drag` moves at
+  differ only by a last move; a fling's momentum comes from a velocity estimate each platform samples at its own
+  rate, timed by its event time stamps. `slow-drag` moves at
   40 px/s, under every row's minimum fling velocity, so how long a driver waits before lifting cannot make it fling.
-- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. Today: flings under
-  the least-squares rows (Android, Windows, Linux) carry ~1030 px on from iOS and ~600 px from the web. GPUI times a
-  touch when it receives it, not by the platform's event time, so the web's jittered samples read as a slowing
-  finger (ROADMAP Phase 2, "Touch timestamps"). The iOS trackers' rows agree within 10 %.
+- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. None today. Until
+  touches carried the platform's event time (patch 0020), least-squares flings from the web, timed when GPUI
+  received the browser's ~33 ms frames, came out ~40 % short of iOS's; with time stamps the fling traces agree within
+  35 % under every row. What is left is the drivers' own speed: idb's 150 ms swipe takes ~200 ms on iOS.
 
 `pinch` traces are recorded but not replayed until the scale recognizer is wired into touch dispatch: GPUI ignores the
 second finger, and the platforms disagree on which finger is first.

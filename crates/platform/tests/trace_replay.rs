@@ -49,20 +49,15 @@ enum Gesture {
 }
 
 /// Scroll totals of the same gesture on two platforms may differ by this fraction of the larger one. The drivers move
-/// between the same points, so pans differ only by the last move a platform reports (iOS lifts 10 px past it); a
-/// fling's momentum is its release velocity's integral, and each platform samples the finger at its own rate (iOS
-/// every 16 ms, headless Chromium every ~33 ms, Android per input batch), so the velocity, and the distance, differ.
+/// between the same points, so pans differ only by the last move a platform reports; a fling's momentum is its
+/// release velocity's integral, timed by each touch's platform time stamp, and the drivers sample the finger at their
+/// own rate (iOS ~20 ms, headless Chromium ~33 ms, Android per input batch) and swipe at their own speed (idb's 150 ms
+/// swipe takes ~200 ms), so the velocity, and the distance, differ.
 const SCROLL_TOLERANCE: f32 = 0.35;
 
 /// Differences the replay found and their open fix: (gesture, the rows' velocity tracker, why). Their scroll is
 /// printed, not compared; recognition is still checked. Remove a row once its fix lands.
-const KNOWN_DIFFERENCES: [(&str, VelocityTrackerKind, &str); 1] = [(
-    "fling",
-    VelocityTrackerKind::LeastSquares,
-    "touches are timed when GPUI receives them, not by the platform's event time, and least squares \
-     extrapolates the web's jittered ~33 ms samples to a lower release velocity than iOS's even 16 ms ones \
-     (ROADMAP Phase 2, Touch timestamps)",
-)];
+const KNOWN_DIFFERENCES: [(&str, VelocityTrackerKind, &str); 0] = [];
 
 /// One replay's result: the window's gestures, summed.
 #[derive(Debug, Default, PartialEq)]

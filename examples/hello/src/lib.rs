@@ -57,8 +57,8 @@ struct Hello {
 enum Screen {
     /// The fields, the line of scripts, the buttons and what sits under them.
     Main(Shown),
-    /// A trace pad: it takes every touch raw (no taps, scrolls or long presses) and logs each one, timed from the
-    /// first (`None` until then). Only a relaunch leaves it.
+    /// A trace pad: it takes every touch raw (no taps, scrolls or long presses) and logs each one, timed by its
+    /// platform time stamp from the first (`None` until then). Only a relaunch leaves it.
     TracePad(Option<Instant>),
 }
 
@@ -234,7 +234,8 @@ impl Render for ColourTip {
 }
 
 /// The trace recorder: one `trace: touch(at_ms, id, phase, x, y)` line per touch GPUI receives, in the trace format
-/// of docs/gesture-recognizers.md (ms since the first touch, window logical px), ready to paste into a fixture.
+/// of docs/gesture-recognizers.md (ms since the first touch by the platform's event time, `TouchEvent::time_stamp`,
+/// or when GPUI received it where the platform has none; window logical px), ready to paste into a fixture.
 fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
     div()
         .id("trace-pad")
@@ -246,11 +247,13 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
         .text_color(rgb(0xcdd6f4))
         .child("Recording touches")
         .on_touch(cx.listener(|this, event: &TouchEvent, _, cx| {
-            let now = cx.background_executor().now();
+            let at = event
+                .time_stamp
+                .unwrap_or_else(|| cx.background_executor().now());
             let Screen::TracePad(first) = &mut this.screen else {
                 return;
             };
-            let at_ms = now.duration_since(*first.get_or_insert(now)).as_millis();
+            let at_ms = at.duration_since(*first.get_or_insert(at)).as_millis();
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
             log::info!(
                 "trace: touch({at_ms}, {}, {:?}, {x:.2}, {y:.2})",
