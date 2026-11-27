@@ -1,0 +1,428 @@
+Feed Wayland touches into GPUI's TouchEvent.
+
+What: gpui_linux's Wayland client binds `wl_touch` on a seat with the touch capability (once, as winit does; a seat
+that loses it, or is replaced, cancels its touches) and turns `down`/`motion`/`up`/`cancel` into `TouchEvent`s:
+`Started`/`Moved`/`Ended`, `Cancelled` for every touch still down on `cancel`, device `Touch`, surface-local
+logical pixels (Wayland's surface coordinates are logical, so winit's physical-pixel scaling is dropped), an up at
+the last motion's position. Wayland reuses `wl_touch` ids and GPUI never reuses a `TouchId`, so each down gets a
+fresh one. `time_stamp` is the event's millisecond time moved onto GPUI's clock by its age against
+`CLOCK_MONOTONIC` (what libinput-based compositors stamp with), as patch 0020 does on iOS and the web; an event
+older than 10 s is on another base (a test client's made-up times) and is timed at dispatch. `frame`, `shape` and
+`orientation` are ignored, as in winit: each event is delivered as it comes. A touch down's serial is recorded as a
+press, so moves, popup grabs, selections and activation tokens work from a tap. Compositors never make pointer
+events from `wl_touch`, so nothing is deduplicated.
+
+New file `wayland/touch.rs`, ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @
+v0.30.13 (45a6f047c7eb0d68f37138cbdd38eec9cd4c1575), Apache-2.0, Copyright the winit contributors (credited in
+NOTICE); Flutter's Linux fl_touch_manager.cc @ 3.50.1 is the second reference. Its touch map and clock are pure,
+with table tests (`touches_follow_wl_touch_events`, `touch_time_stamps`); `client.rs` holds only the dispatch glue.
+A port, so one patch whatever its size (AGENTS.md patch rule 4).
+
+Why: upstream's Wayland backend binds only `wl_pointer` and `wl_keyboard`, so a touchscreen on Wayland did nothing
+in GPUI apps (compositors don't emulate a pointer for touch). The backend's seat handling is private, so neither a
+Parallax crate nor an extension trait can add it. cfg: Linux/FreeBSD with the `wayland` feature, as the module is.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-apple/src/process_info.rs b/gpui-pre-apple/src/process_info.rs
+index a988581..1c23753 100644
+--- a/gpui-pre-apple/src/process_info.rs
++++ b/gpui-pre-apple/src/process_info.rs
+@@ -7,6 +7,15 @@ use objc2_foundation::{
+     NSProcessInfoPowerStateDidChangeNotification, NSProcessInfoThermalState,
+     NSProcessInfoThermalStateDidChangeNotification,
+ };
++use std::time::{Duration, Instant};
++
++/// An event time on the uptime clock (`UITouch.timestamp`, `NSEvent.timestamp`: seconds since boot, as
++/// `NSProcessInfo.systemUptime` counts) moved onto GPUI's clock: its age taken off the current instant. A stamp
++/// later than now counts as now.
++pub fn uptime_instant(timestamp: f64) -> Option<Instant> {
++    let age = NSProcessInfo::processInfo().systemUptime() - timestamp;
++    Instant::now().checked_sub(Duration::try_from_secs_f64(age.max(0.)).ok()?)
++}
+ 
+ pub fn thermal_state() -> ThermalState {
+     match NSProcessInfo::processInfo().thermalState() {
+diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
+index df20a16..f6085f6 100644
+--- a/gpui-pre-ios/src/ios/events.rs
++++ b/gpui-pre-ios/src/ios/events.rs
+@@ -4,13 +4,13 @@ use gpui::{
+     BackGestureEvent, BackGesturePhase, BackGestureSource, Modifiers, Pixels, Point, PointerDevice,
+     ScrollDelta, ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
+ };
++use gpui_apple::process_info::uptime_instant;
+ use objc2_core_foundation::CGPoint;
+-use objc2_foundation::NSProcessInfo;
+ use objc2_ui_kit::{
+     UIGestureRecognizerState, UIKeyModifierFlags, UIPanGestureRecognizer, UIRectEdge,
+     UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UITouchType, UIView,
+ };
+-use std::time::{Duration, Instant};
++use std::time::Instant;
+ 
+ /// A release faster than this, in points per second toward going back, commits
+ /// a back gesture regardless of how far it travelled.
+@@ -140,8 +140,7 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+ /// `timestamp` and `NSProcessInfo.systemUptime` count seconds since boot, so
+ /// the touch's age is taken off the current instant.
+ pub fn touch_time_stamp(touch: &UITouch) -> Option<Instant> {
+-    let age = NSProcessInfo::processInfo().systemUptime() - touch.timestamp();
+-    Instant::now().checked_sub(Duration::try_from_secs_f64(age.max(0.)).ok()?)
++    uptime_instant(touch.timestamp())
+ }
+ 
+ /// The device behind a touch: Apple Pencil is a pen, and an iPad pointer's
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index eab175b..bbbc853 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -74,6 +74,7 @@ use std::{
+ };
+ 
+ mod native_views;
++mod touch;
+ 
+ const WINDOW_STATE_IVAR: &CStr = c"windowState";
+ 
+@@ -103,6 +104,7 @@ pub enum UserTabbingPreference {
+ #[ctor(unsafe)]
+ unsafe fn build_classes() {
+     unsafe {
++        touch::register_touch_recognizer_class();
+         WINDOW_CLASS = build_window_class(c"GPUIWindow", class!(NSWindow));
+         PANEL_CLASS = build_window_class(c"GPUIPanel", class!(NSPanel));
+         VIEW_CLASS = {
+@@ -669,6 +671,7 @@ struct MacWindowState {
+     renderer: renderer::Renderer,
+     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
++    touch_ids: touch::TouchIds<touch::TouchIdentity>,
+     activate_callback: Option<Box<dyn FnMut(bool)>>,
+     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
+     // `None` until a callback is registered, so notifications during
+@@ -1180,6 +1183,7 @@ impl MacWindow {
+                 renderer,
+                 request_frame_callback: None,
+                 event_callback: None,
++                touch_ids: touch::TouchIds::default(),
+                 activate_callback: None,
+                 visibility_callback: None,
+                 last_visibility: None,
+@@ -1274,6 +1278,7 @@ impl MacWindow {
+             native_view,
+             setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawPolicy::DuringViewResize
+             ];
++            touch::add_touch_recognizer(native_view);
+ 
+             let native_view: *mut AnyObject = msg_send![native_view, autorelease];
+             let _: () = msg_send![content_view, addSubview: native_view];
+diff --git a/gpui-pre-macos/src/window/touch.rs b/gpui-pre-macos/src/window/touch.rs
+new file mode 100644
+index 0000000..773e431
+--- /dev/null
++++ b/gpui-pre-macos/src/window/touch.rs
+@@ -0,0 +1,302 @@
++//! Direct touches (a touchscreen Mac, or an iPad by Sidecar) as GPUI `TouchEvent`s, from macOS 27.
++//!
++//! AppKit hands direct touches to gesture recognizers only, never to a view's responder methods, so every
++//! GPUIView carries one `GPUITouchRecognizer`: an `NSGestureRecognizer` subclass overriding
++//! `touches…WithEvent:`, Apple's custom-recognizer pattern (`NSGestureRecognizer (NSSubclassUse)` in the SDK
++//! headers). It reads each changed `NSTouch` and hands it to GPUI, whose own recognizers (taps, pans, pinch)
++//! take it from there. Before macOS 27 no recognizer is added.
++
++use super::{is_macos_version_at_least, window_state_if_set};
++use gpui::{PlatformInput, PointerDevice, TouchEvent, TouchId, TouchPhase, point, px};
++use gpui_apple::process_info::uptime_instant;
++use objc2::{
++    class, msg_send,
++    rc::Retained,
++    runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
++    sel,
++};
++use objc2_foundation::{NSInteger, NSOperatingSystemVersion, NSPoint, NSUInteger};
++use std::ptr;
++
++// `NSTouchPhase` bits (NSTouch.h).
++const BEGAN: NSUInteger = 1 << 0;
++const MOVED: NSUInteger = 1 << 1;
++const STATIONARY: NSUInteger = 1 << 2;
++const ENDED: NSUInteger = 1 << 3;
++const CANCELLED: NSUInteger = 1 << 4;
++const TOUCHING: NSUInteger = BEGAN | MOVED | STATIONARY;
++/// The touches an event changed: stationary ones have nothing new for GPUI.
++const CHANGED: NSUInteger = BEGAN | MOVED | ENDED | CANCELLED;
++
++/// AppKit touch phase → GPUI's. Extend: one row per `NSTouchPhase` bit in `CHANGED`.
++const PHASES: [(NSUInteger, TouchPhase); 4] = [
++    (BEGAN, TouchPhase::Started),
++    (MOVED, TouchPhase::Moved),
++    (ENDED, TouchPhase::Ended),
++    (CANCELLED, TouchPhase::Cancelled),
++];
++
++/// `NSTouchTypeMaskDirect` (NSTouch.h): a finger on a screen.
++const TOUCH_TYPE_MASK_DIRECT: NSUInteger = 1 << 0;
++
++/// The first macOS with direct touch (`NSScreen.touchCapabilities`, `NSIsTouchNative` are `macos(27.0)`).
++const DIRECT_TOUCH_MACOS: NSOperatingSystemVersion = NSOperatingSystemVersion {
++    majorVersion: 27,
++    minorVersion: 0,
++    patchVersion: 0,
++};
++
++/// `NSGestureRecognizerState` (NSGestureRecognizer.h), as the recognizer reports it to AppKit.
++#[repr(isize)] // NSInteger
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum RecognizerState {
++    Possible = 0,
++    Began = 1,
++    Changed = 2,
++    Ended = 3,
++    Cancelled = 4,
++}
++
++/// The recognizer's state once an event is handled: it claims the touch sequence from its first touch (GPUI
++/// recognizes the gestures itself) and finishes when no finger is down.
++fn next_state(current: NSInteger, touching: bool, cancelled: bool) -> RecognizerState {
++    match (touching, cancelled) {
++        (true, _) if current == RecognizerState::Possible as NSInteger => RecognizerState::Began,
++        (true, _) => RecognizerState::Changed,
++        (false, true) => RecognizerState::Cancelled,
++        (false, false) => RecognizerState::Ended,
++    }
++}
++
++fn touch_phase(bits: NSUInteger) -> Option<TouchPhase> {
++    PHASES
++        .iter()
++        .find(|(bit, _)| *bit == bits)
++        .map(|(_, phase)| *phase)
++}
++
++/// GPUI's ids for the touches down now. `NSTouch` objects do not persist and their `identity` may be reused by a
++/// later touch, so a new identity takes the next id and gives it up when its touch ends. Generic so the id
++/// rules are tested without AppKit.
++pub(super) struct TouchIds<K> {
++    last: u64,
++    live: Vec<(K, TouchId)>,
++}
++
++impl<K> Default for TouchIds<K> {
++    fn default() -> Self {
++        Self {
++            last: 0,
++            live: Vec::new(),
++        }
++    }
++}
++
++impl<K: PartialEq> TouchIds<K> {
++    fn track(&mut self, key: K, phase: TouchPhase) -> TouchId {
++        let id = match self.live.iter().find(|(live, _)| *live == key) {
++            Some((_, id)) => *id,
++            None => {
++                self.last += 1;
++                let id = TouchId(self.last);
++                self.live.push((key, id));
++                id
++            }
++        };
++        match phase {
++            TouchPhase::Started | TouchPhase::Moved => {}
++            TouchPhase::Ended | TouchPhase::Cancelled => self.live.retain(|(_, live)| *live != id),
++        }
++        id
++    }
++}
++
++/// An `NSTouch.identity`, compared with `isEqual:` as NSTouch.h asks.
++pub(super) struct TouchIdentity(Retained<AnyObject>);
++
++impl PartialEq for TouchIdentity {
++    fn eq(&self, other: &Self) -> bool {
++        // SAFETY: both are live identity objects, which implement `NSObject`'s `isEqual:`.
++        let equal: Bool = unsafe { msg_send![&*self.0, isEqual: &*other.0] };
++        equal.as_bool()
++    }
++}
++
++/// Registers `GPUITouchRecognizer`; `build_classes` calls it once at load.
++pub(super) unsafe fn register_touch_recognizer_class() {
++    let mut decl = ClassBuilder::new(c"GPUITouchRecognizer", class!(NSGestureRecognizer))
++        .expect("GPUITouchRecognizer is registered once, by build_classes");
++    // One handler for the four callbacks: each touch carries its own phase.
++    for selector in [
++        sel!(touchesBeganWithEvent:),
++        sel!(touchesMovedWithEvent:),
++        sel!(touchesEndedWithEvent:),
++        sel!(touchesCancelledWithEvent:),
++    ] {
++        // SAFETY: the signature matches `- (void)touches…WithEvent:(NSEvent *)event`.
++        unsafe { decl.add_method(selector, handle_touches as extern "C" fn(_, _, _)) };
++    }
++    decl.register();
++}
++
++/// Gives `view` (a GPUIView) its direct-touch recognizer, on macOS 27 and later.
++pub(super) unsafe fn add_touch_recognizer(view: *mut AnyObject) {
++    if !is_macos_version_at_least(DIRECT_TOUCH_MACOS) {
++        return;
++    }
++    let class: &AnyClass = class!(GPUITouchRecognizer);
++    // SAFETY: on the main thread during window creation; `initWithTarget:action:` takes a nil target and action
++    // (the handler is the subclass's own `touches…WithEvent:`). The view retains the recognizer, so ours is
++    // autoreleased.
++    unsafe {
++        let recognizer: *mut AnyObject = msg_send![class, alloc];
++        let recognizer: *mut AnyObject = msg_send![
++            recognizer,
++            initWithTarget: ptr::null_mut::<AnyObject>(),
++            action: None::<Sel>
++        ];
++        let _: () = msg_send![recognizer, setAllowedTouchTypes: TOUCH_TYPE_MASK_DIRECT];
++        let _: () = msg_send![view, addGestureRecognizer: recognizer];
++        let _: *mut AnyObject = msg_send![recognizer, autorelease];
++    }
++}
++
++extern "C" fn handle_touches(this: &AnyObject, _: Sel, native_event: *mut AnyObject) {
++    // SAFETY: AppKit calls this on the main thread with a live `NSEvent`, for a recognizer that
++    // `add_touch_recognizer` put on a GPUIView, which owns the window-state ivar.
++    unsafe {
++        let view: *mut AnyObject = msg_send![this, view];
++        let Some(view) = view.as_ref() else { return };
++        let Some(window_state) = window_state_if_set(view) else {
++            return;
++        };
++        // Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/macos/
++        // framework/Source/FlutterViewController.mm (its pointer events'
++        // `.timestamp = static_cast<size_t>(event.timestamp * USEC_PER_SEC)`) @ 3.50.1
++        // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter
++        // Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++        // `NSEvent.timestamp` counts seconds since boot, as `UITouch.timestamp` does.
++        let time_stamp = uptime_instant(msg_send![native_event, timestamp]);
++        let none: *const AnyObject = ptr::null();
++        let changed: *mut AnyObject =
++            msg_send![native_event, touchesMatchingPhase: CHANGED, inView: none];
++        let changed: *mut AnyObject = msg_send![changed, allObjects];
++        let count: NSUInteger = msg_send![changed, count];
++        let mut cancelled = false;
++        for index in 0..count {
++            let touch: *mut AnyObject = msg_send![changed, objectAtIndex: index];
++            let Some(phase) = touch_phase(msg_send![touch, phase]) else {
++                continue;
++            };
++            cancelled |= phase == TouchPhase::Cancelled;
++            let identity: *mut AnyObject = msg_send![touch, identity];
++            let Some(identity) = Retained::retain(identity) else {
++                continue;
++            };
++            let location: NSPoint = msg_send![touch, locationInView: view];
++            let mut lock = window_state.lock();
++            let event = TouchEvent {
++                id: lock.touch_ids.track(TouchIdentity(identity), phase),
++                phase,
++                // GPUIView is not flipped: AppKit's y grows upward, as for mouse events.
++                position: point(
++                    px(location.x as f32),
++                    lock.content_size().height - px(location.y as f32),
++                ),
++                predicted_position: None,
++                force: None,
++                device: PointerDevice::Touch,
++                time_stamp,
++            };
++            let Some(mut callback) = lock.event_callback.take() else {
++                continue;
++            };
++            drop(lock);
++            callback(PlatformInput::Touch(event));
++            window_state.lock().event_callback = Some(callback);
++        }
++        let touching: *mut AnyObject =
++            msg_send![native_event, touchesMatchingPhase: TOUCHING, inView: none];
++        let touching: NSUInteger = msg_send![touching, count];
++        let state: NSInteger = msg_send![this, state];
++        let next = next_state(state, touching > 0, cancelled) as NSInteger;
++        let _: () = msg_send![this, setState: next];
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn touch_phases() {
++        let cases = [
++            ("began", BEGAN, Some(TouchPhase::Started)),
++            ("moved", MOVED, Some(TouchPhase::Moved)),
++            ("ended", ENDED, Some(TouchPhase::Ended)),
++            ("cancelled", CANCELLED, Some(TouchPhase::Cancelled)),
++            ("stationary is not a change", STATIONARY, None),
++        ];
++        for (name, bits, expected) in cases {
++            assert_eq!(touch_phase(bits), expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn recognizer_states() {
++        use RecognizerState::*;
++        let cases = [
++            (
++                "first touch claims the sequence",
++                Possible,
++                true,
++                false,
++                Began,
++            ),
++            ("more touches", Began, true, false, Changed),
++            (
++                "a finger lifts, another stays",
++                Changed,
++                true,
++                false,
++                Changed,
++            ),
++            (
++                "one finger cancelled, another stays",
++                Changed,
++                true,
++                true,
++                Changed,
++            ),
++            ("last finger lifts", Changed, false, false, Ended),
++            ("tap in one event", Possible, false, false, Ended),
++            ("system takes the touches", Changed, false, true, Cancelled),
++        ];
++        for (name, current, touching, cancelled, expected) in cases {
++            assert_eq!(
++                next_state(current as NSInteger, touching, cancelled),
++                expected,
++                "{name}"
++            );
++        }
++    }
++
++    #[test]
++    fn touch_ids() {
++        use TouchPhase::*;
++        // (identity, phase, expected id): identities are reused, ids never are.
++        let cases = [
++            ("first finger down", 7, Started, 1),
++            ("second finger down", 8, Started, 2),
++            ("first finger moves", 7, Moved, 1),
++            ("first finger lifts", 7, Ended, 1),
++            ("identity reused by a new touch", 7, Started, 3),
++            ("second finger cancelled", 8, Cancelled, 2),
++            ("move with no begin still gets an id", 9, Moved, 4),
++        ];
++        let mut ids = TouchIds::default();
++        for (name, identity, phase, expected) in cases {
++            assert_eq!(ids.track(identity, phase), TouchId(expected), "{name}");
++        }
++    }
++}

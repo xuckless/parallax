@@ -29,6 +29,12 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   events (XInput 2.2 and later) and send them as `TouchEvent`s (`device: Touch`, the server's event time as
   `time_stamp`), so taps, pans, pinches and overscroll work on X11 as on phones. The pointer events the X server
   emulates from a touch are dropped, so a tap clicks once ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md#x11)).
+- Direct touch on macOS 27 (patch 0024): touchscreen Macs and iPads used as Sidecar displays send GPUI
+  `TouchEvent`s (ids, phases including `Cancelled`, device `Touch`, the event's own time stamp) through a gesture
+  recognizer on GPUI's view, so taps, pans, flings, long presses and pinches go through GPUI's touch recognizers. No
+  change before macOS 27. Add `NSIsTouchNative` (true) to your app bundle's Info.plist to turn off AppKit's
+  mouse/scroll emulation of touches ([docs/desktop-touch-macos.md](docs/desktop-touch-macos.md)). Not yet checked on
+  touch hardware.
 
 ### Changed
 

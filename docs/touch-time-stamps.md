@@ -15,7 +15,8 @@ OS clock and GPUI's together and takes the event's age off the current instant:
 | Platform | Event time | Its clock, read at dispatch | Where |
 |---|---|---|---|
 | Android | `MotionEvent.getEventTime()`, the packet's `time_stamp` (µs) | `CLOCK_MONOTONIC` (`uptimeMillis`) | [pointer.rs](../crates/android/src/pointer.rs) `Clock`, read in [host.rs](../crates/android/src/host.rs) |
-| iOS | `UITouch.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_ios `touch_time_stamp` (0020) |
+| iOS | `UITouch.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_ios `touch_time_stamp` (0020), via gpui_apple `uptime_instant` (0024) |
+| macOS 27 | `NSEvent.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_macos `window/touch.rs` (0024, [desktop-touch-macos.md](desktop-touch-macos.md)) |
 | Web | `PointerEvent.timeStamp` (ms) | `performance.now()` | gpui_web `event_time_stamp` (0020) |
 | Windows | `POINTER_INFO.PerformanceCount`, else `dwTime` (ms) | `QueryPerformanceCounter`, else `GetTickCount` | gpui_windows `pointer::Clock` (0021, [desktop-touch-windows.md](desktop-touch-windows.md)) |
 | Linux, Wayland | `wl_touch` event `time` (ms, `u32`) | `CLOCK_MONOTONIC`; over 10 s old is another base: `None` | gpui_linux `wayland/touch.rs` `Clock` (0022, [desktop-touch-linux.md](desktop-touch-linux.md#wayland)) |
