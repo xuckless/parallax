@@ -5,7 +5,7 @@
 //! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how
 //! long the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as
 //! a `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
-//! of the keyboard inset.
+//! of the keyboard inset and of the OS's reduce-motion and reduce-transparency settings (docs/os-settings.md).
 //! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
@@ -53,6 +53,8 @@ struct Hello {
     screen: Screen,
     /// The keyboard's inset (`WindowInsets::ime`) last drawn, logged when it changes.
     keyboard: Pixels,
+    /// `(reduce_motion, reduce_transparency)` last drawn, logged when they change; `None` before the first frame.
+    os_settings: Option<(bool, bool)>,
 }
 
 /// What the window shows.
@@ -87,6 +89,15 @@ impl Render for Hello {
         if insets.ime.bottom != self.keyboard {
             self.keyboard = insets.ime.bottom;
             log::info!("keyboard inset {}", f32::from(self.keyboard));
+        }
+        let os_settings = Some((cx.reduce_motion(), cx.reduce_transparency()));
+        if os_settings != self.os_settings {
+            self.os_settings = os_settings;
+            log::info!(
+                "os settings: reduce motion {}, reduce transparency {}",
+                cx.reduce_motion(),
+                cx.reduce_transparency()
+            );
         }
         div()
             .size_full()
@@ -355,6 +366,7 @@ fn open_window(cx: &mut App) {
             }),
             screen: Screen::Main(Shown::Box),
             keyboard: px(0.),
+            os_settings: None,
         })
     });
     match opened {
