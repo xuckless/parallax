@@ -1,6 +1,6 @@
 //! The frame engine on plain values, so it is tested on any host; `main.rs` reads the window and injects what it
 //! returns. A gesture is frames in record-traces.sh's syntax (docs/traces.md): `ms finger…`, each finger `slot:x:y`
-//! (in contact), `slot:x:y:hover` (a pen in range, not touching), `slot:up` or `slot:cancel`, in window logical px.
+//! (in contact), `slot:x:y:hover` (a pen in range, not touching) or `slot:up`, in window logical px.
 //! Each frame is injected, then held `ms`.
 
 use std::collections::BTreeMap;
@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 // windows crate.
 pub const INRANGE: u32 = 0x2;
 pub const INCONTACT: u32 = 0x4;
-pub const CANCELED: u32 = 0x8000;
 pub const DOWN: u32 = 0x1_0000;
 pub const UPDATE: u32 = 0x2_0000;
 pub const UP: u32 = 0x4_0000;
@@ -34,14 +33,13 @@ enum Verb {
     Contact,
     Hover,
     Up,
-    Cancel,
 }
 
 /// (pointer's state, what it does) → its injection flags and its next state; any other pair is an error. These are
 /// InjectTouchInput's documented flag sequences (its Remarks table; pens take the same): a down enters contact, an
-/// update moves, an up leaves, a cancel is an up marked canceled, a hover ends with a bare update. To extend, add a
-/// row.
-const TRANSITIONS: [(Option<InRange>, Verb, u32, Option<InRange>); 8] = [
+/// update moves, an up leaves, a hover ends with a bare update. No cancel: Windows delivers an injected up marked
+/// `POINTER_FLAG_CANCELED` as a plain up. To extend, add a row.
+const TRANSITIONS: [(Option<InRange>, Verb, u32, Option<InRange>); 7] = [
     (
         None,
         Verb::Contact,
@@ -61,7 +59,6 @@ const TRANSITIONS: [(Option<InRange>, Verb, u32, Option<InRange>); 8] = [
         Some(InRange::Contact),
     ),
     (Some(InRange::Contact), Verb::Up, UP, None),
-    (Some(InRange::Contact), Verb::Cancel, UP | CANCELED, None),
     (None, Verb::Hover, INRANGE | UPDATE, Some(InRange::Hover)),
     (
         Some(InRange::Hover),
@@ -117,7 +114,6 @@ fn parse_finger(text: &str) -> Option<Finger> {
     };
     match parts[1..] {
         ["up"] => Some((slot, Verb::Up, None)),
-        ["cancel"] => Some((slot, Verb::Cancel, None)),
         [x, y] => Some((slot, Verb::Contact, Some(point(x, y)?))),
         [x, y, "hover"] => Some((slot, Verb::Hover, Some(point(x, y)?))),
         _ => None,
@@ -208,7 +204,7 @@ mod tests {
     fn frames_to_injections() {
         type Injection = &'static [(u32, u32, f64, f64)];
         type Want = Result<&'static [Injection], usize>;
-        let rows: [(&str, &[&str], Want); 11] = [
+        let rows: [(&str, &[&str], Want); 10] = [
             (
                 "tap",
                 &["50 0:10:20", "0 0:up"],
@@ -233,15 +229,6 @@ mod tests {
                 ]),
             ),
             (
-                "cancel where it was",
-                &["16 0:1:1", "16 0:3:4", "0 0:cancel"],
-                Ok(&[
-                    &[(0, PRESS, 1., 1.)],
-                    &[(0, CONTACT, 3., 4.)],
-                    &[(0, UP | CANCELED, 3., 4.)],
-                ]),
-            ),
-            (
                 "hover, touch, lift, leave",
                 &["16 0:1:1:hover", "16 0:2:2", "16 0:up"],
                 Ok(&[
@@ -257,7 +244,11 @@ mod tests {
             ),
             ("nothing in range injects nothing", &["100"], Ok(&[&[]])),
             ("up when away", &["0 0:up"], Err(0)),
-            ("cancel a hover", &["16 0:1:1:hover", "0 0:cancel"], Err(1)),
+            (
+                "hover while touching",
+                &["16 0:1:1", "16 0:2:2:hover"],
+                Err(1),
+            ),
             ("bad finger", &["16 0:x:1"], Err(0)),
             ("no hold time", &["0:1:1"], Err(0)),
         ];

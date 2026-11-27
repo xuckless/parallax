@@ -73,10 +73,9 @@ mod windows_tool {
                     MOUSEINPUT, SendInput,
                 },
                 Pointer::{
-                    InjectSyntheticPointerInput, POINTER_FLAG_CANCELED, POINTER_FLAG_DOWN,
-                    POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP,
-                    POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO,
-                    POINTER_TOUCH_INFO,
+                    InjectSyntheticPointerInput, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT,
+                    POINTER_FLAG_INRANGE, POINTER_FLAG_UP, POINTER_FLAG_UPDATE, POINTER_FLAGS,
+                    POINTER_INFO, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
                 },
             },
             WindowsAndMessaging::{
@@ -111,7 +110,6 @@ mod windows_tool {
     const _: () = {
         assert!(frames::INRANGE == POINTER_FLAG_INRANGE.0);
         assert!(frames::INCONTACT == POINTER_FLAG_INCONTACT.0);
-        assert!(frames::CANCELED == POINTER_FLAG_CANCELED.0);
         assert!(frames::DOWN == POINTER_FLAG_DOWN.0);
         assert!(frames::UPDATE == POINTER_FLAG_UPDATE.0);
         assert!(frames::UP == POINTER_FLAG_UP.0);

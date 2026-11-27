@@ -13,15 +13,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/record-traces.sh" windows
 checks_dir=$work/checks
 mkdir -p "$checks_dir"
 
-# Frames beyond the gesture table's verbs, in its syntax (frames.rs in crates/touch-inject has the hover and cancel
-# fingers). A pen moving in range above x1 y1 → x2 y2 over ms, never touching:
+# Frames beyond the gesture table's verbs, in its syntax (frames.rs in crates/touch-inject has the hover finger).
+# A pen moving in range above x1 y1 → x2 y2 over ms, never touching:
 frames_hover() {
   local i n=$(($5 / frame_ms))
   for ((i = 0; i <= n; i++)); do echo "$frame_ms 0:$(lerp "$1" "$3" $i $n):$(lerp "$2" "$4" $i $n):hover"; done
   echo "0 0:up"
 }
-# A finger held at x y for ms, then cancelled (POINTER_FLAG_CANCELED):
-frames_cancel() { printf '%s\n' "$3 0:$1:$2" "0 0:cancel"; }
 
 # Commands a check runs, besides `perform <verb> …` (a touch):
 gesture() {
@@ -43,6 +41,20 @@ pen() {
   windows_inject pen "${frames[@]}"
 }
 click() { windows_inject click "$@"; }
+# A finger held at x y while the display changes resolution: Windows cancels every injected contact then
+# (InjectTouchInput: "All active contacts are cancelled when a WM_DISPLAYCHANGE is received"). The injector's next
+# frame fails, as it should. An injected up marked POINTER_FLAG_CANCELED arrives as a plain up, so this is the
+# harness's one real cancel.
+cancel_by_display() {
+  local injector was
+  windows_inject touch "2000 0:$1:$2" "0 0:up" &
+  injector=$!
+  sleep 0.5
+  was=$("$windows_bin/touch-inject.exe" display $scaled_display 100)
+  wait "$injector" || true
+  # Unquoted on purpose: "width height percent".
+  "$windows_bin/touch-inject.exe" display $was >/dev/null
+}
 
 # The checks: name | screen (main or pad; pad@150: at 150 % display scale) | command (BOX: the box's centre) |
 # assertions, each kind:argument:
@@ -59,7 +71,7 @@ checks=(
   "fling-order|pad|gesture fling|rising lines:Moved,:5+ ids:1"
   "pinch|pad|gesture pinch|ids:2 unique lines:Started,:2 lines:Ended,:2"
   "reused-id|pad|gesture double-tap|ids:2 lines:Started,:2 lines:Ended,:2"
-  "cancel|pad|perform cancel 200 400 100|lines:Cancelled,:1 lines:Ended,:0"
+  "cancel|pad|cancel_by_display 200 400|lines:Cancelled,:1 lines:Ended,:0 ids:1"
   "pen|pad|pen swipe 200 600 200 400 300|all:Pen\) lines:Moved,.*Pen\).force.0\.50:15+ rising lines:Started,:1 lines:Ended,:1"
   "pen-hover|pad|pen hover 100 300 300 300 300|lines:touch\(:0 lines:mouse_move:5+ lines:mouse_down:0"
   "title-bar|pad|perform swipe 200 -14 300 -14 300|moved lines:touch\(:0"
