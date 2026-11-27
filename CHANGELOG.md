@@ -12,6 +12,8 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - iOS: backspace deletes a Thai vowel, not its whole grapheme, and whole emoji; half an emoji from iOS no longer
   aborts or corrupts the text; `textInRange:` clamps; line granularity of the tokenizer follows the text's line
   breaks (Flutter's fixes, patch 0029).
+- iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
+  secure text entry (patch 0030). Fork `parallax-gpui*` 0.3.14-parallax.11.
 
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
