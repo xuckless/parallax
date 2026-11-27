@@ -4,6 +4,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
+## [Unreleased]
+
+### Fixed
+
+- macOS draws text: `parallax-platform` now turns on `gpui_platform`'s `font-kit` feature. 0.1.1 to 0.1.4 built
+  without it, so `gpui_macos` used GPUI's `NoopTextSystem` and every macOS app drew no text (boxes only).
+- The `hello` example's desktop binary logs to stderr (`env_logger`, `RUST_LOG` to change the level).
+
 ## [0.1.4] - 2026-11-26 — Gate 1
 
 Wave 10: **Gate 1 passes**: Android text input, mouse, autofill and locales, checked with Gboard on API 28, 33 and 35

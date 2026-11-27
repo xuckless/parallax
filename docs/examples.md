@@ -40,7 +40,9 @@ cargo run -p hello
 ```
 
 Linux needs the `LINUX_PACKAGES` of [ci.yml](../.github/workflows/ci.yml) (on Fedora: `libxkbcommon-x11-devel`,
-`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop installs no logger, so `log` lines are silent there.
+`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop logs to stderr through
+[env_logger](https://docs.rs/env_logger): warnings, plus `info` from hello; `RUST_LOG` overrides it
+(e.g. `RUST_LOG=debug`).
 
 ### Web
 
