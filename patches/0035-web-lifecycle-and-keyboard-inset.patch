@@ -753,7 +753,7 @@ index e8a75c8..537775c 100644
          };
          let changed = self.visible_bounds != visible_bounds || self.insets != insets;
 diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 5024601..639d88e 100644
+index 1131916..3fe95b9 100644
 --- a/gpui-pre-web/src/window.rs
 +++ b/gpui-pre-web/src/window.rs
 @@ -28,6 +28,7 @@ pub(crate) struct WebWindowCallbacks {
@@ -853,7 +853,7 @@ index 5024601..639d88e 100644
      let is_visible = browser_window
          .document()
          .and_then(|document| js_sys::Reflect::get(&document, &"visibilityState".into()).ok())
-@@ -885,6 +910,10 @@ impl PlatformWindow for WebWindow {
+@@ -890,6 +915,10 @@ impl PlatformWindow for WebWindow {
          self.inner.viewport.borrow().insets.clone()
      }
  

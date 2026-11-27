@@ -5,8 +5,8 @@ example is a workspace member, so [CI](ci.md) checks it on all six targets.
 
 ## hello
 
-[examples/hello](../examples/hello/): one window with two text fields (prose, and an email field with an autofill
-hint), a line in several scripts (`SCRIPTS`: Latin, CJK, Arabic, emoji) and a box. Each click or tap moves the box to
+[examples/hello](../examples/hello/): one window with three text fields (prose, an email field with an autofill
+hint, and a secure password field drawn in the clear), a line in several scripts (`SCRIPTS`: Latin, CJK, Arabic, emoji) and a box. Each click or tap moves the box to
 the next colour of `COLOURS` in [lib.rs](../examples/hello/src/lib.rs), and the log line says whether the click came
 from a mouse, a tap or a key; a tap outside a field blurs it. A two-finger or trackpad pinch resizes the box within
 `ZOOM` and its label shows the zoom and the pinch's rotation; `hello: pinch end: …` logs each end

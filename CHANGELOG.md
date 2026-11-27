@@ -36,6 +36,9 @@ window.
   viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
 - Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
   windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
+- Web secure fields (patch 0034): while a `secure` field is focused the hidden IME element is an
+  `<input type=password>`, so browsers and keyboards neither show nor learn what is typed; Enter in it submits on
+  touch keyboards too. hello gains a password field.
 
 ### Changed
 

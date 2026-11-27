@@ -41,7 +41,7 @@ const heard = (pattern) => {
   seen = logs.length;
   return lines;
 };
-const mirror = (names) => js(`(() => { const t = document.querySelector('textarea');
+const mirror = (names) => js(`(() => { const t = document.querySelector('textarea, input');
   return Object.fromEntries(${JSON.stringify(names)}.map((n) => [n, n in t.style ? t.style[n] : t.getAttribute(n)])); })()`);
 const tap = async (x, y) => {
   if (mode === "mobile") {
@@ -106,6 +106,20 @@ if (mode === "desktop") {
   await sleep(600);
   check("keyboard closed", heard(/keyboard inset/), ["0"]);
 }
+
+// hello's password field at y 176: the mirror is an <input type=password> while it is focused, a textarea after.
+const element = () => js(`(() => { const t = document.querySelector('textarea, input');
+  return [t.localName, t.getAttribute('type'), t.getAttribute('autocomplete'), t === document.activeElement]; })()`);
+await tap(200, 176);
+check("password field element", await element(), ["input", "password", "current-password", true]);
+await send("Input.insertText", { text: "hunter2" });
+for (const type of ["keyDown", "keyUp"]) {
+  await send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+}
+await sleep(400);
+check("password typed into the input", logs.filter((line) => line.includes("submitted: 7 bytes")).length, 1);
+await tap(200, 110);
+check("email field element again", await element(), ["textarea", null, "email", true]);
 
 // The phases hello logs, waiting up to 3 s for `want` of them, then 300 ms for any extra.
 const phases = async (want) => {
