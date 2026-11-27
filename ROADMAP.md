@@ -51,7 +51,7 @@ Known limits of this plan:
 
 - **All patches reach crates.io through our published GPUI fork** (`parallax-gpui*`, patch rule 11).
   Upstreaming stays paused (rule 14); patches upstream fixes on its own are dropped at the next sync.
-- **Hardware:** the owner has no real phones and possibly no touchscreen laptop. Gates are checked on emulators,
+- **Hardware:** the owner has no real phones and possibly no touchscreen laptop; they have an iPad (Sidecar touch on macOS 27) and an Apple developer account. Gates are checked on emulators,
   simulators and synthetic touch injection until hardware is available.
 - **Deferred past Gate 2:** Android multi-window (now in Phase 4).
 
@@ -236,34 +236,39 @@ patch only for a case that can't be reached that way. Order follows the [oracle 
       everywhere: GPUI's default). Wave 11: the table in `parallax_platform::behaviour`, patch 0014's
       `App::set_gesture_tuning`, applied by every entry point (`parallax::run`, the facade's `android_main!`)
       ([behaviour.md](docs/behaviour.md)).
-- [ ] Pinch (Wave 12): `.on_pinch` delivering Flutter's `ScaleUpdateDetails` fields, wired into touch dispatch through
+- [x] Pinch (Wave 12): `.on_pinch` delivering Flutter's `ScaleUpdateDetails` fields, wired into touch dispatch through
       the deepest-wins claims. Wave 11 ported the recognizer as maths (patch 0015,
-      [scale-and-overscroll.md](docs/scale-and-overscroll.md)); Flutter's `scale` tests are the oracle.
-- [ ] Overscroll (Wave 12): on by default per the behaviour table's row (bounce, glow, stretch, clamp), with a
-      per-container opt-out; ports Wave 11's maths (patch 0015) into GPUI's scroll containers.
+      [scale-and-overscroll.md](docs/scale-and-overscroll.md)); Flutter's `scale` tests are the oracle. Wave 12:
+      patch 0016, who wins the fingers follows Flutter's arena ([pinch.md](docs/pinch.md)).
+- [x] Overscroll (Wave 12) for `div` scroll containers: on by default per the behaviour table's row (bounce, glow,
+      stretch, clamp), with a per-container opt-out; ports Wave 11's maths (patch 0015) into GPUI's scroll containers.
+      Wave 12: patch 0017, with Flutter's scroll activities ([overscroll.md](docs/overscroll.md)).
+- [ ] Overscroll for `uniform_list` and `list` (deferred from Wave 12: their visible range assumes an in-range offset).
 - [ ] Left from Wave 11:
-      - [ ] Haptics (Wave 12): GPUI has no haptics hook, so the table's `haptics` are data only. Port Flutter's
+      - [x] Haptics (Wave 12, patch 0018, [haptics.md](docs/haptics.md)): GPUI has no haptics hook, so the table's `haptics` are data only. Port Flutter's
             `PlatformPlugin` (Android `View.performHapticFeedback`) and `FlutterPlatformPlugin` (iOS
             `UIFeedbackGenerator`) haptics behind a platform hook; callers: long press, selection handles, pickers.
-      - [ ] Android touch slop (Wave 12) from `ViewConfiguration.getScaledTouchSlop()` at runtime, as Flutter's
+      - [x] Android touch slop (Wave 12) from `ViewConfiguration.getScaledTouchSlop()` at runtime, as Flutter's
             embedding sends it; the row holds AOSP's default 8 dp.
       - [ ] iOS `carriedMomentum`: repeated flings speed up ([scroll-physics.md](docs/scroll-physics.md)).
       - [ ] Momentum's stop tolerance is `toleranceFor` at a fixed device pixel ratio of 2; pass the window's scale factor
             (`tolerance_for` already takes it).
-      - [ ] Touch timestamps: `TouchEvent` has no timestamp, so velocity trackers time samples by dispatch; a stalled
+      - [x] Touch timestamps (Wave 12, patch 0020, [touch-time-stamps.md](docs/touch-time-stamps.md)): `TouchEvent` had no timestamp, so velocity trackers time samples by dispatch; a stalled
             main thread delivers a burst that reads as a velocity spike. Add the platform's event time to `TouchEvent`
             (Android `MotionEvent.getEventTime`, iOS `UITouch.timestamp`, web `PointerEvent.timeStamp`) and track by it.
       - [ ] Scale: trackpad pan/zoom cases of `scale_test.dart` (GPUI reports trackpad pinches as `PinchEvent`).
       - [ ] Recognizers: Flutter's multi-pointer drag cases (GPUI's recognizer ignores extra touches).
-      - [ ] Row values GPUI doesn't read yet (Wave 12): pan and scale slops, `dragStartDistanceMotionThreshold`,
-            overscroll style, haptics and touch-target minimum, until the scale recognizer, scroll containers and
-            widgets read them.
-- [ ] Trace recorder (Wave 12): capture raw touch traces into test fixtures on the Android emulator, the iOS simulator
+      - [ ] Row values GPUI doesn't read yet: pan and scale slops (GPUI derives them from the touch slop,
+            `gpui::slops`), `dragStartDistanceMotionThreshold` and touch-target minimum, until widgets read them.
+            Wave 12: overscroll style and the long-press haptic are read.
+- [x] Trace recorder (Wave 12, [traces.md](docs/traces.md)): capture raw touch traces into test fixtures on the Android emulator, the iOS simulator
       (driven by `idb`) and a browser, until the owner has devices.
-- [ ] Trace replay (Wave 12): run the traces through the gesture and physics test tables on every platform.
-- [ ] Smoke-test flake fixes (Wave 12).
+- [x] Trace replay (Wave 12): run the traces through the gesture and physics test tables on every platform
+      (`trace_replay`, on `gpui::play_trace`).
+- [x] Smoke-test flake fixes (Wave 12).
 
-**Gate 2** (0.1.7, emulator/simulator-verified): the ported gesture and physics tables pass on every target, and the
+**Gate 2** (0.1.7, emulator/simulator-verified) — **passed 2026-11-27**: 6 gestures × 3 platforms × 6 behaviour rows.
+The ported gesture and physics tables pass on every target, and the the ported gesture and physics tables pass on every target, and the
 Android emulator, iOS simulator and browser traces replay to the same gestures and scroll outcomes everywhere.
 
 ## Phase 3: Desktop touch
@@ -274,8 +279,11 @@ event handling into GPUI's desktop backends; Flutter's Windows and Linux embedde
 
 - [ ] `touch-windows`: `WM_POINTER` touch and pen in `gpui_windows`, from winit's Windows backend.
 - [ ] `touch-linux`: Wayland `wl_touch` and X11 XInput2 touch in `gpui_linux`, from winit's Wayland and X11 backends.
-- [ ] `touch-macos`: touchscreen events in `gpui_macos`, from winit's macOS backend once the macOS 27 API is known
-      (open question).
+- [ ] `touch-macos`: touchscreen events in `gpui_macos`, from winit's macOS backend, on the macOS 27 touch APIs
+      (owner's notes): direct touches arrive only through gesture recognizers with `allowedTouchTypes = .direct`; an
+      app opts in with `NSIsTouchNative` in its Info.plist; `NSScreen.touchCapabilities` says whether a screen takes
+      touch; Apple's touch target is 36 pt (the macOS row's minimum to check). Testable live via Sidecar with the
+      owner's iPad (iPadOS 27); the owner has an iPad and an Apple developer account.
 - [ ] Synthetic touch injection for tests: Windows `InjectTouchInput` on CI's Windows runner, Linux `uinput`.
 - [ ] Record traces on a touchscreen laptop for each desktop OS (once one is available) and add them to the Phase 2
       fixtures; until then, injected traces.
@@ -341,7 +349,8 @@ tests are the oracle.
 
 ## Open questions
 
-- [ ] macOS 27: how are touchscreen events exposed? Needed before `touch-macos`.
+- [x] macOS 27: how are touchscreen events exposed? Answered in Phase 3's `touch-macos` (gesture recognizers with
+      `allowedTouchTypes = .direct`, `NSIsTouchNative`, `NSScreen.touchCapabilities`; Sidecar with the owner's iPad).
 - [ ] Is a touchscreen laptop available for Phase 3 traces? Until then, synthetic injection only.
 - [ ] Which patches to file upstream first (when upstreaming resumes).
 - [ ] When `zed-industries/gpui` holds code, move `upstream/` to it. Same code as `gpui-pre`, so only the source changes.
