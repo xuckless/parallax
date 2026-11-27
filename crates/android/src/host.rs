@@ -6,11 +6,11 @@ use std::{
     ffi::c_void,
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use gpui::{
-    App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
+    App, AppLifecyclePhase, Application, ApplicationHandle, AsyncApp, DevicePixels,
     DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
     RequestFrameOptions, Size, WindowInsets, WindowVisibility, point, px, size,
 };
@@ -29,6 +29,7 @@ use crate::{
     backend::Device,
     haptics, keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
+    metrics::Metrics,
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
@@ -130,49 +131,47 @@ struct MainThreadHost {
     touch_slop_changed: TouchSlopChanged,
 }
 
-/// Called on the main thread, inside GPUI, when the device's touch slop (logical pixels) moves from the first value to
-/// the second: the facade re-applies the behaviour table's row with it.
-pub type TouchSlopChanged = fn(&mut App, Option<Pixels>, Option<Pixels>);
+/// Called on the main thread, in its own looper turn, when the device's touch slop moves to a new value (logical
+/// pixels): the facade re-applies the behaviour table's row with it.
+pub type TouchSlopChanged = fn(&mut App, Pixels);
 
 enum AppState {
     /// `JNI_OnLoad` ran; the app launches on the first surface (GPUI needs one to open its window).
     Loaded { launch: fn(&mut App) },
     /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
-    /// change; `fonts` is `None` when the system fonts did not load (logged), then there is no order to change.
+    /// change; `cx` schedules work on GPUI's next looper turn without entering it; `fonts` is `None` when the
+    /// system fonts did not load (logged), then there is no order to change.
     Running {
         app: Rc<ApplicationHandle>,
+        cx: AsyncApp,
         fonts: Option<Arc<AndroidTextSystem>>,
     },
 }
 
 impl MainThreadHost {
-    /// Java's density and touch slop, which it sends with every surface and insets report; logged when either moves.
-    /// Returns whether the density changed. A changed logical slop reaches the app's [`TouchSlopChanged`] hook once
-    /// GPUI runs; before that, the launch reads it ([`crate::touch_slop`]).
-    fn set_scale(&self, density: f32, touch_slop: jint) -> bool {
-        let before = self.shell.metrics.get();
-        let after = Metrics {
-            density,
-            touch_slop: Some(DevicePixels(touch_slop)),
-            ..before
-        };
-        self.shell.metrics.set(after);
-        let (old, new) = (before.touch_slop(), after.touch_slop());
-        let density_changed = before.density != density;
-        if old != new || density_changed {
-            log::info!("parallax: touch slop {touch_slop} px at density {density}: {new:?}");
+    /// Takes Java's density and touch slop (sent with every surface and insets report, [`Metrics::rescaled`]) and logs
+    /// when either moved. A moved logical slop goes to the app's [`TouchSlopChanged`] hook on the next looper turn,
+    /// not inside this JNI call, which may be mid-report (the insets are not stored yet) or reached while GPUI runs;
+    /// before launch, the launch reads it ([`crate::touch_slop`]). Returns whether the density moved.
+    fn rescale_and_notify(&self, density: f32, touch_slop: jint) -> bool {
+        let rescaled = self
+            .shell
+            .metrics
+            .get()
+            .rescaled(density, DevicePixels(touch_slop));
+        self.shell.metrics.set(rescaled.metrics);
+        if rescaled.density_moved || rescaled.touch_slop_moved.is_some() {
+            let logical = rescaled.metrics.touch_slop();
+            log::info!("parallax: touch slop {touch_slop} px at density {density}: {logical:?}");
         }
-        if old != new {
-            // Cloned so the borrow ends before GPUI runs.
-            let app = match &*self.app.borrow() {
-                AppState::Loaded { .. } => None,
-                AppState::Running { app, .. } => Some(app.clone()),
-            };
-            if let Some(app) = app {
-                app.update(|cx| (self.touch_slop_changed)(cx, old, new));
-            }
+        if let (Some(new), AppState::Running { cx, .. }) =
+            (rescaled.touch_slop_moved, &*self.app.borrow())
+        {
+            let hook = self.touch_slop_changed;
+            cx.spawn(async move |cx| cx.update(|cx| hook(cx, new)))
+                .detach();
         }
-        density_changed
+        rescaled.density_moved
     }
 
     /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
@@ -185,6 +184,7 @@ impl MainThreadHost {
             AppState::Running {
                 app,
                 fonts: Some(fonts),
+                ..
             } => (app.clone(), fonts.clone()),
         };
         if fonts.set_locales(locales) {
@@ -312,7 +312,7 @@ extern "system" fn surface_created(
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
         let size = window.size();
-        host.set_scale(density, touch_slop);
+        host.rescale_and_notify(density, touch_slop);
         host.shell.set_display(size, refresh_rate);
         host.shell.handle(SurfaceEvent::Created {
             window,
@@ -333,6 +333,7 @@ extern "system" fn surface_created(
                 let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running {
+                    cx: app.to_async(),
                     app: Rc::new(app),
                     fonts,
                 };
@@ -362,7 +363,7 @@ extern "system" fn surface_changed(
     with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
         let size = size(DevicePixels(width), DevicePixels(height));
-        host.set_scale(density, touch_slop);
+        host.rescale_and_notify(density, touch_slop);
         host.shell.set_display(size, refresh_rate);
         host.shell.handle(SurfaceEvent::Resized { size });
     });
@@ -628,7 +629,7 @@ extern "system" fn insets(
     };
     with_owner(activity, |host| {
         // A density change keeps the surface's pixel size, so no surfaceChanged brings it: GPUI's scale changes here.
-        let density_changed = host.set_scale(density, touch_slop);
+        let density_changed = host.rescale_and_notify(density, touch_slop);
         host.shell.set_insets(
             edges(safe_left, safe_top, safe_right, safe_bottom),
             edges(ime_left, ime_top, ime_right, ime_bottom),
@@ -637,76 +638,6 @@ extern "system" fn insets(
             host.shell.resized();
         }
     });
-}
-
-/// What Java last reported about the display and system bars, in physical pixels.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Metrics {
-    pub(crate) size: Size<DevicePixels>,
-    pub(crate) density: f32,
-    pub(crate) refresh_rate: f32,
-    /// `ViewConfiguration.getScaledTouchSlop()`; `None` until Java first reports it.
-    touch_slop: Option<DevicePixels>,
-    safe_area: Edges<DevicePixels>,
-    ime: Edges<DevicePixels>,
-}
-
-impl Metrics {
-    /// Before the first surface: nothing drawn yet, so any density works; 1.0 keeps conversions finite.
-    const BEFORE_FIRST_SURFACE: Metrics = Metrics {
-        size: Size {
-            width: DevicePixels(0),
-            height: DevicePixels(0),
-        },
-        density: 1.0,
-        refresh_rate: 0.0,
-        touch_slop: None,
-        safe_area: Edges {
-            top: DevicePixels(0),
-            right: DevicePixels(0),
-            bottom: DevicePixels(0),
-            left: DevicePixels(0),
-        },
-        ime: Edges {
-            top: DevicePixels(0),
-            right: DevicePixels(0),
-            bottom: DevicePixels(0),
-            left: DevicePixels(0),
-        },
-    };
-
-    fn logical(&self, edges: Edges<DevicePixels>) -> Edges<Pixels> {
-        edges.map(|edge| px(edge.0 as f32 / self.density))
-    }
-
-    /// The window (and display) bounds in logical pixels.
-    pub(crate) fn bounds(&self) -> Bounds<Pixels> {
-        Bounds::new(
-            point(px(0.), px(0.)),
-            size(
-                px(self.size.width.0 as f32 / self.density),
-                px(self.size.height.0 as f32 / self.density),
-            ),
-        )
-    }
-
-    /// The touch slop in logical pixels, as Flutter's `DeviceGestureSettings.fromView`: physical over the density.
-    pub(crate) fn touch_slop(&self) -> Option<Pixels> {
-        self.touch_slop.map(|slop| px(slop.0 as f32 / self.density))
-    }
-
-    pub(crate) fn refresh_interval(&self) -> Option<Duration> {
-        (self.refresh_rate > 0.0).then(|| Duration::from_secs_f32(1.0 / self.refresh_rate))
-    }
-
-    pub(crate) fn insets(&self) -> WindowInsets {
-        WindowInsets {
-            safe_area: self.logical(self.safe_area),
-            ime: self.logical(self.ime),
-            // Not yet on Android: rounded display corners (`RoundedCorner`, API 31).
-            corner_radii: Default::default(),
-        }
-    }
 }
 
 /// A GPUI callback the window registered, taken out while it runs so it can re-enter the shell.
