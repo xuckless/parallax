@@ -62,6 +62,7 @@ the hitboxes the element inserts). Before 0013's fixes, 5 failed. The fling rule
 
 - **Arena:** yield to / held arena, arena reject, passive gestures, two recognizers on one pointer, microtask order.
 - **Buttons and devices:** secondary/tertiary buttons, button changes, device-kind filters, mouse drags.
-- **Multi-pointer:** GPUI ignores extra touches while one is active (until pinch lands).
+- **Multi-pointer:** the touch recognizer ignores extra touches while one is active; on an `on_pinch` element they
+  pinch ([pinch.md](pinch.md)).
 - **Velocity and fling:** max-velocity clamps, synthesized events, quick flicks: the velocity and physics tables.
 - **No GPUI twin:** tap-down and tap-move callbacks, details `toString`, exception logging, pointer pan/zoom.

@@ -6,6 +6,23 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Touch pinch (patch 0016): two or more fingers on an element with an id and `on_pinch` pinch it, through
+  upstream's `PinchEvent`, which gains `touch: Option<TouchPinch>` (`Start` / `Update` / `End` with Flutter's scale
+  details: focal and local focal point, scale, horizontal and vertical scale, rotation, pointer count, focal point
+  delta, end velocity and scale velocity). A touch pinch fills `position` and `delta` like a trackpad pinch, so one
+  listener zooms for both. The deepest `on_pinch` element under the fingers gets it; one finger still taps and pans,
+  and a second turns a pan into a pinch, as in Flutter's arena. `Window::join_pinch` and `Window::pinch_owner` let
+  custom elements take part ([docs/pinch.md](docs/pinch.md)).
+- hello: the box zooms with a two-finger or trackpad pinch and shows the zoom and rotation.
+
+### Changed
+
+- `PinchEvent` has a new public field, `touch` (`None` for trackpad pinches): struct literals need `touch: None`.
+- An element with `on_pinch` and an id now decides its touches like one with `on_click`: an ancestor's `on_touch`
+  no longer takes them.
+
 ## [0.1.6] - 2026-11-26 — Phase 2 gestures and physics
 
 Wave 11: Phase 2's gestures and physics, ported from Flutter 3.50.1 into our GPUI fork (patches 0011–0015, fork
