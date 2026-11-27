@@ -1,0 +1,263 @@
+Give GPUI text fields on iOS UIKit's own selection UI with UITextInteraction.
+
+Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterTextInputPlugin.mm
+@ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `-[FlutterTextInputView textInteraction]`, its touch
+forwarding to the view responder and `textInRange:`'s nil check. Copyright 2014 The Flutter Authors. BSD-3-Clause.
+
+What: while GPUITextInputView is first responder it carries a `UITextInteraction` in editable mode, made as Flutter
+makes it, so a focused GPUI field gets what a UITextField has: the caret, tap to place it, double tap for a word,
+the selection highlight and handles (drag to extend), the loupe on long press, and UIKit's edit menu (Cut, Copy,
+Paste, Delete, Select All, AutoFill; on iOS 16+ UIKit presents it through UIEditMenuInteraction), which calls
+patch 0036's actions. It leaves when the view resigns.
+- The interaction's gestures go on the text input's own view (its `textInputView`), so the view now covers GPUI's
+  view (the window sizes it, autoresizing) instead of a hidden 1-point frame, and is its own `textInputView`.
+- `hitTest:withEvent:` claims a touch only while editing and only on the field's text (a closest position) or
+  within half of Apple's 44 pt touch target of a selection end (a handle knob); every other touch reaches GPUI's
+  view as before. Touches it claims but UIKit's gestures leave are forwarded to GPUI's view (Flutter's
+  `touchesBegan:` … `touchesCancelled:`), so the app still sees them; a recognized gesture cancels them.
+- `selectionRectsForRange:` falls back to the app's first rect when the app gives no selection rects (UIKit draws
+  no highlight or handles without them); one-line fields need nothing more.
+- `textInRange:` takes nil (UIKit sends it; Flutter checks too). It panicked in objc2 before.
+
+Why: AGENTS.md "iOS text selection": native `UITextInteraction` on iOS. The behaviour table marks iOS
+`TextSelectionControls::Native`, so Parallax's own selection engine is off there and nothing selected text.
+
+Test: the native protocol smoke test checks the interaction comes with the responder and goes with it; patch
+0028's table still passes. Checked by hand in Parallax's hello on the iPhone 17 Pro and iPad Pro 11-inch
+simulators (iOS 26.5): double tap selects a word with handles and the edit menu, a handle drag extends it, Copy
+then Paste replaces a selection, long press shows the loupe, taps outside the field reach GPUI.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
+index 33ceef8..f8973f3 100644
+--- a/gpui-pre-ios/Cargo.toml
++++ b/gpui-pre-ios/Cargo.toml
+@@ -153,6 +153,7 @@ features = [
+     "UIGestureRecognizer",
+     "UIPanGestureRecognizer",
+     "UIScreenEdgePanGestureRecognizer",
++    "UIInteraction",
+     "UIInterface",
+     "UIKey",
+     "UIKeyConstants",
+@@ -169,6 +170,7 @@ features = [
+     "UIScreen",
+     "UITextInput",
+     "UITextInputTraits",
++    "UITextInteraction",
+     "UITouch",
+     "UITraitCollection",
+     "UIView",
+diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
+index d4359bc..57649b8 100644
+--- a/gpui-pre-ios/src/ios/text_input.rs
++++ b/gpui-pre-ios/src/ios/text_input.rs
+@@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
+ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+ use objc2_foundation::{
+     NSArray, NSAttributedStringKey, NSComparisonResult, NSCopying, NSDictionary,
+-    NSObjectNSDelayedPerforming, NSObjectProtocol, NSRange, NSString, ns_string,
++    NSObjectNSDelayedPerforming, NSObjectProtocol, NSRange, NSSet, NSString, ns_string,
+ };
+ use objc2_ui_kit::*;
+ use std::{
+@@ -147,6 +147,8 @@ pub(super) struct TextInputIvars {
+     content_changed: Cell<bool>,
+     native_edit: Cell<bool>,
+     temporarily_deleted_composed_character: RefCell<Option<Retained<NSString>>>,
++    /// UIKit's selection UI (`sync_text_interaction`), installed while this view is first responder.
++    text_interaction: RefCell<Option<Retained<UITextInteraction>>>,
+ }
+ 
+ define_class!(
+@@ -175,9 +177,48 @@ define_class!(
+                 self.ivars().keyboard_desired.set(false);
+                 self.ivars().keyboard_eligible.set(false);
+             }
++            self.sync_text_interaction();
+             resigned
+         }
+ 
++        // This view covers GPUI's view. While editing, touches on the field's text hit it, for UITextInteraction's
++        // gestures; the rest, and every touch while not editing, reach GPUI's view (or UIKit's selection views).
++        #[unsafe(method_id(hitTest:withEvent:))]
++        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
++            let on_text = self.ivars().text_interaction.borrow().is_some()
++                && (self.closestPositionToPoint(point).is_some() || self.near_selection_end(point));
++            if on_text {
++                Some(self.retain().into_super())
++            } else {
++                let hit: Option<Retained<UIView>> =
++                    unsafe { msg_send![super(self), hitTest: point, withEvent: event] };
++                hit.filter(|hit| !std::ptr::eq(Retained::as_ptr(hit).cast::<TextInputView>(), self))
++            }
++        }
++
++        // Ported from flutter/flutter FlutterTextInputPlugin.mm @ 3.50.1: "Forward touches to the viewResponder to
++        // allow tapping inside the UITextField as normal." GPUI's view is the superview. Copyright 2014 The Flutter
++        // Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++        #[unsafe(method(touchesBegan:withEvent:))]
++        fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
++            if let Some(view) = self.superview() { view.touchesBegan_withEvent(touches, event); }
++        }
++
++        #[unsafe(method(touchesMoved:withEvent:))]
++        fn touches_moved(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
++            if let Some(view) = self.superview() { view.touchesMoved_withEvent(touches, event); }
++        }
++
++        #[unsafe(method(touchesEnded:withEvent:))]
++        fn touches_ended(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
++            if let Some(view) = self.superview() { view.touchesEnded_withEvent(touches, event); }
++        }
++
++        #[unsafe(method(touchesCancelled:withEvent:))]
++        fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
++            if let Some(view) = self.superview() { view.touchesCancelled_withEvent(touches, event); }
++        }
++
+         #[unsafe(method(reconcileTextInput))]
+         fn reconcile_text_input(&self) {
+             self.ivars().update_pending.set(false);
+@@ -196,6 +237,7 @@ define_class!(
+                 self.resignFirstResponder();
+                 self.ivars().reconciling_responder.set(previous);
+             }
++            self.sync_text_interaction();
+             if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
+                 self.reloadInputViews();
+             }
+@@ -404,9 +446,10 @@ define_class!(
+ 
+     unsafe impl UITextInput for TextInputView {
+         #[unsafe(method_id(textInRange:))]
+-        fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
++        fn text_in_range(&self, range: Option<&UITextRange>) -> Option<Retained<NSString>> {
+             (|| {
+-            let range = self.validated_range(range)?;
++            // UIKit can ask with nil (FlutterTextInputPlugin.mm @ 3.50.1 `textInRange:`).
++            let range = self.validated_range(range?)?;
+             self.with_handler(|handler| {
+                 // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
+                 let document = document_range(handler)?;
+@@ -582,7 +625,10 @@ define_class!(
+             let Some(range) = self.validated_range(range) else { return NSArray::new(); };
+             let bounds = self.with_handler(|handler| {
+                 if !allowed_range(handler, &range) { return Vec::new(); }
+-                handler.selection_bounds_for_range(range)
++                let rects = handler.selection_bounds_for_range(range.clone());
++                // UIKit draws no highlight or handles without rects; an app that gives none (a one-line field)
++                // has its first rect.
++                if rects.is_empty() { handler.bounds_for_range(range).into_iter().collect() } else { rects }
+             }).unwrap_or_default();
+             let count = bounds.len();
+             let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
+@@ -629,9 +675,8 @@ define_class!(
+         }
+         #[unsafe(method_id(textInputView))]
+         fn text_input_view(&self) -> Retained<UIView> {
+-            // GPUI's bounds and hit testing use the rendering view's coordinate space,
+-            // not the hidden responder's one-point frame.
+-            self.superview().unwrap_or_else(|| self.retain().into_super())
++            // This view covers GPUI's view (the window sizes it), so their coordinate spaces are the same.
++            self.retain().into_super()
+         }
+     }
+ 
+@@ -655,6 +700,7 @@ impl TextInputView {
+             content_changed: Cell::new(false),
+             native_edit: Cell::new(false),
+             temporarily_deleted_composed_character: RefCell::new(None),
++            text_interaction: RefCell::new(None),
+         });
+         unsafe { msg_send![super(this), initWithFrame: frame] }
+     }
+@@ -715,6 +761,45 @@ impl TextInputView {
+         self.with_handler(document_range).flatten()
+     }
+ 
++    /// UIKit's own selection UI (caret, handles, loupe, edit menu) while this view edits, as UITextView has: a
++    /// `UITextInteraction`, made as Flutter's `-[FlutterTextInputView textInteraction]` (FlutterTextInputPlugin.mm
++    /// @ 3.50.1) makes it. Its gestures sit on this view, which claims touches on the field's text (`hitTest:`) and
++    /// hands GPUI the ones the gestures leave (`touches…`).
++    fn sync_text_interaction(&self) {
++        let mut installed = self.ivars().text_interaction.borrow_mut();
++        match (self.isFirstResponder(), installed.take()) {
++            (true, None) => {
++                let interaction =
++                    UITextInteraction::textInteractionForMode(UITextInteractionMode::Editable, self.mtm());
++                // SAFETY: this view implements UITextInput, which `textInput` requires.
++                unsafe { interaction.setTextInput(Some(self)) };
++                *installed = Some(interaction.clone());
++                // UIKit asks this view back (`hitTest:`) while it adds the interaction.
++                drop(installed);
++                self.addInteraction(ProtocolObject::from_ref(&*interaction));
++            }
++            (false, Some(interaction)) => self.removeInteraction(ProtocolObject::from_ref(&*interaction)),
++            (true, Some(interaction)) => *installed = Some(interaction),
++            (false, None) => {}
++        }
++    }
++
++    /// Whether `point` can grab a selection handle: within half of Apple's 44 pt minimum touch target of either
++    /// end's caret, so a knob drawn outside the text still takes its drag.
++    fn near_selection_end(&self, point: CGPoint) -> bool {
++        const HALF_TOUCH_TARGET: f64 = 22.;
++        let near = |caret: CGRect| {
++            caret != CGRect::ZERO
++                && (caret.origin.x - HALF_TOUCH_TARGET..=caret.origin.x + caret.size.width + HALF_TOUCH_TARGET)
++                    .contains(&point.x)
++                && (caret.origin.y - HALF_TOUCH_TARGET..=caret.origin.y + caret.size.height + HALF_TOUCH_TARGET)
++                    .contains(&point.y)
++        };
++        self.selectedTextRange().is_some_and(|range| {
++            near(self.caretRectForPosition(&range.start())) || near(self.caretRectForPosition(&range.end()))
++        })
++    }
++
+     /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
+     /// delegate, as of an app edit.
+     fn action_changed(&self, content_changed: bool) {
+@@ -1187,8 +1272,17 @@ pub(super) mod tests {
+         view.ivars().keyboard_eligible.set(true);
+         assert!(view.becomeFirstResponder());
+         assert!(view.isFirstResponder());
++        // UIKit's selection UI lives on the view while it edits, and leaves with the responder.
++        view.sync_text_interaction();
++        let interaction = view.ivars().text_interaction.borrow().clone();
++        assert_eq!(
++            interaction.as_ref().and_then(|interaction| interaction.view()),
++            Some(view.clone().into_super())
++        );
+         assert!(view.resignFirstResponder());
+         assert!(!view.isFirstResponder());
++        assert!(view.ivars().text_interaction.borrow().is_none());
++        assert!(interaction.and_then(|interaction| interaction.view()).is_none());
+         assert!(
+             !view.ivars().keyboard_desired.get(),
+             "native resignation must cancel the outstanding keyboard request"
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 1f2e099..10d3f84 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -490,12 +490,14 @@ impl IosWindow {
+         // Make the window visible
+         window.makeKeyAndVisible();
+ 
+-        // Create a hidden text input view for keyboard handling.
++        // Create a transparent text input view for keyboard handling.
+         // Uses our custom GPUITextInputView which implements UIKeyInput
+-        // so iOS actually routes keyboard text to us.
+-        let text_input_frame = CGRect::new(CGPoint::ZERO, CGSize::new(1.0, 1.0));
+-        let text_input_view = TextInputView::new(text_input_frame, main_thread);
+-        text_input_view.setAlpha(0.01);
++        // so iOS actually routes keyboard text to us. It covers the view, where
++        // UIKit draws its selection UI; it takes only touches on edited text.
++        let text_input_view = TextInputView::new(view.bounds(), main_thread);
++        text_input_view.setAutoresizingMask(
++            UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
++        );
+         text_input_view.setUserInteractionEnabled(true);
+         view.addSubview(&text_input_view);
+ 

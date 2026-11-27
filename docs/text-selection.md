@@ -4,8 +4,9 @@ Flutter's text selection behaviour, ported as a pure state machine in `parallax-
 ([text_selection/mod.rs](../crates/ext/src/text_selection/mod.rs), geometry in
 [geometry.rs](../crates/ext/src/text_selection/geometry.rs)). Pointer input in; the new selection and the overlay
 (handles, toolbar anchors, magnifier) out, as plain values. The app draws the overlay itself; there is no Material or
-Cupertino look. iOS keeps UIKit's `UITextInteraction` (AGENTS.md, "iOS text selection"): its behaviour row says
-`TextSelectionControls::Native`, so `TextSelection::for_behaviour` returns `None` there. Sources and dropped parts:
+Cupertino look. iOS keeps UIKit's `UITextInteraction` (AGENTS.md, "iOS text selection",
+[ios-text-selection.md](ios-text-selection.md)): its behaviour row says `TextSelectionControls::Native`, so
+`TextSelection::for_behaviour` returns `None` there. Sources and dropped parts:
 [PORTED.md](../third_party/flutter/PORTED.md).
 
 ## How to use it
