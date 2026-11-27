@@ -74,11 +74,30 @@ fn at(offset: usize) -> Point<Pixels> {
 use PointerDevice::{Mouse, Pen, Touch};
 
 fn down(offset: usize, device: PointerDevice, tap_count: usize) -> Input {
+    down_on_device(offset, device, tap_count, kTouchSlop)
+}
+
+/// A press on a device whose touch slop is `touch_slop` (Flutter's test `DeviceGestureSettings`); `down` takes
+/// Flutter's default, `kTouchSlop`.
+fn down_on_device(
+    offset: usize,
+    device: PointerDevice,
+    tap_count: usize,
+    touch_slop: Pixels,
+) -> Input {
     Input::Down {
         position: at(offset),
         device,
         tap_count,
         shift: false,
+        touch_slop,
+    }
+}
+
+/// A move to `x` on the line, between caret positions.
+fn to_x(x: f32) -> Input {
+    Input::Move {
+        position: point(px(x), px(LINE / 2.)),
     }
 }
 
@@ -89,6 +108,7 @@ fn shift_tap(offset: usize, device: PointerDevice) -> [Input; 2] {
             device,
             tap_count: 1,
             shift: true,
+            touch_slop: kTouchSlop,
         },
         Input::Up,
     ]
@@ -315,6 +335,45 @@ fn flutter_selection_gesture_tests_pass() {
                 &[down(4, Touch, 1), to(7), to(10), Input::Up],
             ]),
             caret(10),
+        ),
+        (
+            "Parallax: a touch drag past the device's 8 px slop, short of kTouchSlop, moves the cursor (android)",
+            Android,
+            Start {
+                text: "I love flutter!",
+                ..ABC
+            },
+            steps([
+                &tap(4, Touch, 1),
+                &[down_on_device(4, Touch, 1, px(8.)), to_x(52.), Input::Up],
+            ]),
+            caret(5),
+        ),
+        (
+            "Parallax: a touch drag within the device's 8 px slop is a tap (android)",
+            Android,
+            Start {
+                text: "I love flutter!",
+                ..ABC
+            },
+            steps([
+                &tap(4, Touch, 1),
+                &[down_on_device(5, Touch, 1, px(8.)), to_x(56.), Input::Up],
+            ]),
+            caret(5),
+        ),
+        (
+            "Parallax: a touch pan past twice the device's 8 px slop, short of kPanSlop, selects (windows)",
+            Windows,
+            Start {
+                text: "I love flutter!",
+                ..ABC
+            },
+            steps([
+                &tap(4, Touch, 1),
+                &[down_on_device(4, Touch, 1, px(8.)), to_x(60.), Input::Up],
+            ]),
+            range(4, 6),
         ),
         (
             "Stylus drag selects text (android)",

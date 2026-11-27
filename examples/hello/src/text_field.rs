@@ -259,6 +259,7 @@ impl TextField {
                     device,
                     tap_count: event.click_count,
                     shift: event.modifiers.shift,
+                    touch_slop: window.gesture_tuning().touch_slop,
                 },
             };
             return self.selection_input(input, window, cx);
@@ -956,6 +957,7 @@ fn listen_for_selection_gestures(
                             .map_or(PointerDevice::Touch, |source| source.device),
                         tap_count: 1,
                         shift: false,
+                        touch_slop: window.gesture_tuning().touch_slop,
                     },
                     window,
                     cx,

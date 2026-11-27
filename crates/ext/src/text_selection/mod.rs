@@ -17,7 +17,10 @@ mod tests;
 
 use std::ops::Range;
 
-use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, TouchDragKind, point, slops};
+use gpui::{
+    Bounds, Haptic, Pixels, Point, PointerDevice, TouchDragKind, constants::kTouchSlop, point,
+    slops,
+};
 use parallax_platform::behaviour::{
     Behaviour, HandleDrag, LongPressSelects, MagnifierKind, SecondaryTap, SelectionRules,
     ShiftSelect, TapCount, TapEdge, TextBoundaryKind, TextSelectionControls, TouchDragSelects,
@@ -108,6 +111,9 @@ pub enum Input {
         device: PointerDevice,
         tap_count: usize,
         shift: bool,
+        /// The device's touch slop: the window's `GestureTuning::touch_slop`, the one GPUI's recognizer judges the
+        /// drag by (Flutter's `DeviceGestureSettings.touchSlop`, which its tap-and-drag recognizers use too).
+        touch_slop: Pixels,
     },
     Move {
         position: Point<Pixels>,
@@ -209,6 +215,7 @@ struct Press {
     /// The effective tap count (`_getEffectiveConsecutiveTapCount`).
     tap_count: usize,
     shift: bool,
+    touch_slop: Pixels,
 }
 
 /// The gesture in progress: one per field, its data on the variant that owns it.
@@ -290,6 +297,7 @@ impl TextSelection {
                     device,
                     tap_count,
                     shift,
+                    touch_slop,
                 },
             ) => {
                 let press = Press {
@@ -297,6 +305,7 @@ impl TextSelection {
                     device,
                     tap_count: step.effective_tap_count(tap_count),
                     shift,
+                    touch_slop,
                 };
                 step.tap_down(press);
                 Gesture::Pressed(press)
@@ -475,9 +484,10 @@ impl<L: TextLayout> Step<'_, L> {
         }
     }
 
-    /// `_hasSufficientGlobalDistanceToAccept` of the recognizer the platform uses.
+    /// `_hasSufficientGlobalDistanceToAccept` of the recognizer the platform uses, with the device's slops
+    /// (`computeHitSlop` / `computePanSlop` of its `gestureSettings`), so the drag starts where GPUI's won.
     fn past_drag_slop(&self, press: Press, position: Point<Pixels>) -> bool {
-        let slop = slops(press.device, None);
+        let slop = slops(press.device, Some(press.touch_slop));
         let moved = position - press.origin;
         match self.engine.rules.drag_recognizer {
             TouchDragKind::Horizontal => moved.x.abs() > slop.hit,
@@ -599,6 +609,8 @@ impl<L: TextLayout> Step<'_, L> {
             device: PointerDevice::Touch,
             tap_count: 1,
             shift: false,
+            // A long press never becomes this press's drag; the slop goes unread.
+            touch_slop: kTouchSlop,
         });
         let without_focus = match self.engine.rules.long_press {
             LongPressSelects::AppleCaretWhenFocused if self.field.focused => {

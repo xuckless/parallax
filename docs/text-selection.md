@@ -40,7 +40,8 @@ handlers, named after them (`on_tap_down`, `tap_up`, `drag_update`, `handle_drag
 
 GPUI differences: a touch tap reaches the field as mouse down then up, both at release (GPUI recognizes taps on
 release), so a touch's `onTapDown` runs late; Android sets the selection on tap up anyway. A long press runs
-`onTapDown` first, as Flutter's recognizer does. The drag slop is the row's recognizer's (`gpui::slops`).
+`onTapDown` first, as Flutter's recognizer does. The drag slop is the row's recognizer's (`gpui::slops`) at the device's touch slop, `Input::Down::touch_slop` (the
+window's `GestureTuning::touch_slop`), so a drag GPUI hands over past the slop starts as a drag here too.
 
 ## Per-platform rules
 
