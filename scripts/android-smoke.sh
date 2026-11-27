@@ -8,9 +8,10 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=hello-android.sh
+source "$repo/scripts/hello-android.sh"
 adb="${ANDROID_HOME:?set ANDROID_HOME to the Android SDK}/platform-tools/adb"
-app=io.github.xuckless.parallax.hello
-component=$app/io.github.xuckless.parallax.ParallaxActivity
+app=$hello_app
 # Typed into the prose field; the app logs only its length, never the text (docs/examples.md).
 typed=smoke
 
@@ -97,16 +98,11 @@ rotate() {
   return 1
 }
 
-launch() {
-  cargo build --quiet -p cargo-parallax --manifest-path "$repo/Cargo.toml"
-  (cd "$repo/examples/hello" && "$repo/target/debug/cargo-parallax" run android --device "$serial")
-}
-
 # The smoke run, in order: one `step` per row, with the step name, the command, the extended regex a new logcat line
 # must match, and the seconds to wait. To add a step, add a row; the command may use on_device (adb shell), tap_colour,
-# rotate and launch. Rows are trusted code: the command runs through `eval`. Double quotes expand $typed, ${#typed},
-# $component and $drawn here, when the row is defined; anything the command should expand when it runs goes in single
-# quotes. The fields are joined with the unit separator \x1f, which no command or regex uses (`|` is regex alternation).
+# rotate and hello_android_run (hello-android.sh). Rows are trusted code: the command runs through `eval`. Double
+# quotes expand $serial, $typed, ${#typed}, $hello_component and $drawn here, when the row is defined; anything the
+# command should expand when it runs goes in single quotes. The fields are joined with the unit separator \x1f, which no command or regex uses (`|` is regex alternation).
 # The rotate and resume steps wait for the first frame drawn on a surface of the new orientation (window.rs logs it once
 # per surface), not for the surface event: that is logged before the surface is made, and a late surfaceChanged from
 # the previous rotation could satisfy the next step.
@@ -114,14 +110,14 @@ sep=$'\x1f'
 steps=()
 step() { steps+=("$1$sep$2$sep$3$sep$4"); }
 drawn="parallax: first frame drawn on a [0-9]+x[0-9]+"
-step "launch" "launch" "$drawn portrait surface" 60
+step "launch" "hello_android_run $serial" "$drawn portrait surface" 60
 step "tap the box" "tap_colour 3b82f6" "box colour ef4444 \(touch click" 20
 step "focus the field" "tap_colour ffffff" "insets in pixels: .*ime Edges .*bottom: [1-9]" 20
 step "type and submit" "on_device input text $typed && on_device input keyevent KEYCODE_ENTER" "text field submitted: ${#typed} bytes" 20
 step "rotate to landscape" "rotate 1" "$drawn landscape surface" 30
 step "rotate to portrait" "rotate 0" "$drawn portrait surface" 30
 step "background" "on_device input keyevent KEYCODE_HOME" "parallax: lifecycle From\(.*, Stop\)" 20
-step "resume" "on_device am start -n $component" "$drawn portrait surface" 20
+step "resume" "on_device am start -n $hello_component" "$drawn portrait surface" 20
 step "tap the box again" "tap_colour ef4444" "box colour 22c55e \(touch click" 20
 
 # Lines that mean the app crashed, hung or cannot draw (host.rs logs the last two), at any step.

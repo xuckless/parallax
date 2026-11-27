@@ -26,7 +26,7 @@ at once.
 
 | Step | Does | Waits for |
 |---|---|---|
-| launch | `cargo-parallax run android` (build, install, `am start -W`) | `parallax: first frame drawn on a WxH portrait surface` ([window.rs](../crates/android/src/window.rs), once per surface) |
+| launch | `hello_android_run` ([hello-android.sh](../scripts/hello-android.sh), shared with record-traces.sh): `cargo-parallax run android` (build, install, `am start -W`) | `parallax: first frame drawn on a WxH portrait surface` ([window.rs](../crates/android/src/window.rs), once per surface) |
 | tap the box | taps the blue box | `box colour ef4444 (touch click` |
 | focus the field | taps the first white field | an insets line with a non-zero IME bottom (the keyboard opened) |
 | type and submit | `input text smoke`, then Enter | `text field submitted: 5 bytes` (the app logs the length, never the text) |
@@ -38,7 +38,7 @@ at once.
 The rotate and resume steps wait for a frame drawn on the new surface, at the new orientation, not for the surface
 event: that line is logged before the surface is made, and a late `surfaceChanged` from the previous rotation could
 pass the next step. After the table it checks the whole log once more for crashes and that the app process is still
-alive. To add a step, add a `step` row; commands may call `on_device` (`adb shell`), `tap_colour`, `rotate`, `launch`.
+alive. To add a step, add a `step` row; commands may call `on_device` (`adb shell`), `tap_colour`, `rotate`, `hello_android_run`.
 
 **Dialogs:** `hide_error_dialogs` stops new error dialogs but leaves one already up (a cached booted snapshot, or a
 launcher that stalled during boot, brings it), and it took the taps in CI. Before each step `dismiss_dialogs` reads

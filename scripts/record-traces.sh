@@ -10,6 +10,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=hello-android.sh
+source "$repo/scripts/hello-android.sh"
 platform=${1:?usage: record-traces.sh <android|web|ios> [gesture…]}
 shift
 fixtures=$repo/crates/platform/tests/traces/$platform
@@ -35,12 +37,11 @@ record_button=a855f7
 # --- Android: hello installed by cargo-parallax, touched by writing multi-touch events straight to the emulator's
 # touchscreen. Not `adb shell input`: its swipe moves in a tight loop (~7 moves a millisecond, many stamped the same
 # millisecond, which no velocity tracker can read) and it has no multi-touch.
-app=io.github.xuckless.parallax.hello
+app=$hello_app
 adb() { "${ANDROID_HOME:?set ANDROID_HOME}/platform-tools/adb" "$@"; }
 adb_shell() { adb shell "$@"; }
 android_setup() {
-  cargo build --quiet -p cargo-parallax --manifest-path "$repo/Cargo.toml"
-  (cd "$repo/examples/hello" && "$repo/target/debug/cargo-parallax" run android ${ANDROID_SERIAL:+--device "$ANDROID_SERIAL"})
+  hello_android_run "${ANDROID_SERIAL:-}"
   density=$(adb_shell wm density | awk '{ d = $NF } END { print d / 160 }')
   read -r width height < <(adb_shell wm size | awk '{ s = $NF } END { sub("x", " ", s); print s }')
   # Only root may write to /dev/input.
@@ -50,7 +51,7 @@ android_setup() {
 }
 android_launch() {
   adb_shell logcat -c
-  adb_shell am start -S -W -n "$app/io.github.xuckless.parallax.ParallaxActivity" >/dev/null
+  adb_shell am start -S -W -n "$hello_component" >/dev/null
 }
 android_log() { adb_shell logcat -d | tr -d '\r'; }
 android_screenshot() { adb exec-out screencap >"$1"; }
@@ -112,13 +113,16 @@ android_pinch() {
 }
 
 # --- Web: hello's wasm build in headless Chromium, driven over CDP by cdp-touch.mjs. CSS px are logical px.
-cdp_port=9333
+# CDP_PORT and HTTP_PORT pick the ports; unset, the OS picks free ones, so two runs side by side never collide.
+free_port() { python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+cdp_port=${CDP_PORT:-$(free_port)}
+http_port=${HTTP_PORT:-$(free_port)}
 cdp() { node "$repo/scripts/cdp-touch.mjs" "$cdp_port" "$@"; }
 web_setup() {
   wasm-pack build "$repo/examples/hello" --target web --no-typescript --no-pack --dev
-  python3 -m http.server 8765 --bind 127.0.0.1 --directory "$repo/examples/hello" >/dev/null 2>&1 &
+  python3 -m http.server "$http_port" --bind 127.0.0.1 --directory "$repo/examples/hello" >/dev/null 2>&1 &
   # Console messages reach the log only through Chromium's own stderr logging.
-  "${CHROMIUM:-chromium-browser}" --headless=new --remote-debugging-port=$cdp_port --user-data-dir="$work/profile" \
+  "${CHROMIUM:-chromium-browser}" --headless=new --remote-debugging-port="$cdp_port" --user-data-dir="$work/profile" \
     --window-size=412,915 --force-device-scale-factor=1 --touch-events=enabled --enable-logging=stderr --v=0 \
     about:blank 2>"$work/chrome.log" &
   trap 'kill $(jobs -p) 2>/dev/null' EXIT
@@ -126,7 +130,7 @@ web_setup() {
 }
 web_launch() {
   web_mark=$(wc -l <"$work/chrome.log")
-  cdp open http://127.0.0.1:8765/
+  cdp open "http://127.0.0.1:$http_port/"
 }
 web_log() { tail -n +"$((web_mark + 1))" "$work/chrome.log" | grep -a 'CONSOLE'; }
 web_screenshot() { cdp screenshot "$1"; }
@@ -220,9 +224,17 @@ for row in "${gestures[@]}"; do
     continue
   fi
   sleep 1.5
+  # Written aside first: a run that logged no touches (the pad missed the gesture) keeps the old fixture.
+  trace=$work/$name.trace
   {
     echo "# $platform $name: $command"
-    "${platform}_log" | grep -o 'touch([^)]*)'
-  } >"$fixtures/$name.trace"
-  echo "record-traces: $platform $name: $(($(wc -l <"$fixtures/$name.trace") - 1)) events"
+    "${platform}_log" | grep -o 'touch([^)]*)' || true
+  } >"$trace"
+  events=$(($(wc -l <"$trace") - 1))
+  if ((events == 0)); then
+    echo "record-traces: $platform $name: no events, $fixtures/$name.trace kept" >&2
+    continue
+  fi
+  mv "$trace" "$fixtures/$name.trace"
+  echo "record-traces: $platform $name: $events events"
 done
