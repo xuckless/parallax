@@ -1,0 +1,658 @@
+Feed Wayland touches into GPUI's TouchEvent.
+
+What: gpui_linux's Wayland client binds `wl_touch` on a seat with the touch capability (once, as winit does; a seat
+that loses it, or is replaced, cancels its touches) and turns `down`/`motion`/`up`/`cancel` into `TouchEvent`s:
+`Started`/`Moved`/`Ended`, `Cancelled` for every touch still down on `cancel`, device `Touch`, surface-local
+logical pixels (Wayland's surface coordinates are logical, so winit's physical-pixel scaling is dropped), an up at
+the last motion's position. Wayland reuses `wl_touch` ids, so each down takes the next `TouchId` (from 0,
+wrapping), given up at its up or cancel; motion, up or cancel with no live down is dropped. `time_stamp` is the event's millisecond time moved onto GPUI's clock by its age against
+`CLOCK_MONOTONIC` (what libinput-based compositors stamp with), as patch 0020 does on iOS and the web; an event
+older than 10 s is on another base (a test client's made-up times) and is timed at dispatch. `frame`, `shape` and
+`orientation` are ignored, as in winit: each event is delivered as it comes. A touch down's serial is recorded as a
+press, so moves, popup grabs, selections and activation tokens work from a tap. Compositors never make pointer
+events from `wl_touch`, so nothing is deduplicated. A touch's up or cancel reaches a window a modal child blocks
+(`reaches_blocked_window` in linux.rs, shared with X11, table test `blocked_window_input`): dropped there, GPUI's
+touch would stay open once the child closes.
+
+New file `wayland/touch.rs`, ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @
+v0.30.13 (e9809ef54b18499bb4f2cac945719ecc2a61061b), Apache-2.0, Copyright the winit contributors (credited in
+NOTICE); Flutter's Linux fl_touch_manager.cc @ 3.50.1 is the second reference. Its touch map is pure, with a
+table test (`touches_follow_wl_touch_events`); `client.rs` holds only the dispatch glue. New file `linux/clock.rs`:
+the `CLOCK_MONOTONIC` ms event clock (`Clock`, table test `event_time_stamps`), shared with X11 (patch 0023).
+A port, so one patch whatever its size (AGENTS.md patch rule 4).
+
+Why: upstream's Wayland backend binds only `wl_pointer` and `wl_keyboard`, so a touchscreen on Wayland did nothing
+in GPUI apps (compositors don't emulate a pointer for touch). The backend's seat handling is private, so neither a
+Parallax crate nor an extension trait can add it. cfg: Linux/FreeBSD with the `wayland` feature, as the module is.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-linux/src/linux.rs b/gpui-pre-linux/src/linux.rs
+index c5afc4a..a0420d3 100644
+--- a/gpui-pre-linux/src/linux.rs
++++ b/gpui-pre-linux/src/linux.rs
+@@ -1,3 +1,5 @@
++#[cfg(any(feature = "wayland", feature = "x11"))]
++mod clock;
+ mod dispatcher;
+ mod display_connection;
+ mod headless;
+@@ -32,6 +34,53 @@ use std::rc::Rc;
+ 
+ use gpui::WindowingModes;
+ 
++/// Whether `input` reaches a window a modal child blocks. A touch's end or cancel does, or GPUI's touch would stay
++/// open once the child closes; other input is dropped, as upstream drops all of it.
++#[cfg(any(feature = "wayland", feature = "x11"))]
++pub(crate) fn reaches_blocked_window(input: &gpui::PlatformInput) -> bool {
++    use gpui::{PlatformInput, TouchEvent, TouchPhase};
++    matches!(
++        input,
++        PlatformInput::Touch(TouchEvent {
++            phase: TouchPhase::Ended | TouchPhase::Cancelled,
++            ..
++        })
++    )
++}
++
++#[cfg(all(test, any(feature = "wayland", feature = "x11")))]
++mod tests {
++    use gpui::{PlatformInput, TouchEvent, TouchPhase};
++
++    #[test]
++    fn blocked_window_input() {
++        let touch = |phase| {
++            PlatformInput::Touch(TouchEvent {
++                phase,
++                ..TouchEvent::default()
++            })
++        };
++        let rows = [
++            ("a touch ends", touch(TouchPhase::Ended), true),
++            ("a touch is cancelled", touch(TouchPhase::Cancelled), true),
++            (
++                "rejected: a touch starts",
++                touch(TouchPhase::Started),
++                false,
++            ),
++            ("rejected: a touch moves", touch(TouchPhase::Moved), false),
++            (
++                "rejected: a key",
++                PlatformInput::ModifiersChanged(Default::default()),
++                false,
++            ),
++        ];
++        for (name, input, reaches) in rows {
++            assert_eq!(super::reaches_blocked_window(&input), reaches, "{name}");
++        }
++    }
++}
++
+ /// Returns the default platform implementation for the current OS.
+ ///
+ /// A windowed platform connects to the display server the process environment names, or starts
+diff --git a/gpui-pre-linux/src/linux/clock.rs b/gpui-pre-linux/src/linux/clock.rs
+new file mode 100644
+index 0000000..093c26d
+--- /dev/null
++++ b/gpui-pre-linux/src/linux/clock.rs
+@@ -0,0 +1,88 @@
++//! The display server's input clock read next to GPUI's, so an event's millisecond time becomes a GPUI `Instant`
++//! by its age, as `TouchEvent::time_stamp` wants. Wayland compositors (Weston, Mutter, KWin and wlroots stamp input
++//! from libinput), Xorg and Xwayland (`GetTimeInMillis`) all stamp events with `CLOCK_MONOTONIC` in milliseconds,
++//! wrapping at `u32`, so both backends read it here.
++
++use std::time::{Duration, Instant};
++
++/// An age past this, either way, means the server stamps on another clock (a remote display, a test client's
++/// made-up times): no time stamp, so GPUI times the touch when it dispatches it.
++const MAX_EVENT_AGE_MILLIS: u32 = 10_000;
++
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct Clock {
++    pub(crate) now: Instant,
++    /// `CLOCK_MONOTONIC` at `now` in milliseconds, wrapped to `u32` as event times wrap.
++    pub(crate) monotonic_millis: u32,
++}
++
++impl Clock {
++    pub(crate) fn read() -> Self {
++        let mut time = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        // SAFETY: `time` is a valid, writable timespec, and CLOCK_MONOTONIC exists on every Linux and FreeBSD.
++        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
++        let millis = (time.tv_sec as u64)
++            .wrapping_mul(1000)
++            .wrapping_add(time.tv_nsec as u64 / 1_000_000);
++        Self {
++            now: Instant::now(),
++            // Truncation is the point: servers send the low 32 bits.
++            monotonic_millis: millis as u32,
++        }
++    }
++
++    /// When an event stamped `time` happened, on GPUI's clock (Flutter's `PointerEvent.timeStamp`). A stamp a
++    /// little after the clock read counts as now; one more than [`MAX_EVENT_AGE_MILLIS`] away is `None`.
++    pub(crate) fn at(self, time: u32) -> Option<Instant> {
++        // The wrapping difference read as signed, so an age across the u32 wrap stays small.
++        let age = self.monotonic_millis.wrapping_sub(time) as i32;
++        if age.unsigned_abs() > MAX_EVENT_AGE_MILLIS {
++            return None;
++        }
++        self.now
++            .checked_sub(Duration::from_millis(age.max(0) as u64))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // Extend: one row per kind of event time a backend can send.
++    #[test]
++    fn event_time_stamps() {
++        // (row name, CLOCK_MONOTONIC ms at the clock read, the event's time, its age in ms, or None when untimed)
++        let rows: [(&str, u32, u32, Option<u64>); 8] = [
++            ("on time", 5_000, 5_000, Some(0)),
++            ("a frame old", 5_000, 4_984, Some(16)),
++            ("after the clock read is now", 1_000, 1_003, Some(0)),
++            ("across the u32 wrap", 10, u32::MAX - 5, Some(16)),
++            (
++                "ten seconds old is still timed",
++                20_000,
++                10_000,
++                Some(10_000),
++            ),
++            (
++                "older than ten seconds is another clock",
++                20_001,
++                10_000,
++                None,
++            ),
++            ("a foreign clock far behind", 100_000, 30_000, None),
++            ("a foreign clock ahead", 30_000, 100_000, None),
++        ];
++        let now = Instant::now() + Duration::from_secs(60);
++        for (name, monotonic_millis, time, age) in rows {
++            let clock = Clock {
++                now,
++                monotonic_millis,
++            };
++            let expected = age.map(|age| now - Duration::from_millis(age));
++            assert_eq!(clock.at(time), expected, "{name}");
++        }
++    }
++}
+diff --git a/gpui-pre-linux/src/linux/wayland.rs b/gpui-pre-linux/src/linux/wayland.rs
+index cbc962b..7c650c9 100644
+--- a/gpui-pre-linux/src/linux/wayland.rs
++++ b/gpui-pre-linux/src/linux/wayland.rs
+@@ -4,6 +4,7 @@ mod cursor;
+ mod display;
+ mod popup;
+ mod serial;
++mod touch;
+ mod window;
+ 
+ /// Contains Types for configuring layer_shell surfaces.
+diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
+index c70243b..a2d9ed0 100644
+--- a/gpui-pre-linux/src/linux/wayland/client.rs
++++ b/gpui-pre-linux/src/linux/wayland/client.rs
+@@ -38,7 +38,7 @@ use wayland_client::{
+     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
+     protocol::{
+         wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
+-        wl_shm_pool, wl_surface,
++        wl_shm_pool, wl_surface, wl_touch,
+     },
+ };
+ use wayland_protocols::ext::background_effect::v1::client::{
+@@ -87,6 +87,7 @@ use super::{
+     window::{ImeInput, WaylandWindowStatePtr},
+ };
+ 
++use crate::linux::clock::Clock;
+ use crate::linux::{
+     DOUBLE_CLICK_INTERVAL, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT, SCROLL_LINES,
+     capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
+@@ -97,6 +98,7 @@ use crate::linux::{
+         cursor::Cursor,
+         serial::{ActivationContext, Serial, SerialKind, SerialTracker},
+         to_shape,
++        touch::{Touches, WlTouchEvent},
+         window::WaylandWindow,
+     },
+     xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
+@@ -107,8 +109,8 @@ use gpui::{
+     KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+     MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
+     PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
+-    ScrollEvent, ScrollSource, SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind,
+-    WindowParams, point, px, size,
++    ScrollEvent, ScrollSource, SharedString, Size, TouchEvent, TouchPhase, WindowButtonLayout,
++    WindowKind, WindowParams, point, px, size,
+ };
+ use gpui_wgpu::{CompositorGpuHint, GpuContext};
+ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+@@ -367,6 +369,8 @@ pub(crate) struct WaylandClientState {
+     pinch_gesture: Option<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>,
+     pinch_scale: f32,
+     wl_keyboard: Option<wl_keyboard::WlKeyboard>,
++    wl_touch: Option<wl_touch::WlTouch>,
++    touches: Touches<ObjectId>,
+     cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+     data_device: Option<wl_data_device::WlDataDevice>,
+     primary_selection: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+@@ -1070,6 +1074,8 @@ impl WaylandConnection {
+             wl_seat: seat,
+             wl_pointer: None,
+             wl_keyboard: None,
++            wl_touch: None,
++            touches: Touches::default(),
+             pinch_gesture: None,
+             pinch_scale: 1.0,
+             cursor_shape_device: None,
+@@ -1618,8 +1624,14 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
+                     if let Some(wl_keyboard) = state.wl_keyboard.take() {
+                         wl_keyboard.release();
+                     }
++                    if let Some(wl_touch) = state.wl_touch.take() {
++                        wl_touch.release();
++                    }
+                     state.wl_seat.release();
+                     state.wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ());
++                    // The old seat's touches never end.
++                    let touches = state.touches.event(WlTouchEvent::Cancel, None);
++                    dispatch_touches(state, touches);
+                 }
+                 "wl_output" => {
+                     let Ok(version) = wl_output_version(version) else {
+@@ -1711,6 +1723,18 @@ pub(crate) fn get_window(
+     state.windows.get(surface_id).cloned()
+ }
+ 
++/// Hands each touch to the window on its surface, with the client state released, as other input is.
++fn dispatch_touches(mut state: RefMut<WaylandClientState>, touches: Vec<(ObjectId, TouchEvent)>) {
++    let touches: Vec<_> = touches
++        .into_iter()
++        .filter_map(|(surface, touch)| Some((get_window(&mut state, &surface)?, touch)))
++        .collect();
++    drop(state);
++    for (window, touch) in touches {
++        window.handle_input(PlatformInput::Touch(touch));
++    }
++}
++
+ impl Dispatch<wl_surface::WlSurface, ()> for WaylandClientStatePtr {
+     fn event(
+         this: &mut Self,
+@@ -2005,10 +2029,82 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
+ 
+                 state.wl_pointer = Some(pointer);
+             }
++            // As winit binds touch: once, while the seat has it; a seat that loses it cancels its touches.
++            let has_touch = capabilities.contains(wl_seat::Capability::Touch);
++            match (has_touch, state.wl_touch.take()) {
++                (true, None) => state.wl_touch = Some(seat.get_touch(qh, ())),
++                (true, Some(wl_touch)) => state.wl_touch = Some(wl_touch),
++                (false, Some(wl_touch)) => {
++                    wl_touch.release();
++                    let touches = state.touches.event(WlTouchEvent::Cancel, None);
++                    dispatch_touches(state, touches);
++                }
++                (false, None) => {}
++            }
+         }
+     }
+ }
+ 
++impl Dispatch<wl_touch::WlTouch, ()> for WaylandClientStatePtr {
++    fn event(
++        this: &mut Self,
++        _: &wl_touch::WlTouch,
++        event: wl_touch::Event,
++        _: &(),
++        _: &Connection,
++        _: &QueueHandle<Self>,
++    ) {
++        let client = this.get_client();
++        let mut state = client.borrow_mut();
++        let (event, time) = match event {
++            wl_touch::Event::Down {
++                serial,
++                time,
++                surface,
++                id,
++                x,
++                y,
++            } => {
++                // winit drops a down on a surface that isn't a window (and so the rest of that touch).
++                if get_window(&mut state, &surface.id()).is_none() {
++                    return;
++                }
++                // Wayland takes a touch down's serial wherever it takes a button press (moves, popup grabs,
++                // selections), and GPUI turns a tap into a mouse press.
++                state.serial_tracker.update_with_focused_surface(
++                    SerialKind::MousePress,
++                    serial,
++                    Some(surface.clone()),
++                );
++                let location = point(px(x as f32), px(y as f32));
++                (
++                    WlTouchEvent::Down {
++                        id,
++                        surface: surface.id(),
++                        location,
++                    },
++                    Some(time),
++                )
++            }
++            wl_touch::Event::Up { time, id, .. } => (WlTouchEvent::Up { id }, Some(time)),
++            wl_touch::Event::Motion { time, id, x, y } => {
++                let location = point(px(x as f32), px(y as f32));
++                (WlTouchEvent::Motion { id, location }, Some(time))
++            }
++            wl_touch::Event::Cancel => (WlTouchEvent::Cancel, None),
++            // Delivered event by event, as winit does; shape and orientation are blank in winit too.
++            wl_touch::Event::Frame
++            | wl_touch::Event::Shape { .. }
++            | wl_touch::Event::Orientation { .. } => return,
++            // The generated enum is non-exhaustive; an event a later wl_touch version adds is ignored.
++            _ => return,
++        };
++        let time_stamp = time.and_then(|time| Clock::read().at(time));
++        let touches = state.touches.event(event, time_stamp);
++        dispatch_touches(state, touches);
++    }
++}
++
+ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
+     fn event(
+         this: &mut Self,
+diff --git a/gpui-pre-linux/src/linux/wayland/touch.rs b/gpui-pre-linux/src/linux/wayland/touch.rs
+new file mode 100644
+index 0000000..5fe613b
+--- /dev/null
++++ b/gpui-pre-linux/src/linux/wayland/touch.rs
+@@ -0,0 +1,264 @@
++//! Touch handling.
++//!
++//! Ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @ v0.30.13
++//! (e9809ef54b18499bb4f2cac945719ecc2a61061b). Copyright the winit contributors. Apache-2.0, see NOTICE.
++//! Second reference: Flutter's Linux embedder, engine/src/flutter/shell/platform/linux/fl_touch_manager.cc
++//! @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++//!
++//! Left out of winit's file: smithay-client-toolkit's `TouchHandler` plumbing and the per-seat lookup (GPUI binds
++//! one seat), and the conversion to physical pixels (Wayland's surface coordinates are logical, as GPUI's are).
++//! Added for GPUI: a fresh [`TouchId`] per touch, because Wayland reuses `wl_touch` ids and GPUI never reuses one,
++//! and the event's time stamp on GPUI's clock (`linux::clock`).
++
++use std::time::Instant;
++
++use collections::HashMap;
++use gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase};
++
++/// One `wl_touch` event that moves a touch point. `frame` groups events but winit (and GTK, under Flutter) delivers
++/// each one as it comes, so it, `shape` and `orientation` (both blank in winit) never become a `WlTouchEvent`.
++#[derive(Clone, Debug)]
++pub(crate) enum WlTouchEvent<S> {
++    Down {
++        id: i32,
++        surface: S,
++        location: Point<Pixels>,
++    },
++    Up {
++        id: i32,
++    },
++    Motion {
++        id: i32,
++        location: Point<Pixels>,
++    },
++    Cancel,
++}
++
++/// The state of the touch point.
++#[derive(Clone, Debug)]
++struct TouchPoint<S> {
++    /// The surface on which the point is present.
++    surface: S,
++
++    /// The location of the point on the surface.
++    location: Point<Pixels>,
++
++    /// GPUI's id for this touch.
++    touch_id: TouchId,
++}
++
++/// The touched points of the seat, by `wl_touch` id, and the next GPUI id to hand out.
++#[derive(Debug)]
++pub(crate) struct Touches<S> {
++    /// The mapping from touched points to the surfaces they're present.
++    touch_map: HashMap<i32, TouchPoint<S>>,
++    next_touch_id: u64,
++}
++
++impl<S> Default for Touches<S> {
++    fn default() -> Self {
++        Self {
++            touch_map: HashMap::default(),
++            next_touch_id: 0,
++        }
++    }
++}
++
++impl<S: Clone> Touches<S> {
++    /// The touches one `wl_touch` event makes, each with the surface it lands on. A down must only be passed for a
++    /// surface that is a window (winit drops the rest), so the motion and up that follow it are dropped too.
++    pub(crate) fn event(
++        &mut self,
++        event: WlTouchEvent<S>,
++        time_stamp: Option<Instant>,
++    ) -> Vec<(S, TouchEvent)> {
++        let touch = |point: &TouchPoint<S>, phase| {
++            (
++                point.surface.clone(),
++                TouchEvent {
++                    id: point.touch_id,
++                    phase,
++                    position: point.location,
++                    predicted_position: None,
++                    force: None,
++                    device: PointerDevice::Touch,
++                    time_stamp,
++                },
++            )
++        };
++        match event {
++            WlTouchEvent::Down {
++                id,
++                surface,
++                location,
++            } => {
++                let point = TouchPoint {
++                    surface,
++                    location,
++                    touch_id: TouchId(self.next_touch_id),
++                };
++                // 2^64 touches never happen; wrapping keeps the counter panic-free.
++                self.next_touch_id = self.next_touch_id.wrapping_add(1);
++                // Update the state of the point. A compositor that reuses an id still down would leave GPUI's
++                // touch open, so that touch is cancelled first.
++                let replaced = self.touch_map.insert(id, point.clone());
++                replaced
++                    .iter()
++                    .map(|old| touch(old, TouchPhase::Cancelled))
++                    .chain([touch(&point, TouchPhase::Started)])
++                    .collect()
++            }
++            WlTouchEvent::Up { id } => {
++                // Remove the touch point.
++                self.touch_map
++                    .remove(&id)
++                    .map(|point| touch(&point, TouchPhase::Ended))
++                    .into_iter()
++                    .collect()
++            }
++            WlTouchEvent::Motion { id, location } => self
++                .touch_map
++                .get_mut(&id)
++                .map(|point| {
++                    point.location = location;
++                    touch(point, TouchPhase::Moved)
++                })
++                .into_iter()
++                .collect(),
++            WlTouchEvent::Cancel => {
++                let mut points: Vec<_> = self.touch_map.drain().map(|(_, point)| point).collect();
++                // The map's order is arbitrary; cancel in the order the touches went down.
++                points.sort_by_key(|point| point.touch_id);
++                points
++                    .iter()
++                    .map(|point| touch(point, TouchPhase::Cancelled))
++                    .collect()
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{point, px};
++
++    #[test]
++    fn touches_follow_wl_touch_events() {
++        use TouchPhase::*;
++        let at = |x: f32, y: f32| point(px(x), px(y));
++        let down = |id, surface, x, y| WlTouchEvent::Down {
++            id,
++            surface,
++            location: at(x, y),
++        };
++        let motion = |id, x, y| WlTouchEvent::Motion {
++            id,
++            location: at(x, y),
++        };
++        let up = |id| WlTouchEvent::Up { id };
++        let cancel = WlTouchEvent::Cancel;
++        // (row name, wl_touch events (a surface is a name), touches out: (surface, GPUI id, phase, x, y)).
++        let cases: &[(
++            &str,
++            Vec<WlTouchEvent<&str>>,
++            &[(&str, u64, TouchPhase, f32, f32)],
++        )] = &[
++            (
++                "tap",
++                vec![down(0, "a", 1., 2.), up(0)],
++                &[("a", 0, Started, 1., 2.), ("a", 0, Ended, 1., 2.)],
++            ),
++            (
++                "up is where the last motion was",
++                vec![down(3, "a", 1., 2.), motion(3, 5., 6.), up(3)],
++                &[
++                    ("a", 0, Started, 1., 2.),
++                    ("a", 0, Moved, 5., 6.),
++                    ("a", 0, Ended, 5., 6.),
++                ],
++            ),
++            (
++                "a reused wl_touch id is a new touch",
++                vec![down(0, "a", 1., 1.), up(0), down(0, "a", 2., 2.), up(0)],
++                &[
++                    ("a", 0, Started, 1., 1.),
++                    ("a", 0, Ended, 1., 1.),
++                    ("a", 1, Started, 2., 2.),
++                    ("a", 1, Ended, 2., 2.),
++                ],
++            ),
++            (
++                "two fingers on two surfaces keep their own",
++                vec![
++                    down(0, "a", 1., 1.),
++                    down(1, "b", 9., 9.),
++                    motion(1, 8., 8.),
++                    up(0),
++                    up(1),
++                ],
++                &[
++                    ("a", 0, Started, 1., 1.),
++                    ("b", 1, Started, 9., 9.),
++                    ("b", 1, Moved, 8., 8.),
++                    ("a", 0, Ended, 1., 1.),
++                    ("b", 1, Ended, 8., 8.),
++                ],
++            ),
++            (
++                "cancel ends every touch where it was, in the order they went down",
++                vec![
++                    down(4, "a", 1., 1.),
++                    down(2, "b", 2., 2.),
++                    motion(4, 3., 3.),
++                    cancel.clone(),
++                    up(4),
++                ],
++                &[
++                    ("a", 0, Started, 1., 1.),
++                    ("b", 1, Started, 2., 2.),
++                    ("a", 0, Moved, 3., 3.),
++                    ("a", 0, Cancelled, 3., 3.),
++                    ("b", 1, Cancelled, 2., 2.),
++                ],
++            ),
++            (
++                "rejected: motion, up and cancel without a live down",
++                vec![motion(0, 1., 1.), up(0), cancel.clone()],
++                &[],
++            ),
++            (
++                "a down on an id still down cancels the old touch",
++                vec![down(0, "a", 1., 1.), down(0, "b", 2., 2.)],
++                &[
++                    ("a", 0, Started, 1., 1.),
++                    ("a", 0, Cancelled, 1., 1.),
++                    ("b", 1, Started, 2., 2.),
++                ],
++            ),
++        ];
++        for (name, events, expected) in cases {
++            let mut touches = Touches::default();
++            let out: Vec<_> = events
++                .iter()
++                .flat_map(|event| touches.event(event.clone(), None))
++                .map(|(surface, touch)| {
++                    (
++                        surface,
++                        touch.id.0,
++                        touch.phase,
++                        touch.position,
++                        touch.device,
++                    )
++                })
++                .collect();
++            let expected: Vec<_> = expected
++                .iter()
++                .map(|&(surface, id, phase, x, y)| {
++                    (surface, id, phase, at(x, y), PointerDevice::Touch)
++                })
++                .collect();
++            assert_eq!(out, expected, "{name}");
++        }
++    }
++}
+diff --git a/gpui-pre-linux/src/linux/wayland/window.rs b/gpui-pre-linux/src/linux/wayland/window.rs
+index 1f7d22d..7ee7a11 100644
+--- a/gpui-pre-linux/src/linux/wayland/window.rs
++++ b/gpui-pre-linux/src/linux/wayland/window.rs
+@@ -1608,7 +1608,8 @@ impl WaylandWindowStatePtr {
+     }
+ 
+     pub fn handle_input(&self, input: PlatformInput) {
+-        if self.is_blocked() {
++        // A touch's end still gets through, so a modal child opening mid-touch leaves no touch open.
++        if self.is_blocked() && !crate::linux::reaches_blocked_window(&input) {
+             return;
+         }
+         let callback = self.callbacks.borrow_mut().input.take();

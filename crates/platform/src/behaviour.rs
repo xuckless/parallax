@@ -2,8 +2,10 @@
 // defaults of (under packages/flutter/lib/src/) widgets/scroll_configuration.dart,
 // widgets/feedback.dart, widgets/text_selection.dart, cupertino/picker.dart, material/app.dart, material/constants.dart,
 // cupertino/constants.dart; Android's touch slop from engine/src/flutter/shell/platform/android/io/flutter/embedding/
-// android/FlutterView.java; the browser OS detection of engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/
-// browser_detection.dart and foundation/_platform_web.dart. Ledger rows: third_party/flutter/PORTED.md.
+// android/FlutterView.java; the desktop embedders' missing touch slop from engine/src/flutter/shell/platform/embedder/
+// embedder.h; desktop tap targets read from material/theme_data.dart; the browser OS detection of
+// engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/browser_detection.dart and foundation/_platform_web.dart.
+// Ledger rows: third_party/flutter/PORTED.md.
 // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 
 //! Target → platform behaviour: Flutter's `TargetPlatform` defaults as one table. How to read, extend and override
@@ -29,6 +31,10 @@ use crate::{Error, Target};
 // material/constants.dart and cupertino/constants.dart.
 pub const kMinInteractiveDimension: Pixels = px(48.0);
 pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
+/// Apple's minimum touch hit area on macOS 27, 36 pt on each axis ("Bring Touch to your Mac app",
+/// https://developer.apple.com/videos/play/tech-talks/111468/, "Expand hit targets for touch"). Flutter has no macOS
+/// touch value (its 44 is Cupertino's, for iOS).
+pub const APPLE_MACOS_MIN_TOUCH_TARGET: Pixels = px(36.0);
 
 /// What a scrollable shows past its edge: GPUI's `Overscroll` (bounce, Material 3's stretch, Material 2's glow, or a
 /// hard stop), the one copy, re-exported so a row reads as data.
@@ -83,8 +89,10 @@ pub struct Behaviour {
     /// `ScrollBehavior.buildOverscrollIndicator` (bouncing physics shows none: the physics overscrolls).
     pub overscroll: Overscroll,
     pub haptics: Haptics,
-    /// Smallest tap target a control should have: Material's 48 or Cupertino's 44 (the set `.adaptive` widgets
-    /// pick per platform).
+    /// Smallest tap target a control should have for a touch: Material's 48 or Cupertino's 44 (the set `.adaptive`
+    /// widgets pick per platform, padded as Flutter pads for touch: `MaterialTapTargetSize.padded`). On desktop
+    /// Flutter shrink-wraps for every pointer; Parallax keeps the touch size there, since a pointer's kind decides
+    /// (AGENTS.md, "Desktop touch"). macOS takes Apple's own touch value instead: Flutter has none for a macOS touch.
     pub min_touch_target: Pixels,
 }
 
@@ -130,6 +138,9 @@ pub const TABLE: [Behaviour; 5] = [
     },
     Behaviour {
         target: Target::MacOs,
+        // The desktop embedders (macOS, Windows, Linux) send window metrics through the embedder API, whose
+        // `FlutterWindowMetricsEvent` (shell/platform/embedder/embedder.h) has no touch slop: a touch or pen gets
+        // `kTouchSlop` / `kPanSlop`, a mouse the precise-pointer slops (`computeHitSlop`, `computePanSlop`).
         touch_slop: TouchSlop::Unset,
         scroll_physics: ScrollPhysics::Bouncing {
             deceleration_rate: ScrollDecelerationRate::Fast,
@@ -137,7 +148,7 @@ pub const TABLE: [Behaviour; 5] = [
         velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
-        min_touch_target: kMinInteractiveDimensionCupertino,
+        min_touch_target: APPLE_MACOS_MIN_TOUCH_TARGET,
     },
     Behaviour {
         target: Target::Windows,
@@ -369,7 +380,7 @@ mod tests {
             ),
             (
                 "macos: kTouchSlop, BouncingScrollPhysics(fast) maxFlingVelocity kMaxFlingVelocity * 8, \
-                 no Feedback, kMinInteractiveDimensionCupertino",
+                 no Feedback, Apple's macOS 27 36 pt touch target",
                 behaviour(Some(Target::MacOs)).copied(),
                 None,
                 Expected {
@@ -381,7 +392,7 @@ mod tests {
                     overscroll: Overscroll::Bounce,
                     long_press: None,
                     velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
-                    min_touch_target: 44.,
+                    min_touch_target: 36.,
                 },
             ),
             (
@@ -458,6 +469,52 @@ mod tests {
             matches!(behaviour(Some(Target::Web)), Err(Error::UnsupportedTarget)),
             "web: no row of its own"
         );
+    }
+
+    /// Desktop touch (AGENTS.md, "Desktop touch"): a desktop row gives a touch or pen Flutter's touch slops and a
+    /// mouse the precise-pointer ones, and GPUI's touch recognizer, which judges every touch and pen, takes the
+    /// touch hit slop. Each row runs its pointer through the row's physics (`behaviour_table`); a touch drag scrolls
+    /// on every row, as Flutter's `ScrollBehavior.dragDevices` holds touch and stylus on every platform (the
+    /// desktop rows' trace replay, `tests/trace_replay.rs`).
+    #[test]
+    fn desktop_pointer_slops_table() {
+        use PointerDevice::{Mouse, Pen, Touch};
+        // One row per pointer, each on another desktop target (the slops follow the pointer, not the target).
+        // (row name with its Flutter sources, target, pointer, expected hit / pan / scale slop)
+        let rows = [
+            (
+                "macos touch: computeHitSlop's kTouchSlop, kPanSlop, kScaleSlop",
+                Target::MacOs,
+                Touch,
+                [18., 36., 18.],
+            ),
+            (
+                "windows pen: stylus slops are touch's",
+                Target::Windows,
+                Pen,
+                [18., 36., 18.],
+            ),
+            (
+                "linux mouse: kPrecisePointer slops",
+                Target::Linux,
+                Mouse,
+                [1., 2., 1.],
+            ),
+        ];
+        for (name, target, device, [hit, pan, scale]) in rows {
+            let row = behaviour(Some(target)).expect("every desktop target has a row");
+            let found = slops(device, row.touch_slop.resolve(None));
+            assert_eq!(
+                [found.hit, found.pan, found.scale],
+                [px(hit), px(pan), px(scale)],
+                "{name}"
+            );
+            assert_eq!(
+                row.gesture_tuning(None).touch_slop,
+                slops(Touch, row.touch_slop.resolve(None)).hit,
+                "{name}: the touch recognizer takes the touch hit slop"
+            );
+        }
     }
 
     #[test]

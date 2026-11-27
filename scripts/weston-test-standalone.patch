@@ -1,0 +1,53 @@
+Lets Weston 14.0.2's test plugin (tests/weston-test.c) run outside Weston's own test runner, applied by
+scripts/build-weston.sh. Standalone, `weston_compositor_get_test_data` is NULL, so the plugin crashed on the first
+output repaint (`maybe_breakpoint`), when a client binds or drops `weston_test`, and at shutdown. With these
+guards the `weston_test` global works for an outside client (scripts/weston-touch.py); client breakpoints, which need
+the runner, stay unused.
+
+diff --git a/tests/weston-test.c b/tests/weston-test.c
+index 420ec5a04..f144bcbb0 100644
+--- a/tests/weston-test.c
++++ b/tests/weston-test.c
+@@ -94,6 +94,9 @@ maybe_breakpoint(struct weston_test *test,
+ 	struct wet_test_pending_breakpoint *bp, *tmp;
+ 	struct wet_testsuite_data *tsd = weston_compositor_get_test_data(test->compositor);
+ 
++	if (!tsd)
++		return;
++
+ 	wl_list_for_each_safe(bp, tmp, &tsd->breakpoints.list, link) {
+ 		struct wet_test_active_breakpoint *active_bp;
+ 
+@@ -593,6 +596,9 @@ destroy_test(struct wl_resource *resource)
+ 	struct weston_test *test = wl_resource_get_user_data(resource);
+ 	struct wet_testsuite_data *tsd = weston_compositor_get_test_data(test->compositor);
+ 
++	if (!tsd)
++		return;
++
+ 	assert(tsd->wl_client);
+ 	tsd->wl_client = NULL;
+ }
+@@ -615,8 +621,10 @@ bind_test(struct wl_client *client, void *data, uint32_t version, uint32_t id)
+ 				       destroy_test);
+ 
+ 	/* There can only be one wl_client bound */
+-	assert(!tsd->wl_client);
+-	tsd->wl_client = client;
++	if (tsd) {
++		assert(!tsd->wl_client);
++		tsd->wl_client = client;
++	}
+ 	notify_pointer_position(test, resource);
+ }
+ 
+@@ -816,7 +824,8 @@ handle_compositor_destroy(struct wl_listener *listener,
+ 	if (test->is_seat_initialized)
+ 		test_seat_release(test);
+ 
+-	data->wl_client = NULL;
++	if (data)
++		data->wl_client = NULL;
+ 
+ 	wl_list_remove(&test->layer.view_list.link);
+ 	wl_list_remove(&test->layer.link);

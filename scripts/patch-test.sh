@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Run GPUI's own lib tests, every patch's tests among them, on the patched fork crate parallax-gpui.
+# On Linux it also runs parallax-gpui-linux's lib tests (host_backends below).
 # The crate can't run them as shipped, so this tests a scratch copy of build/parallax-gpui/ in build/patch-tests/
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
+# Then it tests gpui_windows's pure modules (windows_pure below) on the host as a scratch crate, windows-pure.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
 # Needs GNU sed (sed -i). Run scripts/apply-patches.sh first. See docs/patch-tests.md.
 set -euo pipefail
@@ -53,9 +55,47 @@ mapfile -t tests < <("${test_cmd[@]}" --list --format terse | sed -n 's/: test$/
 skip_args=()
 for test in "${skips[@]}"; do
     matches="$(printf '%s\n' "${tests[@]}" | grep -cF -- "$test" || true)"
-    printf '%s\n' "${tests[@]}" | grep -qxF -- "$test" && [[ $matches == 1 ]] \
+    # Not grep -q: quitting at the first match can kill printf mid-write, which pipefail reads as no match.
+    printf '%s\n' "${tests[@]}" | grep -xF -- "$test" >/dev/null && [[ $matches == 1 ]] \
         || die "skip '$test' must name exactly one test; it matches $matches"
     skip_args+=(--skip "$test")
 done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
+
+# gpui_windows builds only on Windows, so its pure decision modules (plain values, no `windows` crate) are tested
+# here as one host crate on parallax-gpui, a member of the scratch workspace. To add one, add its file name here.
+windows_pure=(pointer)
+pure="$out/crates/windows-pure"
+mkdir -p "$pure/src"
+# The modules' edition is gpui_windows's own.
+edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/parallax-gpui-windows/Cargo.toml")"
+[[ -n $edition ]] || die "no edition in parallax-gpui-windows's Cargo.toml"
+cat > "$pure/Cargo.toml" <<EOF
+[package]
+name = "windows-pure"
+version = "0.0.0"
+edition = "$edition"
+publish = false
+
+[dependencies]
+gpui = { package = "parallax-gpui", path = "../parallax-gpui", features = ["test-support"] }
+EOF
+{
+    echo '#![allow(dead_code)] // their callers are gpui_windows'"'"'s Windows-only glue'
+    for module in "${windows_pure[@]}"; do
+        printf '#[path = "../../parallax-gpui-windows/src/%s.rs"]\nmod %s;\n' "$module" "$module"
+    done
+} > "$pure/src/lib.rs"
+sed -i 's/^members = \[$/members = [\n    "windows-pure",/' "$out/crates/Cargo.toml"
+grep -qx '    "windows-pure",' "$out/crates/Cargo.toml" || die "could not add windows-pure to the scratch workspace"
+cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --target-dir target/patch-tests -- "$@"
+
+# Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
+# builds. Add a row when a backend patch ships tests the host can run.
+host_backends=()
+[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland and 0023's X11 touch tables
+for crate in "${host_backends[@]}"; do
+    cargo test --manifest-path "$out/crates/Cargo.toml" -p "$crate" --features test-support --lib \
+        --target-dir target/patch-tests -- "$@"
+done

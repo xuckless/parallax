@@ -1,0 +1,12 @@
+# windows fling: swipe 200 650 200 250 150
+touch(0, 1, Started, 200.02, 650.00, Touch)
+touch(15, 1, Moved, 200.02, 606.01, Touch)
+touch(31, 1, Moved, 200.02, 560.99, Touch)
+touch(47, 1, Moved, 200.02, 517.00, Touch)
+touch(63, 1, Moved, 200.02, 471.98, Touch)
+touch(79, 1, Moved, 200.02, 427.99, Touch)
+touch(95, 1, Moved, 200.02, 383.01, Touch)
+touch(112, 1, Moved, 200.02, 338.98, Touch)
+touch(128, 1, Moved, 200.02, 294.01, Touch)
+touch(143, 1, Moved, 200.02, 250.01, Touch)
+touch(159, 1, Ended, 200.02, 250.01, Touch)

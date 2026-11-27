@@ -1,0 +1,11 @@
+# windows double-tap: taps 200 400 2 100 50
+touch(0, 1, Started, 200.02, 399.98, Touch)
+touch(15, 1, Moved, 200.02, 399.98, Touch)
+touch(31, 1, Moved, 200.02, 399.98, Touch)
+touch(48, 1, Moved, 200.02, 399.98, Touch)
+touch(50, 1, Ended, 200.02, 399.98, Touch)
+touch(150, 2, Started, 200.02, 399.98, Touch)
+touch(166, 2, Moved, 200.02, 399.98, Touch)
+touch(182, 2, Moved, 200.02, 399.98, Touch)
+touch(198, 2, Moved, 200.02, 399.98, Touch)
+touch(200, 2, Ended, 200.02, 399.98, Touch)

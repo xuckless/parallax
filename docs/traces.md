@@ -10,19 +10,20 @@ each platform, [trace_replay.rs](../crates/platform/tests/trace_replay.rs) repla
 hello's purple "Record touches" button swaps the window for a trace pad ([lib.rs](../examples/hello/src/lib.rs),
 `trace_pad`). It takes every touch raw with `on_touch` (so nothing is turned into taps or scrolls) and logs one line
 per `TouchEvent` GPUI receives, in the [trace format](gesture-recognizers.md#trace-format):
-`trace: touch(at_ms, id, phase, x, y)`, ms since the pad's first touch by the platform's event time
-(`TouchEvent::time_stamp`, [touch-time-stamps.md](touch-time-stamps.md)), window logical px. Only a relaunch leaves
-the pad. It logs no text.
+`trace: touch(at_ms, id, phase, x, y, device)` (device `Touch` or `Pen`), ms since the pad's first touch by the platform's event time
+(`TouchEvent::time_stamp`, [touch-time-stamps.md](touch-time-stamps.md)), window logical px, then ` force <f>` when
+the touch has one. Mouse presses and moves log `trace: mouse_down(…)` / `trace: mouse_move(…)` (touches never become
+mouse events on the pad). Only a relaunch leaves the pad. It logs no text.
 
 ## Recording
 
 ```sh
 scripts/apply-patches.sh
-scripts/record-traces.sh web            # or android, ios; optional gesture names: record-traces.sh ios fling
+scripts/record-traces.sh web            # or android, ios, wayland, x11, windows; optional gesture names: record-traces.sh ios fling
 ```
 
 It sets the platform up, finds the button by colour ([locate-colour.py](../scripts/locate-colour.py)), then per row of
-its `gestures` table relaunches hello, taps the button, performs the gesture and writes
+its `gestures` table relaunches hello, waits until the button is drawn, taps it, performs the gesture and writes
 `crates/platform/tests/traces/<platform>/<gesture>.trace`, only if the pad logged touches (else the old fixture
 stays). Gestures are in logical px and ms, the same everywhere.
 
@@ -31,6 +32,8 @@ stays). Gestures are in logical px and ms, the same everywhere.
 | web | `wasm-pack` build served on 127.0.0.1, headless Chromium (free ports, or `HTTP_PORT` / `CDP_PORT`) | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
 | ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | idb's 150 ms swipe takes ~200 ms |
 | android | `cargo parallax run android` on an emulator ([hello-android.sh](../scripts/hello-android.sh), shared with the smoke test) | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
+| wayland, x11 | hello's desktop bin in Weston's headless backend; x11 through its Xwayland | Weston's test plugin (`weston_test.send_touch`), frames as android's ([traces-desktop.md](traces-desktop.md)) | x11 at scale 1 only |
+| windows | hello's desktop bin, kept topmost (CI's `windows-touch` job) | [touch-inject](../crates/touch-inject/src/main.rs): a synthetic pointer device (`InjectSyntheticPointerInput`), the same frames as android's, a held contact re-sent every 16 ms | Git Bash; [windows-touch-harness.md](windows-touch-harness.md) |
 
 **iOS on the Mac** (`ssh pixl-mac`, everything under `/Users/Shared/parallax/`): the checkout is rsynced to
 `traces/parallax`, built with `traces/cargo` and `traces/target` and the gap audit's 1.98.1 toolchain (read-only),
@@ -59,8 +62,14 @@ element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
   web driver stamped each move when its fingers were there, its last move, clamped to the end point a frame late,
   read as the finger slowing (~35 % short).
 
+## Desktop fixtures (Gate 3)
+
+The replay also reads the `windows`, `wayland` and `x11` folders; what their harnesses must write:
+[traces-desktop.md](traces-desktop.md).
+
 ## Extending
 
 A gesture: a row in the script's `gestures` table and in `GESTURES`, then record it on every platform. A platform:
-its `<platform>_setup / _launch / _log / _screenshot / _scale` and one function per verb in the script, and its
-folder name in `PLATFORMS`.
+its `<platform>_setup` and `_launch` in the script, and either its own `_log / _screenshot / _scale` and one function
+per verb, or a `<driver>_frames` sink for the shared frame builders (a `drivers` row when it shares another's, as
+wayland and x11 share weston's); then its folder name in `PLATFORMS`.

@@ -232,9 +232,10 @@ impl Render for ColourTip {
     }
 }
 
-/// The trace recorder: one `trace: touch(at_ms, id, phase, x, y)` line per touch GPUI receives, in the trace format
+/// The trace recorder: one `trace: touch(at_ms, id, phase, x, y, device)` line per touch GPUI receives, in the trace format
 /// of docs/gesture-recognizers.md (ms since the first touch by the platform's event time, `TouchEvent::time_stamp`,
-/// or when GPUI received it where the platform has none; window logical px), ready to paste into a fixture.
+/// or when GPUI received it where the platform has none; window logical px), ready to paste into a fixture, then
+/// ` force <f>` when the touch has one. Mouse presses and moves log `trace: mouse_down(…)` / `trace: mouse_move(…)`.
 fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
     div()
         .id("trace-pad")
@@ -254,19 +255,41 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
             };
             let at_ms = at.duration_since(*first.get_or_insert(at)).as_millis();
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+            let force = event
+                .force
+                .map_or(String::new(), |force| format!(" force {force:.2}"));
             log::info!(
-                "trace: touch({at_ms}, {}, {:?}, {x:.2}, {y:.2})",
+                "trace: touch({at_ms}, {}, {:?}, {x:.2}, {y:.2}, {:?}){force}",
                 event.id.0,
-                event.phase
+                event.phase,
+                event.device
             );
         }))
+        // Mouse input the pad gets: touches never become mouse events here (`on_touch` opts out), so these come
+        // from a mouse, or a pen hovering, as the platform sent them (scripts/touch-checks.sh asserts on them).
+        .on_mouse_down(MouseButton::Left, |event, window, _| {
+            log::info!(
+                "trace: mouse_down({:.2}, {:.2}, {:?})",
+                f32::from(event.position.x),
+                f32::from(event.position.y),
+                window.pointer_source()
+            );
+        })
+        .on_mouse_move(|event, _, _| {
+            log::info!(
+                "trace: mouse_move({:.2}, {:.2})",
+                f32::from(event.position.x),
+                f32::from(event.position.y)
+            );
+        })
         .into_any_element()
 }
 
 /// Opens the one window. Android and the web size it themselves and ignore the bounds.
 pub fn launch(cx: &mut App) {
     text_field::bind_keys(cx);
-    let bounds = Bounds::centered(None, size(px(400.), px(400.)), cx);
+    // Tall enough for record-traces.sh's gestures (logical y up to 650) on desktop harnesses (docs/traces.md).
+    let bounds = Bounds::centered(None, size(px(400.), px(700.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         ..Default::default()

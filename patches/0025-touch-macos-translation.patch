@@ -1,0 +1,498 @@
+Translate macOS direct touches into GPUI touches: the decisions, on plain values.
+
+What: a new `gpui_macos` module, `window/touch.rs`, with no AppKit calls; patch 0026 wires it to AppKit.
+- `PHASES`: `NSTouchPhase` bit → `TouchPhase` (Began → Started, Moved, Ended, Cancelled; stationary touches carry
+  nothing new and have no row). `CHANGED` and `TOUCHING` are the phase masks the recognizer reads touches by.
+- `TouchIds<K>`: GPUI's ids for the live touches, keyed by `NSTouch.identity` (generic, so tested without AppKit),
+  with each touch's last position. `track` gives a begin the next `TouchId` (from 0, wrapping) and drops a move or
+  end with no live begin; a begin of an identity still live cancels that stale touch where it was, then starts its
+  own, the rule gpui_windows (0021) and gpui_linux's Wayland (0022) follow. `cancel_all` cancels every live touch
+  where it last was (AppKit reset the recognizer).
+- `RecognizerState` (NSGestureRecognizer.h's states, decoded from AppKit's `NSInteger` by `from_raw`) and
+  `next_state(state, Left)`, one row per (state, what the event left: fingers `Touching`, the last `Lifted` or
+  `Cancelled`): the recognizer claims a sequence from its first touch (`Began`, then `Changed`) and finishes
+  `Ended` or `Cancelled` when no finger is down; a sequence that ends within its first event fails; nothing moves
+  on from `Ended`, `Cancelled` or `Failed`, which AppKit resets itself (the legal transitions only).
+- `TouchQueue`: touches on their way to GPUI's input callback; while the callback is busy (AppKit re-enters the
+  run loop inside it) an end or cancel waits and a start or move is dropped, so no touch stays open.
+- `TOUCH_COPIES` / `is_touch_copy`: the mouse, scroll and magnify events AppKit makes from direct touches in an app
+  without `NSIsTouchNative`, dropped while the recognizer holds touches (mouse events by `subtype ==
+  NSEventSubtypeTouch`; scroll and magnify carry no subtype, so any mid-touch), as 0021 drops `MI_WP_SIGNATURE`
+  copies and 0023 `XIPointerEmulated` ones.
+Table tests: `touch_phases`, `recognizer_states`, `touch_ids`, `touch_queue`, `touch_copies` (run on a Mac:
+`cargo test -p parallax-gpui-macos --features test-support --lib touch`). Nothing calls the module until 0026.
+
+Why: macOS 27 delivers direct touches (a touchscreen Mac, an iPad by Sidecar) to gesture recognizers only, and
+GPUI's macOS backend had none; its window and view are private, so neither a Parallax crate nor an extension trait
+can add this. Kept apart from the AppKit glue (0026) so each patch has one concern (AGENTS.md patch rule 4). cfg:
+the crate's own (macOS).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index eab175b..48d9d71 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -74,6 +74,7 @@ use std::{
+ };
+ 
+ mod native_views;
++mod touch;
+ 
+ const WINDOW_STATE_IVAR: &CStr = c"windowState";
+ 
+diff --git a/gpui-pre-macos/src/window/touch.rs b/gpui-pre-macos/src/window/touch.rs
+new file mode 100644
+index 0000000..ead481e
+--- /dev/null
++++ b/gpui-pre-macos/src/window/touch.rs
+@@ -0,0 +1,449 @@
++//! Direct touches (a touchscreen Mac, or an iPad by Sidecar) as GPUI touches: the decisions, on plain values.
++//! `touch_recognizer.rs` reads AppKit and acts on what these return.
++//!
++//! AppKit hands direct touches to gesture recognizers only, from macOS 27. Per event the recognizer turns each
++//! changed `NSTouch` into a touch phase (`PHASES`), gives it GPUI's id (`TouchIds`), and moves its own
++//! `NSGestureRecognizer` state (`next_state`). While it holds touches, the mouse, scroll and magnify events AppKit
++//! makes from them are dropped (`is_touch_copy`).
++
++use gpui::{Pixels, Point, TouchEvent, TouchId, TouchPhase};
++use objc2_app_kit::{NSEventSubtype, NSEventType};
++use objc2_foundation::{NSInteger, NSUInteger};
++use std::collections::VecDeque;
++
++// `NSTouchPhase` bits (NSTouch.h).
++pub(super) const BEGAN: NSUInteger = 1 << 0;
++pub(super) const MOVED: NSUInteger = 1 << 1;
++pub(super) const STATIONARY: NSUInteger = 1 << 2;
++pub(super) const ENDED: NSUInteger = 1 << 3;
++pub(super) const CANCELLED: NSUInteger = 1 << 4;
++/// The touches still on the screen.
++pub(super) const TOUCHING: NSUInteger = BEGAN | MOVED | STATIONARY;
++/// The touches an event changed: stationary ones have nothing new for GPUI.
++pub(super) const CHANGED: NSUInteger = BEGAN | MOVED | ENDED | CANCELLED;
++
++/// AppKit touch phase → GPUI's. Extend: one row per `NSTouchPhase` bit in `CHANGED`.
++pub(super) const PHASES: [(NSUInteger, TouchPhase); 4] = [
++    (BEGAN, TouchPhase::Started),
++    (MOVED, TouchPhase::Moved),
++    (ENDED, TouchPhase::Ended),
++    (CANCELLED, TouchPhase::Cancelled),
++];
++
++/// `NSGestureRecognizerState` (NSGestureRecognizer.h), as the recognizer reports it to AppKit.
++#[repr(isize)] // NSInteger
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum RecognizerState {
++    Possible = 0,
++    Began = 1,
++    Changed = 2,
++    Ended = 3,
++    Cancelled = 4,
++    Failed = 5,
++}
++
++impl RecognizerState {
++    const ALL: [Self; 6] = [
++        Self::Possible,
++        Self::Began,
++        Self::Changed,
++        Self::Ended,
++        Self::Cancelled,
++        Self::Failed,
++    ];
++
++    /// AppKit's `state`; `None` for a value NSGestureRecognizer.h does not define.
++    pub(super) fn from_raw(state: NSInteger) -> Option<Self> {
++        Self::ALL
++            .into_iter()
++            .find(|known| *known as NSInteger == state)
++    }
++}
++
++/// What an event left on the screen: fingers still touching, or none, the last lifted or cancelled.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum Left {
++    Touching,
++    Lifted,
++    Cancelled,
++}
++
++/// The recognizer's next state once an event is handled, `None` when it stays (NSGestureRecognizer.h's legal
++/// transitions only). It claims the touch sequence from its first touch (GPUI recognizes the gestures itself) and
++/// finishes when no finger is down; a sequence that ends before it began (a tap within one event) fails. AppKit
++/// resets a finished recognizer to `Possible` itself, so nothing moves on from `Ended`, `Cancelled` or `Failed`.
++pub(super) fn next_state(current: RecognizerState, left: Left) -> Option<RecognizerState> {
++    use RecognizerState::*;
++    match (current, left) {
++        (Possible, Left::Touching) => Some(Began),
++        (Possible, Left::Lifted | Left::Cancelled) => Some(Failed),
++        (Began | Changed, Left::Touching) => Some(Changed),
++        (Began | Changed, Left::Lifted) => Some(Ended),
++        (Began | Changed, Left::Cancelled) => Some(Cancelled),
++        (Ended | Cancelled | Failed, _) => None,
++    }
++}
++
++/// GPUI's ids for the touches down now, with where each last was. `NSTouch` objects do not persist and their
++/// `identity` may be reused by a later touch, so a new identity takes the next id (counting from 0, wrapping) and
++/// gives it up when its touch ends. Generic so the id rules are tested without AppKit.
++pub(super) struct TouchIds<K> {
++    next: u64,
++    live: Vec<(K, TouchId, Point<Pixels>)>,
++}
++
++impl<K> Default for TouchIds<K> {
++    fn default() -> Self {
++        Self {
++            next: 0,
++            live: Vec::new(),
++        }
++    }
++}
++
++impl<K: PartialEq> TouchIds<K> {
++    /// The touches (id, phase, position) one changed `NSTouch` makes. A move or end of an identity with no live
++    /// touch is dropped; a begin of one still live cancels that stale touch where it was, then starts its own.
++    pub(super) fn track(
++        &mut self,
++        key: K,
++        phase: TouchPhase,
++        position: Point<Pixels>,
++    ) -> Vec<(TouchId, TouchPhase, Point<Pixels>)> {
++        let index = self.live.iter().position(|(live, _, _)| *live == key);
++        match (index, phase) {
++            (None, TouchPhase::Started) => vec![(self.start(key, position), phase, position)],
++            (None, TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled) => Vec::new(),
++            (Some(index), TouchPhase::Started) => {
++                let (_, stale, at) = self.live.remove(index);
++                vec![
++                    (stale, TouchPhase::Cancelled, at),
++                    (self.start(key, position), phase, position),
++                ]
++            }
++            (Some(index), TouchPhase::Moved) => {
++                self.live[index].2 = position;
++                vec![(self.live[index].1, phase, position)]
++            }
++            (Some(index), TouchPhase::Ended | TouchPhase::Cancelled) => {
++                let (_, id, _) = self.live.remove(index);
++                vec![(id, phase, position)]
++            }
++        }
++    }
++
++    fn start(&mut self, key: K, position: Point<Pixels>) -> TouchId {
++        let id = TouchId(self.next);
++        self.next = self.next.wrapping_add(1);
++        self.live.push((key, id, position));
++        id
++    }
++
++    /// Cancels every live touch where it last was (AppKit reset the recognizer under them).
++    pub(super) fn cancel_all(&mut self) -> Vec<(TouchId, Point<Pixels>)> {
++        self.live.drain(..).map(|(_, id, at)| (id, at)).collect()
++    }
++
++    pub(super) fn is_touching(&self) -> bool {
++        !self.live.is_empty()
++    }
++}
++
++/// Touches on their way to GPUI's input callback. While the callback runs it cannot take another event (AppKit
++/// re-enters the run loop, in a menu or modal loop say): an end or cancel then waits for it, or GPUI's touch would
++/// stay open, and a start or move is dropped, as other input is then. gpui_windows has the same queue.
++#[derive(Debug, Default)]
++pub(super) struct TouchQueue(VecDeque<TouchEvent>);
++
++impl TouchQueue {
++    /// Queues `event`, for a callback that is free (`deliverable`) or busy.
++    pub(super) fn push(&mut self, event: TouchEvent, deliverable: bool) {
++        match (deliverable, event.phase) {
++            (true, _) | (false, TouchPhase::Ended | TouchPhase::Cancelled) => {
++                self.0.push_back(event)
++            }
++            (false, TouchPhase::Started | TouchPhase::Moved) => {}
++        }
++    }
++
++    pub(super) fn pop(&mut self) -> Option<TouchEvent> {
++        self.0.pop_front()
++    }
++}
++
++/// How AppKit marks an event it made from a direct touch (an app without `NSIsTouchNative`).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum TouchCopy {
++    /// A mouse event says so in `subtype` (`NSEventSubtypeTouch`).
++    Subtype,
++    /// A scroll or magnify has no subtype (NSEvent.h: valid for mouse and kit-defined events only), so one that
++    /// arrives while the recognizer holds touches is taken as theirs.
++    WhileTouching,
++}
++
++/// The events GPUIView handles that AppKit also makes from touches. GPUI makes its own mouse events from the
++/// touches, so these copies are dropped while the recognizer holds touches, as gpui_windows drops `MI_WP_SIGNATURE`
++/// copies and gpui_linux `XIPointerEmulated` ones. Extend: one row per event type GPUIView routes to GPUI.
++const TOUCH_COPIES: [(NSEventType, TouchCopy); 12] = [
++    (NSEventType::LeftMouseDown, TouchCopy::Subtype),
++    (NSEventType::LeftMouseUp, TouchCopy::Subtype),
++    (NSEventType::LeftMouseDragged, TouchCopy::Subtype),
++    (NSEventType::RightMouseDown, TouchCopy::Subtype),
++    (NSEventType::RightMouseUp, TouchCopy::Subtype),
++    (NSEventType::RightMouseDragged, TouchCopy::Subtype),
++    (NSEventType::OtherMouseDown, TouchCopy::Subtype),
++    (NSEventType::OtherMouseUp, TouchCopy::Subtype),
++    (NSEventType::OtherMouseDragged, TouchCopy::Subtype),
++    (NSEventType::MouseMoved, TouchCopy::Subtype),
++    (NSEventType::ScrollWheel, TouchCopy::WhileTouching),
++    (NSEventType::Magnify, TouchCopy::WhileTouching),
++];
++
++/// Whether GPUIView drops an event as AppKit's copy of a touch. `subtype` is read only for the rows that carry one.
++pub(super) fn is_touch_copy(
++    event_type: NSEventType,
++    touching: bool,
++    subtype: impl FnOnce() -> NSEventSubtype,
++) -> bool {
++    let copy = TOUCH_COPIES
++        .iter()
++        .find(|(copied, _)| *copied == event_type)
++        .map(|(_, copy)| *copy);
++    match (touching, copy) {
++        (false, _) | (true, None) => false,
++        (true, Some(TouchCopy::Subtype)) => subtype() == NSEventSubtype::Touch,
++        (true, Some(TouchCopy::WhileTouching)) => true,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{point, px};
++
++    #[test]
++    fn touch_phases() {
++        let stationary = PHASES.iter().find(|(bit, _)| *bit == STATIONARY);
++        assert_eq!(stationary, None, "stationary is not a change");
++    }
++
++    /// One row per (state, what the event left).
++    #[test]
++    fn recognizer_states() {
++        use RecognizerState::*;
++        let rows = [
++            (
++                "first touch claims the sequence",
++                Possible,
++                Left::Touching,
++                Some(Began),
++            ),
++            (
++                "tap within one event fails",
++                Possible,
++                Left::Lifted,
++                Some(Failed),
++            ),
++            (
++                "cancelled before it began fails",
++                Possible,
++                Left::Cancelled,
++                Some(Failed),
++            ),
++            ("touches go on", Began, Left::Touching, Some(Changed)),
++            (
++                "last finger lifts after the first event",
++                Began,
++                Left::Lifted,
++                Some(Ended),
++            ),
++            (
++                "cancelled after the first event",
++                Began,
++                Left::Cancelled,
++                Some(Cancelled),
++            ),
++            (
++                "a finger lifts, another stays",
++                Changed,
++                Left::Touching,
++                Some(Changed),
++            ),
++            ("last finger lifts", Changed, Left::Lifted, Some(Ended)),
++            (
++                "system takes the touches",
++                Changed,
++                Left::Cancelled,
++                Some(Cancelled),
++            ),
++            (
++                "rejected: ended waits for AppKit's reset",
++                Ended,
++                Left::Touching,
++                None,
++            ),
++            (
++                "rejected: cancelled waits for AppKit's reset",
++                Cancelled,
++                Left::Lifted,
++                None,
++            ),
++            (
++                "rejected: failed waits for AppKit's reset",
++                Failed,
++                Left::Cancelled,
++                None,
++            ),
++        ];
++        for (name, current, left, expected) in rows {
++            assert_eq!(next_state(current, left), expected, "{name}");
++        }
++        assert_eq!(RecognizerState::from_raw(5), Some(Failed), "raw failed");
++        assert_eq!(RecognizerState::from_raw(6), None, "rejected: raw unknown");
++    }
++
++    #[test]
++    fn touch_ids() {
++        use TouchPhase::*;
++        let at = |x: f32| point(px(x), px(0.));
++        // (name, identity, phase, x, touches out as (id, phase, x)): identities are reused, live ids never are.
++        let rows: [(&str, u32, TouchPhase, f32, &[(u64, TouchPhase, f32)]); 8] = [
++            ("first finger down", 7, Started, 1., &[(0, Started, 1.)]),
++            ("second finger down", 8, Started, 2., &[(1, Started, 2.)]),
++            ("first finger moves", 7, Moved, 3., &[(0, Moved, 3.)]),
++            ("first finger lifts", 7, Ended, 4., &[(0, Ended, 4.)]),
++            (
++                "identity reused by a new touch",
++                7,
++                Started,
++                5.,
++                &[(2, Started, 5.)],
++            ),
++            (
++                "a begin of a live identity cancels its stale touch",
++                8,
++                Started,
++                6.,
++                &[(1, Cancelled, 2.), (3, Started, 6.)],
++            ),
++            ("rejected: a move with no live begin", 9, Moved, 7., &[]),
++            ("rejected: an end with no live begin", 9, Ended, 7., &[]),
++        ];
++        let mut ids = TouchIds::default();
++        for (name, identity, phase, x, expected) in rows {
++            let got: Vec<_> = ids
++                .track(identity, phase, at(x))
++                .into_iter()
++                .map(|(id, phase, position)| (id.0, phase, position.x.as_f32()))
++                .collect();
++            assert_eq!(got, expected, "{name}");
++        }
++        let cancelled: Vec<_> = ids
++            .cancel_all()
++            .into_iter()
++            .map(|(id, position)| (id.0, position.x.as_f32()))
++            .collect();
++        assert_eq!(
++            cancelled,
++            [(2, 5.), (3, 6.)],
++            "reset cancels the live touches"
++        );
++        assert!(!ids.is_touching(), "and forgets them");
++    }
++
++    /// One row per (callback free or busy × phase): what GPUI gets, in order, once the callback is free.
++    #[test]
++    fn touch_queue() {
++        use TouchPhase::{Cancelled, Ended, Moved, Started};
++        let rows: [(&str, &[(TouchPhase, bool)], &[TouchPhase]); 3] = [
++            (
++                "free: every touch, in order",
++                &[(Started, true), (Moved, true), (Ended, true)],
++                &[Started, Moved, Ended],
++            ),
++            (
++                "busy: ends and cancels wait",
++                &[(Ended, false), (Cancelled, false)],
++                &[Ended, Cancelled],
++            ),
++            (
++                "rejected: busy starts and moves are dropped",
++                &[(Started, false), (Moved, false), (Ended, true)],
++                &[Ended],
++            ),
++        ];
++        for (name, pushes, expected) in rows {
++            let mut queue = TouchQueue::default();
++            for &(phase, deliverable) in pushes {
++                let event = TouchEvent {
++                    phase,
++                    ..TouchEvent::default()
++                };
++                queue.push(event, deliverable);
++            }
++            let got: Vec<_> = std::iter::from_fn(|| queue.pop())
++                .map(|event| event.phase)
++                .collect();
++            assert_eq!(got, expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn touch_copies() {
++        let touch = NSEventSubtype::Touch;
++        let mouse = NSEventSubtype::MouseEvent;
++        let rows = [
++            (
++                "a tap's mouse down",
++                NSEventType::LeftMouseDown,
++                true,
++                touch,
++                true,
++            ),
++            (
++                "a long press's right click",
++                NSEventType::RightMouseUp,
++                true,
++                touch,
++                true,
++            ),
++            (
++                "a pan's scroll",
++                NSEventType::ScrollWheel,
++                true,
++                mouse,
++                true,
++            ),
++            ("a pinch's magnify", NSEventType::Magnify, true, mouse, true),
++            (
++                "rejected: a real mouse mid-touch",
++                NSEventType::LeftMouseDown,
++                true,
++                mouse,
++                false,
++            ),
++            (
++                "rejected: no touches held",
++                NSEventType::LeftMouseDown,
++                false,
++                touch,
++                false,
++            ),
++            (
++                "rejected: a scroll with no touches held",
++                NSEventType::ScrollWheel,
++                false,
++                mouse,
++                false,
++            ),
++            ("rejected: a key", NSEventType::KeyDown, true, touch, false),
++        ];
++        for (name, event_type, touching, subtype, dropped) in rows {
++            assert_eq!(
++                is_touch_copy(event_type, touching, || subtype),
++                dropped,
++                "{name}"
++            );
++        }
++    }
++}

@@ -13,7 +13,11 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
 | [gesture-tuning.md](gesture-tuning.md) | Patches 0014 and 0019: `App::set_gesture_tuning` for new windows, `Window::set_gesture_tuning` retunes an open one (Android's device touch slop), their tests |
 | [velocity-tracking.md](velocity-tracking.md) | Patch 0011: Flutter's velocity trackers and least-squares solver ported into GPUI, the kinds, which platform gets which, the ported tests |
+| [desktop-touch-linux.md](desktop-touch-linux.md) | Linux touchscreens: Wayland `wl_touch` (patch 0022) and X11 XInput 2 touch (patch 0023), both from winit, as `TouchEvent`s; the shared event clock, ids, selection by XInput version, emulated pointer events, cancels, seats, tests |
 | [touch-time-stamps.md](touch-time-stamps.md) | Patch 0020: `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, how Android, iOS and the web fill it, what reads it (velocity tracking), the fallback to dispatch time |
+| [desktop-touch-windows.md](desktop-touch-windows.md) | Patch 0021: Windows touch and pen (`WM_POINTER`, ported from winit) as `TouchEvent`s, dropping the mouse copies Windows makes, pen hover, cancels, time stamps, the pure `pointer.rs` and its host tests |
+| [windows-touch-harness.md](windows-touch-harness.md) | Gate 3 on Windows: touch-inject (synthetic touch and pen, mouse clicks, display scale), the Windows traces, windows-touch-checks.sh's runtime checks and what they found, the CI job |
+| [desktop-touch-macos.md](desktop-touch-macos.md) | Patches 0024–0026: direct touch on macOS 27 (touchscreen Macs, Sidecar iPads): the AppKit touch APIs, the touch recognizer on GPUIView, `NSIsTouchNative` and emulation, limits |
 | [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer and glow and stretch overscroll state on 0012's physics; how to drive them, and what Wave 12 wires |
 | [pinch.md](pinch.md) | Patch 0016: touch pinch through upstream's `on_pinch` / `PinchEvent`, the pinch arena's states (which element and fingers pinch), each platform's multi-touch path, the trace tests |
 | [overscroll.md](overscroll.md) | Patch 0017: bounce, stretch and glow in `div` scroll containers, chosen by `GestureTuning::overscroll` from the behaviour table, the per-container `.overscroll(..)`, the ported `ScrollPosition` glue, limits and tests |
@@ -22,9 +26,11 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [haptics.md](haptics.md) | Patch 0018 and Android: `Window::perform_haptic`, the long-press haptic from the behaviour table, each kind per platform (Android, iOS, web), the Android pull, the tests |
+| [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
 | [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
-| [ci.md](ci.md) | The nine CI jobs (six targets, Java tests, patch tests, Android smoke), what each checks, when each runs, running the checks locally, adding a target |
+| [ci.md](ci.md) | The eleven CI jobs (six targets, Java tests, patch tests, Linux touch, Windows touch, Android smoke), what each checks, when each runs, adding a target |
+| [ci-local.md](ci-local.md) | Running CI's checks locally: the commands, the Android NDK setup, desktop touch runs |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
 | [audits/oracle-inventory.md](audits/oracle-inventory.md) | Flutter 3.50.1 test files per area (gestures, text input, accessibility), the upstream GPUI code each checks, portability verdicts, Android/iOS test-infra risks, Phase 2/4 order |
 | [audits/oracle-inventory-gestures.md](audits/oracle-inventory-gestures.md) | Oracle inventory part: Flutter's gesture, velocity and scroll-physics tests, case counts and salvage per file |
@@ -50,5 +56,6 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
 | [gate-1.md](gate-1.md) | Gate 1 on the Android emulator (API 28, 33, 35, Gboard): the results matrix, the failures found, and how to rerun it |
+| [traces-desktop.md](traces-desktop.md) | Gate 3's desktop trace fixtures: the folders the replay reads, what a Windows, Wayland, X11 or macOS harness must write, the device column, the Weston headless harness for Wayland and X11, checking a harness |
 | [traces.md](traces.md) | Touch traces for Gate 2: hello's trace pad recorder, record-traces.sh on the Android emulator, headless Chromium (CDP) and the iOS simulator (idb), the replay test and its tolerance |
 | [scroll-physics.md](scroll-physics.md) | Patch 0012: GPUI's one `ScrollPhysics` (Flutter's bouncing and clamping physics) for flings, overscroll and the table, Flutter's physics module on GPUI's springs, what is not ported yet, the ported test tables |

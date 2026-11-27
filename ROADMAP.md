@@ -1,6 +1,6 @@
 # ROADMAP
 
-Parallax ships in seven phases, in order, across two rolling release lines. Each phase ends with a gate, and the
+Parallax ships in eight phases, in order, across two rolling release lines. Each phase ends with a gate, and the
 next phase starts only after the gate passes. Each phase uses only what earlier phases produced.
 No dates are set. Tick a box only when the work is merged and verified (see `AGENTS.md`).
 
@@ -16,7 +16,7 @@ no fixed schedule and no planned last number.
 
 | Line | Phases | First release |
 |---|---|---|
-| v0.1.x | 0–5: foundation, Android, gestures and behaviour, desktop touch, text input, tooling | 0.1.1: the working prototype skeleton (Phase 1) |
+| v0.1.x | 0–5 and NativeView: foundation, Android, gestures and behaviour, desktop touch, text input, native views, tooling | 0.1.1: the working prototype skeleton (Phase 1) |
 | v0.2.x | 6: accessibility | the first accessibility adapter that lands |
 
 - Every gate that passes ships a release. Merged, verified work between gates may ship one too.
@@ -44,15 +44,17 @@ GPUI, Flutter, winit, AccessKit); new code is only the glue.
 | 12 | 2 | Pinch: `.on_pinch` with Flutter's `ScaleUpdateDetails` fields, wired through deepest-wins claims · overscroll on by default per the behaviour table, per-container opt-out · trace recorders (Android emulator, browser, iOS simulator via `idb`) + replay across platforms · haptics hook porting Flutter's `PlatformPlugin` / `FlutterPlatformPlugin` haptics · Android runtime touch slop from `ViewConfiguration` · smoke-test flake fixes | 0.1.7 = **Gate 2** |
 | 13 | 3 | Desktop touch: winit's touch and pen event handling ported into GPUI's Windows, Linux and macOS backends · synthetic injection tests | 0.1.8 = **Gate 3** |
 | 14 | 4 | Text input + selection: Flutter's iOS `UITextInput` cases + fixes, web `text_editing.dart` vs `ime_mirror`, Flutter's selection behaviour, native `UITextInteraction` | 0.1.9 = **Gate 4** |
-| 15 | 5 | Tooling + docs: `cargo parallax run ios` / `run web`, Android release signing + App Bundle (from `flutter_tools`), getting-started docs | 0.1.10 = **Gate 5**, closes v0.1.x |
-| 16 | 6 | Accessibility: AccessKit adapters (Android, iOS), web semantics DOM | first 0.2.x |
+| 15 | NativeView | Native views under GPUI: Wayland subsurface, wgpu hole, Windows DirectComposition, iOS, Android, web (from Chromium and Flutter) | 0.1.10 = **NativeView gate** |
+| 16 | 5 | Tooling + docs: `cargo parallax run ios` / `run web`, Android release signing + App Bundle (from `flutter_tools`), getting-started docs | 0.1.11 = **Gate 5**, closes v0.1.x |
+| 17 | 6 | Accessibility: AccessKit adapters (Android, iOS), web semantics DOM | first 0.2.x |
 
 Known limits of this plan:
 
 - **All patches reach crates.io through our published GPUI fork** (`parallax-gpui*`, patch rule 11).
   Upstreaming stays paused (rule 14); patches upstream fixes on its own are dropped at the next sync.
-- **Hardware:** the owner has no real phones and possibly no touchscreen laptop; they have an iPad (Sidecar touch on macOS 27) and an Apple developer account. Gates are checked on emulators,
-  simulators and synthetic touch injection until hardware is available.
+- **Hardware:** the owner has no real phones and no touchscreen laptop; their iPad gives macOS touch through Sidecar
+  (macOS 27), and they have an Apple developer account. Gates are checked on emulators, simulators and synthetic touch
+  injection until hardware is available.
 - **Deferred past Gate 2:** Android multi-window (now in Phase 4).
 
 ## Phase 0: Foundation, gap audit and Flutter oracle
@@ -268,7 +270,7 @@ patch only for a case that can't be reached that way. Order follows the [oracle 
 - [x] Smoke-test flake fixes (Wave 12).
 
 **Gate 2** (0.1.7, emulator/simulator-verified) — **passed 2026-11-27**: 6 gestures × 3 platforms × 6 behaviour rows.
-The ported gesture and physics tables pass on every target, and the the ported gesture and physics tables pass on every target, and the
+The ported gesture and physics tables pass on every target, and the
 Android emulator, iOS simulator and browser traces replay to the same gestures and scroll outcomes everywhere.
 
 ## Phase 3: Desktop touch
@@ -277,20 +279,28 @@ Wave 13. Always compiled in; behaviour follows pointer type at runtime. Each pat
 drops the fake mouse events the OS makes from touch, so a tap fires once. Ports winit's (Apache-2.0/MIT) touch and pen
 event handling into GPUI's desktop backends; Flutter's Windows and Linux embedders are the second reference.
 
-- [ ] `touch-windows`: `WM_POINTER` touch and pen in `gpui_windows`, from winit's Windows backend.
-- [ ] `touch-linux`: Wayland `wl_touch` and X11 XInput2 touch in `gpui_linux`, from winit's Wayland and X11 backends.
-- [ ] `touch-macos`: touchscreen events in `gpui_macos`, from winit's macOS backend, on the macOS 27 touch APIs
-      (owner's notes): direct touches arrive only through gesture recognizers with `allowedTouchTypes = .direct`; an
-      app opts in with `NSIsTouchNative` in its Info.plist; `NSScreen.touchCapabilities` says whether a screen takes
-      touch; Apple's touch target is 36 pt (the macOS row's minimum to check). Testable live via Sidecar with the
-      owner's iPad (iPadOS 27); the owner has an iPad and an Apple developer account.
-- [ ] Synthetic touch injection for tests: Windows `InjectTouchInput` on CI's Windows runner, Linux `uinput`.
+- [x] `touch-windows` (patch 0021): `WM_POINTER` touch and pen in `gpui_windows`, from winit's Windows backend.
+      Verified with injected input on CI's `windows-touch` job (13 runtime checks).
+- [x] `touch-linux`: Wayland `wl_touch` (patch 0022, live under Weston headless) and X11 XInput2 touch (patch 0023,
+      live through Xwayland, plus fixture rows) in `gpui_linux`, from winit's Wayland and X11 backends.
+- [x] `touch-macos` (patches 0024–0026): direct touches in `gpui_macos`, from winit's macOS backend, on the macOS 27
+      touch APIs: gesture recognizers with `allowedTouchTypes = .direct`, `NSIsTouchNative` opt-in,
+      `NSScreen.touchCapabilities`, Apple's 36 pt touch target on the macOS row. Built and unit-tested.
+- [ ] macOS live check on touch: the owner's Sidecar run with the iPad
+      (`/Users/Shared/parallax/w13-macos-touch/CHECK.md` on `pixl-mac`).
+- [x] Synthetic touch injection for tests: Windows `InjectSyntheticPointerInput` through `crates/touch-inject` on CI's
+      Windows runner; Linux through Weston's headless test protocol (`weston_test.send_touch`), which replaced the
+      planned `uinput` (no root, no session, real `wl_touch` and Xwayland XInput 2 touch).
+- [x] iOS touch ids (patch 0027): one `TouchId` per `UITouch` lifetime (found by the trace identity check).
 - [ ] Record traces on a touchscreen laptop for each desktop OS (once one is available) and add them to the Phase 2
       fixtures; until then, injected traces.
+- [ ] Pen traces on X11, Wayland and the web (Windows injects pens; no second platform records them yet).
 - [ ] Keep a draft for each patch in `drafts/upstream/`.
 
-**Gate 3** (0.1.8): the desktop traces replay to the same gestures and scroll outcomes as the emulator, simulator and
-browser traces, on each desktop OS.
+**Gate 3** (0.1.8, synthetic-verified: the owner has no touchscreen) — **passed 2026-11-27**: the Windows, Wayland and
+X11 traces replay to the same gestures and scroll outcomes as the Android, web and iOS traces, within tolerance
+(fling −1030 / −1069 / −1058 px/s against −1070…−1100; pinch scale 2.0 everywhere). macOS is pending the owner's
+Sidecar check.
 
 ## Phase 4: Text input oracle and selection
 
@@ -318,9 +328,45 @@ fixes (39 + 15 cases), web `text_editing.dart` strategies and tests, Flutter's s
 
 **Gate 4** (0.1.9): the ported Flutter text-input tables pass on every target.
 
+## Phase: NativeView
+
+Wave 15, from [issue #1](https://github.com/xuckless/parallax/issues/1). A zero-overhead cutout: an OS-native view
+(a browser page, video, map) shows under GPUI's content through a hole GPUI paints, and the view's own frames cause
+no GPUI render. Upstream has it on macOS only. Sources: Chromium's overlay and subsurface code (BSD-3), Flutter's
+platform views, WebView2's visual hosting.
+
+- [ ] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
+      `set_sync` only for frames that move, resize, show or hide it, `desync` otherwise; `wp_viewport` for its size;
+      fractional scale rounds the subsurface outwards and cuts the hole a physical pixel smaller. Port Chromium's
+      `ui/ozone/platform/wayland/host/wayland_subsurface.cc` and `wayland_frame_manager.cc` (BSD-3; with its mutter
+      buffer-release workaround). GStreamer's `waylandsink` layout sequence is reference only (LGPL).
+- [ ] wgpu renderer hole: `PrimitiveBatch::NativeViews` clears the view's bounds to transparent in paint order, with
+      Chromium's `ReplaceExistingQuadWithHolePunch` semantics; premultiplied alpha while a view shows; log the
+      alpha mode chosen. Risk: NVIDIA's Vulkan WSI offers only opaque, so fall back to GL there.
+- [ ] Windows: GPUI already presents through DirectComposition. A root container visual, the app's visual below
+      GPUI's swapchain visual, a D3D11 hole, placement in GPUI's own DComp `Commit`. Model Chromium's
+      `dc_layer_overlay.cc` / `dc_layer_tree.cc` and WebView2's visual hosting; never child HWNDs.
+- [ ] iOS: a `UIView` / `CALayer` under a non-opaque `CAMetalLayer`, the Metal hole shared with macOS; Flutter's
+      `FlutterPlatformViewsController.mm` as the oracle.
+- [ ] Android: a `SurfaceView` underlay; Flutter's HCPP `PlatformViewsController2.java` as reference (API 34+), with
+      TLHC-style copies below it.
+- [ ] Web: a DOM slot under a transparent canvas, from Flutter's `slots.dart` and `content_manager.dart`.
+- [ ] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
+      take their own input.
+- [ ] The view's own frames cause 0 GPUI renders.
+- [ ] X11: deferred (no underlay); `NativeView::new` keeps failing there.
+
+Acceptance (issue #1, per target): an example with a view under the window showing a buffer that changes every frame
+and a div over part of it; moving and resizing keeps hole and view in step with no gap or one-frame lag; pointer and
+scroll over the view arrive with view-relative positions; 0 GPUI frames/s while only the view updates; the alpha
+mode chosen is logged; no seams at 1.0 and a fractional scale (1.25). On Wayland: checked on GNOME/mutter with
+NVIDIA (proprietary, Vulkan) and Mesa.
+
+**NativeView gate** (0.1.10): the acceptance above passes on every listed target.
+
 ## Phase 5: Tooling and docs
 
-Wave 15. Sources: Flutter's `flutter_tools` (Xcode project generation, Android release signing and App Bundle).
+Wave 16. Sources: Flutter's `flutter_tools` (Xcode project generation, Android release signing and App Bundle).
 
 - [ ] `cargo parallax run ios` (generates the Xcode project, as `flutter_tools` does) and `cargo parallax run web`.
 - [ ] Store builds for app developers (as `flutter_tools` does): `cargo parallax build android --release` signs with the app's own key and
@@ -329,12 +375,12 @@ Wave 15. Sources: Flutter's `flutter_tools` (Xcode project generation, Android r
 - [ ] Docs: getting started per target, the touch → mouse rule and its opt-out, the behaviour table, Flutter credits.
 - [ ] Example app polished for every target.
 
-**Gate 5** (0.1.10): a fresh clone runs the example app on every target through `cargo parallax`, and the docs cover each one.
+**Gate 5** (0.1.11): a fresh clone runs the example app on every target through `cargo parallax`, and the docs cover each one.
 Closes the v0.1.x line.
 
 ## Phase 6: Accessibility (v0.2.x)
 
-Wave 16. Each adapter ships as the next 0.2.x release when it lands. Sources: AccessKit's adapters
+Wave 17. Each adapter ships as the next 0.2.x release when it lands. Sources: AccessKit's adapters
 (`accesskit_android`, `accesskit_ios`) and a web semantics DOM; Flutter's `AccessibilityBridge` and `SemanticsObject`
 tests are the oracle.
 
@@ -351,7 +397,8 @@ tests are the oracle.
 
 - [x] macOS 27: how are touchscreen events exposed? Answered in Phase 3's `touch-macos` (gesture recognizers with
       `allowedTouchTypes = .direct`, `NSIsTouchNative`, `NSScreen.touchCapabilities`; Sidecar with the owner's iPad).
-- [ ] Is a touchscreen laptop available for Phase 3 traces? Until then, synthetic injection only.
+- [ ] Is a touchscreen laptop available for Phase 3 traces? Still none; synthetic injection only. macOS touch comes
+      from the owner's iPad through Sidecar.
 - [ ] Which patches to file upstream first (when upstreaming resumes).
 - [ ] When `zed-industries/gpui` holds code, move `upstream/` to it. Same code as `gpui-pre`, so only the source changes.
 - [ ] `gpui-pre` is published by one person. If its snapshots stop, fall back to vendoring Zed `crates/gpui*` with a generated manifest.

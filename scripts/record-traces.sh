@@ -2,17 +2,22 @@
 # Records touch traces from examples/hello's trace pad on one platform: performs each scripted gesture with the
 # platform's own input tool and saves the `touch(…)` lines GPUI received as a test fixture (docs/traces.md).
 #
-# Usage: scripts/record-traces.sh <android|web|ios> [gesture…]     (default: every row of the gesture table)
+# Usage: scripts/record-traces.sh <android|web|ios|wayland|x11|windows> [gesture…]   (default: every gesture row)
 # Needs: android: ANDROID_HOME, one running emulator or device (ANDROID_SERIAL picks one), cargo-parallax's
 #        requirements (docs/cli.md). web: wasm-pack, Node 22+, Chromium (CHROMIUM overrides its path).
 #        ios: ssh host pixl-mac with the iOS simulator and idb under /Users/Shared/parallax (docs/traces.md).
+#        wayland, x11: Weston's build dependencies (scripts/build-weston.sh), Xwayland for x11; WESTON_SCALE (1 or 2)
+#        sets the output scale; WESTON_RUN prefixes the Weston commands, e.g. `podman exec <container>` where
+#        Weston is built in a container sharing this checkout's path and /tmp (docs/traces-desktop.md).
+#        windows: Git Bash on Windows 10 1809+ with a desktop session (docs/desktop-touch-windows.md).
 #        All: python3.
+# Sourced (scripts/windows-touch-checks.sh does), it only defines the gestures and drivers, and runs nothing.
 set -euo pipefail
 
-repo=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=hello-android.sh
 source "$repo/scripts/hello-android.sh"
-platform=${1:?usage: record-traces.sh <android|web|ios> [gesture…]}
+platform=${1:?usage: record-traces.sh <android|web|ios|wayland|x11|windows> [gesture…]}
 shift
 fixtures=$repo/crates/platform/tests/traces/$platform
 work=$repo/target/record-traces/$platform
@@ -31,8 +36,47 @@ gestures=(
   "fling|swipe 200 650 200 250 150"
   "pinch|pinch 200 400 50 2 500"
 )
-# hello's "Record touches" button (RECORD_BUTTON in examples/hello/src/lib.rs).
+# hello's "Record touches" button (RECORD_BUTTON in examples/hello/src/lib.rs), and its box's first colour
+# (COLOURS[0]): one tap on the box must log exactly one touch click.
 record_button=a855f7
+box_colour=3b82f6
+
+# --- Frames: the gestures as touch frames, for the platforms that inject raw touches (android, wayland, x11, windows:
+# each driver has a `<driver>_frames` sink). A frame is "ms finger…", a finger "slot:x:y" (logical px; down when new,
+# else a move) or "slot:up"; fingers not listed stay put. The sink sends a frame, then waits its ms. Each builder
+# prints one frame a line; `perform` routes a verb. Moves come every `frame_ms`, as from a 60 Hz touchscreen.
+frame_ms=16
+lerp() { awk -v a="$1" -v b="$2" -v i="$3" -v n="$4" 'BEGIN { printf "%.2f", a + (b - a) * i / n }'; }
+frames_tap() { printf '%s\n' "$3 0:$1:$2" "0 0:up"; }
+frames_taps() {
+  local i
+  for ((i = 0; i < $3; i++)); do printf '%s\n' "$5 0:$1:$2" "$4 0:up"; done
+}
+frames_swipe() {
+  local i n=$(($5 / frame_ms))
+  for ((i = 0; i <= n; i++)); do echo "$frame_ms 0:$(lerp "$1" "$3" $i $n):$(lerp "$2" "$4" $i $n)"; done
+  echo "0 0:up"
+}
+# Two fingers `radius` either side of x, spread to radius·scale.
+frames_pinch() {
+  local i r n=$(($5 / frame_ms))
+  for ((i = 0; i <= n; i++)); do
+    r=$(lerp "$3" "$(awk -v r="$3" -v s="$4" 'BEGIN { print r * s }')" $i $n)
+    echo "$frame_ms $(awk -v x="$1" -v y="$2" -v r="$r" 'BEGIN { printf "0:%.2f:%s 1:%.2f:%s", x - r, y, x + r, y }')"
+  done
+  echo "0 0:up 1:up"
+}
+# A gesture verb on the platform: its frames through the driver's sink, or the driver's own verb (web, ios).
+perform() {
+  local verb=$1 frames
+  shift
+  if declare -F "${driver}_frames" >/dev/null; then
+    mapfile -t frames < <("frames_$verb" "$@")
+    "${driver}_frames" "${frames[@]}"
+  else
+    "${driver}_$verb" "$@"
+  fi
+}
 
 # --- Android: hello installed by cargo-parallax, touched by writing multi-touch events straight to the emulator's
 # touchscreen. Not `adb shell input`: its swipe moves in a tight loop (~7 moves a millisecond, many stamped the same
@@ -56,15 +100,14 @@ android_launch() {
 android_log() { adb_shell logcat -d | tr -d '\r'; }
 android_screenshot() { adb exec-out screencap >"$1"; }
 android_scale() { echo "$density"; }
-# The touch engine. A gesture is frames, each "ms finger…" with a finger "slot:x:y" (logical px) or "slot:up";
-# fingers not listed stay put. touch_frames writes one device script: per frame, type-B multi-touch input_events
+# The frames sink writes one device script: per frame, type-B multi-touch input_events
 # (24 bytes on the 64-bit emulator: a zero time the kernel fills in, type, code, value) through mksh's builtin
 # `print`, then a sleep of `ms` less the ~3 ms toybox `sleep` takes to start. Axes run 0-32767 over the display;
 # pressure must be above 0, or Android reads the slot as hovering.
 touch_le() { local i; for ((i = 0; i < $2; i++)); do printf '\\x%02x' $((($1 >> (8 * i)) & 255)); done; }
 touch_event() { printf '\\x00%.0s' {1..16}; touch_le "$1" 2; touch_le "$2" 2; touch_le "$3" 4; }
 touch_axis() { awk -v v="$1" -v d="$density" -v n="$2" 'BEGIN { printf "%d", v * d * 32767 / n }'; }
-touch_frames() {
+android_frames() {
   local frame ms finger slot x y bytes script=$work/touch.sh
   local -A down=()
   echo "exec 3>$touchscreen" >"$script"
@@ -87,29 +130,6 @@ touch_frames() {
     echo "print -n '$bytes' >&3; sleep $(awk -v ms="$ms" 'BEGIN { print (ms > 3 ? ms - 3 : 0) / 1000 }')" >>"$script"
   done
   adb push -q "$script" /data/local/tmp/touch.sh && adb_shell sh /data/local/tmp/touch.sh
-}
-# Moves come every `frame_ms`, as from a 60 Hz touchscreen.
-frame_ms=16
-lerp() { awk -v a="$1" -v b="$2" -v i="$3" -v n="$4" 'BEGIN { printf "%.2f", a + (b - a) * i / n }'; }
-android_tap() { touch_frames "$3 0:$1:$2" "0 0:up"; }
-android_taps() {
-  local i frames=()
-  for ((i = 0; i < $3; i++)); do frames+=("$5 0:$1:$2" "$4 0:up"); done
-  touch_frames "${frames[@]}"
-}
-android_swipe() {
-  local i n=$(($5 / frame_ms)) frames=()
-  for ((i = 0; i <= n; i++)); do frames+=("$frame_ms 0:$(lerp "$1" "$3" $i $n):$(lerp "$2" "$4" $i $n)"); done
-  touch_frames "${frames[@]}" "0 0:up"
-}
-# Two fingers `radius` either side of x, spread to radius·scale.
-android_pinch() {
-  local i r n=$(($5 / frame_ms)) frames=()
-  for ((i = 0; i <= n; i++)); do
-    r=$(lerp "$3" "$(awk -v r="$3" -v s="$4" 'BEGIN { print r * s }')" $i $n)
-    frames+=("$frame_ms $(awk -v x="$1" -v y="$2" -v r="$r" 'BEGIN { printf "0:%.2f:%s 1:%.2f:%s", x - r, y, x + r, y }')")
-  done
-  touch_frames "${frames[@]}" "0 0:up 1:up"
 }
 
 # --- Web: hello's wasm build in headless Chromium, driven over CDP by cdp-touch.mjs. CSS px are logical px.
@@ -187,39 +207,151 @@ ios_swipe() { idb ui swipe "$1" "$2" "$3" "$4" --duration "$(ms_to_s "$5")" --de
 ios_pinch() { idb ui pinch "$1" "$2" "$4" --radius "$3" --duration "$(ms_to_s "$5")"; }
 ms_to_s() { awk -v ms="$1" 'BEGIN { print ms / 1000 }'; }
 
+# --- Wayland and X11: hello's desktop bin in Weston's headless backend (build-weston.sh), touched through Weston's
+# test plugin by weston-touch.py: real wl_touch events, stamped with CLOCK_MONOTONIC. The output is 400 × 700 logical
+# px and the kiosk shell fills it with hello's one window, so output px are window px. x11 runs hello on the Xwayland
+# Weston starts, which turns those wl_touch events into XInput 2 touch events.
+# Weston's socket is in $weston_env, set only for its clients, so WESTON_RUN's own tools keep the session's. It lives
+# under /tmp: a socket path must fit in 108 bytes.
+weston_scale=${WESTON_SCALE:-1}
+on_weston() { ${WESTON_RUN:-} env "${weston_env[@]}" "$@"; }
+weston_setup() {
+  weston_runtime=$(mktemp -d /tmp/parallax-weston.XXXXXX)
+  weston_env=(XDG_RUNTIME_DIR="$weston_runtime" WAYLAND_DISPLAY=parallax-weston)
+  weston_build=$(on_weston "$repo/scripts/build-weston.sh")
+  cargo build --quiet -p hello --bin hello
+  on_weston meson devenv -C "$weston_build" weston --backend=headless --renderer=pixman --shell=kiosk \
+    --width=400 --height=700 --scale="$weston_scale" \
+    --socket=parallax-weston --debug --modules="$weston_build/tests/test-plugin.so" "$@" >"$work/weston.log" 2>&1 &
+  trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$weston_runtime"' EXIT
+  for _ in {1..30}; do [[ -S $weston_runtime/parallax-weston ]] && return 0; sleep 1; done
+  echo "record-traces: Weston never started, see $work/weston.log" >&2
+  return 1
+}
+# Relaunches hello with `env` arguments that pick the display server.
+weston_launch() {
+  [[ -z ${hello_pid:-} ]] || { kill "$hello_pid" 2>/dev/null; wait "$hello_pid" 2>/dev/null || true; }
+  env "$@" "$repo/target/debug/hello" 2>"$work/hello.log" &
+  hello_pid=$!
+}
+weston_log() { cat "$work/hello.log"; }
+weston_screenshot() {
+  rm -rf "$work/shots" && mkdir "$work/shots"
+  on_weston env XDG_PICTURES_DIR="$work/shots" "$weston_build/clients/weston-screenshooter"
+  cat "$work/shots"/*.png >"$1"
+}
+weston_scale() { echo "$weston_scale"; }
+weston_frames() { env "${weston_env[@]}" python3 -I "$repo/scripts/weston-touch.py" "$@"; }
+wayland_setup() { weston_setup; }
+wayland_launch() { weston_launch -u DISPLAY "${weston_env[@]}"; }
+# Xwayland scales X11 windows up rather than give them the output scale, so x11 records at scale 1 only.
+x11_setup() {
+  ((weston_scale == 1)) || { echo "record-traces: x11 records at WESTON_SCALE=1 only" >&2; return 1; }
+  weston_setup --xwayland
+}
+x11_launch() {
+  # Weston starts Xwayland on the first X client and names its display in its log.
+  local display
+  display=$(grep -o 'xserver listening on display :[0-9]*' "$work/weston.log" | grep -o ':[0-9]*$' | tail -1)
+  weston_launch -u WAYLAND_DISPLAY DISPLAY="${display:?Weston logged no Xwayland display}"
+}
+
+# --- Windows: hello's desktop bin, touched through a synthetic pointer device by crates/touch-inject
+# (InjectSyntheticPointerInput), so it gets real WM_POINTER messages and Windows' own mouse copies of them. Git Bash;
+# MSYS2_ARG_CONV_EXCL keeps frames from path conversion.
+windows_bin=$repo/target/debug
+windows_setup() {
+  cargo build -p hello -p touch-inject
+  trap windows_stop EXIT
+}
+windows_inject() { MSYS2_ARG_CONV_EXCL='*' "$windows_bin/touch-inject.exe" "$hello_pid" "$@"; }
+windows_stop() { [[ -z ${hello_pid:-} ]] || taskkill //F //PID "$hello_pid" >/dev/null 2>&1 || true; }
+windows_launch() {
+  windows_stop
+  # The cursor off the window, so no stray mouse move reaches the pad.
+  "$windows_bin/touch-inject.exe" park
+  # The pid through a file, not `$(…)`: hello inherits touch-inject's handles, so a pipe would stay open while it runs.
+  "$windows_bin/touch-inject.exe" launch "$(cygpath -w "$windows_bin/hello.exe")" "$(cygpath -w "$work/hello.log")" \
+    >"$work/hello.pid"
+  hello_pid=$(<"$work/hello.pid")
+  # Above the runner's console window, which comes back on top now and then.
+  windows_inject raise
+}
+windows_log() { cat "$work/hello.log"; }
+windows_screenshot() { windows_inject screenshot "$(cygpath -w "$1")"; }
+windows_scale() { windows_inject scale; }
+windows_frames() { windows_inject touch "$@"; }
+
+# Who logs, screenshots and touches for each platform: its own functions, or a shared driver's. To add a platform
+# that shares one, add a row.
+declare -A drivers=([wayland]=weston [x11]=weston)
+driver=${drivers[$platform]:-$platform}
+
 # --- The run: launch, enter the trace pad, perform the gesture, keep what the pad logged.
 wait_for() {
   local attempt
   for attempt in {1..30}; do
     # Not `grep -q`: it stops reading at the match, and pipefail then fails on the log command's SIGPIPE.
-    "${platform}_log" | grep "$1" >/dev/null && return 0
+    "${driver}_log" | grep "$1" >/dev/null && return 0
     sleep 1
   done
   echo "record-traces: $platform never logged \"$1\"" >&2
   return 1
 }
 
+# "x y", logical px, of the centre of the topmost band of colour $1 on screen.
+locate() {
+  "${driver}_screenshot" "$work/screen.png"
+  python3 -I "$repo/scripts/locate-colour.py" "$1" <"$work/screen.png" |
+    awk -v s="$("${driver}_scale")" '{ printf "%d %d", $1 / s, $2 / s }'
+}
+# A fresh hello on its main screen, drawn: "window open" comes before the first frame, which a slow CI runner can take
+# seconds to draw, and a tap before it hits nothing.
+launch_main() {
+  local attempt
+  "${platform}_launch"
+  wait_for "window open"
+  for attempt in {1..30}; do
+    if locate "$record_button" >/dev/null 2>&1; then
+      sleep 0.5
+      return 0
+    fi
+    sleep 1
+  done
+  echo "record-traces: $platform never drew the record button" >&2
+  return 1
+}
+# A fresh hello on its trace pad; `button` is where the "Record touches" button is.
+launch_pad() {
+  launch_main
+  # Unquoted on purpose: $button is "x y".
+  perform tap $button 50
+  wait_for "trace: recording"
+}
+
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
 "${platform}_setup"
-"${platform}_launch"
-wait_for "window open"
-sleep 2
-"${platform}_screenshot" "$work/screen.png"
-read -r button_x button_y < <(python3 -I "$repo/scripts/locate-colour.py" "$record_button" <"$work/screen.png")
-scale=$("${platform}_scale")
-button=$(awk -v s="$scale" -v x="$button_x" -v y="$button_y" 'BEGIN { printf "%d %d", x / s, y / s }')
+launch_main
+button=$(locate "$record_button")
+
+# One tap is one click: GPUI makes the click from the touch, and the platform must add no mouse events of its own.
+perform tap $(locate "$box_colour") 50
+sleep 1
+clicks=$("${driver}_log" | grep -o 'box colour.*' || true)
+if [[ $clicks != *"(touch click, count 1)" || $(wc -l <<<"$clicks") != 1 ]]; then
+  echo "record-traces: one tap on the box logged: ${clicks:-nothing}" >&2
+  exit 1
+fi
 
 wanted=" $* "
 for row in "${gestures[@]}"; do
   IFS='|' read -r name command <<<"$row"
   [[ $# == 0 || $wanted == *" $name "* ]] || continue
-  "${platform}_launch"
-  wait_for "window open"
-  sleep 1
-  "${platform}_tap" $button 50
-  wait_for "trace: recording"
+  launch_pad
   read -r verb args <<<"$command"
   # Unquoted on purpose: $args is the verb's numbers.
-  if ! "${platform}_$verb" $args; then
+  if ! perform "$verb" $args; then
     echo "record-traces: $platform $name skipped"
     continue
   fi
@@ -228,7 +360,7 @@ for row in "${gestures[@]}"; do
   trace=$work/$name.trace
   {
     echo "# $platform $name: $command"
-    "${platform}_log" | grep -o 'touch([^)]*)' || true
+    "${driver}_log" | grep -o 'touch([^)]*)' || true
   } >"$trace"
   events=$(($(wc -l <"$trace") - 1))
   if ((events == 0)); then

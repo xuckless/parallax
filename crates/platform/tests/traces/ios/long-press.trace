@@ -1,3 +1,4 @@
 # ios long-press: tap 200 400 800
-touch(0, 4435729408, Started, 200.00, 400.00)
-touch(853, 4435729408, Ended, 200.00, 400.00)
+# ids: patch 0027's TouchIds applied to the recorded UITouch addresses (recorded before the fix)
+touch(0, 0, Started, 200.00, 400.00)
+touch(853, 0, Ended, 200.00, 400.00)
