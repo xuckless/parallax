@@ -1,0 +1,5 @@
+# x11 double-tap: taps 200 400 2 100 50
+touch(0, 5, Started, 200.00, 400.00, Touch)
+touch(50, 5, Ended, 200.00, 400.00, Touch)
+touch(150, 6, Started, 200.00, 400.00, Touch)
+touch(200, 6, Ended, 200.00, 400.00, Touch)

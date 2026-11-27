@@ -1,0 +1,12 @@
+# x11 fling: swipe 200 650 200 250 150
+touch(0, 12, Started, 200.00, 650.00, Touch)
+touch(16, 12, Moved, 200.00, 605.00, Touch)
+touch(32, 12, Moved, 200.00, 561.00, Touch)
+touch(48, 12, Moved, 200.00, 516.00, Touch)
+touch(64, 12, Moved, 200.00, 472.00, Touch)
+touch(80, 12, Moved, 200.00, 427.00, Touch)
+touch(96, 12, Moved, 200.00, 383.00, Touch)
+touch(112, 12, Moved, 200.00, 338.00, Touch)
+touch(128, 12, Moved, 200.00, 294.00, Touch)
+touch(144, 12, Moved, 200.00, 250.00, Touch)
+touch(160, 12, Ended, 200.00, 250.00, Touch)

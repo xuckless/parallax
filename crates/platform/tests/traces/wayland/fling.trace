@@ -1,0 +1,12 @@
+# wayland fling: swipe 200 650 200 250 150
+touch(0, 1, Started, 200.00, 650.00, Touch)
+touch(16, 1, Moved, 200.00, 605.56, Touch)
+touch(32, 1, Moved, 200.00, 561.11, Touch)
+touch(48, 1, Moved, 200.00, 516.67, Touch)
+touch(64, 1, Moved, 200.00, 472.22, Touch)
+touch(80, 1, Moved, 200.00, 427.78, Touch)
+touch(96, 1, Moved, 200.00, 383.33, Touch)
+touch(112, 1, Moved, 200.00, 338.89, Touch)
+touch(128, 1, Moved, 200.00, 294.44, Touch)
+touch(144, 1, Moved, 200.00, 250.00, Touch)
+touch(160, 1, Ended, 200.00, 250.00, Touch)

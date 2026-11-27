@@ -1,0 +1,5 @@
+# wayland double-tap: taps 200 400 2 100 50
+touch(0, 1, Started, 200.00, 400.00, Touch)
+touch(50, 1, Ended, 200.00, 400.00, Touch)
+touch(150, 2, Started, 200.00, 400.00, Touch)
+touch(200, 2, Ended, 200.00, 400.00, Touch)

@@ -303,7 +303,7 @@ index 3fb9164..79e314a 100644
  pub(crate) fn get_valuator_axis_index(
      valuator_mask: &Vec<u32>,
      valuator_number: u16,
-@@ -124,8 +219,166 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
+@@ -124,8 +219,275 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
  
  #[cfg(test)]
  mod tests {
@@ -334,7 +334,8 @@ index 3fb9164..79e314a 100644
 +        }
 +    }
 +
-+    // Extend: one row per XI2 touch event shape; batch 2's recorded X11 touch traces add rows here.
++    // Extend: one row per XI2 touch event shape. The gesture rows follow Xwayland's events in the live x11 traces
++    // (parallax-platform's tests/traces/x11, docs/traces-desktop.md): ids, positions and ages as recorded.
 +    #[test]
 +    fn xi2_touch_events() {
 +        let clock = Clock {
@@ -347,7 +348,7 @@ index 3fb9164..79e314a 100644
 +            Xi2Touch,
 +            f32,
 +            Option<(u64, TouchPhase, f32, f32, u64)>,
-+        ); 5] = [
++        ); 14] = [
 +            (
 +                "begin at scale 1",
 +                Xi2Touch {
@@ -395,6 +396,114 @@ index 3fb9164..79e314a 100644
 +                },
 +                1.0,
 +                Some((u64::from(u32::MAX), TouchPhase::Started, 0.0, 0.0, 0)),
++            ),
++            (
++                "tap: begin (Xwayland, as recorded)",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: 2,
++                    time: 49_950,
++                    event_x: 200 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((2, TouchPhase::Started, 200.0, 400.0, 50)),
++            ),
++            (
++                "tap: end where it began",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_END_EVENT,
++                    detail: 2,
++                    time: 50_000,
++                    event_x: 200 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((2, TouchPhase::Ended, 200.0, 400.0, 0)),
++            ),
++            (
++                "double tap: the second touch has the next detail",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: 3,
++                    time: 50_000,
++                    event_x: 200 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((3, TouchPhase::Started, 200.0, 400.0, 0)),
++            ),
++            (
++                "long press: an end 800 ms after its begin keeps its age",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_END_EVENT,
++                    detail: 4,
++                    time: 49_200,
++                    event_x: 200 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((4, TouchPhase::Ended, 200.0, 400.0, 800)),
++            ),
++            (
++                "slow drag: an update moves",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_UPDATE_EVENT,
++                    detail: 10,
++                    time: 49_984,
++                    event_x: 200 * 65535,
++                    event_y: 599 * 65535,
++                },
++                1.0,
++                Some((10, TouchPhase::Moved, 200.0, 599.0, 16)),
++            ),
++            (
++                "fling: the last update",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_UPDATE_EVENT,
++                    detail: 12,
++                    time: 50_000,
++                    event_x: 200 * 65535,
++                    event_y: 250 * 65535,
++                },
++                1.0,
++                Some((12, TouchPhase::Moved, 200.0, 250.0, 0)),
++            ),
++            (
++                "pinch: the first finger",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: 14,
++                    time: 50_000,
++                    event_x: 150 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((14, TouchPhase::Started, 150.0, 400.0, 0)),
++            ),
++            (
++                "pinch: the second finger has its own detail",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: 15,
++                    time: 50_000,
++                    event_x: 250 * 65535,
++                    event_y: 400 * 65535,
++                },
++                1.0,
++                Some((15, TouchPhase::Started, 250.0, 400.0, 0)),
++            ),
++            (
++                "pinch at scale 2: a spread finger in logical pixels",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_UPDATE_EVENT,
++                    detail: 15,
++                    time: 50_000,
++                    event_x: 600 * 65535,
++                    event_y: 800 * 65535,
++                },
++                2.0,
++                Some((15, TouchPhase::Moved, 300.0, 400.0, 0)),
 +            ),
 +            (
 +                "ownership is not a phase",

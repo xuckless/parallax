@@ -1,0 +1,3 @@
+# x11 long-press: tap 200 400 800
+touch(0, 8, Started, 200.00, 400.00, Touch)
+touch(800, 8, Ended, 200.00, 400.00, Touch)
