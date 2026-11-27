@@ -1,0 +1,1128 @@
+Run touch flings on Flutter's scroll simulations.
+
+What: adds `gestures/physics.rs`, a Rust translation of Flutter's `Tolerance`, `Simulation`, `FrictionSimulation`
+and `ClampingScrollSimulation` (flutter/flutter 3.50.1, ae9b586f34; names, constants and comments kept), exported
+from the crate root. `ScrollPhysics` keeps its public API (`Exponential { decay_per_ms }`, `FrictionSpline
+{ friction, pixels_per_inch }`, `ios()`, `android()`), but its private `fling_duration`/`fling_distance` give way to
+`ScrollPhysics::simulation(speed)`, which builds what Flutter's `createBallisticSimulation` builds for a position in
+range: iOS a `FrictionSimulation` with drag `decay_per_ms^1000` (0.998^1000, Flutter's "~0.135"), Android a
+`ClampingScrollSimulation` (`pixels_per_inch` stands in for Flutter's 160 logical pixels per inch). `Momentum` holds
+that simulation and ends on the first tick it is done at, as Flutter's ballistic scroll does; the tolerance is
+Flutter's `toleranceFor` at a device pixel ratio of 2 (velocity 10 px/s, GPUI's `MOMENTUM_STOP_VELOCITY`). The
+transcribed AOSP `friction_spline` module and its table test go; the "fling curves are sane" test is rewritten on the
+simulations. Ports Flutter's tests as tables, named after the Flutter test per row: all 3 of
+`friction_simulation_test.dart`, `test_friction` and `scroll_with_inf_edge_ends` of `newton_test.dart`, all 5 of
+`scroll_simulation_test.dart`, and the bounce/clamp rows of `scroll_physics_test.dart`'s "doesn't alter the velocity
+for time 0".
+
+Why: Flutter's tests fail on the old maths. Android's fling was AOSP's `SplineOverScroller` curve, which Flutter
+replaced because it is not ballistic (flutter/flutter#113424, #120338): its starting velocity is not the release
+velocity (2863.6 px/s for a 2866.9 px/s release), it stops with a jump (from 4.9 px/s to 0; a 187 px/s step in one
+frame against the test's 85.5 bound), and a fling restarted from its own position and velocity does not retrace it.
+Flutter's `ClampingScrollSimulation` travels the same total distance and passes. iOS used the same exponential law as
+Flutter's `FrictionSimulation`, which now runs it directly; its `finalX`, `timeAtX` and constant deceleration come
+with it, since Flutter's iOS overscroll and macOS preset build on them. Overscroll and bounce at the edges are not
+part of this patch. Not platform-specific, so no cfg.
+
+Upstream: not filed (upstreaming paused, AGENTS.md patch rule 14).
+
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index 21db052..14c797a 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -138,24 +138,31 @@ impl Default for GestureTuning {
+     }
+ }
+ 
++mod physics;
++pub use physics::{ClampingScrollSimulation, FrictionSimulation, Simulation, Tolerance};
++
+ /// How free scrolling decelerates after a fling.
+ ///
+ /// This models deceleration only. Boundary behavior — bouncing, edge glow,
+ /// clamping — is the scroll container's policy: the container is the one that
+ /// knows its extents.
++///
++/// Each preset runs one of the fling simulations ported from Flutter.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub enum ScrollPhysics {
+     /// Exponential velocity decay, the `UIScrollView` model:
+-    /// `velocity(t) = v₀ · decay_per_msᵐˢ`.
++    /// `velocity(t) = v₀ · decay_per_msᵐˢ`. Runs Flutter's
++    /// [`FrictionSimulation`] (the in-range part of its
++    /// `BouncingScrollSimulation`) with drag `decay_per_ms¹⁰⁰⁰`.
+     Exponential {
+         /// Per-millisecond velocity decay factor. `UIScrollView`'s normal
+         /// deceleration rate is `0.998`.
+         decay_per_ms: f32,
+     },
+-    /// The friction spline of Android's `OverScroller`: fling duration and
+-    /// distance follow a logarithmic deceleration law, and progress along
+-    /// the fling follows a cubic-Bezier ease-out curve. Transcribed from
+-    /// AOSP's `SplineOverScroller` (Apache-2.0).
++    /// The deceleration law of Android's `OverScroller`, as Flutter's
++    /// [`ClampingScrollSimulation`] makes it ballistic: the same total fling
++    /// distance as Android, with a deceleration that depends only on the
++    /// current velocity.
+     FrictionSpline {
+         /// The scroll friction coefficient;
+         /// `ViewConfiguration.getScrollFriction()` is `0.015` on Android.
+@@ -169,7 +176,8 @@ pub enum ScrollPhysics {
+ }
+ 
+ impl ScrollPhysics {
+-    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate.
++    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate, as
++    /// Flutter's `BouncingScrollPhysics` (`0.998¹⁰⁰⁰ ≈ 0.135`).
+     pub fn ios() -> Self {
+         Self::Exponential {
+             decay_per_ms: 0.998,
+@@ -178,10 +186,10 @@ impl ScrollPhysics {
+ 
+     /// Android scroll feel: `OverScroller` with stock friction, at Android's
+     /// nominal density of 160 density-independent pixels per inch — the
+-    /// right pairing when fling distances are in logical pixels. Platforms
+-    /// that fling in physical pixels, or know the display's true density in
+-    /// their logical space, should construct
+-    /// [`ScrollPhysics::FrictionSpline`] directly.
++    /// right pairing when fling distances are in logical pixels, and
++    /// Flutter's `ClampingScrollPhysics`. Platforms that fling in physical
++    /// pixels, or know the display's true density in their logical space,
++    /// should construct [`ScrollPhysics::FrictionSpline`] directly.
+     pub fn android() -> Self {
+         Self::FrictionSpline {
+             friction: 0.015,
+@@ -189,156 +197,37 @@ impl ScrollPhysics {
+         }
+     }
+ 
+-    /// How long a fling released at `speed` pixels per second coasts before
+-    /// it stops.
+-    fn fling_duration(self, speed: f32) -> Duration {
++    /// The fling released at `speed` pixels per second, starting at 0, as
++    /// Flutter's `createBallisticSimulation` builds it for a position in range.
++    fn simulation(self, speed: f32) -> Box<dyn Simulation> {
+         match self {
+-            Self::Exponential { decay_per_ms } => {
+-                if speed <= MOMENTUM_STOP_VELOCITY {
+-                    return Duration::ZERO;
+-                }
+-                let milliseconds = (MOMENTUM_STOP_VELOCITY / speed).ln() / decay_per_ms.ln();
+-                Duration::from_secs_f32(milliseconds / 1000.)
+-            }
++            Self::Exponential { decay_per_ms } => Box::new(FrictionSimulation::new(
++                (decay_per_ms as f64).powi(1000),
++                0.,
++                speed as f64,
++                MOMENTUM_TOLERANCE,
++                0.,
++            )),
+             Self::FrictionSpline {
+                 friction,
+                 pixels_per_inch,
+-            } => {
+-                if speed <= 0. {
+-                    return Duration::ZERO;
+-                }
+-                let deceleration = friction_spline::deceleration(speed, friction, pixels_per_inch);
+-                let seconds = (deceleration / (friction_spline::deceleration_rate() - 1.)).exp();
+-                Duration::from_secs_f64(seconds)
+-            }
+-        }
+-    }
+-
+-    /// Distance traveled `elapsed` into a fling released at `speed` pixels
+-    /// per second, in pixels along the fling direction. Evaluated in closed
+-    /// form so the trajectory is independent of tick timing.
+-    fn fling_distance(self, speed: f32, elapsed: Duration) -> f32 {
+-        let duration = self.fling_duration(speed);
+-        if duration.is_zero() {
+-            return 0.;
+-        }
+-        let elapsed = elapsed.min(duration);
+-        match self {
+-            Self::Exponential { decay_per_ms } => {
+-                // ∫₀ᵗ v₀·kᵐˢ dms, with speed converted to pixels per
+-                // millisecond.
+-                let milliseconds = elapsed.as_secs_f32() * 1000.;
+-                (speed / 1000.) * (decay_per_ms.powf(milliseconds) - 1.) / decay_per_ms.ln()
+-            }
+-            Self::FrictionSpline {
+-                friction,
+-                pixels_per_inch,
+-            } => {
+-                let deceleration = friction_spline::deceleration(speed, friction, pixels_per_inch);
+-                let rate = friction_spline::deceleration_rate();
+-                let total_distance = friction as f64
+-                    * friction_spline::physical_coefficient(pixels_per_inch)
+-                    * (rate / (rate - 1.) * deceleration).exp();
+-                let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
+-                total_distance as f32 * friction_spline::distance_coefficient(progress as f32)
+-            }
++            } => Box::new(ClampingScrollSimulation::new(
++                0.,
++                speed as f64,
++                friction as f64,
++                pixels_per_inch as f64,
++            )),
+         }
+     }
+ }
+ 
+-/// The fling model of Android's `OverScroller.SplineOverScroller`,
+-/// transcribed from AOSP (Apache-2.0). `SPLINE_TIME`, which AOSP uses for
+-/// programmatic scroll animations rather than flings, is intentionally not
+-/// transcribed.
+-mod friction_spline {
+-    use std::sync::LazyLock;
+-
+-    const NB_SAMPLES: usize = 100;
+-    const INFLEXION: f32 = 0.35;
+-    const START_TENSION: f32 = 0.5;
+-    const END_TENSION: f32 = 1.0;
+-    const P1: f32 = START_TENSION * INFLEXION;
+-    const P2: f32 = 1.0 - END_TENSION * (1.0 - INFLEXION);
+-
+-    /// Android's `DECELERATION_RATE`: `ln(0.78) / ln(0.9)`.
+-    pub(super) fn deceleration_rate() -> f64 {
+-        0.78f64.ln() / 0.9f64.ln()
+-    }
+-
+-    /// `SPLINE_POSITION` from AOSP's static initializer: fractional fling
+-    /// distance sampled at 100 evenly spaced fractions of the fling
+-    /// duration, from a cubic Bezier with control points shaped by
+-    /// `INFLEXION` and the start/end tensions.
+-    static SPLINE_POSITION: LazyLock<[f32; NB_SAMPLES + 1]> = LazyLock::new(|| {
+-        let mut spline_position = [0f32; NB_SAMPLES + 1];
+-        let mut x_min = 0f32;
+-        for (i, sample) in spline_position.iter_mut().take(NB_SAMPLES).enumerate() {
+-            let alpha = i as f32 / NB_SAMPLES as f32;
+-            let mut x_max = 1f32;
+-            let (x, coefficient) = loop {
+-                let x = x_min + (x_max - x_min) / 2.;
+-                let coefficient = 3. * x * (1. - x);
+-                let time = coefficient * ((1. - x) * P1 + x * P2) + x * x * x;
+-                if (time - alpha).abs() < 1e-5 {
+-                    break (x, coefficient);
+-                }
+-                if time > alpha {
+-                    x_max = x;
+-                } else {
+-                    x_min = x;
+-                }
+-            };
+-            *sample = coefficient * ((1. - x) * START_TENSION + x) + x * x * x;
+-        }
+-        spline_position[NB_SAMPLES] = 1.;
+-        spline_position
+-    });
+-
+-    /// `SensorManager.GRAVITY_EARTH · 39.37 in/m · ppi · 0.84`, AOSP's
+-    /// `mPhysicalCoeff`: gravity expressed in pixels, times an empirical
+-    /// "look and feel" tuning factor.
+-    pub(super) fn physical_coefficient(pixels_per_inch: f32) -> f64 {
+-        9.80665 * 39.37 * pixels_per_inch as f64 * 0.84
+-    }
+-
+-    /// AOSP's `getSplineDeceleration`.
+-    pub(super) fn deceleration(speed: f32, friction: f32, pixels_per_inch: f32) -> f64 {
+-        (INFLEXION as f64 * speed as f64
+-            / (friction as f64 * physical_coefficient(pixels_per_inch)))
+-        .ln()
+-    }
+-
+-    /// Fraction of the total fling distance covered at fraction `time` of
+-    /// the fling duration: table lookup plus linear interpolation, as in
+-    /// `SplineOverScroller.update`.
+-    pub(super) fn distance_coefficient(time: f32) -> f32 {
+-        if time >= 1. {
+-            return 1.;
+-        }
+-        let index = ((NB_SAMPLES as f32 * time) as usize).min(NB_SAMPLES - 1);
+-        let time_lower = index as f32 / NB_SAMPLES as f32;
+-        let time_upper = (index + 1) as f32 / NB_SAMPLES as f32;
+-        let distance_lower = SPLINE_POSITION[index];
+-        let distance_upper = SPLINE_POSITION[index + 1];
+-        let velocity_coefficient = (distance_upper - distance_lower) / (time_upper - time_lower);
+-        distance_lower + (time - time_lower) * velocity_coefficient
+-    }
+-
+-    #[cfg(test)]
+-    pub(super) fn bezier_time_and_position(parameter: f32) -> (f32, f32) {
+-        let coefficient = 3. * parameter * (1. - parameter);
+-        let cubed = parameter * parameter * parameter;
+-        (
+-            coefficient * ((1. - parameter) * P1 + parameter * P2) + cubed,
+-            coefficient * ((1. - parameter) * START_TENSION + parameter) + cubed,
+-        )
+-    }
+-
+-    #[cfg(test)]
+-    pub(super) fn spline_position_samples() -> &'static [f32; NB_SAMPLES + 1] {
+-        &SPLINE_POSITION
+-    }
+-}
++/// Flutter's `ScrollPhysics.toleranceFor` at a device pixel ratio of 2:
++/// velocity `1 / (0.050 · 2)` (= [`MOMENTUM_STOP_VELOCITY`]), distance `1 / 2`.
++const MOMENTUM_TOLERANCE: Tolerance = Tolerance {
++    distance: 0.5,
++    time: Tolerance::DEFAULT_TOLERANCE.time,
++    velocity: MOMENTUM_STOP_VELOCITY as f64,
++};
+ 
+ /// The set of gesture kinds that participate in recognition.
+ ///
+@@ -611,9 +500,9 @@ struct CompletedTap {
+ }
+ 
+ /// One fling in progress. The trajectory is a closed-form curve of elapsed
+-/// time — each tick evaluates it and emits the increment — so the fling is
+-/// exactly frame-rate independent: a stalled frame simply resumes further
+-/// along the same curve.
++/// time — each tick evaluates it and emits the increment — so a stalled
++/// frame simply resumes further along the same curve. The fling ends on the
++/// first tick its simulation is done at, as Flutter's ballistic scroll does.
+ struct Momentum {
+     /// The device of the touch that flung.
+     device: PointerDevice,
+@@ -622,10 +511,9 @@ struct Momentum {
+     position: Point<Pixels>,
+     /// Unit vector of the release velocity.
+     direction: Point<f32>,
+-    /// Release speed in pixels per second.
+-    speed: f32,
++    /// Distance along `direction` over time, from the release speed.
++    simulation: Box<dyn Simulation>,
+     started_at: Instant,
+-    duration: Duration,
+     /// Distance already emitted along `direction`, in pixels.
+     emitted_distance: f32,
+ }
+@@ -889,10 +777,9 @@ impl TouchGestureRecognizer {
+                     if speed >= self.tuning.min_fling_velocity {
+                         let direction = point(velocity.x / speed, velocity.y / speed);
+                         let speed = speed.min(MAX_FLING_VELOCITY);
+-                        let duration = self.tuning.scroll_physics.fling_duration(speed);
+-                        if !duration.is_zero() {
+-                            let total_distance =
+-                                self.tuning.scroll_physics.fling_distance(speed, duration);
++                        let simulation = self.tuning.scroll_physics.simulation(speed);
++                        if !simulation.is_done(0.) {
++                            let total_distance = simulation.x(f64::INFINITY) as f32;
+                             // Prediction may have left the content ahead of
+                             // the raw release position. Emitting that
+                             // correction here would visibly snap the content
+@@ -913,9 +800,8 @@ impl TouchGestureRecognizer {
+                                 device: touch.device,
+                                 position: touch.start_position,
+                                 direction,
+-                                speed,
++                                simulation,
+                                 started_at: now,
+-                                duration,
+                                 emitted_distance,
+                             });
+                         }
+@@ -1075,11 +961,8 @@ impl TouchGestureRecognizer {
+ 
+     fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
+         let momentum = self.momentum.as_mut()?;
+-        let elapsed = now.duration_since(momentum.started_at);
+-        let distance = self
+-            .tuning
+-            .scroll_physics
+-            .fling_distance(momentum.speed, elapsed);
++        let elapsed = now.duration_since(momentum.started_at).as_secs_f64();
++        let distance = momentum.simulation.x(elapsed) as f32;
+         // Prediction overshoot can start momentum ahead of its curve. Hold
+         // that position until the curve catches up instead of stepping back.
+         let step = (distance - momentum.emitted_distance).max(0.);
+@@ -1089,7 +972,7 @@ impl TouchGestureRecognizer {
+             px(momentum.direction.y * step),
+         );
+         let position = momentum.position;
+-        if elapsed >= momentum.duration {
++        if momentum.simulation.is_done(elapsed) {
+             self.momentum = None;
+             Some(RecognizedTouchGesture::Scroll(scroll_event(
+                 position,
+@@ -1987,60 +1870,23 @@ mod tests {
+         assert_eq!(scroll.touch_phase, TouchPhase::Started);
+     }
+ 
+-    #[test]
+-    fn spline_position_table_matches_the_bezier_curve() {
+-        let samples = friction_spline::spline_position_samples();
+-        // AOSP's initializer solves sample 0 numerically like every other
+-        // sample, so it lands within solver tolerance of zero, not at zero.
+-        assert!(samples[0].abs() < 1e-4);
+-        assert_eq!(samples[100], 1.);
+-        for window in samples.windows(2) {
+-            assert!(window[0] < window[1], "table must be strictly increasing");
+-        }
+-        // Each table entry must lie on the defining parametric Bezier: for
+-        // sample i there must be a curve parameter whose time component is
+-        // i/100 and whose position component is the stored value.
+-        for (i, &stored_position) in samples.iter().enumerate().take(100) {
+-            let alpha = i as f32 / 100.;
+-            let (mut lower, mut upper) = (0f32, 1f32);
+-            for _ in 0..50 {
+-                let middle = (lower + upper) / 2.;
+-                let (time, _) = friction_spline::bezier_time_and_position(middle);
+-                if time > alpha {
+-                    upper = middle;
+-                } else {
+-                    lower = middle;
+-                }
+-            }
+-            let (time, position) = friction_spline::bezier_time_and_position((lower + upper) / 2.);
+-            assert!(
+-                (time - alpha).abs() < 1e-4,
+-                "sample {i}: time {time} != {alpha}"
+-            );
+-            assert!(
+-                (position - stored_position).abs() < 1e-3,
+-                "sample {i}: position {position} != stored {stored_position}"
+-            );
+-        }
+-    }
+-
+     #[test]
+     fn fling_curves_are_sane_for_both_physics() {
+         for physics in [ScrollPhysics::ios(), ScrollPhysics::android()] {
+-            let slow = physics.fling_duration(500.);
+-            let fast = physics.fling_duration(4000.);
+-            assert!(slow > Duration::ZERO, "{physics:?}");
+-            assert!(fast > slow, "faster flings must coast longer: {physics:?}");
+-
+-            let halfway = physics.fling_distance(4000., fast / 2);
+-            let total = physics.fling_distance(4000., fast);
+-            assert!(halfway > 0. && halfway < total, "{physics:?}");
++            let (slow, fast) = (physics.simulation(500.), physics.simulation(4000.));
++            let stop_time = |simulation: &dyn Simulation| {
++                (1..)
++                    .map(|frame| frame as f64 / 60.)
++                    .find(|&t| simulation.is_done(t))
++            };
++            let (slow_stop, fast_stop) = (stop_time(&*slow), stop_time(&*fast));
++            assert!(slow_stop > Some(0.), "{physics:?}");
+             assert!(
+-                physics.fling_distance(4000., fast * 2) == total,
+-                "distance must not grow past the fling duration: {physics:?}"
++                fast_stop > slow_stop,
++                "faster flings must coast longer: {physics:?}"
+             );
+             assert!(
+-                physics.fling_distance(4000., fast) > physics.fling_distance(500., slow),
++                fast.x(f64::INFINITY) > slow.x(f64::INFINITY),
+                 "faster flings must travel further: {physics:?}"
+             );
+         }
+diff --git a/gpui-pre/src/gestures/physics.rs b/gpui-pre/src/gestures/physics.rs
+new file mode 100644
+index 0000000..f172529
+--- /dev/null
++++ b/gpui-pre/src/gestures/physics.rs
+@@ -0,0 +1,702 @@
++// Ported from flutter/flutter packages/flutter/lib/src/physics/{tolerance,simulation,friction_simulation}.dart
++// and packages/flutter/lib/src/widgets/scroll_simulation.dart @ ae9b586f34a8443573f82ef57c3bf914a908cbf7 (3.50.1).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++//! The fling simulations behind [`ScrollPhysics`](super::ScrollPhysics),
++//! translated from Flutter: [`FrictionSimulation`] (iOS) and
++//! [`ClampingScrollSimulation`] (Android). Times are in seconds, positions
++//! in pixels, velocities in pixels per second.
++
++/// Structure that specifies maximum allowable magnitudes for distances,
++/// durations, and velocity differences to be considered equal.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Tolerance {
++    /// The magnitude of the maximum distance between two points for them to be
++    /// considered within tolerance.
++    pub distance: f64,
++    /// The magnitude of the maximum duration between two times for them to be
++    /// considered within tolerance.
++    pub time: f64,
++    /// The magnitude of the maximum difference between two velocities for them to
++    /// be considered within tolerance.
++    pub velocity: f64,
++}
++
++impl Tolerance {
++    const EPSILON_DEFAULT: f64 = 1e-3;
++
++    /// A default tolerance of 0.001 for all three values.
++    pub const DEFAULT_TOLERANCE: Tolerance = Tolerance {
++        distance: Self::EPSILON_DEFAULT,
++        time: Self::EPSILON_DEFAULT,
++        velocity: Self::EPSILON_DEFAULT,
++    };
++}
++
++/// The base class for all simulations.
++///
++/// A simulation models an object, in a one-dimensional space, on which particular
++/// forces are being applied, and exposes:
++///
++///  * The object's position, [`Simulation::x`]
++///  * The object's velocity, [`Simulation::dx`]
++///  * Whether the simulation is "done", [`Simulation::is_done`]
++///
++/// A simulation is generally "done" if the object has, to a given tolerance,
++/// come to a complete rest.
++pub trait Simulation {
++    /// The position of the object in the simulation at the given time.
++    fn x(&self, time: f64) -> f64;
++    /// The velocity of the object in the simulation at the given time.
++    fn dx(&self, time: f64) -> f64;
++    /// Whether the simulation is "done" at the given time.
++    fn is_done(&self, time: f64) -> bool;
++}
++
++/// Numerically determine the input value which produces output value `target`
++/// for a function `f`, given its first-derivative `df`.
++fn newtons_method(
++    initial_guess: f64,
++    target: f64,
++    f: impl Fn(f64) -> f64,
++    df: impl Fn(f64) -> f64,
++    iterations: usize,
++) -> f64 {
++    let mut guess = initial_guess;
++    for _ in 0..iterations {
++        guess -= (f(guess) - target) / df(guess);
++    }
++    guess
++}
++
++/// A simulation that applies a drag to slow a particle down.
++///
++/// Models a particle affected by fluid drag, e.g. air resistance.
++///
++/// The simulation ends when the velocity of the particle drops to zero (within
++/// the current velocity tolerance).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct FrictionSimulation {
++    drag: f64,
++    drag_log: f64,
++    x: f64,
++    v: f64,
++    constant_deceleration: f64,
++    // The time at which the simulation should be stopped.
++    // This is needed when constantDeceleration is not zero (on Desktop), when
++    // using the pure friction simulation, acceleration naturally reduces to zero
++    // and creates a stopping point.
++    final_time: f64,
++    /// How close to the actual end of the simulation a value at a particular time
++    /// must be before [`Simulation::is_done`] considers the simulation to be "done".
++    pub tolerance: Tolerance,
++}
++
++impl FrictionSimulation {
++    /// Creates a [`FrictionSimulation`] with the given arguments, namely: the fluid
++    /// drag coefficient _cₓ_, a unitless value; the initial position _x₀_, in the same
++    /// length units as used for [`Simulation::x`]; and the initial velocity _dx₀_, in the same
++    /// velocity units as used for [`Simulation::dx`].
++    pub fn new(
++        drag: f64,
++        position: f64,
++        velocity: f64,
++        tolerance: Tolerance,
++        constant_deceleration: f64,
++    ) -> Self {
++        let mut simulation = Self {
++            drag,
++            drag_log: drag.ln(),
++            x: position,
++            v: velocity,
++            // Dart's `double.sign` is 0.0 at zero, Rust's `signum` is not.
++            constant_deceleration: constant_deceleration
++                * if velocity == 0. {
++                    0.
++                } else {
++                    velocity.signum()
++                },
++            // needs to be infinity for newtonsMethod call in constructor.
++            final_time: f64::INFINITY,
++            tolerance,
++        };
++        simulation.final_time = newtons_method(
++            0.,
++            0.,
++            |time| simulation.dx(time),
++            |time| {
++                (simulation.v * simulation.drag.powf(time) * simulation.drag_log)
++                    - simulation.constant_deceleration
++            },
++            10,
++        );
++        simulation
++    }
++
++    /// The value of [`Simulation::x`] at `f64::INFINITY`.
++    pub fn final_x(&self) -> f64 {
++        if self.constant_deceleration == 0. {
++            return self.x - self.v / self.drag_log;
++        }
++        self.x(self.final_time)
++    }
++
++    /// The time at which the value of `x(time)` will equal `x`.
++    ///
++    /// Returns `f64::INFINITY` if the simulation will never reach `x`.
++    pub fn time_at_x(&self, x: f64) -> f64 {
++        if x == self.x {
++            return 0.0;
++        }
++        let final_x = self.final_x();
++        let out_of_reach = if self.v > 0. {
++            x < self.x || x > final_x
++        } else {
++            x > self.x || x < final_x
++        };
++        if self.v == 0.0 || out_of_reach {
++            return f64::INFINITY;
++        }
++        newtons_method(0., x, |time| self.x(time), |time| self.dx(time), 10)
++    }
++}
++
++impl Simulation for FrictionSimulation {
++    fn x(&self, time: f64) -> f64 {
++        if time > self.final_time {
++            return self.final_x();
++        }
++        self.x + self.v * self.drag.powf(time) / self.drag_log
++            - self.v / self.drag_log
++            - ((self.constant_deceleration / 2.) * time * time)
++    }
++
++    fn dx(&self, time: f64) -> f64 {
++        if time > self.final_time {
++            return 0.;
++        }
++        self.v * self.drag.powf(time) - self.constant_deceleration * time
++    }
++
++    fn is_done(&self, time: f64) -> bool {
++        self.dx(time).abs() < self.tolerance.velocity
++    }
++}
++
++/// An implementation of scroll physics that aligns with Android.
++///
++/// For any value of `velocity`, this travels the same total distance as the
++/// Android scroll physics.
++///
++/// This scroll physics has been adjusted relative to Android's in order to make
++/// it ballistic, meaning that the deceleration at any moment is a function only
++/// of the current velocity [`Simulation::dx`] and does not depend on how long ago the
++/// simulation was started. Compared to this scroll physics, Android's moves
++/// faster at the very beginning, then slower, and it ends at the same place but
++/// a little later.
++//
++// This class is based on OverScroller.java from Android:
++//   https://android.googlesource.com/platform/frameworks/base/+/android-13.0.0_r24/core/java/android/widget/OverScroller.java#738
++// and in particular class SplineOverScroller (at the end of the file), starting
++// at method "fling".  (A very similar algorithm is in Scroller.java in the same
++// directory, but OverScroller is what's used by RecyclerView.)
++//
++// In the Android implementation, times are in milliseconds, positions are in
++// physical pixels, but velocity is in physical pixels per whole second.
++//
++// The "See..." comments below refer to SplineOverScroller methods and values.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct ClampingScrollSimulation {
++    /// The position of the particle at the beginning of the simulation, in
++    /// pixels.
++    position: f64,
++    /// The velocity at which the particle is traveling at the beginning of the
++    /// simulation, in pixels per second.
++    velocity: f64,
++    /// The total time the simulation will run, in seconds.
++    duration: f64,
++    /// The total, signed, distance the simulation will travel, in pixels.
++    distance: f64,
++}
++
++impl ClampingScrollSimulation {
++    // See INFLEXION.
++    const K_INFLEXION: f64 = 0.35;
++
++    /// Creates a scroll physics simulation that aligns with Android scrolling.
++    ///
++    /// `friction` is the amount of friction the particle experiences as it
++    /// travels: the more, the sooner it stops and the less far it travels.
++    /// `0.015` travels the same total distance as the Android scroll physics
++    /// (see mFlingFriction).
++    ///
++    /// `pixels_per_inch` stands in for Flutter's `160.0 // 1 inch / 1 logical pixel`
++    /// in `_physicalCoeff`, so a fling can run in a space of another density.
++    pub fn new(position: f64, velocity: f64, friction: f64, pixels_per_inch: f64) -> Self {
++        // See mPhysicalCoeff.  This has a value of 0.84 times Earth gravity,
++        // expressed in units of pixels per second^2.
++        let physical_coeff = 9.80665 // g, in meters per second^2
++            * 39.37 // 1 meter / 1 inch
++            * pixels_per_inch // 1 inch / 1 pixel
++            * 0.84; // "look and feel tuning"
++        // See DECELERATION_RATE.
++        let k_deceleration_rate = Self::k_deceleration_rate();
++
++        // See getSplineFlingDuration().
++        // See getSplineDeceleration().  That function's value is
++        // math.log(velocity.abs() / referenceVelocity).
++        let reference_velocity = friction * physical_coeff / Self::K_INFLEXION;
++        // This is the value getSplineFlingDuration() would return, but in seconds.
++        let android_duration =
++            (velocity.abs() / reference_velocity).powf(1. / (k_deceleration_rate - 1.0));
++        // We finish a bit sooner than Android, in order to travel the
++        // same total distance.
++        let duration = k_deceleration_rate * Self::K_INFLEXION * android_duration;
++
++        // See getSplineFlingDistance().  This returns the same value but with the
++        // sign of [velocity], and in pixels.
++        let distance = velocity * duration / k_deceleration_rate;
++
++        Self {
++            position,
++            velocity,
++            duration,
++            distance,
++        }
++    }
++
++    // See DECELERATION_RATE.
++    fn k_deceleration_rate() -> f64 {
++        0.78f64.ln() / 0.9f64.ln()
++    }
++}
++
++impl Simulation for ClampingScrollSimulation {
++    fn x(&self, time: f64) -> f64 {
++        let t = (time / self.duration).clamp(0.0, 1.0);
++        self.position + self.distance * (1.0 - (1.0 - t).powf(Self::k_deceleration_rate()))
++    }
++
++    fn dx(&self, time: f64) -> f64 {
++        let t = (time / self.duration).clamp(0.0, 1.0);
++        self.velocity * (1.0 - t).powf(Self::k_deceleration_rate() - 1.0)
++    }
++
++    fn is_done(&self, time: f64) -> bool {
++        time >= self.duration
++    }
++}
++
++/// Flutter's tests as the spec (AGENTS.md, Flutter rule 6): each row is named
++/// after the Flutter test it ports. Add a row per new Flutter case.
++#[cfg(test)]
++mod tests {
++    use super::super::ScrollPhysics;
++    use super::*;
++
++    /// flutter_test's `precisionErrorTolerance`, `moreOrLessEquals`' default epsilon.
++    const PRECISION: f64 = 1e-10;
++    const INF: f64 = f64::INFINITY;
++
++    /// One `expect` on a [`FrictionSimulation`].
++    enum Expect {
++        /// `x(time)` within epsilon of a value.
++        X(f64, f64, f64),
++        /// `dx(time)` within epsilon of a value.
++        Dx(f64, f64, f64),
++        /// `x(time)` strictly between two values.
++        XBetween(f64, f64, f64),
++        /// `dx(time)` strictly below a value.
++        DxBelow(f64, f64),
++        /// `finalX` within epsilon of a value.
++        FinalX(f64, f64),
++        /// `timeAtX(x)` equals a value exactly.
++        TimeAtX(f64, f64),
++        /// `timeAtX(x(time))` within [`PRECISION`] of `time`.
++        TimeAtOwnX(f64),
++        IsDone(f64, bool),
++    }
++    use Expect::*;
++
++    struct FrictionCase {
++        flutter_test: &'static str,
++        drag: f64,
++        position: f64,
++        velocity: f64,
++        tolerance_velocity: f64,
++        constant_deceleration: f64,
++        expects: &'static [Expect],
++    }
++
++    const DEFAULT_VELOCITY: f64 = Tolerance::DEFAULT_TOLERANCE.velocity;
++
++    const FRICTION_CASES: &[FrictionCase] = &[
++        FrictionCase {
++            flutter_test: "friction_simulation_test.dart: Friction simulation positive velocity",
++            drag: 0.135,
++            position: 100.0,
++            velocity: 100.0,
++            tolerance_velocity: DEFAULT_VELOCITY,
++            constant_deceleration: 0.,
++            expects: &[
++                X(0.0, 100.0, PRECISION),
++                Dx(0.0, 100.0, PRECISION),
++                X(0.1, 110.0, 1.0),
++                X(0.5, 131.0, 1.0),
++                X(2.0, 149.0, 1.0),
++                FinalX(149.0, 1.0),
++                TimeAtX(100.0, 0.0),
++                TimeAtOwnX(0.1),
++                TimeAtOwnX(0.5),
++                TimeAtOwnX(2.0),
++                TimeAtX(-1.0, INF),
++                TimeAtX(200.0, INF),
++            ],
++        },
++        FrictionCase {
++            flutter_test: "friction_simulation_test.dart: Friction simulation negative velocity",
++            drag: 0.135,
++            position: 100.0,
++            velocity: -100.0,
++            tolerance_velocity: DEFAULT_VELOCITY,
++            constant_deceleration: 0.,
++            expects: &[
++                X(0.0, 100.0, PRECISION),
++                Dx(0.0, -100.0, PRECISION),
++                X(0.1, 91.0, 1.0),
++                X(0.5, 68.0, 1.0),
++                X(2.0, 51.0, 1.0),
++                FinalX(50.0, 1.0),
++                TimeAtX(100.0, 0.0),
++                TimeAtOwnX(0.1),
++                TimeAtOwnX(0.5),
++                TimeAtOwnX(2.0),
++                TimeAtX(101.0, INF),
++                TimeAtX(40.0, INF),
++            ],
++        },
++        FrictionCase {
++            flutter_test: "friction_simulation_test.dart: Friction simulation constant deceleration",
++            drag: 0.135,
++            position: 100.0,
++            velocity: -100.0,
++            tolerance_velocity: DEFAULT_VELOCITY,
++            constant_deceleration: 100.,
++            expects: &[
++                X(0.0, 100.0, PRECISION),
++                Dx(0.0, -100.0, PRECISION),
++                X(0.1, 91.0, 1.0),
++                X(0.5, 80.0, 1.0),
++                X(2.0, 80.0, 1.0),
++                FinalX(80.0, 1.0),
++                TimeAtX(100.0, 0.0),
++                TimeAtOwnX(0.1),
++                TimeAtOwnX(0.2),
++                TimeAtOwnX(0.3),
++                TimeAtX(101.0, INF),
++                TimeAtX(40.0, INF),
++            ],
++        },
++        FrictionCase {
++            flutter_test: "newton_test.dart: test_friction",
++            drag: 0.3,
++            position: 100.0,
++            velocity: 400.0,
++            tolerance_velocity: 1.0,
++            constant_deceleration: 0.,
++            expects: &[
++                IsDone(0.0, false),
++                X(0.0, 100.0, 0.0),
++                Dx(0.0, 400.0, 0.0),
++                XBetween(1.0, 330.0, 335.0),
++                Dx(1.0, 120.0, 0.0),
++                Dx(2.0, 36.0, 0.0),
++                Dx(3.0, 10.8, PRECISION),
++                DxBelow(4.0, 3.5),
++                IsDone(5.0, true),
++                XBetween(5.0, 431.0, 432.0),
++            ],
++        },
++        // BouncingScrollSimulation inside its extents is a FrictionSimulation
++        // with drag 0.135; only that part is ported here.
++        FrictionCase {
++            flutter_test: "newton_test.dart: scroll_with_inf_edge_ends",
++            drag: 0.135,
++            position: 100.0,
++            velocity: 400.0,
++            tolerance_velocity: 1.0,
++            constant_deceleration: 0.,
++            expects: &[
++                IsDone(0.0, false),
++                X(0.0, 100.0, 0.0),
++                Dx(0.0, 400.0, 0.0),
++                X(1.0, 272.0, 1.0),
++                Dx(1.0, 54.0, 1.0),
++                Dx(2.0, 7.0, 1.0),
++                DxBelow(3.0, 1.0),
++                IsDone(5.0, true),
++                X(5.0, 300.0, 1.0),
++            ],
++        },
++    ];
++
++    #[test]
++    fn friction_simulation_matches_flutter() {
++        let mut failures = Vec::new();
++        for case in FRICTION_CASES {
++            let tolerance = Tolerance {
++                velocity: case.tolerance_velocity,
++                ..Tolerance::DEFAULT_TOLERANCE
++            };
++            let friction = FrictionSimulation::new(
++                case.drag,
++                case.position,
++                case.velocity,
++                tolerance,
++                case.constant_deceleration,
++            );
++            for (index, expect) in case.expects.iter().enumerate() {
++                let (got, ok) = match *expect {
++                    X(time, want, epsilon) => {
++                        let got = friction.x(time);
++                        (got, (got - want).abs() <= epsilon)
++                    }
++                    Dx(time, want, epsilon) => {
++                        let got = friction.dx(time);
++                        (got, (got - want).abs() <= epsilon)
++                    }
++                    XBetween(time, low, high) => {
++                        let got = friction.x(time);
++                        (got, low < got && got < high)
++                    }
++                    DxBelow(time, high) => {
++                        let got = friction.dx(time);
++                        (got, got < high)
++                    }
++                    FinalX(want, epsilon) => {
++                        let got = friction.final_x();
++                        (got, (got - want).abs() <= epsilon)
++                    }
++                    TimeAtX(x, want) => {
++                        let got = friction.time_at_x(x);
++                        (got, got == want)
++                    }
++                    TimeAtOwnX(time) => {
++                        let got = friction.time_at_x(friction.x(time));
++                        (got, (got - time).abs() <= PRECISION)
++                    }
++                    IsDone(time, want) => {
++                        let got = friction.is_done(time);
++                        (f64::from(u8::from(got)), got == want)
++                    }
++                };
++                if !ok {
++                    failures.push(format!("{}, expect #{index}: got {got}", case.flutter_test));
++                }
++            }
++        }
++        assert!(failures.is_empty(), "{failures:#?}");
++    }
++
++    /// The (position, velocity) pairs Flutter's clamping tests start from.
++    const CLAMPING_STARTS: &[(f64, f64)] = &[
++        (51.0, 2866.91537),
++        (584.0, 2617.294734),
++        (345.0, 1982.785934),
++        (0.0, 1831.366634),
++        (-156.2, 1541.57665),
++        (4.0, 1139.250439),
++        (4534.0, 1073.553798),
++        (75.0, 614.2093),
++        (5469.0, 182.114534),
++    ];
++
++    fn clamping(position: f64, velocity: f64) -> ClampingScrollSimulation {
++        ClampingScrollSimulation::new(position, velocity, 0.015, 160.0)
++    }
++
++    type ClampingCheck = fn() -> Result<(), String>;
++
++    /// Flutter's `scroll_simulation_test.dart`, one row per test.
++    const CLAMPING_CASES: &[(&str, ClampingCheck)] = &[
++        (
++            "ClampingScrollSimulation has a stable initial conditions",
++            || {
++                for &(position, velocity) in CLAMPING_STARTS {
++                    let simulation = clamping(position, velocity);
++                    let (x, dx) = (simulation.x(0.0), simulation.dx(0.0));
++                    if (x - position).abs() > PRECISION || (dx - velocity).abs() > PRECISION {
++                        return Err(format!("({position}, {velocity}) starts at ({x}, {dx})"));
++                    }
++                }
++                Ok(())
++            },
++        ),
++        (
++            "ClampingScrollSimulation only decelerates, never speeds up",
++            || {
++                // Regression test for flutter/flutter#113424
++                let simulation = clamping(0., 8000.0);
++                let mut time = 0.0;
++                let mut velocity = simulation.dx(time);
++                while !simulation.is_done(time) {
++                    if time >= 3.0 {
++                        return Err(format!("still running at {time}"));
++                    }
++                    time += 1. / 60.;
++                    let next_velocity = simulation.dx(time);
++                    if next_velocity > velocity {
++                        return Err(format!(
++                            "speeds up at {time}: {velocity} -> {next_velocity}"
++                        ));
++                    }
++                    velocity = next_velocity;
++                }
++                Ok(())
++            },
++        ),
++        (
++            "ClampingScrollSimulation reaches a smooth stop: velocity is continuous and goes to zero",
++            || {
++                // Regression test for flutter/flutter#113424
++                let initial_velocity = 8000.0;
++                let max_deceleration = 5130.0; // -acceleration(initialVelocity), from formula below
++                let simulation = clamping(0., initial_velocity);
++                let mut time = 0.0;
++                let mut velocity = simulation.dx(time);
++                let delta = 1. / 60.;
++                loop {
++                    if time >= 3.0 {
++                        return Err(format!("still running at {time}"));
++                    }
++                    time += delta;
++                    let next_velocity = simulation.dx(time);
++                    if (next_velocity - velocity).abs() >= delta * max_deceleration {
++                        return Err(format!("jumps at {time}: {velocity} -> {next_velocity}"));
++                    }
++                    velocity = next_velocity;
++                    if simulation.is_done(time) {
++                        break;
++                    }
++                }
++                if velocity.abs() > PRECISION {
++                    return Err(format!("ends at velocity {velocity}"));
++                }
++                Ok(())
++            },
++        ),
++        ("ClampingScrollSimulation is ballistic", || {
++            // Regression test for flutter/flutter#120338
++            let delta = 1. / 90.;
++            let undisturbed = clamping(0., 8000.0);
++            let mut time = 0.0;
++            let mut restarted = undisturbed;
++            let mut trajectories = Vec::new();
++            loop {
++                if time >= 4.0 {
++                    return Err(format!("still running at {time}"));
++                }
++                time += delta;
++                restarted = clamping(restarted.x(delta), restarted.dx(delta));
++                trajectories.push((
++                    (restarted.x(0.), undisturbed.x(time)),
++                    (restarted.dx(0.), undisturbed.dx(time)),
++                ));
++                if restarted.is_done(0.) && undisturbed.is_done(time) {
++                    break;
++                }
++            }
++            // Compare the headline number first: the total distances traveled.
++            // This way, if the test fails, it shows the big final difference
++            // instead of the tiny difference that's in the very first frame.
++            let ((restarted_x, undisturbed_x), _) = trajectories[trajectories.len() - 1];
++            if (restarted_x - undisturbed_x).abs() > PRECISION {
++                return Err(format!("ends at {restarted_x}, not {undisturbed_x}"));
++            }
++            // The whole trajectories along the way should match too.
++            for (frame, ((xr, xu), (dxr, dxu))) in trajectories.into_iter().enumerate() {
++                if (xr - xu).abs() > PRECISION || (dxr - dxu).abs() > PRECISION {
++                    return Err(format!("frame {frame}: ({xr}, {dxr}) vs ({xu}, {dxu})"));
++                }
++            }
++            Ok(())
++        }),
++        (
++            "ClampingScrollSimulation satisfies a physical acceleration formula",
++            || {
++                // Different regression test for flutter/flutter#120338
++                //
++                // This one provides a formula for the particle's acceleration as a function
++                // of its velocity, and checks that it behaves according to that formula.
++                // The point isn't that it's this specific formula, but just that there's
++                // some formula which depends only on velocity, not time, so that the
++                // physical metaphor makes sense.
++
++                // Copied from the implementation.
++                let k_deceleration_rate = 0.78f64.ln() / 0.9f64.ln();
++                // Same as the referenceVelocity in _flingDuration.
++                let reference_velocity = 0.015 * 9.80665 * 39.37 * 160.0 * 0.84 / 0.35;
++                // The value of _duration when velocity == referenceVelocity.
++                let reference_duration = k_deceleration_rate * 0.35;
++                // The rate of deceleration when dx(time) == referenceVelocity.
++                let reference_deceleration =
++                    (k_deceleration_rate - 1.) * reference_velocity / reference_duration;
++                let acceleration = |velocity: f64| {
++                    -velocity.signum()
++                        * reference_deceleration
++                        * (velocity.abs() / reference_velocity)
++                            .powf((k_deceleration_rate - 2.) / (k_deceleration_rate - 1.))
++                };
++                let jerk = |velocity: f64| {
++                    reference_velocity / reference_duration / reference_duration
++                        * (k_deceleration_rate - 1.)
++                        * (k_deceleration_rate - 2.)
++                        * (velocity.abs() / reference_velocity)
++                            .powf((k_deceleration_rate - 3.) / (k_deceleration_rate - 1.))
++                };
++                for &(position, velocity) in CLAMPING_STARTS {
++                    let simulation = clamping(position, velocity);
++                    let delta = 1. / 60.;
++                    let mut time = 0.0;
++                    while time < 2.0 {
++                        let difference = simulation.dx(time + delta) - simulation.dx(time);
++                        let predicted_difference =
++                            delta * acceleration(simulation.dx(time + delta / 2.));
++                        let max_third_derivative = jerk(simulation.dx(time + delta));
++                        if (difference - predicted_difference).abs()
++                            >= max_third_derivative * delta.powi(2) / 2.
++                        {
++                            return Err(format!("({position}, {velocity}) at {time}"));
++                        }
++                        time += delta;
++                    }
++                }
++                Ok(())
++            },
++        ),
++    ];
++
++    #[test]
++    fn clamping_scroll_simulation_matches_flutter() {
++        let failures: Vec<String> = CLAMPING_CASES
++            .iter()
++            .filter_map(|(flutter_test, check)| {
++                check()
++                    .err()
++                    .map(|error| format!("{flutter_test}: {error}"))
++            })
++            .collect();
++        assert!(failures.is_empty(), "{failures:#?}");
++    }
++
++    /// `scroll_physics_test.dart`: "ScrollPhysics scrolling subclasses -
++    /// Creating the simulation doesn't alter the velocity for time 0", for the
++    /// presets standing in for `BouncingScrollPhysics` and `ClampingScrollPhysics`.
++    #[test]
++    fn presets_keep_the_release_velocity_at_time_0() {
++        for physics in [ScrollPhysics::ios(), ScrollPhysics::android()] {
++            let dx = physics.simulation(1000.).dx(0.);
++            assert!((dx - 1000.).abs() <= PRECISION, "{physics:?}: {dx}");
++        }
++    }
++}
