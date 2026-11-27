@@ -23,6 +23,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [overscroll.md](overscroll.md) | Patch 0017: bounce, stretch and glow in `div` scroll containers, chosen by `GestureTuning::overscroll` from the behaviour table, the per-container `.overscroll(..)`, the ported `ScrollPosition` glue, limits and tests |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [gesture-recognizers.md](gesture-recognizers.md) | Patch 0013: Flutter's recognizer tests as table rows through the test platform, the tuning, slop, per-target tap-count and fling-distance fixes, the touch trace format for trace replay |
+| [touch-drag.md](touch-drag.md) | Patch 0042: claiming a touch drag at touch down or competing for it past the slop (Flutter's tap-and-drag recognizers), the slop per `TouchDragKind`, who uses it, the tests |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [web-text-input.md](web-text-input.md) | Patch 0034: the web IME mirror, Flutter's per-field attribute rules, keyboard layout and IME placement on the caret, the ported test rows, checking in Chromium |
