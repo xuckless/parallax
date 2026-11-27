@@ -18,6 +18,7 @@ OS clock and GPUI's together and takes the event's age off the current instant:
 | iOS | `UITouch.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_ios `touch_time_stamp` (0020) |
 | Web | `PointerEvent.timeStamp` (ms) | `performance.now()` | gpui_web `event_time_stamp` (0020) |
 | Windows | `POINTER_INFO.PerformanceCount`, else `dwTime` (ms) | `QueryPerformanceCounter`, else `GetTickCount` | gpui_windows `pointer::Clock` (0021, [desktop-touch-windows.md](desktop-touch-windows.md)) |
+| Linux, Wayland | `wl_touch` event `time` (ms, `u32`) | `CLOCK_MONOTONIC`; over 10 s old is another base: `None` | gpui_linux `wayland/touch.rs` `Clock` (0022, [desktop-touch-linux.md](desktop-touch-linux.md#wayland)) |
 | Other desktops, tests | none | | `None` |
 
 A stamp later than the clock read counts as now. `None` (no event time, synthesized touches, tests) is timed when

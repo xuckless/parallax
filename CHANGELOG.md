@@ -22,6 +22,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   mouse messages Windows makes from touch and pen are dropped (Flutter's `MI_WP_SIGNATURE` check), so a tap clicks
   once, through GPUI's recognizer. Mouse and touchpad input are unchanged
   ([docs/desktop-touch-windows.md](docs/desktop-touch-windows.md)).
+- Wayland touch (patch 0022, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreens on Wayland reach GPUI as
+  `TouchEvent`s (taps, pans, flings and pinches through GPUI's recognizer, as on mobile), with the compositor's event
+  time as `time_stamp`. Ported from winit's Wayland touch handling ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md)).
 
 ### Changed
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Run GPUI's own lib tests, every patch's tests among them, on the patched fork crate parallax-gpui.
+# On Linux it also runs parallax-gpui-linux's lib tests (host_backends below).
 # The crate can't run them as shipped, so this tests a scratch copy of build/parallax-gpui/ in build/patch-tests/
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
-# Then it tests gpui_windows's pure modules (pointer.rs) on the host as a scratch crate, windows-pure.
+# Then it tests gpui_windows's pure modules (windows_pure below) on the host as a scratch crate, windows-pure.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
 # Needs GNU sed (sed -i). Run scripts/apply-patches.sh first. See docs/patch-tests.md.
 set -euo pipefail
@@ -85,3 +86,12 @@ EOF
 sed -i 's/^members = \[$/members = [\n    "windows-pure",/' "$out/crates/Cargo.toml"
 grep -qx '    "windows-pure",' "$out/crates/Cargo.toml" || die "could not add windows-pure to the scratch workspace"
 cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --target-dir target/patch-tests -- "$@"
+
+# Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
+# builds. Add a row when a backend patch ships tests the host can run.
+host_backends=()
+[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland touch tables
+for crate in "${host_backends[@]}"; do
+    cargo test --manifest-path "$out/crates/Cargo.toml" -p "$crate" --features test-support --lib \
+        --target-dir target/patch-tests -- "$@"
+done

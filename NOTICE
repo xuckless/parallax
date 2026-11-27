@@ -28,6 +28,10 @@ parallax-gpui-windows packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.
 
+parallax-gpui-linux includes code ported from winit (https://github.com/rust-windowing/winit),
+licensed under the Apache License 2.0: Wayland touch handling (patch 0022, wayland/touch.rs).
+Copyright the winit contributors.
+
 cargo-parallax includes the Gradle Wrapper 9.8.2 (https://github.com/gradle/gradle),
 crates/cli/templates/android/gradle/wrapper/gradle-wrapper.jar, licensed under the
 Apache License 2.0 (license text inside the jar, META-INF/LICENSE). Copyright Gradle, Inc.
