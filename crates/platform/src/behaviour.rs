@@ -88,7 +88,7 @@ pub struct Behaviour {
     /// Smallest tap target a control should have for a touch: Material's 48 or Cupertino's 44 (the set `.adaptive`
     /// widgets pick per platform, padded as Flutter pads for touch: `MaterialTapTargetSize.padded`). On desktop
     /// Flutter shrink-wraps for every pointer; Parallax keeps the touch size there, since a pointer's kind decides
-    /// (AGENTS.md, "Desktop touch"). macOS's 44 also meets Apple's 36 pt for touch.
+    /// (AGENTS.md, "Desktop touch"). macOS takes Apple's own touch value instead: Flutter has none for a macOS touch.
     pub min_touch_target: Pixels,
 }
 
@@ -144,7 +144,9 @@ pub const TABLE: [Behaviour; 5] = [
         velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
-        min_touch_target: kMinInteractiveDimensionCupertino,
+        // Flutter has no macOS touch value (its 44 is Cupertino's, for iOS); Apple's macOS 27 touch guidance asks
+        // for a touch target of at least 36 pt.
+        min_touch_target: px(36.0),
     },
     Behaviour {
         target: Target::Windows,
@@ -376,7 +378,7 @@ mod tests {
             ),
             (
                 "macos: kTouchSlop, BouncingScrollPhysics(fast) maxFlingVelocity kMaxFlingVelocity * 8, \
-                 no Feedback, kMinInteractiveDimensionCupertino",
+                 no Feedback, Apple's macOS 27 36 pt touch target",
                 behaviour(Some(Target::MacOs)).copied(),
                 None,
                 Expected {
@@ -388,7 +390,7 @@ mod tests {
                     overscroll: Overscroll::Bounce,
                     long_press: None,
                     velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
-                    min_touch_target: 44.,
+                    min_touch_target: 36.,
                 },
             ),
             (
@@ -546,13 +548,6 @@ mod tests {
                 "{name}: the touch recognizer takes the touch hit slop"
             );
         }
-        assert!(
-            behaviour(Some(Target::MacOs))
-                .expect("macos has a row")
-                .min_touch_target
-                >= px(36.),
-            "macos: the touch target meets Apple's 36 pt for touch"
-        );
     }
 
     #[test]
