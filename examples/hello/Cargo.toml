@@ -18,6 +18,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 log = "0.4"
 parallax = { path = "../../crates/parallax" }
+# Flutter's text selection gestures and overlay for the text field (src/text_field.rs).
+parallax-ext = { path = "../../crates/ext" }
 # Grapheme boundaries for the text field's cursor moves and deletes (src/text_field.rs).
 unicode-segmentation = "1"
 # Names GPUI's clock type (the executor's `now()`), which works in the browser too: the trace pad times touches by it.
@@ -30,3 +32,7 @@ wasm-bindgen = "0.2.120"
 # Desktop and iOS log to stderr (main.rs); Android logs to logcat and the web to the console (lib.rs).
 [target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
 env_logger = "0.11"
+
+# The text field's mouse selection test (src/text_field.rs) drives GPUI's test platform.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

@@ -16,6 +16,10 @@ GPUI's, ported once by patches 0012-0013; a row holds only what Flutter picks pe
 | Windows | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 | Linux | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 
+`text_selection`: Android, macOS, Windows and Linux run Flutter's selection rules (`TextSelectionControls::Flutter`
+with a `SelectionRules` row: Android's mobile arms, macOS the Apple ones, Windows and Linux the desktop ones, Material's
+22 px handle everywhere); iOS is `Native` (UIKit). What each rule does: [text-selection.md](text-selection.md).
+
 `scroll_physics` is GPUI's `ScrollPhysics` ([scroll-physics.md](scroll-physics.md)), which also gives the fling
 limits: min / max fling 100 / 8000 px/s for `Bouncing { Normal }`, 100 / 64000 for `Fast` (with its 1400 constant
 deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, none for clamping.
@@ -68,7 +72,8 @@ tuning from then on: density changes never touch it, even when it equals the pla
 **Read by GPUI:** `overscroll` is `GestureTuning::overscroll`, the default every scroll container follows (a
 container may set its own): [overscroll.md](overscroll.md). `haptics.long_press` plays on a claimed long press
 (patch 0018, [haptics.md](haptics.md)). The touch pinch's scale recognizer takes its pan and scale slops from
-`touch_slop` ([pinch.md](pinch.md)). The other `haptics` rows (`tap`, `selection_handle_drag`, `picker_item`: no
+`touch_slop` ([pinch.md](pinch.md)). `haptics.selection_handle_drag` is what `parallax_ext::text_selection` asks the app to play while a handle moves
+([text-selection.md](text-selection.md)). The other `haptics` rows (`tap`, `picker_item`: no
 GPUI widget plays them yet), `min_touch_target`, the pan and scale slops and `drag_start_distance_motion_threshold`
 are data GPUI doesn't take yet; the widgets that later waves wire read them (ROADMAP Phase 2).
 
