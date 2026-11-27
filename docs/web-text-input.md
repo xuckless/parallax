@@ -52,10 +52,21 @@ a text control at the element, and it bubbles to the document listener gpui_web 
 
 ## Checking it in a browser
 
-Build and serve hello ([examples-run.md](examples-run.md)), start headless Chromium as
-[record-traces.sh](../scripts/record-traces.sh)'s `web_setup` does, then run
-`node scripts/web-checks.mjs <port> <url> desktop` and `… mobile` ([web-checks.mjs](../scripts/web-checks.mjs)):
-it taps each field, reads the mirror's attributes and position (`Runtime.evaluate`), composes with
-`Input.imeSetComposition`, and fakes an Android phone with touch emulation and its user agent. Verified on Chromium 158 (2026-11-27): desktop attributes, placement at the
-caret and none mid-composition (`Input.imeSetComposition`); Android `inputmode=email`, `enterkeyhint=done`. Firefox
-and Safari are left for the owner.
+Build and serve hello ([examples-run.md](examples-run.md)), then run [web-checks.mjs](../scripts/web-checks.mjs):
+`node scripts/web-checks.mjs <url> desktop|mobile <browser>`. It taps each field, reads the mirror's attributes,
+position and element, types into the password field and submits it, moves the selection from the page, and fakes an
+Android phone (touch, its user agent) in `mobile`. Browsers:
+
+- `<port>`: headless Chromium started as [record-traces.sh](../scripts/record-traces.sh)'s `web_setup` does, over
+  the DevTools Protocol, no deps. Only it composes (`Input.imeSetComposition`).
+- `firefox`, `webkit`: [Playwright](https://playwright.dev)'s builds. Install both under the scratchpad or
+  `target/`, never system-wide (`npm install playwright`, `npx playwright install firefox webkit` with
+  `PLAYWRIGHT_BROWSERS_PATH` set), then pass `PLAYWRIGHT_DIR` (the folder holding `node_modules`) and the same
+  `PLAYWRIGHT_BROWSERS_PATH`. Checks Playwright can't drive print `skip`.
+
+Verified 2026-11-27: Chromium 158 and Firefox 142, desktop and mobile, every check. WebKit not yet: Playwright's
+Linux build needs Ubuntu's libraries and fails to open an EGL display on Fedora, and its macOS build runs no
+animation frames over ssh (pixl-mac has no GUI session for the agent; `safaridriver` is not enabled). The owner
+runs `… desktop webkit` in a GUI session on the Mac. Owed on a phone: the swap focuses the new element after the tap's
+events, and iOS Safari may not raise its keyboard for a focus outside a user gesture. Firefox rewrites `autocapitalize="off"` as its synonym `none`,
+so the check reads the IDL value.

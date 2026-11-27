@@ -53,4 +53,4 @@ then `visibilitychange`) and shows it with `Target.activateTarget`, freezes and 
 `Page.setWebLifecycleState`, and makes the visual viewport 300 px shorter. Turning focus emulation off is no way to
 hide it: a fresh headless Chromium's only tab stays visible and focused, and the hidden phases arrived only at the
 next lifecycle step, which made the old check flaky. Synthetic `pagehide`/`pageshow` cover the back/forward cache
-and unloading.
+and unloading in every browser; Playwright's Firefox and WebKit pages never hide, so those three rows `skip` there.
