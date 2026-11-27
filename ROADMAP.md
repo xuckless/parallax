@@ -215,23 +215,38 @@ fix goes in as a patch to our published fork, with a draft kept in `drafts/upstr
 Tests drive GPUI through its test platform (touch events in, gestures and scroll offsets out); a small public-seam
 patch only for a case that can't be reached that way. Order follows the [oracle inventory](docs/audits/oracle-inventory.md).
 
-- [ ] Velocity: `velocity_tracker` and `lsq_solver` cases.
-- [ ] Physics: `friction_simulation`, clamping and `scroll_physics` (fling) cases.
-- [ ] Recognizers: tap, double-tap, long-press and drag cases. (Flutter's `arena` is skipped: GPUI resolves
-      competing gestures by claims, not an arena.)
-- [ ] Multi-touch and pinch in `gestures.rs` (upstream has none), with Flutter's `scale` tests as the oracle.
-- [ ] Overscroll (bounce, glow, clamp): a row in the behaviour table and a scroll-container patch.
-- [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
-      Covers scroll physics preset, gesture tuning (GPUI's touch slop is 8 px, Flutter's 18), touch → mouse
-      emulation, overscroll, haptics, touch-target minimum. Wave 11: the table in `parallax_platform::behaviour`
-      and patch 0014's `App::set_gesture_tuning` ([behaviour.md](docs/behaviour.md)). Left for later:
+- [x] Velocity: `velocity_tracker` and `lsq_solver` cases. Wave 11: Flutter's trackers ported (patch 0011,
+      [velocity-tracking.md](docs/velocity-tracking.md)).
+- [x] Physics: `friction_simulation`, clamping and `scroll_physics` (fling) cases. Wave 11: flings run Flutter's
+      `FrictionSimulation` and `ClampingScrollSimulation` (patch 0012, [scroll-physics.md](docs/scroll-physics.md)).
+- [x] Recognizers: tap, double-tap, long-press and drag cases. (Flutter's `arena` is skipped: GPUI resolves
+      competing gestures by claims, not an arena.) Wave 11: `constants.dart` ported once into GPUI, Flutter's
+      double-tap rule, executor clock (patch 0013, [gesture-recognizers.md](docs/gesture-recognizers.md)).
+- [x] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
+      Covers scroll physics preset, gesture tuning, touch → mouse emulation, overscroll, haptics, touch-target
+      minimum. Wave 11: the table in `parallax_platform::behaviour`, patch 0014's `App::set_gesture_tuning`, applied
+      by the facade's `android_main!` and `parallax::set_platform_gesture_tuning` ([behaviour.md](docs/behaviour.md)).
+- [ ] Multi-touch and pinch in `gestures.rs` (upstream has none), with Flutter's `scale` tests as the oracle. Wave 11
+      ported the recognizer as maths (patch 0015, [scale-and-overscroll.md](docs/scale-and-overscroll.md)); Wave 12
+      wires it into touch dispatch.
+- [ ] Overscroll (bounce, glow, clamp): a row in the behaviour table and a scroll-container patch. Wave 11 ported the
+      maths (patch 0015); Wave 12 wires bouncing physics and the indicators into GPUI's scroll containers.
+- [ ] Left from Wave 11:
       - [ ] Haptics: GPUI has no haptics hook, so the table's `haptics` are data only. Needs a platform hook (Android
             `View.performHapticFeedback`, iOS `UIFeedbackGenerator`) and callers (long press, selection handles, pickers).
       - [ ] Android touch slop from `ViewConfiguration.getScaledTouchSlop()` at runtime, as Flutter's embedding sends it;
             the row holds AOSP's default 8 dp.
-      - [ ] Row values GPUI's recognizer doesn't take yet: pan and scale slops, `kDoubleTapMinTime`, max fling velocity,
-            `dragStartDistanceMotionThreshold`, the velocity tracker per platform, macOS's constant deceleration (1400).
-      - [ ] Overscroll style and touch-target minimum are data only until a scroll container and widgets read them.
+      - [ ] iOS `carriedMomentum`: repeated flings speed up ([scroll-physics.md](docs/scroll-physics.md)).
+      - [ ] macOS `ScrollDecelerationRate.fast`'s constant deceleration 1400: GPUI's `ScrollPhysics` has no term for it.
+      - [ ] Momentum's stop tolerance is `toleranceFor` at a fixed device pixel ratio of 2; pass the window's scale factor
+            (overscroll's `tolerance_for` already takes it).
+      - [ ] Web on macOS: gpui_web's own tuning picks `IOSScrollViewFling`; the behaviour table's macOS row
+            (`MacOSScrollViewFling`) applies only through `set_platform_gesture_tuning`.
+      - [ ] Scale: trackpad pan/zoom cases of `scale_test.dart` (GPUI reports trackpad pinches as `PinchEvent`).
+      - [ ] Recognizers: Flutter's multi-pointer drag cases (GPUI's recognizer ignores extra touches).
+      - [ ] Row values GPUI's recognizer doesn't take yet: pan and scale slops, max fling velocity,
+            `dragStartDistanceMotionThreshold`; overscroll style and touch-target minimum until a scroll container and
+            widgets read them.
 - [ ] Trace recorder: capture raw touch traces into test fixtures, starting with the Android emulator, the iOS simulator and a browser until the owner has devices.
 - [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
 
