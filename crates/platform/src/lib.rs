@@ -1,5 +1,7 @@
 //! Picks the GPUI platform for the current target (desktop, web, iOS, Android) from one table.
-//! How it works and how to extend it: `docs/platform.md`.
+//! How it works and how to extend it: `docs/platform.md`. The target → behaviour table: [`behaviour`].
+
+pub mod behaviour;
 
 use std::rc::Rc;
 

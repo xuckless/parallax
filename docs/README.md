@@ -9,11 +9,12 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch on xuckless/zed (patches in Zed's layout, for upstream PRs), rebuilding it with sync-fork.sh, and how it differs from the published fork crates |
 | [gpui-fork-crates.md](gpui-fork-crates.md) | The published `parallax-gpui*` fork crates: naming, versioning and content hash, fork-crates.sh, fork-version.sh, publish-fork.sh, CI checks |
 | [patches.md](patches.md) | Writing, numbering and making patches; the patch table |
-| [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008 and 0010: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss |
+| [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008, 0010 and 0014: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss, the app's gesture tuning |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
+| [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): slops, timeouts, scroll physics, overscroll, haptics, touch target; how GPUI gets it (patch 0014), overriding and extending it |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [ci.md](ci.md) | The nine CI jobs (six targets, Java tests, patch tests, Android smoke), what each checks, when each runs, running the checks locally, adding a target |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
