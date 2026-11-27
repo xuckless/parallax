@@ -17,11 +17,10 @@ mod tests;
 
 use std::ops::Range;
 
-use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, point, slops};
+use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, TouchDragKind, point, slops};
 use parallax_platform::behaviour::{
-    Behaviour, DragRecognizer, HandleDrag, LongPressSelects, MagnifierKind, SecondaryTap,
-    SelectionRules, ShiftSelect, TapCount, TapEdge, TextBoundaryKind, TextSelectionControls,
-    TouchDragSelects,
+    Behaviour, HandleDrag, LongPressSelects, MagnifierKind, SecondaryTap, SelectionRules,
+    ShiftSelect, TapCount, TapEdge, TextBoundaryKind, TextSelectionControls, TouchDragSelects,
 };
 
 pub use geometry::{
@@ -269,6 +268,12 @@ impl TextSelection {
         }
     }
 
+    /// The drag the field competes for when a touch starts on it (`Window::compete_for_touch_drag`): the row's
+    /// recognizer, so the drag GPUI hands over is the one `TextSelectionGestureDetector` would have won.
+    pub fn touch_drag_kind(&self) -> TouchDragKind {
+        self.rules.drag_recognizer
+    }
+
     /// Runs one input: `state × input → next`, every pair in this one match.
     pub fn handle(&mut self, input: Input, field: &Field, layout: &impl TextLayout) -> Effects {
         let mut step = Step {
@@ -475,8 +480,8 @@ impl<L: TextLayout> Step<'_, L> {
         let slop = slops(press.device, None);
         let moved = position - press.origin;
         match self.engine.rules.drag_recognizer {
-            DragRecognizer::Horizontal => moved.x.abs() > slop.hit,
-            DragRecognizer::Pan => moved.x.as_f32().hypot(moved.y.as_f32()) > slop.pan.as_f32(),
+            TouchDragKind::Horizontal => moved.x.abs() > slop.hit,
+            TouchDragKind::Pan => moved.x.as_f32().hypot(moved.y.as_f32()) > slop.pan.as_f32(),
         }
     }
 

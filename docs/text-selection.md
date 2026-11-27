@@ -18,6 +18,9 @@ Cupertino look. iOS keeps UIKit's `UITextInteraction` (AGENTS.md, "iOS text sele
    click count as `tap_count`, `window.pointer_source()` as the device), pressed moves and ups, right click
    (`SecondaryTap`), the `LongPressEvent` phases (claim `Started` with `prevent_default`), a claimed
    `TouchDragEvent` that starts in a handle's `hit` rect (`HandleDrag*`), and `Typed` for keyboard or IME changes.
+   For finger drags on the text, compete for the touch-down offer with
+   `window.compete_for_touch_drag(selection.touch_drag_kind())` ([touch-drag.md](touch-drag.md)); when the drag
+   wins (`TouchDragStart::PastSlop`), send `Down` at its `start_position` (touch, one tap), then `Move`s and `Up`.
 4. Apply the `Effects`: the selection, `request_keyboard` (focus and show the keyboard), the haptic.
 5. Draw `overlay()`: `handles` (`rect`, `kind`: which quadrant points at the text, `hit`: at least 48 square),
    `toolbar` anchors (place it with `toolbar_origin`), `magnifier` (`rect`; animate a `jumped_line` move over
@@ -51,12 +54,12 @@ take Material's 22 px handle so a touch can grab one. The handle-drag click is `
 `text_selection_test.dart` and `text_field_test.dart`, on a 10 px monospace layout), handle geometry, `_getHandleDy`,
 toolbar anchors and placement, the magnifier's positioning tests and `shiftWithinBounds`. `text_selection_table` in
 [behaviour.rs](../crates/platform/src/behaviour.rs) checks the rows. hello's `mouse_selects_by_the_desktop_row` drives
-the field through GPUI's test platform with mouse events.
+the field through GPUI's test platform with mouse events, `touch_selects_by_the_android_row` with touches on
+Android's row (tap, long press, a horizontal finger drag moving the caret, a vertical drag left to the pan).
 
 ## Not ported (yet)
 
-- **Finger drags on the field's text** (Android moves the caret): GPUI's `TouchDragEvent` must be claimed at touch
-  down, which would cost the field its taps and long presses. The engine handles them; hello doesn't send them.
+- A finger drag right after a double tap (word by word): GPUI's won drag carries no tap count.
 - Scrolling fields (drag offsets, edge scroll), read-only fields, obscured text, right-to-left handles, spell check,
   force press, the floating cursor, handle taps, the toolbar's own buttons and styles (Material's).
 - Web on an iOS host takes the iOS row, so it has no selection gestures.

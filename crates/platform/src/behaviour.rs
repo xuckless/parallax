@@ -22,7 +22,7 @@
 /// GPUI's haptic kinds (Flutter's `HapticFeedback` calls), the one type the table's haptics rows hold.
 pub use gpui::Haptic;
 use gpui::{
-    GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics,
+    GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics, TouchDragKind,
     VelocityTrackerKind, px, slops,
 };
 
@@ -126,8 +126,10 @@ pub struct SelectionRules {
     pub tap_count: TapCount,
     /// `onDragSelectionStart` / `onDragSelectionUpdate` for a finger.
     pub touch_drag: TouchDragSelects,
-    /// The recognizer `TextSelectionGestureDetector` builds for drags, which sets the slop a drag needs to start.
-    pub drag_recognizer: DragRecognizer,
+    /// The recognizer `TextSelectionGestureDetector` builds for drags, which sets the slop a drag needs to start:
+    /// GPUI's `TouchDragKind` (`Horizontal`: `TapAndHorizontalDragGestureRecognizer`, `Pan`:
+    /// `TapAndPanGestureRecognizer`), the drag a field competes for (`Window::compete_for_touch_drag`).
+    pub drag_recognizer: TouchDragKind,
     /// `onTripleTapDown` / three-tap drags in a multi-line field (a single-line field selects all).
     pub triple_tap: TextBoundaryKind,
     /// `onSecondaryTap`.
@@ -182,14 +184,6 @@ pub enum TouchDragSelects {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DragRecognizer {
-    /// `TapAndHorizontalDragGestureRecognizer`: starts past the hit slop, horizontally.
-    Horizontal,
-    /// `TapAndPanGestureRecognizer`: starts past the pan slop, any direction.
-    Pan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextBoundaryKind {
     Paragraph,
     Line,
@@ -228,7 +222,7 @@ const ANDROID_SELECTION: SelectionRules = SelectionRules {
     long_press: LongPressSelects::Word,
     tap_count: TapCount::Cycle,
     touch_drag: TouchDragSelects::CaretWhenFocused,
-    drag_recognizer: DragRecognizer::Horizontal,
+    drag_recognizer: TouchDragKind::Horizontal,
     triple_tap: TextBoundaryKind::Paragraph,
     secondary_tap: SecondaryTap::CaretWhenUnfocused,
     handle_drag: HandleDrag::Ordered,
@@ -244,7 +238,7 @@ const WINDOWS_SELECTION: SelectionRules = SelectionRules {
     long_press: LongPressSelects::Word,
     tap_count: TapCount::Alternate,
     touch_drag: TouchDragSelects::Range,
-    drag_recognizer: DragRecognizer::Pan,
+    drag_recognizer: TouchDragKind::Pan,
     triple_tap: TextBoundaryKind::Paragraph,
     secondary_tap: SecondaryTap::CaretWhenUnfocused,
     handle_drag: HandleDrag::Ordered,
@@ -717,7 +711,7 @@ mod tests {
                     long_press: LongPressSelects::AppleCaretWhenFocused,
                     tap_count: TapCount::Hold,
                     touch_drag: TouchDragSelects::Range,
-                    drag_recognizer: DragRecognizer::Pan,
+                    drag_recognizer: TouchDragKind::Pan,
                     triple_tap: TextBoundaryKind::Paragraph,
                     secondary_tap: SecondaryTap::AppleSelectWord,
                     handle_drag: HandleDrag::AppleExtent,

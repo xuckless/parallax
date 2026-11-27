@@ -36,6 +36,10 @@ window.
   viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
 - Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
   windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
+- A finger drag moves the caret on Android (patch 0042): `Window::compete_for_touch_drag(kind)` lets an element win
+  a touch drag once the touch passes the drag's slop, as Flutter's tap-and-drag recognizers do, so a text field keeps
+  its taps and long presses. `TouchDragEvent` gains `start` (`TouchDragStart::Down` or `PastSlop(kind)`);
+  `TextSelection::touch_drag_kind` gives the field's kind; hello's text field uses it ([docs/touch-drag.md](docs/touch-drag.md)).
 
 ### Changed
 
