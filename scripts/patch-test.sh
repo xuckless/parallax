@@ -5,7 +5,7 @@
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
-# Then it tests gpui_windows's pure modules (windows_pure below) on the host as a scratch crate, windows-pure.
+# Then it tests gpui_windows's and gpui_ios's pure modules (pure_crates below) on the host as scratch crates.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
 # Needs GNU sed (sed -i). Run scripts/apply-patches.sh first. See docs/patch-tests.md.
 set -euo pipefail
@@ -63,17 +63,25 @@ done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
 
-# gpui_windows builds only on Windows, so its pure decision modules (plain values, no `windows` crate) are tested
-# here as one host crate on parallax-gpui, a member of the scratch workspace. To add one, add its file name here.
-windows_pure=(pointer)
-pure="$out/crates/windows-pure"
-mkdir -p "$pure/src"
-# The modules' edition is gpui_windows's own.
-edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/parallax-gpui-windows/Cargo.toml")"
-[[ -n $edition ]] || die "no edition in parallax-gpui-windows's Cargo.toml"
-cat > "$pure/Cargo.toml" <<EOF
+# gpui_windows and gpui_ios build only on their own OS, so their pure decision modules (plain values, no `windows` or
+# objc2 crate) are tested here as one host crate per backend on parallax-gpui, members of the scratch workspace.
+# One row per backend: "scratch crate:fork crate:modules", each module its path under the crate's src/ without
+# ".rs", space-separated. To add a module, add its path to its backend's row. A module listed must use only `gpui`
+# and `std`.
+pure_crates=(
+    "windows-pure:parallax-gpui-windows:pointer"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset"
+)
+for row in "${pure_crates[@]}"; do
+    IFS=: read -r name backend modules <<<"$row"
+    pure="$out/crates/$name"
+    mkdir -p "$pure/src"
+    # The modules' edition is their backend's own.
+    edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/$backend/Cargo.toml")"
+    [[ -n $edition ]] || die "no edition in $backend's Cargo.toml"
+    cat > "$pure/Cargo.toml" <<EOF
 [package]
-name = "windows-pure"
+name = "$name"
 version = "0.0.0"
 edition = "$edition"
 publish = false
@@ -81,15 +89,16 @@ publish = false
 [dependencies]
 gpui = { package = "parallax-gpui", path = "../parallax-gpui", features = ["test-support"] }
 EOF
-{
-    echo '#![allow(dead_code)] // their callers are gpui_windows'"'"'s Windows-only glue'
-    for module in "${windows_pure[@]}"; do
-        printf '#[path = "../../parallax-gpui-windows/src/%s.rs"]\nmod %s;\n' "$module" "$module"
-    done
-} > "$pure/src/lib.rs"
-sed -i 's/^members = \[$/members = [\n    "windows-pure",/' "$out/crates/Cargo.toml"
-grep -qx '    "windows-pure",' "$out/crates/Cargo.toml" || die "could not add windows-pure to the scratch workspace"
-cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --target-dir target/patch-tests -- "$@"
+    {
+        echo "#![allow(dead_code)] // their callers are $backend's OS-only glue"
+        for module in $modules; do
+            printf '#[path = "../../%s/src/%s.rs"]\nmod %s;\n' "$backend" "$module" "${module##*/}"
+        done
+    } > "$pure/src/lib.rs"
+    sed -i "s/^members = \[\$/members = [\n    \"$name\",/" "$out/crates/Cargo.toml"
+    grep -qx "    \"$name\"," "$out/crates/Cargo.toml" || die "could not add $name to the scratch workspace"
+    cargo test --manifest-path "$out/crates/Cargo.toml" -p "$name" --lib --target-dir target/patch-tests -- "$@"
+done
 
 # Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
 # builds. Add a row when a backend patch ships tests the host can run.
