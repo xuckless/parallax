@@ -49,6 +49,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
+| [ios-keyboard.md](ios-keyboard.md) | Patches 0031–0033: iOS hardware keyboard presses → GPUI key events (Flutter's key responder, GPUI first then UIKit's text system), the keyboard inset's docked-frame maths and animation, layout-change notifications, the host tables and simulator checks |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |
 | [android-autofill.md](android-autofill.md) | Android autofill: GPUI's hint → Flutter's `Configuration.Autofill`, the field id, AutofillManager calls, filled values through the merge path, the hint table |
