@@ -11,6 +11,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [patches.md](patches.md) | Writing, numbering and making patches; the patch table |
 | [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008 and 0010: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
+| [velocity-tracking.md](velocity-tracking.md) | Patch 0011: Flutter's velocity trackers and least-squares solver ported into GPUI, the kinds, which platform gets which, the ported tests |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
