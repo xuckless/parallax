@@ -70,3 +70,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0015](../patches/0015-scale-and-overscroll-ports.patch) | Flutter's scale recognizer and overscroll indicators, new modules only ([scale-and-overscroll.md](scale-and-overscroll.md)) |
 | [0016](../patches/0016-touch-pinch.patch) | touch pinch: the scale recognizer in touch dispatch, `PinchEvent::touch`, `on_pinch` for fingers, `Window::join_pinch` ([pinch.md](pinch.md)) |
 | [0017](../patches/0017-overscroll-in-scroll-containers.patch) | overscroll (bounce, stretch, glow) in `div` scroll containers, `GestureTuning::overscroll`, `.overscroll(..)` ([overscroll.md](overscroll.md)) |
+| [0018](../patches/0018-haptic-feedback.patch) | `gpui::Haptic`, `PlatformWindow::perform_haptic` / `Window::perform_haptic`, `GestureTuning::long_press_haptic` on a claimed long press; iOS and web backends ([haptics.md](haptics.md)) |

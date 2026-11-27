@@ -16,7 +16,7 @@
   priority queue (`PriorityQueueSender`/`Receiver`, exported on Android by
   [patch 0001](../patches/0001-export-priority-queue-android.patch)); an eventfd registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
 - **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty,
-  then Java runs GPUI's text-input calls (`nativeTextInputCalls`, [android-text-input.md](android-text-input.md)).
+  then Java runs GPUI's text-input calls (`nativeTextInputCalls`, [android-text-input.md](android-text-input.md)) and plays its haptics (`nativeHapticFeedbackCalls`, [haptics.md](haptics.md)).
 - **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
   one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
   The shell applies the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android

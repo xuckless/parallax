@@ -40,17 +40,19 @@ Every Parallax entry point applies the current target's row before app code runs
 `parallax::set_platform_gesture_tuning` (`Result<(), parallax_platform::Error>`; they log an error and keep the
 platform's tuning). `Behaviour::gesture_tuning()` fills GPUI's `GestureTuning` from the row (`touch_slop` ← the hit
 slop, `scroll_physics`, `min_fling_velocity` / `max_fling_velocity` ← its fling limits, `velocity_tracker`,
-`overscroll`), the rest from `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
+`overscroll`, `long_press_haptic` ← `haptics.long_press`, played on a claimed long press: [haptics.md](haptics.md)),
+the rest from `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
 `parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
 
 **Override:** call `cx.set_gesture_tuning` in `launch`, after the entry point's call, with a changed copy, e.g.
 `GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`. Windows opened later use it.
 
 **Read by GPUI:** `overscroll` is `GestureTuning::overscroll`, the default every scroll container follows (a
-container may set its own): [overscroll.md](overscroll.md). The touch pinch's scale recognizer takes its pan and
-scale slops from `touch_slop` ([pinch.md](pinch.md)). `haptics`, `min_touch_target`, the pan and scale slops and
-`drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the widgets that Wave 12 wires read them
-(ROADMAP Phase 2).
+container may set its own): [overscroll.md](overscroll.md). `haptics.long_press` plays on a claimed long press
+(patch 0018, [haptics.md](haptics.md)). The touch pinch's scale recognizer takes its pan and scale slops from
+`touch_slop` ([pinch.md](pinch.md)). The other `haptics` rows (`tap`, `selection_handle_drag`, `picker_item`: no
+GPUI widget plays them yet), `min_touch_target`, the pan and scale slops and `drag_start_distance_motion_threshold`
+are data GPUI doesn't take yet; the widgets that later waves wire read them (ROADMAP Phase 2).
 
 ## Extending
 

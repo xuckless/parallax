@@ -1,0 +1,359 @@
+Play haptics: a platform hook, a public `Window::perform_haptic`, and the long-press haptic from the gesture tuning.
+
+What: `gpui::Haptic`, Flutter's `HapticFeedback` calls (vibrate, light / medium / heavy impact, selection click,
+success / warning / error notification). `PlatformWindow::perform_haptic(Haptic)`, a no-op by default (desktops:
+Flutter plays none there), and `Window::perform_haptic(kind)` for apps. `GestureTuning` gains `long_press_haptic:
+Option<Haptic>` (default `None`); when an element claims a long press (prevents default on its started event, as
+GPUI's long-press tooltip does), the window plays it once. Backends, each ported from Flutter 3.50.1's embedder:
+- gpui_ios: `FlutterPlatformPlugin.mm`'s `vibrateHapticFeedback:`: `UIImpactFeedbackGenerator` light / medium /
+  heavy, `UISelectionFeedbackGenerator`, `UINotificationFeedbackGenerator`, and AudioToolbox's
+  `AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)` for vibrate (adds objc2-ui-kit's four feedback-generator
+  features and links AudioToolbox).
+- gpui_web: `platform_dispatcher.dart`'s `_getHapticFeedbackDuration` (10 to 50 ms per kind) through
+  `navigator.vibrate`, only where the browser has it (Safari has not), as `safe_browser_api.dart`'s `vibrate`.
+- The test platform records each haptic (`TestWindow::haptics`). A window test has one row per case: claimed with
+  vibrate, claimed with heavy impact, unclaimed (nothing plays), claimed with no haptic (nothing plays).
+
+Why: Parallax's platform behaviour table ports Flutter's per-platform `Feedback.forLongPress` (Android vibrate, iOS
+heavy impact, desktops none) and Flutter's embedders play each `HapticFeedback` kind natively, but GPUI had no way to
+play one: no platform method, no window API, and nothing that fires on a long press. The table reaches GPUI only
+through `App::set_gesture_tuning` (patch 0014), so the long-press haptic rides on `GestureTuning` like the slops and
+physics: one source, no second channel. Flutter's widgets call `Feedback.forLongPress` when they handle a long press;
+GPUI's equivalent of handling is claiming, so an unclaimed long press (a slow tap) plays nothing. Android has no
+upstream backend; parallax-android implements the method with Flutter's `PlatformPlugin.vibrateHapticFeedback`.
+No cfg in core: the hook is the same on every platform and each backend decides what it plays.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
+index 5b3acd8..1d9ef66 100644
+--- a/gpui-pre-ios/Cargo.toml
++++ b/gpui-pre-ios/Cargo.toml
+@@ -142,6 +142,10 @@ features = [
+     "UICornerConfiguration",
+     "UICornerRadius",
+     "UIEvent",
++    "UIFeedbackGenerator",
++    "UIImpactFeedbackGenerator",
++    "UINotificationFeedbackGenerator",
++    "UISelectionFeedbackGenerator",
+     "UIGeometry",
+     "UIGestureRecognizer",
+     "UIPanGestureRecognizer",
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 0ca4cd3..cda2bdb 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -58,6 +58,15 @@ use std::{
+ 
+ const KEYBOARD_DISMISS_DISTANCE: Pixels = px(24.);
+ 
++// AudioToolbox's system sounds, for `Haptic::Vibrate` (no objc2 crate is
++// vendored for AudioToolbox; the one function is declared here).
++#[link(name = "AudioToolbox", kind = "framework")]
++unsafe extern "C" {
++    fn AudioServicesPlaySystemSound(sound: u32);
++}
++/// `kSystemSoundID_Vibrate` (AudioServices.h).
++const K_SYSTEM_SOUND_ID_VIBRATE: u32 = 0x0000_0FFF;
++
+ #[derive(Clone, Copy)]
+ struct KeyboardDismissTouch {
+     id: TouchId,
+@@ -1042,6 +1051,45 @@ impl PlatformWindow for IosWindow {
+         self.hide_keyboard();
+     }
+ 
++    // Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/
++    // framework/Source/FlutterPlatformPlugin.mm @ 3.50.1 (`vibrateHapticFeedback:`).
++    // Copyright 2014 The Flutter Authors. BSD-3-Clause. A fresh generator per
++    // call, as Flutter's; the match is exhaustive, one arm per Flutter branch.
++    #[allow(
++        deprecated,
++        reason = "Flutter's initWithStyle:, deprecated by iOS 17.5's feedbackGeneratorWithStyle:forView:"
++    )]
++    fn perform_haptic(&self, haptic: gpui::Haptic) {
++        use gpui::Haptic;
++        use objc2_ui_kit::{
++            UIImpactFeedbackGenerator, UIImpactFeedbackStyle, UINotificationFeedbackGenerator,
++            UINotificationFeedbackType, UISelectionFeedbackGenerator,
++        };
++        let main_thread = self.view.mtm();
++        let impact = |style| {
++            UIImpactFeedbackGenerator::initWithStyle(
++                UIImpactFeedbackGenerator::alloc(main_thread),
++                style,
++            )
++            .impactOccurred()
++        };
++        let notification =
++            |kind| UINotificationFeedbackGenerator::new(main_thread).notificationOccurred(kind);
++        match haptic {
++            // SAFETY: a C call taking a system sound id; it has no other inputs.
++            Haptic::Vibrate => unsafe { AudioServicesPlaySystemSound(K_SYSTEM_SOUND_ID_VIBRATE) },
++            Haptic::LightImpact => impact(UIImpactFeedbackStyle::Light),
++            Haptic::MediumImpact => impact(UIImpactFeedbackStyle::Medium),
++            Haptic::HeavyImpact => impact(UIImpactFeedbackStyle::Heavy),
++            Haptic::SelectionClick => {
++                UISelectionFeedbackGenerator::new(main_thread).selectionChanged()
++            }
++            Haptic::SuccessNotification => notification(UINotificationFeedbackType::Success),
++            Haptic::WarningNotification => notification(UINotificationFeedbackType::Warning),
++            Haptic::ErrorNotification => notification(UINotificationFeedbackType::Error),
++        }
++    }
++
+     fn text_input_state_changed(&self, change: TextInputStateChange) {
+         self.text_input_view.state_changed(change);
+     }
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index 2463a70..3465b21 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -825,6 +825,40 @@ impl PlatformWindow for WebWindow {
+         }
+     }
+ 
++    // Ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/
++    // platform_dispatcher.dart (`HapticFeedback.vibrate`, `_getHapticFeedbackDuration`)
++    // and safe_browser_api.dart (`vibrate`) @ 3.50.1. Copyright 2014 The Flutter
++    // Authors. BSD-3-Clause. Browsers without `navigator.vibrate` (Safari) play
++    // nothing, as in Flutter web.
++    fn perform_haptic(&self, haptic: gpui::Haptic) {
++        use gpui::Haptic;
++        #[allow(non_upper_case_globals, reason = "Flutter's names")]
++        const vibrateLongPress: u32 = 50;
++        #[allow(non_upper_case_globals, reason = "Flutter's names")]
++        const vibrateLightImpact: u32 = 10;
++        #[allow(non_upper_case_globals, reason = "Flutter's names")]
++        const vibrateMediumImpact: u32 = 20;
++        #[allow(non_upper_case_globals, reason = "Flutter's names")]
++        const vibrateHeavyImpact: u32 = 30;
++        #[allow(non_upper_case_globals, reason = "Flutter's names")]
++        const vibrateSelectionClick: u32 = 10;
++        // Kind -> milliseconds; exhaustive, so a new kind can't be missed.
++        let duration_ms = match haptic {
++            Haptic::LightImpact => vibrateLightImpact,
++            Haptic::MediumImpact => vibrateMediumImpact,
++            Haptic::HeavyImpact => vibrateHeavyImpact,
++            Haptic::SelectionClick => vibrateSelectionClick,
++            Haptic::SuccessNotification => vibrateMediumImpact,
++            Haptic::WarningNotification => vibrateMediumImpact,
++            Haptic::ErrorNotification => vibrateHeavyImpact,
++            Haptic::Vibrate => vibrateLongPress,
++        };
++        let navigator = self.inner.browser_window.navigator();
++        if js_sys::Reflect::has(&navigator, &JsValue::from_str("vibrate")).unwrap_or(false) {
++            navigator.vibrate_with_duration(duration_ms);
++        }
++    }
++
+     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
+         self.inner.viewport.borrow().visible_bounds
+     }
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index aa3dab0..c6fe16c 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -154,6 +154,33 @@ pub struct GestureTuning {
+     /// How a touch's release velocity is estimated: one of Flutter's
+     /// per-platform velocity trackers.
+     pub velocity_tracker: VelocityTrackerKind,
++    /// The haptic the window plays when an element claims a long press
++    /// (Flutter's `Feedback.forLongPress`, which its widgets call when they
++    /// handle one), or `None` for none.
++    pub long_press_haptic: Option<Haptic>,
++}
++
++/// A haptic the platform plays through [`Window::perform_haptic`](crate::Window::perform_haptic):
++/// one of Flutter's `HapticFeedback` calls (services/haptic_feedback.dart).
++/// Each backend maps every kind to its own feedback; desktops play none.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Haptic {
++    /// `HapticFeedback.vibrate`: a short vibration.
++    Vibrate,
++    /// `HapticFeedback.lightImpact`.
++    LightImpact,
++    /// `HapticFeedback.mediumImpact`.
++    MediumImpact,
++    /// `HapticFeedback.heavyImpact`.
++    HeavyImpact,
++    /// `HapticFeedback.selectionClick`: a selection moved by one value.
++    SelectionClick,
++    /// `HapticFeedback.successNotification`.
++    SuccessNotification,
++    /// `HapticFeedback.warningNotification`.
++    WarningNotification,
++    /// `HapticFeedback.errorNotification`.
++    ErrorNotification,
+ }
+ 
+ // Flutter's gesture constants (constants.rs), whose recognizer tests these
+@@ -175,6 +202,8 @@ impl Default for GestureTuning {
+             min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
+             max_fling_velocity: ScrollPhysics::ios().max_fling_velocity(),
+             velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
++            // Platform feel, not a constant: a platform or app that wants one sets it.
++            long_press_haptic: None,
+         }
+     }
+ }
+@@ -530,6 +559,10 @@ impl TouchGestureRecognizer {
+         }
+     }
+ 
++    pub(crate) fn tuning(&self) -> &GestureTuning {
++        &self.tuning
++    }
++
+     /// Each gesture is paired with the device it reports: the touch's own,
+     /// except the closing step of a fling this touch catches, which keeps the
+     /// device of the touch that flung, like the momentum steps before it.
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 9f9d978..bfb1590 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1526,6 +1526,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+ 
+     fn play_system_bell(&self) {}
+ 
++    /// Plays a haptic ([`Window::perform_haptic`](crate::Window::perform_haptic)).
++    /// The default plays nothing, as on desktops, where Flutter plays none.
++    fn perform_haptic(&self, _haptic: crate::Haptic) {}
++
+     /// Initialize the accessibility adapter with callbacks.
+     fn a11y_init(&self, _callbacks: A11yCallbacks) {}
+ 
+diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
+index 503d754..90f7467 100644
+--- a/gpui-pre/src/platform/test/window.rs
++++ b/gpui-pre/src/platform/test/window.rs
+@@ -49,6 +49,7 @@ pub(crate) struct TestWindowState {
+     insets_callback: Option<Box<dyn FnMut(WindowInsets)>>,
+     virtual_keyboard_requests: usize,
+     virtual_keyboard_dismissals: usize,
++    haptics: Vec<crate::Haptic>,
+     composition_ends: usize,
+     moved_callback: Option<Box<dyn FnMut()>>,
+     display_changed_callback: Option<Box<dyn FnMut()>>,
+@@ -125,6 +126,7 @@ impl TestWindow {
+             insets: WindowInsets::default(),
+             insets_callback: None,
+             virtual_keyboard_requests: 0,
++            haptics: Vec::new(),
+             virtual_keyboard_dismissals: 0,
+             composition_ends: 0,
+             moved_callback: None,
+@@ -238,6 +240,11 @@ impl TestWindow {
+         self.0.lock().virtual_keyboard_dismissals
+     }
+ 
++    /// The haptics GPUI played on this window, oldest first.
++    pub fn haptics(&self) -> Vec<crate::Haptic> {
++        self.0.lock().haptics.clone()
++    }
++
+     /// How many times GPUI ended a composition on the platform ([`PlatformWindow::end_composition`]).
+     pub fn composition_ends(&self) -> usize {
+         self.0.lock().composition_ends
+@@ -413,6 +420,10 @@ impl PlatformWindow for TestWindow {
+         self.0.lock().virtual_keyboard_dismissals += 1;
+     }
+ 
++    fn perform_haptic(&self, haptic: crate::Haptic) {
++        self.0.lock().haptics.push(haptic);
++    }
++
+     fn bounds(&self) -> Bounds<Pixels> {
+         self.0.lock().bounds
+     }
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 735b861..06653a5 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3896,6 +3896,14 @@ impl Window {
+         self.long_press_capture == Some(entity.entity_id())
+     }
+ 
++    /// Plays a haptic on the platform (Flutter's `HapticFeedback` calls); a
++    /// platform without haptics, such as a desktop, plays nothing. GPUI plays
++    /// [`GestureTuning::long_press_haptic`](crate::GestureTuning) itself when
++    /// a long press is claimed.
++    pub fn perform_haptic(&self, haptic: crate::Haptic) {
++        self.platform_window.perform_haptic(haptic);
++    }
++
+     /// Restarts touch recognition with the tuning a test passes, in place of
+     /// the platform's.
+     #[cfg(test)]
+@@ -6593,6 +6601,12 @@ impl Window {
+                     if !claimed {
+                         self.long_press_capture = None;
+                     }
++                    // Flutter's widgets play `Feedback.forLongPress` when they
++                    // handle a long press; claiming it is GPUI's handling.
++                    if claimed && let Some(haptic) = self.touch_gestures.tuning().long_press_haptic
++                    {
++                        self.perform_haptic(haptic);
++                    }
+                 }
+                 if ended {
+                     self.long_press_capture = None;
+@@ -10629,6 +10643,57 @@ mod tests {
+         }
+     }
+ 
++    #[gpui::test]
++    fn claimed_long_press_plays_the_tuning_haptic_once(cx: &mut TestAppContext) {
++        use crate::Haptic;
++        // (name, how the element answers the long press, the tuning's
++        // `long_press_haptic`, haptics played over the whole press).
++        let rows = [
++            (
++                "claimed, Android's Feedback.forLongPress: vibrate once",
++                LongPressResponse::PreventDefault,
++                Some(Haptic::Vibrate),
++                vec![Haptic::Vibrate],
++            ),
++            (
++                "claimed, iOS's Feedback.forLongPress: heavy impact once",
++                LongPressResponse::PreventDefault,
++                Some(Haptic::HeavyImpact),
++                vec![Haptic::HeavyImpact],
++            ),
++            (
++                "unclaimed: no element handled it, nothing plays",
++                LongPressResponse::None,
++                Some(Haptic::Vibrate),
++                vec![],
++            ),
++            (
++                "claimed, a desktop's none: nothing plays",
++                LongPressResponse::PreventDefault,
++                None,
++                vec![],
++            ),
++        ];
++        for (name, response, long_press_haptic, expected) in rows {
++            cx.update(|cx| {
++                cx.set_gesture_tuning(GestureTuning {
++                    long_press_haptic,
++                    ..GestureTuning::default()
++                })
++            });
++            let window = cx.add_window(move |_, _| LongPressListener {
++                phases: Rc::default(),
++                response,
++            });
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 0.);
++            cx.executor().advance_clock(Duration::from_millis(501));
++            cx.executor().run_until_parked();
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Moved, 2.);
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Ended, 2.);
++            assert_eq!(cx.test_window(window.into()).haptics(), expected, "{name}");
++        }
++    }
++
+     #[gpui::test]
+     fn stale_default_prevention_does_not_claim_long_press(cx: &mut TestAppContext) {
+         let phases = Rc::new(RefCell::new(Vec::new()));

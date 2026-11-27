@@ -34,6 +34,20 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 - `parallax-platform`: `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants), and
   `Behaviour::gesture_tuning()` now fills `GestureTuning::overscroll` from the row.
+- Haptics (patch 0018, [docs/haptics.md](docs/haptics.md)): `gpui::Haptic` (Flutter's `HapticFeedback` calls),
+  `Window::perform_haptic(kind)` and `PlatformWindow::perform_haptic` (no-op by default, as on desktops), and
+  `GestureTuning::long_press_haptic`, which the window plays once when an element claims a long press. The behaviour
+  table's `haptics.long_press` row now fills it (Android vibrate, iOS heavy impact), so a long press that shows a
+  tooltip, or any element that claims one, plays the platform's haptic with no app code.
+- Android plays every kind with Flutter's ported `PlatformPlugin.vibrateHapticFeedback` (`View.performHapticFeedback`);
+  iOS (gpui_ios) with `UIImpactFeedbackGenerator`, `UISelectionFeedbackGenerator`, `UINotificationFeedbackGenerator`
+  and the vibrate system sound, as Flutter's `FlutterPlatformPlugin.mm`; the web (gpui_web) with `navigator.vibrate`
+  and Flutter web's durations, where the browser has it.
+- hello: the box shows its colour as a tooltip on hover or long press; the long press plays the haptic.
+
+### Changed
+
+- `parallax_platform::behaviour::Haptic` is now `gpui::Haptic`, re-exported: Flutter's eight kinds, not three.
 
 ## [0.1.6] - 2026-11-26 — Phase 2 gestures and physics
 

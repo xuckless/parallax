@@ -14,6 +14,8 @@
     reason = "Flutter's constant names, kept so Flutter changes diff in"
 )]
 
+/// GPUI's haptic kinds (Flutter's `HapticFeedback` calls), the one type the table's haptics rows hold.
+pub use gpui::Haptic;
 use gpui::{
     GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics,
     VelocityTrackerKind, px, slops,
@@ -32,20 +34,13 @@ pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
 /// hard stop), the one copy, re-exported so a row reads as data.
 pub use gpui::overscroll::Overscroll;
 
-/// A `HapticFeedback` call (services/haptic_feedback.dart).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Haptic {
-    Vibrate,
-    HeavyImpact,
-    SelectionClick,
-}
-
-/// The haptic Flutter's widgets play per event, `None` for none.
+/// The haptic Flutter's widgets play per event, `None` for none. Each is a `gpui::Haptic` (Flutter's `HapticFeedback`
+/// calls), which the platform plays (`docs/haptics.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Haptics {
     /// `Feedback.forTap` (Android plays a click sound, no haptic).
     pub tap: Option<Haptic>,
-    /// `Feedback.forLongPress`.
+    /// `Feedback.forLongPress`. GPUI plays it when an element claims a long press (`GestureTuning::long_press_haptic`).
     pub long_press: Option<Haptic>,
     /// A text selection handle moves a character (`SelectionOverlay.selectionEndpoints`).
     pub selection_handle_drag: Option<Haptic>,
@@ -144,10 +139,9 @@ pub const TABLE: [Behaviour; 5] = [
 ];
 
 impl Behaviour {
-    /// The values GPUI's touch recognizer and scroll containers take: the row's touch slop, physics, tracker and
-    /// overscroll; the rest are Flutter's
-    /// constants, which `GestureTuning::default()` holds. Pass it, or a changed copy, to `App::set_gesture_tuning`
-    /// (patch 0014) before opening a window.
+    /// The values GPUI's touch recognizer and scroll containers take: the row's touch slop, physics, tracker,
+    /// overscroll and long-press haptic; the rest are Flutter's constants, which `GestureTuning::default()` holds.
+    /// Pass it, or a changed copy, to `App::set_gesture_tuning` (patch 0014) before opening a window.
     pub fn gesture_tuning(&self) -> GestureTuning {
         GestureTuning {
             touch_slop: slops(PointerDevice::Touch, self.touch_slop).hit,
@@ -156,6 +150,7 @@ impl Behaviour {
             max_fling_velocity: self.scroll_physics.max_fling_velocity(),
             velocity_tracker: self.velocity_tracker,
             overscroll: self.overscroll,
+            long_press_haptic: self.haptics.long_press,
             ..GestureTuning::default()
         }
     }
@@ -373,7 +368,7 @@ mod tests {
             );
             assert_eq!(tuning.scroll_physics, expected.physics, "{name}");
             assert_eq!(tuning.overscroll, expected.overscroll, "{name}");
-            assert_eq!(row.haptics.long_press, expected.long_press, "{name}");
+            assert_eq!(tuning.long_press_haptic, expected.long_press, "{name}");
             assert_eq!(tuning.velocity_tracker, expected.velocity_tracker, "{name}");
             assert_eq!(
                 row.min_touch_target,

@@ -12,7 +12,7 @@ That is the one product-name exception to patch rule 9: the name says these are 
 Each keeps upstream's code, `[lib] name` (code still says `gpui`, `gpui_platform`, …), Apache-2.0 licence, licence
 file and metadata. Changed: name, version, deps on each other, description, repository, and a README listing the
 upstream version, Zed commit and applied patches, crediting Zed. [`NOTICE`](../NOTICE) credits Zed too. A crate our
-patches port Flutter code into (`flutter_crates` in the script: `parallax-gpui`) is `Apache-2.0 AND BSD-3-Clause`,
+patches port Flutter code into (`flutter_crates` in the script: `parallax-gpui`, `parallax-gpui-ios`, `parallax-gpui-web`) is `Apache-2.0 AND BSD-3-Clause`,
 ships Flutter's licence as `LICENSE-FLUTTER` and credits Flutter in its README.
 
 ## Versioning
