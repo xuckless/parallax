@@ -1,0 +1,1461 @@
+Estimate touch release velocity with Flutter's velocity trackers, with Flutter's tests as the oracle.
+
+What: replaces `gestures.rs`'s private `VelocityTracker` (and its `quadratic_velocity_at_newest` fit) with a
+near-verbatim Rust port of Flutter 3.50.1's `velocity_tracker.dart` (`gestures/velocity_tracker.rs`: `VelocityTracker`,
+`IOSScrollViewFlingVelocityTracker`, `MacOSScrollViewFlingVelocityTracker` as one tracker with a kind) and
+`lsq_solver.dart` (`gestures/lsq_solver.rs`: `LeastSquaresSolver`, `PolynomialFit`). Adds the public
+`VelocityTrackerKind` and `GestureTuning::velocity_tracker`, which picks the kind: `IOSScrollViewFling` in
+`GestureTuning::default()` (GPUI's iOS-flavoured defaults, as `ScrollPhysics::ios()`), and in gpui_web
+`LeastSquares` under an Android user agent (with `ScrollPhysics::android()`), the rows of Flutter's
+`ScrollBehavior.velocityTrackerBuilder`. The recognizer calls `add_position` where it pushed samples and
+`get_velocity(now)` on release; the tracker's own 40 ms "pointer stopped" check replaces the recognizer's. Ports
+Flutter's `velocity_tracker_test.dart` (with the `velocity_tracker_data.dart` traces) and `lsq_solver_test.dart` as
+table-driven in-crate tests, one row per Flutter test, named after it. The two upstream velocity tests stay, on the
+`LeastSquares` kind.
+
+Why: upstream's tracker approximates only Flutter's base least-squares tracker. Against Flutter's tests it passes the
+two recorded traces and the lsq rows it can be asked about, but has no iOS or macOS strategy, so it fails "Makes
+consistent velocity estimates with consistent velocity" and has no twin for the two iOS assertion tests; it also
+differs outside the tests (an endpoint estimate from 2 samples where Flutter reports zero, a 1e-12 determinant cutoff
+in seconds). Flutter's trackers are tuned against each platform's native scroll views, so Parallax ports them whole
+(docs/velocity-tracking.md). The tests reach private recognizer code, which GPUI's test platform can't, so they live
+in the crate. Not platform-specific code, so no cfg; the per-platform choice is data in `GestureTuning`.
+
+Code under `gpui-pre/src/gestures/` is ported from Flutter (BSD-3-Clause, header on each file, ledger in Parallax's
+third_party/flutter/PORTED.md).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
+index b496aa4..24379ba 100644
+--- a/gpui-pre-web/src/platform.rs
++++ b/gpui-pre-web/src/platform.rs
+@@ -13,8 +13,8 @@ use gpui::{
+     ClipboardReadError, ClipboardString, CursorStyle, DummyKeyboardMapper, ForegroundExecutor,
+     GestureTuning, Image, ImageFormat, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
+     PlatformDisplay, PlatformGestures, PlatformKeyboardLayout, PlatformKeyboardMapper,
+-    PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState, WindowAppearance,
+-    WindowKind, WindowParams, popup::PopupNotSupportedError,
++    PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState, VelocityTrackerKind,
++    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
+ };
+ use gpui_wgpu::{PreparedWebGraphics, WebBackendPreference, WgpuContext, wgpu};
+ use std::{
+@@ -56,18 +56,22 @@ struct WebGestures {
+ 
+ impl WebGestures {
+     fn from_user_agent(user_agent: &str) -> Self {
+-        let scroll_physics = if user_agent.contains("Android") {
+-            ScrollPhysics::android()
++        let (scroll_physics, velocity_tracker) = if user_agent.contains("Android") {
++            (ScrollPhysics::android(), VelocityTrackerKind::LeastSquares)
+         } else {
+             // iOS, and also desktops: the default exponential decay. Desktop
+             // browsers rarely reach the portable fling at all (trackpads
+             // deliver their own momentum events), so the distinction only
+             // matters for touch screens.
+-            ScrollPhysics::ios()
++            (
++                ScrollPhysics::ios(),
++                VelocityTrackerKind::IOSScrollViewFling,
++            )
+         };
+         Self {
+             tuning: GestureTuning {
+                 scroll_physics,
++                velocity_tracker,
+                 ..GestureTuning::default()
+             },
+         }
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index 21db052..1062e60 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -6,7 +6,18 @@
+ //! [`ScrollEvent`](crate::ScrollEvent)s, including post-release
+ //! momentum. Long presses and touch drags can be claimed by element listeners.
+ 
+-use std::collections::VecDeque;
++mod lsq_solver;
++#[cfg(test)]
++mod lsq_solver_test;
++mod velocity_tracker;
++#[cfg(test)]
++mod velocity_tracker_data;
++#[cfg(test)]
++mod velocity_tracker_test;
++
++use velocity_tracker::VelocityTracker;
++pub use velocity_tracker::VelocityTrackerKind;
++
+ use std::mem;
+ use std::time::Duration;
+ 
+@@ -123,6 +134,9 @@ pub struct GestureTuning {
+     /// Minimum release velocity, in pixels per second, required to start
+     /// scroll momentum.
+     pub min_fling_velocity: f32,
++    /// How a touch's release velocity is estimated: one of Flutter's
++    /// per-platform velocity trackers.
++    pub velocity_tracker: VelocityTrackerKind,
+ }
+ 
+ impl Default for GestureTuning {
+@@ -134,6 +148,7 @@ impl Default for GestureTuning {
+             long_press_duration: Duration::from_millis(500),
+             scroll_physics: ScrollPhysics::ios(),
+             min_fling_velocity: 50.,
++            velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
+         }
+     }
+ }
+@@ -515,18 +530,6 @@ const MAX_FLING_VELOCITY: f32 = 8000.;
+ /// of its own.)
+ const MOMENTUM_STOP_VELOCITY: f32 = 10.;
+ 
+-/// How far back the release-velocity estimate looks. Samples older than this
+-/// reflect an earlier part of the gesture, not the speed at release.
+-const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
+-
+-/// A pause between samples longer than this means the finger stopped:
+-/// anything before the pause describes an earlier motion, not the release
+-/// (Flutter's `kAssumePointerMoveStoppedMilliseconds`). Touch hardware
+-/// reports movement every 8–16ms while the finger is in motion.
+-const VELOCITY_ASSUME_STOPPED_GAP: Duration = Duration::from_millis(40);
+-
+-const VELOCITY_MAX_SAMPLES: usize = 20;
+-
+ /// The portable recognizer behind raw touch input: it watches the
+ /// [`TouchEvent`] stream for one touch at a time and resolves it into either
+ /// a tap or a pan, following the competition model described in the module
+@@ -680,8 +683,9 @@ impl TouchGestureRecognizer {
+                     false
+                 };
+                 if matches!(self.state, TouchGestureState::Idle) {
+-                    let mut velocity_tracker = VelocityTracker::default();
+-                    velocity_tracker.push(now, event.position);
++                    let mut velocity_tracker =
++                        VelocityTracker::with_kind(self.tuning.velocity_tracker);
++                    velocity_tracker.add_position(now, event.position);
+                     let touch = ActiveTouch {
+                         id: event.id,
+                         device: event.device,
+@@ -722,7 +726,7 @@ impl TouchGestureRecognizer {
+                     long_press_offered,
+                     touch_drag_offered,
+                 } if touch.id == event.id => {
+-                    touch.velocity_tracker.push(now, event.position);
++                    touch.velocity_tracker.add_position(now, event.position);
+                     touch.last_position = event.position;
+                     let accumulated = event.position - touch.start_position;
+                     if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
+@@ -774,7 +778,7 @@ impl TouchGestureRecognizer {
+                     if raw_delta != Point::default() {
+                         touch.last_movement = raw_delta;
+                     }
+-                    touch.velocity_tracker.push(now, event.position);
++                    touch.velocity_tracker.add_position(now, event.position);
+                     touch.last_position = event.position;
+                     let mut target = event.predicted_position.unwrap_or(event.position);
+                     let mut delta = target - touch.emitted_position;
+@@ -864,21 +868,10 @@ impl TouchGestureRecognizer {
+                     // The release deliberately contributes no velocity
+                     // sample: it usually repeats the last movement's position
+                     // with a later timestamp, which would dilute the
+-                    // estimate. But a release long after the last movement
+-                    // means the finger had already stopped, so nothing
+-                    // flings.
+-                    let finger_stopped =
+-                        touch
+-                            .velocity_tracker
+-                            .latest_sample_time()
+-                            .is_none_or(|latest| {
+-                                now.duration_since(latest) > VELOCITY_ASSUME_STOPPED_GAP
+-                            });
+-                    let mut velocity = if finger_stopped {
+-                        Point::default()
+-                    } else {
+-                        touch.velocity_tracker.velocity()
+-                    };
++                    // estimate. A release long after the last movement
++                    // means the finger had already stopped: the tracker
++                    // reports zero, so nothing flings.
++                    let mut velocity = touch.velocity_tracker.get_velocity(now);
+                     match axis {
+                         Axis::Vertical => velocity.x = 0.,
+                         Axis::Horizontal => velocity.y = 0.,
+@@ -1120,107 +1113,6 @@ fn scroll_event(
+     }
+ }
+ 
+-/// Estimates the velocity a touch had at its newest sample.
+-#[derive(Default)]
+-struct VelocityTracker {
+-    samples: VecDeque<(Instant, Point<Pixels>)>,
+-}
+-
+-impl VelocityTracker {
+-    fn push(&mut self, time: Instant, position: Point<Pixels>) {
+-        self.samples.push_back((time, position));
+-        while self.samples.len() > VELOCITY_MAX_SAMPLES {
+-            self.samples.pop_front();
+-        }
+-    }
+-
+-    fn latest_sample_time(&self) -> Option<Instant> {
+-        self.samples.back().map(|(time, _)| *time)
+-    }
+-
+-    /// The velocity at the newest sample, in pixels per second.
+-    ///
+-    /// Fits a second-degree polynomial by least squares over the trailing
+-    /// [`VELOCITY_WINDOW`] and takes its derivative at the newest sample,
+-    /// like Flutter's `VelocityTracker` and Android's `lsq2` strategy. An
+-    /// endpoint difference over the same window would report the window's
+-    /// *average* speed, which for a flick — still accelerating at lift-off —
+-    /// is roughly half the speed the finger actually had at release.
+-    fn velocity(&self) -> Point<f32> {
+-        let Some((newest_time, _)) = self.samples.back() else {
+-            return Point::default();
+-        };
+-        let mut times_seconds: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
+-        let mut horizontal: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
+-        let mut vertical: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
+-        let mut previous_time = *newest_time;
+-        for (time, position) in self.samples.iter().rev() {
+-            let age = newest_time.duration_since(*time);
+-            if age > VELOCITY_WINDOW
+-                || previous_time.duration_since(*time) > VELOCITY_ASSUME_STOPPED_GAP
+-            {
+-                break;
+-            }
+-            previous_time = *time;
+-            times_seconds.push(-age.as_secs_f64());
+-            horizontal.push(f64::from(f32::from(position.x)));
+-            vertical.push(f64::from(f32::from(position.y)));
+-        }
+-
+-        let endpoint_estimate = |values: &[f64]| -> f32 {
+-            let elapsed = -times_seconds.last().copied().unwrap_or(0.);
+-            if elapsed <= f64::EPSILON {
+-                return 0.;
+-            }
+-            ((values.first().copied().unwrap_or(0.) - values.last().copied().unwrap_or(0.))
+-                / elapsed) as f32
+-        };
+-        if times_seconds.len() < 3 {
+-            return point(endpoint_estimate(&horizontal), endpoint_estimate(&vertical));
+-        }
+-        point(
+-            quadratic_velocity_at_newest(&times_seconds, &horizontal).map_or_else(
+-                || endpoint_estimate(&horizontal),
+-                |velocity| velocity as f32,
+-            ),
+-            quadratic_velocity_at_newest(&times_seconds, &vertical)
+-                .map_or_else(|| endpoint_estimate(&vertical), |velocity| velocity as f32),
+-        )
+-    }
+-}
+-
+-/// Least-squares fit of `value = a0 + a1·t + a2·t²` returning `a1`: the
+-/// fitted curve's velocity at `t = 0`, which callers place at the newest
+-/// sample. `None` when the samples are too degenerate to fit (all
+-/// simultaneous, for example).
+-fn quadratic_velocity_at_newest(times: &[f64], values: &[f64]) -> Option<f64> {
+-    let count = times.len() as f64;
+-    let (mut sum_t1, mut sum_t2, mut sum_t3, mut sum_t4) = (0., 0., 0., 0.);
+-    let (mut sum_v, mut sum_vt, mut sum_vt2) = (0., 0., 0.);
+-    for (&time, &value) in times.iter().zip(values) {
+-        let time_squared = time * time;
+-        sum_t1 += time;
+-        sum_t2 += time_squared;
+-        sum_t3 += time_squared * time;
+-        sum_t4 += time_squared * time_squared;
+-        sum_v += value;
+-        sum_vt += value * time;
+-        sum_vt2 += value * time_squared;
+-    }
+-    // Cramer's rule on the 3×3 normal equations, solved for the linear
+-    // coefficient only.
+-    let determinant = count * (sum_t2 * sum_t4 - sum_t3 * sum_t3)
+-        - sum_t1 * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
+-        + sum_t2 * (sum_t1 * sum_t3 - sum_t2 * sum_t2);
+-    if determinant.abs() < 1e-12 {
+-        return None;
+-    }
+-    let linear_determinant = count * (sum_vt * sum_t4 - sum_t3 * sum_vt2)
+-        - sum_v * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
+-        + sum_t2 * (sum_t1 * sum_vt2 - sum_vt * sum_t2);
+-    Some(linear_determinant / determinant)
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -2106,16 +1998,16 @@ mod tests {
+         // A uniformly accelerating flick: position grows quadratically, so
+         // the speed at the newest sample (2·k·t) is twice the window
+         // average (k·t). The estimator must report the former.
+-        let mut velocity_tracker = VelocityTracker::default();
++        let mut velocity_tracker = VelocityTracker::with_kind(VelocityTrackerKind::LeastSquares);
+         let start = Instant::now();
+         for step in 0..=6 {
+             let t = step as f32 * 0.016;
+-            velocity_tracker.push(
++            velocity_tracker.add_position(
+                 start + Duration::from_millis(step * 16),
+                 point(px(0.), px(1000. * t * t)),
+             );
+         }
+-        let velocity = velocity_tracker.velocity();
++        let velocity = velocity_tracker.get_velocity(start + Duration::from_millis(96));
+         let release_speed = 2. * 1000. * 0.096;
+         assert!(
+             (velocity.y - release_speed).abs() < 1.,
+@@ -2130,13 +2022,13 @@ mod tests {
+         // Fast motion, then a hold longer than the stopped-finger gap, then
+         // a slow nudge: only the motion after the pause describes the
+         // release.
+-        let mut velocity_tracker = VelocityTracker::default();
++        let mut velocity_tracker = VelocityTracker::with_kind(VelocityTrackerKind::LeastSquares);
+         let start = Instant::now();
+-        velocity_tracker.push(start, point(px(0.), px(0.)));
+-        velocity_tracker.push(start + Duration::from_millis(16), point(px(0.), px(50.)));
+-        velocity_tracker.push(start + Duration::from_millis(80), point(px(0.), px(52.)));
+-        velocity_tracker.push(start + Duration::from_millis(96), point(px(0.), px(54.)));
+-        let velocity = velocity_tracker.velocity();
++        velocity_tracker.add_position(start, point(px(0.), px(0.)));
++        velocity_tracker.add_position(start + Duration::from_millis(16), point(px(0.), px(50.)));
++        velocity_tracker.add_position(start + Duration::from_millis(80), point(px(0.), px(52.)));
++        velocity_tracker.add_position(start + Duration::from_millis(96), point(px(0.), px(54.)));
++        let velocity = velocity_tracker.get_velocity(start + Duration::from_millis(96));
+         assert!(
+             velocity.y < 200.,
+             "pre-pause motion leaked into the estimate: {} px/s",
+diff --git a/gpui-pre/src/gestures/lsq_solver.rs b/gpui-pre/src/gestures/lsq_solver.rs
+new file mode 100644
+index 0000000..2611686
+--- /dev/null
++++ b/gpui-pre/src/gestures/lsq_solver.rs
+@@ -0,0 +1,212 @@
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/lsq_solver.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++// Flutter's `precisionErrorTolerance` (foundation/constants.dart).
++const PRECISION_ERROR_TOLERANCE: f64 = 1e-10;
++
++// TODO(abarth): Consider using vector_math.
++struct Vector<'a> {
++    offset: usize,
++    length: usize,
++    elements: &'a [f64],
++}
++
++impl Vector<'_> {
++    fn get(&self, i: usize) -> f64 {
++        self.elements[i + self.offset]
++    }
++
++    fn dot(&self, a: &Vector) -> f64 {
++        let mut result = 0.0;
++        for i in 0..self.length {
++            result += self.get(i) * a.get(i);
++        }
++        result
++    }
++
++    fn norm(&self) -> f64 {
++        self.dot(self).sqrt()
++    }
++}
++
++// TODO(abarth): Consider using vector_math.
++struct Matrix {
++    columns: usize,
++    elements: Vec<f64>,
++}
++
++impl Matrix {
++    fn new(rows: usize, cols: usize) -> Self {
++        Self {
++            columns: cols,
++            elements: vec![0.0; rows * cols],
++        }
++    }
++
++    fn get(&self, row: usize, col: usize) -> f64 {
++        self.elements[row * self.columns + col]
++    }
++
++    fn set(&mut self, row: usize, col: usize, value: f64) {
++        self.elements[row * self.columns + col] = value;
++    }
++
++    fn get_row(&self, row: usize) -> Vector<'_> {
++        Vector {
++            offset: row * self.columns,
++            length: self.columns,
++            elements: &self.elements,
++        }
++    }
++}
++
++/// An nth degree polynomial fit to a dataset.
++pub(crate) struct PolynomialFit {
++    /// The polynomial coefficients of the fit.
++    ///
++    /// For each `i`, the element `coefficients[i]` is the coefficient of
++    /// the `i`-th power of the variable.
++    pub(crate) coefficients: Vec<f64>,
++
++    /// An indicator of the quality of the fit.
++    ///
++    /// Larger values indicate greater quality.  The value ranges from 0.0 to 1.0.
++    ///
++    /// The confidence is defined as the fraction of the dataset's variance
++    /// that is captured by variance in the fit polynomial.  In statistics
++    /// textbooks this is often called "r-squared".
++    #[cfg_attr(
++        not(test),
++        expect(dead_code, reason = "Flutter's API; only its tests read it")
++    )]
++    pub(crate) confidence: f64,
++}
++
++/// Uses the least-squares algorithm to fit a polynomial to a set of data.
++pub(crate) struct LeastSquaresSolver<'a> {
++    /// The x-coordinates of each data point.
++    pub(crate) x: &'a [f64],
++
++    /// The y-coordinates of each data point.
++    pub(crate) y: &'a [f64],
++
++    /// The weight to use for each data point.
++    pub(crate) w: &'a [f64],
++}
++
++impl LeastSquaresSolver<'_> {
++    /// Fits a polynomial of the given degree to the data points.
++    ///
++    /// When there is not enough data to fit a curve None is returned.
++    pub(crate) fn solve(&self, degree: usize) -> Option<PolynomialFit> {
++        let (x, y, w) = (self.x, self.y, self.w);
++        debug_assert!(x.len() == y.len() && y.len() == w.len());
++        if degree > x.len() {
++            // Not enough data to fit a curve.
++            return None;
++        }
++
++        let mut coefficients = vec![0.0; degree + 1];
++
++        // Shorthands for the purpose of notation equivalence to original C++ code.
++        let m = x.len();
++        let n = degree + 1;
++
++        // Expand the X vector to a matrix A, pre-multiplied by the weights.
++        let mut a = Matrix::new(n, m);
++        for h in 0..m {
++            a.set(0, h, w[h]);
++            for i in 1..n {
++                a.set(i, h, a.get(i - 1, h) * x[h]);
++            }
++        }
++
++        // Apply the Gram-Schmidt process to A to obtain its QR decomposition.
++
++        // Orthonormal basis, column-major ordVectorer.
++        let mut q = Matrix::new(n, m);
++        // Upper triangular matrix, row-major order.
++        let mut r = Matrix::new(n, n);
++        for j in 0..n {
++            for h in 0..m {
++                q.set(j, h, a.get(j, h));
++            }
++            for i in 0..j {
++                let dot = q.get_row(j).dot(&q.get_row(i));
++                for h in 0..m {
++                    q.set(j, h, q.get(j, h) - dot * q.get(i, h));
++                }
++            }
++
++            let norm = q.get_row(j).norm();
++            if norm < PRECISION_ERROR_TOLERANCE {
++                // Vectors are linearly dependent or zero so no solution.
++                return None;
++            }
++
++            let inverse_norm = 1.0 / norm;
++            for h in 0..m {
++                q.set(j, h, q.get(j, h) * inverse_norm);
++            }
++            for i in 0..n {
++                let value = if i < j {
++                    0.0
++                } else {
++                    q.get_row(j).dot(&a.get_row(i))
++                };
++                r.set(j, i, value);
++            }
++        }
++
++        // Solve R B = Qt W Y to find B. This is easy because R is upper triangular.
++        // We just work from bottom-right to top-left calculating B's coefficients.
++        let wy: Vec<f64> = (0..m).map(|h| y[h] * w[h]).collect();
++        let wy = Vector {
++            offset: 0,
++            length: m,
++            elements: &wy,
++        };
++        for i in (0..n).rev() {
++            coefficients[i] = q.get_row(i).dot(&wy);
++            for j in (i + 1..n).rev() {
++                coefficients[i] -= r.get(i, j) * coefficients[j];
++            }
++            coefficients[i] /= r.get(i, i);
++        }
++
++        // Calculate the coefficient of determination (confidence) as:
++        //   1 - (sumSquaredError / sumSquaredTotal)
++        // ...where sumSquaredError is the residual sum of squares (variance of the
++        // error), and sumSquaredTotal is the total sum of squares (variance of the
++        // data) where each has been weighted.
++        let mut y_mean = 0.0;
++        for h in 0..m {
++            y_mean += y[h];
++        }
++        y_mean /= m as f64;
++
++        let mut sum_squared_error = 0.0;
++        let mut sum_squared_total = 0.0;
++        for h in 0..m {
++            let mut term = 1.0;
++            let mut err = y[h] - coefficients[0];
++            for i in 1..n {
++                term *= x[h];
++                err -= term * coefficients[i];
++            }
++            sum_squared_error += w[h] * w[h] * err * err;
++            let v = y[h] - y_mean;
++            sum_squared_total += w[h] * w[h] * v * v;
++        }
++
++        let confidence = if sum_squared_total <= PRECISION_ERROR_TOLERANCE {
++            1.0
++        } else {
++            1.0 - (sum_squared_error / sum_squared_total)
++        };
++
++        Some(PolynomialFit {
++            coefficients,
++            confidence,
++        })
++    }
++}
+diff --git a/gpui-pre/src/gestures/lsq_solver_test.rs b/gpui-pre/src/gestures/lsq_solver_test.rs
+new file mode 100644
+index 0000000..6fe8cd7
+--- /dev/null
++++ b/gpui-pre/src/gestures/lsq_solver_test.rs
+@@ -0,0 +1,64 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/lsq_solver_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++use super::lsq_solver::LeastSquaresSolver;
++
++fn approx(value: f64, expectation: f64) -> bool {
++    const EPS: f64 = 1e-6;
++    (value - expectation).abs() < EPS
++}
++
++const X: [f64; 9] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
++const W: [f64; 9] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
++const LINE: [f64; 9] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
++const SLOPED_LINE: [f64; 9] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
++
++/// Fits of `y` over `X` (weights `W`) at a degree: the expected coefficients and confidence.
++/// To add one: a row with the Flutter test's name, `y`, the degree and the expected fit.
++const FITS: &[(&str, &[f64], usize, &[f64], f64)] = &[
++    (
++        "Least-squares fit: linear polynomial to line",
++        &LINE,
++        1,
++        &[1.0, 0.0],
++        1.0,
++    ),
++    (
++        "Least-squares fit: linear polynomial to sloped line",
++        &SLOPED_LINE,
++        1,
++        &[1.0, 1.0],
++        1.0,
++    ),
++    (
++        "Least-squares fit: quadratic polynomial to line",
++        &LINE,
++        2,
++        &[1.0, 0.0, 0.0],
++        1.0,
++    ),
++    (
++        "Least-squares fit: quadratic polynomial to sloped line",
++        &SLOPED_LINE,
++        2,
++        &[1.0, 1.0, 0.0],
++        1.0,
++    ),
++];
++
++#[test]
++fn least_squares_fits() {
++    for (name, y, degree, coefficients, confidence) in FITS {
++        let solver = LeastSquaresSolver { x: &X, y, w: &W };
++        let fit = solver.solve(*degree).expect(name);
++
++        assert_eq!(fit.coefficients.len(), coefficients.len(), "{name}");
++        for (actual, expected) in fit.coefficients.iter().zip(*coefficients) {
++            assert!(approx(*actual, *expected), "{name}: {:?}", fit.coefficients);
++        }
++        assert!(
++            approx(fit.confidence, *confidence),
++            "{name}: confidence {}",
++            fit.confidence
++        );
++    }
++}
+diff --git a/gpui-pre/src/gestures/velocity_tracker.rs b/gpui-pre/src/gestures/velocity_tracker.rs
+new file mode 100644
+index 0000000..14e6521
+--- /dev/null
++++ b/gpui-pre/src/gestures/velocity_tracker.rs
+@@ -0,0 +1,242 @@
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/velocity_tracker.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++//
++// Flutter's three trackers are one `VelocityTracker` here, its `VelocityTrackerKind` picking the estimate (Flutter's
++// subclasses). `Velocity` is GPUI's `Point<f32>` and `Offset` a `Point<f64>`; `VelocityEstimate`'s `confidence`,
++// `duration` and `offset` are dropped (no GPUI caller), so `getVelocityEstimate` folds into `get_velocity`.
++// Flutter's `_sinceLastSample` stopwatch is `now` minus the newest sample's time: GPUI timestamps samples with the
++// clock it passes as `now`.
++
++use scheduler::Instant;
++
++use super::lsq_solver::LeastSquaresSolver;
++use crate::{Pixels, Point, point};
++
++/// Which of Flutter's velocity trackers estimates a touch's release velocity.
++///
++/// Flutter's `ScrollBehavior.velocityTrackerBuilder` picks one per platform: iOS uses
++/// [`Self::IOSScrollViewFling`], macOS [`Self::MacOSScrollViewFling`], Android, Fuchsia, Linux and Windows
++/// [`Self::LeastSquares`].
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum VelocityTrackerKind {
++    /// Flutter's `VelocityTracker`: a least-squares quadratic fit over the
++    /// last 100 ms of continuous motion, differentiated at the newest sample.
++    LeastSquares,
++    /// Flutter's `IOSScrollViewFlingVelocityTracker`: a close approximation of
++    /// the velocity an iOS scroll view reports when the touch that initiates a
++    /// fling is released, as a weighted average of the latest few velocity
++    /// samples.
++    IOSScrollViewFling,
++    /// Flutter's `MacOSScrollViewFlingVelocityTracker`: the same approach,
++    /// weighted as a macOS scroll view is.
++    MacOSScrollViewFling,
++}
++
++const ASSUME_POINTER_MOVE_STOPPED_MILLISECONDS: u128 = 40;
++const HISTORY_SIZE: usize = 20;
++const HORIZON_MILLISECONDS: f64 = 100.;
++const MIN_SAMPLE_SIZE: usize = 3;
++
++/// Weights of `_previousVelocityAt(-2)`, `(-1)` and `(0)` in the iOS and macOS
++/// fling estimates. To add a kind of that shape: one row here and one arm in
++/// [`VelocityTracker::get_velocity`].
++const IOS_SCROLL_VIEW_FLING_WEIGHTS: [(isize, f64); 3] = [(-2, 0.6), (-1, 0.35), (0, 0.05)];
++const MAC_OS_SCROLL_VIEW_FLING_WEIGHTS: [(isize, f64); 3] = [(-2, 0.15), (-1, 0.65), (0, 0.2)];
++
++#[derive(Clone, Copy, Debug)]
++struct PointAtTime {
++    time: Instant,
++    point: Point<f64>,
++}
++
++/// Computes a pointer's velocity based on data from move events.
++///
++/// The input data is provided by calling [`Self::add_position`]. Adding data
++/// is cheap.
++///
++/// To obtain a velocity, call [`Self::get_velocity`]. This will compute the
++/// velocity based on the data added so far. Only call this when you need to
++/// use the velocity, as it is comparatively expensive.
++///
++/// The quality of the velocity estimation will be better if more data points
++/// have been received.
++pub(crate) struct VelocityTracker {
++    kind: VelocityTrackerKind,
++    // Circular buffer; current sample at index. `IOSScrollViewFlingVelocityTracker`'s
++    // `_touchSamples` (its `_sampleSize` is also 20) is this same buffer: the
++    // iOS tracker keeps 20 samples so `VelocityEstimate.offset` is large enough
++    // to count as a fling, and adds them the same way.
++    samples: [Option<PointAtTime>; HISTORY_SIZE],
++    index: usize,
++}
++
++impl VelocityTracker {
++    /// Create a new velocity tracker of a [`VelocityTrackerKind`].
++    pub(crate) fn with_kind(kind: VelocityTrackerKind) -> Self {
++        Self {
++            kind,
++            samples: [None; HISTORY_SIZE],
++            index: 0,
++        }
++    }
++
++    /// Adds a position as the given time to the tracker.
++    pub(crate) fn add_position(&mut self, time: Instant, position: Point<Pixels>) {
++        if let (
++            VelocityTrackerKind::IOSScrollViewFling | VelocityTrackerKind::MacOSScrollViewFling,
++            Some(previous_point),
++        ) = (self.kind, self.samples[self.index])
++        {
++            debug_assert!(
++                previous_point.time <= time,
++                "The position being added ({position:?}) has a smaller timestamp ({time:?}) \
++                 than its predecessor: {previous_point:?}."
++            );
++        }
++        self.index = (self.index + 1) % HISTORY_SIZE;
++        self.samples[self.index] = Some(PointAtTime {
++            time,
++            point: position.map(|value| f64::from(f32::from(value))),
++        });
++    }
++
++    /// Computes the velocity of the pointer at the time of the last provided
++    /// data point, in pixels per second. `now` is the clock the samples were
++    /// added with.
++    ///
++    /// Returns zero if there is no data from which to compute an estimate, or
++    /// if the pointer has not moved for 40 ms.
++    pub(crate) fn get_velocity(&self, now: Instant) -> Point<f32> {
++        let Some(newest_sample) = self.samples[self.index] else {
++            debug_assert!(
++                self.kind == VelocityTrackerKind::LeastSquares,
++                "There must be at least 1 point in _touchSamples: {:?}",
++                self.samples
++            );
++            return Point::default();
++        };
++        // Has user recently moved since last sample?
++        if now.duration_since(newest_sample.time).as_millis()
++            > ASSUME_POINTER_MOVE_STOPPED_MILLISECONDS
++        {
++            return Point::default();
++        }
++        let pixels_per_second = match self.kind {
++            VelocityTrackerKind::LeastSquares => self.least_squares_velocity(newest_sample),
++            // The velocity estimated using this expression is an approximation of the
++            // scroll velocity of an iOS scroll view at the moment the user touch was
++            // released, not the final velocity of the iOS pan gesture recognizer
++            // installed on the scroll view would report. Typically in an iOS scroll
++            // view the velocity values are different between the two, because the
++            // scroll view usually slows down when the touch is released.
++            VelocityTrackerKind::IOSScrollViewFling => {
++                self.weighted_velocity(IOS_SCROLL_VIEW_FLING_WEIGHTS)
++            }
++            // The velocity estimated using this expression is an approximation of the
++            // scroll velocity of a macOS scroll view at the moment the user touch was
++            // released.
++            VelocityTrackerKind::MacOSScrollViewFling => {
++                self.weighted_velocity(MAC_OS_SCROLL_VIEW_FLING_WEIGHTS)
++            }
++        };
++        pixels_per_second.map(|value| value as f32)
++    }
++
++    fn least_squares_velocity(&self, newest_sample: PointAtTime) -> Point<f64> {
++        let mut x = Vec::with_capacity(HISTORY_SIZE);
++        let mut y = Vec::with_capacity(HISTORY_SIZE);
++        let mut w = Vec::with_capacity(HISTORY_SIZE);
++        let mut time = Vec::with_capacity(HISTORY_SIZE);
++        let mut sample_count = 0;
++        let mut index = self.index;
++
++        let mut previous_sample = newest_sample;
++
++        // Starting with the most recent PointAtTime sample, iterate backwards while
++        // the samples represent continuous motion.
++        loop {
++            let Some(sample) = self.samples[index] else {
++                break;
++            };
++
++            let age = newest_sample.time.duration_since(sample.time).as_micros() as f64 / 1000.;
++            // Dart's `.abs()` of `sample.time - previousSample.time`.
++            let delta = sample
++                .time
++                .max(previous_sample.time)
++                .duration_since(sample.time.min(previous_sample.time))
++                .as_micros() as f64
++                / 1000.;
++            previous_sample = sample;
++            if age > HORIZON_MILLISECONDS || delta > ASSUME_POINTER_MOVE_STOPPED_MILLISECONDS as f64
++            {
++                break;
++            }
++
++            x.push(sample.point.x);
++            y.push(sample.point.y);
++            w.push(1.0);
++            time.push(-age);
++            index = if index == 0 { HISTORY_SIZE } else { index } - 1;
++
++            sample_count += 1;
++            if sample_count >= HISTORY_SIZE {
++                break;
++            }
++        }
++
++        if sample_count >= MIN_SAMPLE_SIZE {
++            let x_fit = LeastSquaresSolver {
++                x: &time,
++                y: &x,
++                w: &w,
++            }
++            .solve(2);
++            let y_fit = LeastSquaresSolver {
++                x: &time,
++                y: &y,
++                w: &w,
++            }
++            .solve(2);
++
++            if let (Some(x_fit), Some(y_fit)) = (x_fit, y_fit) {
++                // convert from pixels/ms to pixels/s
++                return point(x_fit.coefficients[1] * 1000., y_fit.coefficients[1] * 1000.);
++            }
++        }
++
++        // We're unable to make a velocity estimate but we did have at least one
++        // valid pointer position.
++        Point::default()
++    }
++
++    fn weighted_velocity(&self, weights: [(isize, f64); 3]) -> Point<f64> {
++        weights
++            .into_iter()
++            .fold(Point::default(), |estimated_velocity, (index, weight)| {
++                estimated_velocity + self.previous_velocity_at(index) * weight
++            })
++    }
++
++    // Computes the velocity using 2 adjacent points in history. When index = 0,
++    // it uses the latest point recorded and the point recorded immediately before
++    // it. The smaller index is, the earlier in history the points used are.
++    fn previous_velocity_at(&self, index: isize) -> Point<f64> {
++        let at = |offset: isize| {
++            self.samples[(self.index as isize + offset).rem_euclid(HISTORY_SIZE as isize) as usize]
++        };
++        let (Some(end), Some(start)) = (at(index), at(index - 1)) else {
++            return Point::default();
++        };
++
++        let dt = end.time.checked_duration_since(start.time);
++        debug_assert!(dt.is_some(), "dt >= 0");
++        let dt = dt.map_or(0, |dt| dt.as_micros());
++
++        if dt > 0 {
++            // Convert dt to milliseconds to preserve floating point precision.
++            (end.point - start.point) * 1000. / (dt as f64 / 1000.)
++        } else {
++            Point::default()
++        }
++    }
++}
+diff --git a/gpui-pre/src/gestures/velocity_tracker_data.rs b/gpui-pre/src/gestures/velocity_tracker_data.rs
+new file mode 100644
+index 0000000..5e2b1ab
+--- /dev/null
++++ b/gpui-pre/src/gestures/velocity_tracker_data.rs
+@@ -0,0 +1,340 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_data.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++//
++// Flutter's recorded pointer traces, one `PointerEvent` per row: (kind, timeStamp in milliseconds, position.dx,
++// position.dy). Pointers (1 to 13) go down one at a time, so the pointer id is dropped.
++
++use PointerEvent::{Down, Move, Up};
++
++/// Flutter's `PointerDownEvent`, `PointerMoveEvent` and `PointerUpEvent`.
++pub(super) enum PointerEvent {
++    Down,
++    Move,
++    Up,
++}
++
++pub(super) const VELOCITY_EVENT_DATA: &[(PointerEvent, u64, f64, f64)] = &[
++    (Down, 216690896, 270.0, 538.2857055664062),
++    (Move, 216690906, 270.0, 538.2857055664062),
++    (Move, 216690951, 270.0, 530.8571166992188),
++    (Move, 216690959, 270.0, 526.8571166992188),
++    (Move, 216690967, 270.0, 521.4285888671875),
++    (Move, 216690975, 270.0, 515.4285888671875),
++    (Move, 216690983, 270.0, 506.8571472167969),
++    (Move, 216690991, 268.8571472167969, 496.0),
++    (Move, 216690998, 267.4285583496094, 483.1428527832031),
++    (Move, 216691006, 266.28570556640625, 469.71429443359375),
++    (Move, 216691014, 265.4285583496094, 456.8571472167969),
++    (Move, 216691021, 264.28570556640625, 443.71429443359375),
++    (Move, 216691029, 264.0, 431.71429443359375),
++    (Move, 216691036, 263.4285583496094, 421.1428527832031),
++    (Move, 216691044, 263.4285583496094, 412.5714416503906),
++    (Move, 216691052, 263.4285583496094, 404.5714416503906),
++    (Move, 216691060, 263.4285583496094, 396.5714416503906),
++    (Move, 216691068, 264.5714416503906, 390.0),
++    (Move, 216691075, 265.1428527832031, 384.8571472167969),
++    (Move, 216691083, 266.0, 380.28570556640625),
++    (Move, 216691091, 266.5714416503906, 376.28570556640625),
++    (Move, 216691098, 267.1428527832031, 373.1428527832031),
++    (Move, 216691106, 267.71429443359375, 370.28570556640625),
++    (Move, 216691114, 268.28570556640625, 367.71429443359375),
++    (Move, 216691121, 268.5714416503906, 366.0),
++    (Move, 216691130, 268.8571472167969, 364.5714416503906),
++    (Move, 216691137, 269.1428527832031, 363.71429443359375),
++    (Move, 216691145, 269.1428527832031, 362.8571472167969),
++    (Move, 216691153, 269.4285583496094, 362.8571472167969),
++    (Move, 216691168, 268.5714416503906, 365.4285583496094),
++    (Move, 216691176, 267.1428527832031, 370.28570556640625),
++    (Move, 216691183, 265.4285583496094, 376.8571472167969),
++    (Move, 216691191, 263.1428527832031, 385.71429443359375),
++    (Move, 216691199, 261.4285583496094, 396.5714416503906),
++    (Move, 216691207, 259.71429443359375, 408.5714416503906),
++    (Move, 216691215, 258.28570556640625, 419.4285583496094),
++    (Move, 216691222, 257.4285583496094, 428.5714416503906),
++    (Move, 216691230, 256.28570556640625, 436.0),
++    (Move, 216691238, 255.7142791748047, 442.0),
++    (Move, 216691245, 255.14285278320312, 447.71429443359375),
++    (Move, 216691253, 254.85714721679688, 453.1428527832031),
++    (Move, 216691261, 254.57142639160156, 458.5714416503906),
++    (Move, 216691268, 254.2857208251953, 463.71429443359375),
++    (Move, 216691276, 254.2857208251953, 470.28570556640625),
++    (Move, 216691284, 254.2857208251953, 477.71429443359375),
++    (Move, 216691292, 255.7142791748047, 487.1428527832031),
++    (Move, 216691300, 256.8571472167969, 498.5714416503906),
++    (Move, 216691307, 258.28570556640625, 507.71429443359375),
++    (Move, 216691315, 259.4285583496094, 516.0),
++    (Move, 216691323, 260.28570556640625, 521.7142944335938),
++    (Up, 216691338, 260.28570556640625, 521.7142944335938),
++    (Down, 216691573, 266.0, 327.4285583496094),
++    (Move, 216691588, 266.0, 327.4285583496094),
++    (Move, 216691626, 261.1428527832031, 337.1428527832031),
++    (Move, 216691634, 258.28570556640625, 343.1428527832031),
++    (Move, 216691642, 254.57142639160156, 354.0),
++    (Move, 216691650, 250.2857208251953, 368.28570556640625),
++    (Move, 216691657, 247.42857360839844, 382.8571472167969),
++    (Move, 216691665, 245.14285278320312, 397.4285583496094),
++    (Move, 216691673, 243.14285278320312, 411.71429443359375),
++    (Move, 216691680, 242.2857208251953, 426.28570556640625),
++    (Move, 216691688, 241.7142791748047, 440.5714416503906),
++    (Move, 216691696, 241.7142791748047, 454.5714416503906),
++    (Move, 216691703, 242.57142639160156, 467.71429443359375),
++    (Move, 216691712, 243.42857360839844, 477.4285583496094),
++    (Move, 216691720, 244.85714721679688, 485.71429443359375),
++    (Move, 216691727, 246.2857208251953, 493.1428527832031),
++    (Move, 216691735, 248.0, 499.71429443359375),
++    (Up, 216691750, 248.0, 499.71429443359375),
++    (Down, 216692255, 249.42857360839844, 351.4285583496094),
++    (Move, 216692270, 249.42857360839844, 351.4285583496094),
++    (Move, 216692309, 246.2857208251953, 361.71429443359375),
++    (Move, 216692317, 244.0, 368.5714416503906),
++    (Move, 216692325, 241.42857360839844, 377.71429443359375),
++    (Move, 216692333, 237.7142791748047, 391.71429443359375),
++    (Move, 216692340, 235.14285278320312, 406.5714416503906),
++    (Move, 216692348, 232.57142639160156, 421.4285583496094),
++    (Move, 216692356, 230.2857208251953, 436.5714416503906),
++    (Move, 216692363, 228.2857208251953, 451.71429443359375),
++    (Move, 216692371, 227.42857360839844, 466.0),
++    (Move, 216692378, 226.2857208251953, 479.71429443359375),
++    (Move, 216692387, 225.7142791748047, 491.71429443359375),
++    (Move, 216692395, 225.14285278320312, 501.71429443359375),
++    (Move, 216692402, 224.85714721679688, 509.1428527832031),
++    (Move, 216692410, 224.57142639160156, 514.8571166992188),
++    (Move, 216692418, 224.2857208251953, 519.4285888671875),
++    (Move, 216692425, 224.0, 523.4285888671875),
++    (Move, 216692433, 224.0, 527.1428833007812),
++    (Move, 216692441, 224.0, 530.5714111328125),
++    (Move, 216692448, 224.0, 533.1428833007812),
++    (Move, 216692456, 224.0, 535.4285888671875),
++    (Move, 216692464, 223.7142791748047, 536.8571166992188),
++    (Move, 216692472, 223.7142791748047, 538.2857055664062),
++    (Up, 216692487, 223.7142791748047, 538.2857055664062),
++    (Down, 216692678, 221.42857360839844, 526.2857055664062),
++    (Move, 216692701, 220.57142639160156, 514.8571166992188),
++    (Move, 216692708, 220.2857208251953, 508.0),
++    (Move, 216692716, 220.2857208251953, 498.0),
++    (Move, 216692724, 221.14285278320312, 484.28570556640625),
++    (Move, 216692732, 221.7142791748047, 469.4285583496094),
++    (Move, 216692740, 223.42857360839844, 453.1428527832031),
++    (Move, 216692748, 225.7142791748047, 436.28570556640625),
++    (Move, 216692755, 229.14285278320312, 418.28570556640625),
++    (Move, 216692763, 232.85714721679688, 400.28570556640625),
++    (Move, 216692770, 236.85714721679688, 382.5714416503906),
++    (Move, 216692778, 241.14285278320312, 366.0),
++    (Move, 216692786, 244.85714721679688, 350.28570556640625),
++    (Move, 216692793, 249.14285278320312, 335.4285583496094),
++    (Up, 216692809, 249.14285278320312, 335.4285583496094),
++    (Down, 216693222, 224.0, 545.4285888671875),
++    (Move, 216693245, 224.0, 545.4285888671875),
++    (Move, 216693275, 222.85714721679688, 535.1428833007812),
++    (Move, 216693284, 222.85714721679688, 528.8571166992188),
++    (Move, 216693291, 222.2857208251953, 518.5714111328125),
++    (Move, 216693299, 222.0, 503.4285583496094),
++    (Move, 216693307, 222.0, 485.4285583496094),
++    (Move, 216693314, 221.7142791748047, 464.0),
++    (Move, 216693322, 222.2857208251953, 440.28570556640625),
++    (Up, 216693337, 222.2857208251953, 440.28570556640625),
++    (Down, 216693985, 208.0, 544.0),
++    (Move, 216694047, 208.57142639160156, 532.2857055664062),
++    (Move, 216694054, 208.85714721679688, 525.7142944335938),
++    (Move, 216694062, 208.85714721679688, 515.1428833007812),
++    (Move, 216694070, 208.0, 501.4285583496094),
++    (Move, 216694077, 207.42857360839844, 487.1428527832031),
++    (Move, 216694085, 206.57142639160156, 472.8571472167969),
++    (Move, 216694092, 206.57142639160156, 458.8571472167969),
++    (Move, 216694100, 206.57142639160156, 446.0),
++    (Move, 216694108, 206.57142639160156, 434.28570556640625),
++    (Move, 216694116, 207.14285278320312, 423.71429443359375),
++    (Move, 216694124, 208.57142639160156, 412.8571472167969),
++    (Move, 216694131, 209.7142791748047, 402.28570556640625),
++    (Move, 216694139, 211.7142791748047, 393.1428527832031),
++    (Move, 216694147, 213.42857360839844, 385.1428527832031),
++    (Move, 216694154, 215.42857360839844, 378.28570556640625),
++    (Move, 216694162, 217.42857360839844, 371.71429443359375),
++    (Move, 216694169, 219.42857360839844, 366.0),
++    (Move, 216694177, 221.42857360839844, 360.8571472167969),
++    (Move, 216694185, 223.42857360839844, 356.5714416503906),
++    (Move, 216694193, 225.14285278320312, 352.28570556640625),
++    (Move, 216694201, 226.85714721679688, 348.5714416503906),
++    (Move, 216694209, 228.2857208251953, 346.0),
++    (Move, 216694216, 229.14285278320312, 343.71429443359375),
++    (Move, 216694224, 230.0, 342.0),
++    (Move, 216694232, 230.57142639160156, 340.5714416503906),
++    (Move, 216694239, 230.85714721679688, 339.71429443359375),
++    (Move, 216694247, 230.85714721679688, 339.4285583496094),
++    (Move, 216694262, 230.2857208251953, 342.0),
++    (Move, 216694270, 228.85714721679688, 346.28570556640625),
++    (Move, 216694278, 227.14285278320312, 352.5714416503906),
++    (Move, 216694286, 225.42857360839844, 359.4285583496094),
++    (Move, 216694294, 223.7142791748047, 367.71429443359375),
++    (Move, 216694301, 222.57142639160156, 376.0),
++    (Move, 216694309, 221.42857360839844, 384.28570556640625),
++    (Move, 216694317, 220.85714721679688, 392.28570556640625),
++    (Move, 216694324, 220.0, 400.5714416503906),
++    (Move, 216694332, 219.14285278320312, 409.71429443359375),
++    (Move, 216694339, 218.85714721679688, 419.1428527832031),
++    (Move, 216694348, 218.2857208251953, 428.8571472167969),
++    (Move, 216694356, 218.2857208251953, 438.8571472167969),
++    (Move, 216694363, 218.2857208251953, 447.71429443359375),
++    (Move, 216694371, 218.2857208251953, 455.71429443359375),
++    (Move, 216694379, 219.14285278320312, 462.8571472167969),
++    (Move, 216694386, 220.0, 469.4285583496094),
++    (Move, 216694394, 221.14285278320312, 475.4285583496094),
++    (Move, 216694401, 222.0, 480.5714416503906),
++    (Move, 216694409, 222.85714721679688, 485.4285583496094),
++    (Move, 216694417, 224.0, 489.71429443359375),
++    (Move, 216694425, 224.85714721679688, 492.8571472167969),
++    (Move, 216694433, 225.42857360839844, 495.4285583496094),
++    (Move, 216694440, 226.0, 497.1428527832031),
++    (Move, 216694448, 226.2857208251953, 498.28570556640625),
++    (Move, 216694456, 226.2857208251953, 498.8571472167969),
++    (Move, 216694471, 226.2857208251953, 498.28570556640625),
++    (Move, 216694479, 226.2857208251953, 496.5714416503906),
++    (Move, 216694486, 226.2857208251953, 493.71429443359375),
++    (Move, 216694494, 226.2857208251953, 490.0),
++    (Move, 216694502, 226.2857208251953, 486.0),
++    (Move, 216694510, 226.2857208251953, 480.5714416503906),
++    (Move, 216694518, 226.2857208251953, 475.71429443359375),
++    (Move, 216694525, 226.2857208251953, 468.8571472167969),
++    (Move, 216694533, 226.2857208251953, 461.4285583496094),
++    (Move, 216694541, 226.2857208251953, 452.5714416503906),
++    (Move, 216694548, 226.57142639160156, 442.28570556640625),
++    (Move, 216694556, 226.57142639160156, 432.28570556640625),
++    (Move, 216694564, 226.85714721679688, 423.4285583496094),
++    (Move, 216694571, 227.42857360839844, 416.0),
++    (Move, 216694580, 227.7142791748047, 410.0),
++    (Move, 216694587, 228.2857208251953, 404.28570556640625),
++    (Move, 216694595, 228.85714721679688, 399.71429443359375),
++    (Move, 216694603, 229.14285278320312, 395.4285583496094),
++    (Move, 216694610, 229.42857360839844, 392.28570556640625),
++    (Move, 216694618, 229.7142791748047, 390.0),
++    (Move, 216694625, 229.7142791748047, 388.0),
++    (Move, 216694633, 229.7142791748047, 386.8571472167969),
++    (Move, 216694641, 229.7142791748047, 386.28570556640625),
++    (Move, 216694648, 229.7142791748047, 386.0),
++    (Move, 216694657, 228.85714721679688, 386.0),
++    (Move, 216694665, 228.0, 388.0),
++    (Move, 216694672, 226.0, 392.5714416503906),
++    (Move, 216694680, 224.0, 397.71429443359375),
++    (Move, 216694688, 222.0, 404.28570556640625),
++    (Move, 216694695, 219.7142791748047, 411.1428527832031),
++    (Move, 216694703, 218.2857208251953, 418.0),
++    (Move, 216694710, 217.14285278320312, 425.4285583496094),
++    (Move, 216694718, 215.7142791748047, 433.4285583496094),
++    (Move, 216694726, 214.85714721679688, 442.28570556640625),
++    (Move, 216694734, 214.0, 454.0),
++    (Move, 216694742, 214.0, 469.4285583496094),
++    (Move, 216694749, 215.42857360839844, 485.4285583496094),
++    (Move, 216694757, 217.7142791748047, 502.8571472167969),
++    (Move, 216694765, 221.14285278320312, 521.4285888671875),
++    (Move, 216694772, 224.57142639160156, 541.1428833007812),
++    (Move, 216694780, 229.14285278320312, 561.1428833007812),
++    (Move, 216694788, 233.42857360839844, 578.8571166992188),
++    (Up, 216694802, 233.42857360839844, 578.8571166992188),
++    (Down, 216695344, 253.42857360839844, 310.5714416503906),
++    (Move, 216695352, 253.42857360839844, 310.5714416503906),
++    (Move, 216695359, 252.85714721679688, 318.0),
++    (Move, 216695367, 251.14285278320312, 322.0),
++    (Move, 216695375, 248.85714721679688, 327.1428527832031),
++    (Move, 216695382, 246.0, 334.8571472167969),
++    (Move, 216695390, 242.57142639160156, 344.5714416503906),
++    (Move, 216695397, 238.85714721679688, 357.4285583496094),
++    (Move, 216695406, 235.7142791748047, 371.71429443359375),
++    (Move, 216695414, 232.2857208251953, 386.8571472167969),
++    (Move, 216695421, 229.42857360839844, 402.0),
++    (Move, 216695429, 227.42857360839844, 416.8571472167969),
++    (Move, 216695437, 226.2857208251953, 431.4285583496094),
++    (Move, 216695444, 226.2857208251953, 446.0),
++    (Move, 216695452, 227.7142791748047, 460.28570556640625),
++    (Move, 216695459, 230.0, 475.1428527832031),
++    (Move, 216695467, 232.2857208251953, 489.71429443359375),
++    (Move, 216695475, 235.7142791748047, 504.0),
++    (Up, 216695490, 235.7142791748047, 504.0),
++    (Down, 216695885, 238.85714721679688, 524.0),
++    (Move, 216695908, 236.2857208251953, 515.7142944335938),
++    (Move, 216695916, 234.85714721679688, 509.1428527832031),
++    (Move, 216695924, 232.57142639160156, 498.5714416503906),
++    (Move, 216695931, 230.57142639160156, 483.71429443359375),
++    (Move, 216695939, 229.14285278320312, 466.5714416503906),
++    (Move, 216695947, 229.14285278320312, 446.5714416503906),
++    (Move, 216695955, 230.57142639160156, 424.8571472167969),
++    (Move, 216695963, 232.57142639160156, 402.28570556640625),
++    (Move, 216695970, 235.14285278320312, 380.0),
++    (Move, 216695978, 238.57142639160156, 359.4285583496094),
++    (Up, 216695993, 238.57142639160156, 359.4285583496094),
++    (Down, 216696429, 238.2857208251953, 568.5714111328125),
++    (Move, 216696459, 234.0, 560.0),
++    (Move, 216696467, 231.42857360839844, 553.1428833007812),
++    (Move, 216696475, 228.2857208251953, 543.1428833007812),
++    (Move, 216696483, 225.42857360839844, 528.8571166992188),
++    (Move, 216696491, 223.14285278320312, 512.2857055664062),
++    (Move, 216696498, 222.0, 495.4285583496094),
++    (Move, 216696506, 221.7142791748047, 477.4285583496094),
++    (Move, 216696514, 221.7142791748047, 458.28570556640625),
++    (Move, 216696521, 223.14285278320312, 438.0),
++    (Move, 216696529, 224.2857208251953, 416.28570556640625),
++    (Up, 216696544, 224.2857208251953, 416.28570556640625),
++    (Down, 216696974, 218.57142639160156, 530.5714111328125),
++    (Move, 216697012, 220.2857208251953, 522.0),
++    (Move, 216697020, 221.14285278320312, 517.7142944335938),
++    (Move, 216697028, 222.2857208251953, 511.71429443359375),
++    (Move, 216697036, 224.0, 504.28570556640625),
++    (Move, 216697044, 227.14285278320312, 490.5714416503906),
++    (Move, 216697052, 229.42857360839844, 474.0),
++    (Move, 216697059, 231.42857360839844, 454.5714416503906),
++    (Move, 216697067, 233.7142791748047, 431.1428527832031),
++    (Up, 216697082, 233.7142791748047, 431.1428527832031),
++    (Down, 216697435, 257.1428527832031, 285.1428527832031),
++    (Move, 216697465, 251.7142791748047, 296.8571472167969),
++    (Move, 216697473, 248.2857208251953, 304.0),
++    (Move, 216697481, 244.57142639160156, 314.8571472167969),
++    (Move, 216697489, 240.2857208251953, 329.1428527832031),
++    (Move, 216697497, 236.85714721679688, 345.1428527832031),
++    (Move, 216697505, 233.7142791748047, 361.4285583496094),
++    (Move, 216697512, 231.14285278320312, 378.28570556640625),
++    (Move, 216697520, 229.42857360839844, 395.4285583496094),
++    (Move, 216697528, 229.42857360839844, 412.8571472167969),
++    (Move, 216697535, 230.85714721679688, 430.8571472167969),
++    (Move, 216697543, 233.42857360839844, 449.71429443359375),
++    (Up, 216697558, 233.42857360839844, 449.71429443359375),
++    (Down, 216697749, 246.0, 311.4285583496094),
++    (Move, 216697780, 244.57142639160156, 318.28570556640625),
++    (Move, 216697787, 243.14285278320312, 325.4285583496094),
++    (Move, 216697795, 241.42857360839844, 336.0),
++    (Move, 216697803, 239.7142791748047, 351.1428527832031),
++    (Move, 216697811, 238.2857208251953, 368.5714416503906),
++    (Move, 216697819, 238.0, 389.4285583496094),
++    (Move, 216697826, 239.14285278320312, 412.0),
++    (Move, 216697834, 242.2857208251953, 438.0),
++    (Move, 216697842, 247.42857360839844, 466.8571472167969),
++    (Move, 216697849, 254.2857208251953, 497.71429443359375),
++    (Up, 216697864, 254.2857208251953, 497.71429443359375),
++    (Down, 216698321, 250.0, 306.0),
++    (Move, 216698328, 250.0, 306.0),
++    (Move, 216698344, 249.14285278320312, 314.0),
++    (Move, 216698351, 247.42857360839844, 319.4285583496094),
++    (Move, 216698359, 245.14285278320312, 326.8571472167969),
++    (Move, 216698366, 241.7142791748047, 339.4285583496094),
++    (Move, 216698374, 238.57142639160156, 355.71429443359375),
++    (Move, 216698382, 236.2857208251953, 374.28570556640625),
++    (Move, 216698390, 235.14285278320312, 396.5714416503906),
++    (Move, 216698398, 236.57142639160156, 421.4285583496094),
++    (Move, 216698406, 241.14285278320312, 451.4285583496094),
++    (Up, 216698421, 241.14285278320312, 451.4285583496094),
++];
++
++pub(super) const INTERRUPTED_VELOCITY_EVENT_DATA: &[(PointerEvent, u64, f64, f64)] = &[
++    (Down, 216698321, 250.0, 306.0),
++    (Move, 216698328, 250.0, 306.0),
++    (Move, 216698344, 249.14285278320312, 314.0),
++    (Move, 216698351, 247.42857360839844, 319.4285583496094),
++    (Move, 216698359, 245.14285278320312, 326.8571472167969),
++    (Move, 216698366, 241.7142791748047, 339.4285583496094),
++    // The pointer "stops" here because we've introduced a 40+ms gap
++    // in the move event stream. See kAssumePointerMoveStoppedMilliseconds
++    // in velocity_tracker.dart.
++    (Move, 216698374 + 40, 238.57142639160156, 355.71429443359375),
++    (Move, 216698382 + 40, 236.2857208251953, 374.28570556640625),
++    (Move, 216698390 + 40, 235.14285278320312, 396.5714416503906),
++    (Move, 216698398 + 40, 236.57142639160156, 421.4285583496094),
++    (Move, 216698406 + 40, 241.14285278320312, 451.4285583496094),
++    (Up, 216698421 + 40, 241.14285278320312, 451.4285583496094),
++];
+diff --git a/gpui-pre/src/gestures/velocity_tracker_test.rs b/gpui-pre/src/gestures/velocity_tracker_test.rs
+new file mode 100644
+index 0000000..8bafde9
+--- /dev/null
++++ b/gpui-pre/src/gestures/velocity_tracker_test.rs
+@@ -0,0 +1,239 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++//
++// Each row names the Flutter test it ports. Flutter's timestamps are `Duration`s; here they are offsets from one
++// `Instant`. Flutter's tracker reads "time since the last sample" from a stopwatch the test never advances (except by
++// `pumpAndSettle`, 100 ms); GPUI's tracker takes that clock as `now`, so a query passes the newest sample's time plus
++// the elapsed time Flutter's stopwatch would show.
++
++use std::panic::{AssertUnwindSafe, catch_unwind};
++use std::time::Duration;
++
++use scheduler::Instant;
++
++use super::VelocityTrackerKind::{self, IOSScrollViewFling, LeastSquares, MacOSScrollViewFling};
++use super::velocity_tracker::VelocityTracker;
++use super::velocity_tracker_data::{
++    INTERRUPTED_VELOCITY_EVENT_DATA, PointerEvent, VELOCITY_EVENT_DATA,
++};
++use crate::{Point, point, px};
++
++fn within_tolerance(actual: f64, expected: f64) -> bool {
++    const K_TOLERANCE: f64 = 0.001; // Within .1% of expected value
++    let diff = (actual - expected) / expected;
++    diff.abs() < K_TOLERANCE
++}
++
++fn check_velocity(actual: Point<f32>, expected: (f64, f64)) -> bool {
++    within_tolerance(f64::from(actual.x), expected.0)
++        && within_tolerance(f64::from(actual.y), expected.1)
++}
++
++const EXPECTED: &[(f64, f64)] = &[
++    (219.59280094228163, 1304.701682306001),
++    (355.71046950050845, 967.2112857054104),
++    (12.657970884022308, -36.90447839251946),
++    (714.1399654786744, -2561.534447931869),
++    (-19.668121066218564, -2910.105747052462),
++    (646.8690114934209, 2976.977762577527),
++    (396.6988447819592, 2106.225572911095),
++    (298.31594440044495, -3660.8315955215294),
++    (-1.7334232785165882, -3288.13174127454),
++    (384.6361280392334, -2645.6612524779835),
++    (176.37900397918557, 2711.2542876273264),
++    (396.9328560260098, 4280.651578291764),
++    (-71.51939428321249, 3716.7385187526947),
++];
++
++/// Recorded traces through a touch `VelocityTracker`: the velocity at each `PointerUpEvent`, in order.
++/// To add one: a trace in velocity_tracker_data.rs and its velocities at each up.
++const TRACES: &[(&str, &[(PointerEvent, u64, f64, f64)], &[(f64, f64)])] = &[
++    (
++        "Velocity tracker gives expected results",
++        VELOCITY_EVENT_DATA,
++        EXPECTED,
++    ),
++    // Regression test for https://github.com/flutter/flutter/pull/7510
++    (
++        "Interrupted velocity estimation",
++        INTERRUPTED_VELOCITY_EVENT_DATA,
++        &[(649.5, 3890.3)],
++    ),
++];
++
++#[test]
++fn velocity_tracker_traces() {
++    for (name, events, expected) in TRACES {
++        let start = Instant::now();
++        let mut tracker = VelocityTracker::with_kind(LeastSquares);
++        let mut last_sample = start;
++        let mut ups = 0;
++        for (event, milliseconds, x, y) in *events {
++            let time = start + Duration::from_millis(*milliseconds);
++            match event {
++                PointerEvent::Down | PointerEvent::Move => {
++                    tracker.add_position(time, point(px(*x as f32), px(*y as f32)));
++                    last_sample = time;
++                }
++                PointerEvent::Up => {
++                    let velocity = tracker.get_velocity(last_sample);
++                    assert!(
++                        check_velocity(velocity, expected[ups]),
++                        "{name}: up {ups}: got {velocity:?}, expected {:?}",
++                        expected[ups]
++                    );
++                    ups += 1;
++                }
++            }
++        }
++        assert_eq!(ups, expected.len(), "{name}: up events");
++    }
++}
++
++/// When a steady drag is queried: after each sample from the `from`-th on, or once after the last sample.
++enum Query {
++    AfterEach { from: usize },
++    AtEnd { elapsed: Duration },
++}
++
++/// A pointer moving by (0, -1) every second, `samples` times, then queried. `None` expects only that no
++/// assertion fires.
++/// To add one: a row with the Flutter test's name, tracker, sample count, query and expected velocity.
++const STEADY_DRAGS: &[(&str, VelocityTrackerKind, usize, Query, Option<(f32, f32)>)] = &[
++    (
++        "No data velocity estimation",
++        LeastSquares,
++        0,
++        Query::AtEnd {
++            elapsed: Duration::ZERO,
++        },
++        Some((0., 0.)),
++    ),
++    (
++        "Estimate does not throw when there are more than 1 point",
++        IOSScrollViewFling,
++        5,
++        Query::AfterEach { from: 0 },
++        None,
++    ),
++    (
++        "Makes consistent velocity estimates with consistent velocity",
++        IOSScrollViewFling,
++        10,
++        Query::AfterEach { from: 3 },
++        Some((0., -1.)),
++    ),
++    (
++        "Assume zero velocity when there are no recent samples - base VelocityTracker",
++        LeastSquares,
++        10,
++        // `tester.pumpAndSettle()` with nothing scheduled pumps one 100 ms frame.
++        Query::AtEnd {
++            elapsed: Duration::from_millis(100),
++        },
++        Some((0., 0.)),
++    ),
++    (
++        "Assume zero velocity when there are no recent samples - IOS",
++        IOSScrollViewFling,
++        10,
++        Query::AtEnd {
++            elapsed: Duration::from_millis(100),
++        },
++        Some((0., 0.)),
++    ),
++    (
++        "Assume zero velocity when there are no recent samples - MacOS",
++        MacOSScrollViewFling,
++        10,
++        Query::AtEnd {
++            elapsed: Duration::from_millis(100),
++        },
++        Some((0., 0.)),
++    ),
++];
++
++#[test]
++fn velocity_tracker_steady_drags() {
++    let position_delta = point(px(0.), px(-1.));
++    let duration_delta = Duration::from_secs(1);
++    for (name, kind, samples, query, expected) in STEADY_DRAGS {
++        let mut tracker = VelocityTracker::with_kind(*kind);
++        let mut position = Point::default();
++        let mut time = Instant::now();
++        let check = |velocity: Point<f32>| {
++            if let Some((x, y)) = expected {
++                assert_eq!(velocity, point(*x, *y), "{name}");
++            }
++        };
++        for i in 0..*samples {
++            position = position + position_delta;
++            time += duration_delta;
++            tracker.add_position(time, position);
++            if let Query::AfterEach { from } = query
++                && i >= *from
++            {
++                check(tracker.get_velocity(time));
++            }
++        }
++        if let Query::AtEnd { elapsed } = query {
++            check(tracker.get_velocity(time + *elapsed));
++        }
++    }
++}
++
++/// One step of an assertion row: add a sample at this offset from the tracker's start, or query the velocity.
++enum Step {
++    AddPosition(Duration),
++    GetVelocity,
++}
++
++/// Flutter's debug-mode assertions, which Rust's `debug_assert!` mirrors: the steps, and the text the assertion
++/// must contain. To add one: a row with the Flutter test's name, the steps and the assertion text.
++const ASSERTIONS: &[(&str, &[Step], &str)] = &[
++    (
++        "FreeScrollStartVelocityTracker.getVelocity throws when no points",
++        &[Step::GetVelocity],
++        "at least 1 point",
++    ),
++    (
++        "FreeScrollStartVelocityTracker.getVelocity throws when the new point precedes the previous point",
++        &[
++            Step::AddPosition(Duration::from_secs(60 * 60)),
++            Step::GetVelocity,
++            Step::AddPosition(Duration::from_secs(1)),
++        ],
++        "has a smaller timestamp",
++    ),
++];
++
++#[test]
++fn velocity_tracker_assertions() {
++    if !cfg!(debug_assertions) {
++        return;
++    }
++    for (name, steps, message) in ASSERTIONS {
++        let start = Instant::now();
++        let mut tracker = VelocityTracker::with_kind(IOSScrollViewFling);
++        let mut now = start;
++        let panic = catch_unwind(AssertUnwindSafe(|| {
++            for step in *steps {
++                match step {
++                    Step::AddPosition(time) => {
++                        now = start + *time;
++                        tracker.add_position(now, Point::default());
++                    }
++                    Step::GetVelocity => {
++                        tracker.get_velocity(now);
++                    }
++                }
++            }
++        }))
++        .expect_err(name);
++        let text = panic
++            .downcast_ref::<String>()
++            .map(String::as_str)
++            .or_else(|| panic.downcast_ref::<&str>().copied())
++            .unwrap_or_default();
++        assert!(text.contains(message), "{name}: assertion said {text:?}");
++    }
++}
