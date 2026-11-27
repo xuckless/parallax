@@ -20,7 +20,7 @@ fork_name() { echo "parallax-gpui${1#gpui-pre}"; }
 # Vendored crates our patches port Flutter code into (BSD-3-Clause, third_party/flutter/PORTED.md). Each ships
 # Flutter's licence as LICENSE-FLUTTER, is licensed "Apache-2.0 AND BSD-3-Clause" and credits Flutter in its README.
 # A patch that ports Flutter code into another crate adds its row.
-flutter_crates=(gpui-pre gpui-pre-ios gpui-pre-web gpui-pre-windows gpui-pre-macos)
+flutter_crates=(gpui-pre gpui-pre-apple gpui-pre-ios gpui-pre-web gpui-pre-windows gpui-pre-macos)
 # Vendored crates our patches port winit code into (Apache-2.0, as GPUI: the licence stays). Each credits winit in its
 # README; NOTICE credits it too. A patch that ports winit code into another crate adds its row.
 winit_crates=(gpui-pre-windows gpui-pre-linux)

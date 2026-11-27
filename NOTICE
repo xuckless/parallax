@@ -14,8 +14,9 @@ code ported from Flutter, under Flutter's BSD 3-Clause License: patches 0011 (ve
 least-squares solver), 0012 (scroll simulations), 0013 (gesture constants, double-tap rule,
 recognizer test cases), 0015 (scale recognizer, overscroll physics and indicators) and 0018
 (haptic kinds); parallax-gpui-ios and parallax-gpui-web include Flutter's iOS and web haptic
-playback (patch 0018), parallax-gpui-macos the macOS embedder's touch time stamps (patch 0024),
-and parallax-gpui-windows Flutter's Windows check for mouse messages made from touch and pen, and
+playback (patch 0018), parallax-gpui-apple the iOS and macOS embedders' touch time stamps
+(patch 0024, used by parallax-gpui-ios and parallax-gpui-macos), parallax-gpui-ios Flutter's
+pointer identifier per touch (patch 0027), and parallax-gpui-windows Flutter's Windows check for mouse messages made from touch and pen, and
 its pen hover (patch 0021).
 
 parallax-gpui-windows includes code ported from winit (https://github.com/rust-windowing/winit)
