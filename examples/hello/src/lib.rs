@@ -1,10 +1,10 @@
-//! One window: a prose field, an email field (with autofill), a line in several scripts, and a centred box; each
-//! click or tap moves the box to the next colour in `COLOURS`, and a two-finger (or trackpad) pinch resizes it
-//! within `ZOOM`, showing the zoom and the pinch's rotation; hovering or long-pressing it shows its colour as a
-//! tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
-//! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how
-//! long the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as
-//! a `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
+//! One window: a prose field, an email field (with autofill), a password field, a line in several scripts, and a
+//! centred box; each click or tap moves the box to the next colour in `COLOURS`, and a two-finger (or trackpad) pinch
+//! resizes it within `ZOOM`, showing the zoom and the pinch's rotation; hovering or long-pressing it shows its colour
+//! as a tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
+//! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long
+//! the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as a
+//! `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
 //! of the keyboard inset and of the OS's reduce-motion and reduce-transparency settings (docs/os-settings.md).
 //! `launch` and `open_window` run on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
@@ -50,6 +50,8 @@ struct Hello {
     rotation: f32,
     prose: Entity<TextField>,
     email: Entity<TextField>,
+    /// Secure input: keyboards neither show nor learn it. Drawn in the clear (hello doesn't mask).
+    password: Entity<TextField>,
     screen: Screen,
     /// The keyboard's inset (`WindowInsets::ime`) last drawn, logged when it changes.
     keyboard: Pixels,
@@ -115,6 +117,7 @@ impl Render for Hello {
             .on_mouse_down(MouseButton::Left, |_, window, cx| window.blur(cx))
             .child(self.prose.clone())
             .child(self.email.clone())
+            .child(self.password.clone())
             .child(SCRIPTS)
             .child(
                 div()
@@ -354,6 +357,18 @@ pub fn open_window(cx: &mut App) {
                     TextInputConfiguration {
                         keyboard_type: KeyboardType::Email,
                         autofill: Some(AutofillHint::Email),
+                        input_action: TextInputAction::Done,
+                        ..TextInputConfiguration::default()
+                    },
+                    cx,
+                )
+            }),
+            password: cx.new(|cx| {
+                TextField::new(
+                    "Password",
+                    TextInputConfiguration {
+                        secure: true,
+                        autofill: Some(AutofillHint::Password),
                         input_action: TextInputAction::Done,
                         ..TextInputConfiguration::default()
                     },
