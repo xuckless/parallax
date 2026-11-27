@@ -29,6 +29,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   events (XInput 2.2 and later) and send them as `TouchEvent`s (`device: Touch`, the server's event time as
   `time_stamp`), so taps, pans, pinches and overscroll work on X11 as on phones. The pointer events the X server
   emulates from a touch are dropped, so a tap clicks once ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md#x11)).
+- Linux touch checked live: `scripts/record-traces.sh wayland` and `x11` record the Gate 2 gestures from hello in
+  Weston's headless backend (real `wl_touch` from Weston's test plugin; X11 through Xwayland's XInput 2 touch), at
+  output scale 1 and 2. They replay to the same taps, long press, pans, flings and pinch as Android, the web and
+  iOS, a tap clicks once, and every touch keeps its own id in logical px. CI runs it (`linux-touch`)
+  ([docs/traces-desktop.md](docs/traces-desktop.md#linux-weston-headless)).
 - Direct touch on macOS 27 (patch 0024): touchscreen Macs and iPads used as Sidecar displays send GPUI
   `TouchEvent`s (ids, phases including `Cancelled`, device `Touch`, the event's own time stamp) through a gesture
   recognizer on GPUI's view, so taps, pans, flings, long presses and pinches go through GPUI's touch recognizers. No

@@ -1,7 +1,7 @@
 # CI
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
-one job per target, no feature variants, plus one job each for the Java tests, the patch tests and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+one job per target, no feature variants, plus one job each for the Java tests, the patch tests, Linux touch and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -9,7 +9,7 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-Eight jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
+Nine jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
 builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs only where a merge is decided: pull
 requests, pushes to `main` and manual runs; start it on a branch with `gh workflow run ci.yml --ref <branch>`
 (emulator setup, GPU mode, caching: [android-smoke.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels
@@ -25,17 +25,17 @@ the older run.
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
 | java-tests | ubuntu-latest | [`scripts/java-test.sh`](android-tests.md) on JDK 21 and the runner's Android SDK; Gradle and Robolectric jars cached. Its own job (`java-tests`, not a matrix row): no Rust, no `build/` |
 | patch-tests | ubuntu-latest | [`scripts/patch-test.sh`](../scripts/patch-test.sh): GPUI's own lib tests on the patched fork crate, every patch's tests among them, then the Linux backend's ([patch-tests.md](patch-tests.md)). Its own job, not a matrix row |
+| linux-touch | ubuntu-latest | Weston built from source, then [`record-traces.sh`](traces-desktop.md#linux-weston-headless) `wayland` at scale 2, `trace_replay`, `wayland` and `x11` at scale 1, `trace_replay`; the recordings are uploaded. Its own job |
 | android-smoke | ubuntu-latest + KVM | [`scripts/android-smoke.sh`](android-smoke.md) on an API 35 `google_apis` x86_64 emulator (Pixel 7 profile). Its own job, not a matrix row |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml` (a subset of Zed's `script/linux`).
 
 ## Android and wasm
 
-Both check the whole workspace, nothing excluded.
-- **Android:** `parallax-platform` depends on upstream `gpui_platform` only off Android (it has no Android arm), so
-  every crate compiles there. See [platform.md](platform.md).
-- **wasm:** single-threaded on stable (AGENTS.md "Web threading"). The workspace takes `gpui_platform` without its
-  default `multithreaded` feature, whose `wasm_thread` needs nightly.
+Both check the whole workspace, nothing excluded. **Android:** `parallax-platform` depends on upstream `gpui_platform`
+only off Android (it has no Android arm), so every crate compiles there ([platform.md](platform.md)). **wasm:**
+single-threaded on stable (AGENTS.md "Web threading"): the workspace takes `gpui_platform` without its default
+`multithreaded` feature, whose `wasm_thread` needs nightly.
 
 ## Published crates
 

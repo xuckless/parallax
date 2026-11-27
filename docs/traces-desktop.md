@@ -20,6 +20,25 @@ compares them with the phone and browser traces under every row, with the same t
 - keep the 6-field lines (`Touch` a finger, `Pen` a pen; old 5-field lines read as `Touch`), and add its verbs to
   [record-traces.sh](../scripts/record-traces.sh) ([Extending](traces.md#extending)) or write the same files from its own driver.
 
+## Linux: Weston headless
+
+`scripts/record-traces.sh wayland` (or `x11`) records Linux live, with no touchscreen or session:
+[build-weston.sh](../scripts/build-weston.sh) builds Weston 14.0.2 from source into `target/weston/` with its
+headless backend, kiosk shell, Xwayland module, screenshooter and **test plugin**, the `weston_test` global Weston's
+own suite injects input with. Distributions never ship that plugin, and outside Weston's runner it needs four NULL
+guards ([weston-test-standalone.patch](../scripts/weston-test-standalone.patch)).
+[weston-touch.py](../scripts/weston-touch.py) (python3, no libraries) sends `weston_test.send_touch`, so hello gets
+real `wl_touch` events stamped with `CLOCK_MONOTONIC`; it plays the same frames as Android (16 ms apart).
+
+- **Output:** 400 × 700 logical px, `WESTON_SCALE` 1 (default) or 2; the kiosk shell fills it with hello's window.
+- **x11:** hello runs on the Xwayland Weston starts, which turns the touches into XInput 2 touch events: scale 1 only.
+- **Checks:** before the gestures, one tap on hello's box must log exactly one touch click (no extra mouse events);
+  `recorded_touches_keep_their_identity` (in `trace_replay`) checks every platform's touches: a new id per touch,
+  `Started`, `Moved`…, then `Ended`, going down at the script's points (scale 1 and 2 give the same logical px).
+- **Elsewhere:** needs Weston's build dependencies (CI's `linux-touch` job lists them). On a host without them,
+  build and run Weston in a container that shares the checkout's path and `/tmp`, e.g.
+  `WESTON_RUN="podman exec <container>" scripts/record-traces.sh wayland`.
+
 ## Checking a harness
 
 `cargo test -p parallax-platform --test trace_replay -- --nocapture` prints every outcome per gesture and row, the

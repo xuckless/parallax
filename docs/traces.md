@@ -18,7 +18,7 @@ the pad. It logs no text.
 
 ```sh
 scripts/apply-patches.sh
-scripts/record-traces.sh web            # or android, ios; optional gesture names: record-traces.sh ios fling
+scripts/record-traces.sh web            # or android, ios, wayland, x11; optional gesture names: record-traces.sh ios fling
 ```
 
 It sets the platform up, finds the button by colour ([locate-colour.py](../scripts/locate-colour.py)), then per row of
@@ -31,6 +31,7 @@ stays). Gestures are in logical px and ms, the same everywhere.
 | web | `wasm-pack` build served on 127.0.0.1, headless Chromium (free ports, or `HTTP_PORT` / `CDP_PORT`) | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
 | ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | idb's 150 ms swipe takes ~200 ms |
 | android | `cargo parallax run android` on an emulator ([hello-android.sh](../scripts/hello-android.sh), shared with the smoke test) | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
+| wayland, x11 | hello's desktop bin in Weston's headless backend; x11 through its Xwayland | Weston's test plugin (`weston_test.send_touch`), frames as android's ([traces-desktop.md](traces-desktop.md)) | x11 at scale 1 only |
 
 **iOS on the Mac** (`ssh pixl-mac`, everything under `/Users/Shared/parallax/`): the checkout is rsynced to
 `traces/parallax`, built with `traces/cargo` and `traces/target` and the gap audit's 1.98.1 toolchain (read-only),

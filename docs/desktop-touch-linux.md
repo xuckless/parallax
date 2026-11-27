@@ -64,10 +64,12 @@ Linux ([patch-tests.md](patch-tests.md)):
 |---|---|---|
 | `event_time_stamps` | `clock.rs` | on time, a frame old, after the read, across the `u32` wrap, foreign clocks behind and ahead |
 | `touches_follow_wl_touch_events` | `wayland/touch.rs` | event sequences → touches, id reuse, cancel, dropped events |
-| `xi2_touch_events` | `x11/event.rs` | XI2 fixtures (type, detail, time, FP16.16 position) → `TouchEvent`; scale 2 → logical px; ownership is no phase |
+| `xi2_touch_events` | `x11/event.rs` | XI2 fixtures (type, detail, time, FP16.16 position) → `TouchEvent`; scale 2 → logical px; ownership is no phase; one or more rows per recorded gesture, as Xwayland sent them |
 | `xi2_window_events_by_version` | `x11/event.rs` | XInput 2.0 to 3.0: which versions select touch and pinch |
 | `pointer_emulation_filter` | `x11/event.rs` | real press kept, emulated press dropped |
 
-No touchscreen yet: recorded XI2 events (`xinput test-xi2`, or an injected `uinput` device) become
-`xi2_touch_events` rows. Live checks: run hello, open its trace pad, and every touch logs a `trace: touch(…)` line
-([traces.md](traces.md)).
+Live, without a touchscreen: Weston's headless backend, touched through its test plugin, drives hello on Wayland
+and, through Xwayland, on X11 ([traces-desktop.md](traces-desktop.md); CI's `linux-touch` job). Those runs check
+that a tap clicks once and that ids, phases and logical px hold at scales 1 and 2. Not injectable there:
+`wl_touch.cancel` (`weston_test` sends only down, motion and up; `touches_follow_wl_touch_events` covers it), and
+Xwayland rounds touch positions to whole px.
