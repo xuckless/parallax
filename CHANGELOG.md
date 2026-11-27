@@ -4,10 +4,23 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased]
+## [Unreleased] (0.1.9)
+
+### Added
+
+- Web app lifecycle (patch 0035, fork `parallax-gpui*` 0.3.14-parallax.11): `App::on_app_lifecycle` now hears the
+  page's focus, visibility, freeze and resume, the back/forward cache and unloading, as Chrome's Page Lifecycle
+  states mapped to Flutter web's phases (docs/web-lifecycle.md).
+- Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
+  viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
+- Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
+  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
 
 ### Fixed
 
+- Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
+  (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
+  and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
 - macOS direct touch (patches 0025, 0026), from the owner's Sidecar check: each finger keeps one id for its
   whole life (a finger landing or lifting while another moved was handled twice: started, cancelled and started
   again, or moved twice); a touch the system cancels is cancelled where it last

@@ -48,6 +48,8 @@ pub struct TextField {
     marked: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// The caret (or selection) last painted while focused, reported to the IME when it moves.
+    ime_caret: Option<Bounds<Pixels>>,
 }
 
 impl TextField {
@@ -66,6 +68,7 @@ impl TextField {
             marked: None,
             last_layout: None,
             last_bounds: None,
+            ime_caret: None,
         }
     }
 
@@ -479,10 +482,17 @@ impl Element for TextElement {
             log::error!("cannot paint the text field: {error:#}");
         }
         let line = prepaint.line.clone();
-        self.field.update(cx, |field, _| {
+        let caret = focused.then_some(prepaint.marker.bounds);
+        let caret_moved = self.field.update(cx, |field, _| {
             // The layout belongs to the content only when the placeholder is not showing.
             field.last_layout = (!field.content.is_empty()).then_some(line);
             field.last_bounds = Some(bounds);
+            std::mem::replace(&mut field.ime_caret, caret) != caret
         });
+        // A moved caret moves the IME's candidate window (the web puts its IME mirror there). Asked here, after
+        // the layout that moved it, so the next frame reads the new bounds.
+        if caret_moved && focused {
+            window.invalidate_character_coordinates();
+        }
     }
 }

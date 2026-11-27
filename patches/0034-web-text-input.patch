@@ -1,0 +1,713 @@
+Web text input: Flutter's per-field configuration rules, keyboard layout and IME placement in gpui_web.
+
+What (gpui_web only):
+- `text_editing.rs` (new, pure): the IME mirror's attributes for a `TextInputConfiguration`, ported from Flutter's web
+  engine (text_editing/input_type.dart, input_action.dart, text_capitalization.dart, autofill_hint.dart,
+  text_editing.dart's `applyConfiguration`): `autocomplete` is the autofill hint's token or "off" (upstream tied it
+  to `suggestions`), `enterkeyhint` only on iOS and Android (upstream set it everywhere), `autocorrect`,
+  `autocapitalize`, `spellcheck`. `input_mode`: each `KeyboardType`'s `inputmode`, written whenever the virtual
+  keyboard is enabled (upstream always wrote "text", ignoring patch 0005's keyboard type). `infer_edit`: the
+  prefix/suffix diff `register_input` ran inline, moved here unchanged so Flutter's delta cases test it.
+- `WebWindow::update_ime_position` (was a no-op): moves the mirror onto the caret, as Flutter's `placeElement`, so
+  a desktop IME's candidate window opens at the caret; never mid-composition (Flutter's `updateElementPlacement`)
+  and never on touch (iOS would pan the page to a focused field near the keyboard).
+- Table tests from Flutter's text_editing_test.dart: 14 configuration rows, 7 input modes, 8 edit rows (7 of
+  Flutter's `TextEditingDeltaState` cases and one for the caret-anchored diff). They run on the host through
+  scripts/patch-test.sh's `web-pure` crate.
+
+Why: GPUI apps on the web got the wrong keyboard for number, email and URL fields, no autofill tokens, an action key
+on desktop, and IME candidate windows in the page's top-left corner. Flutter's web engine has fixed each of these;
+gpui_web keeps one mirror `<textarea>` where Flutter keeps one element per field, so the rules port, the elements
+don't. Not ported: `type=password` for secure fields (a `<textarea>` has none), Flutter's per-browser blur and
+refocus rules (GPUI focus, not the DOM, owns the connection), autofill forms, the delta model.
+
+Ported from flutter/flutter 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors.
+BSD-3-Clause.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+index a50dd53..1a52ba9 100644
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -862,48 +862,11 @@ impl WebWindowInner {
+                 return;
+             }
+ 
+-            let old_units: Vec<u16> = old_value.encode_utf16().collect();
+-            let new_units: Vec<u16> = new_value.encode_utf16().collect();
+-
+-            // A prefix/suffix diff is ambiguous when the inserted text
+-            // shares characters with what follows it (inserting "pactor "
+-            // before "pact" also reads as inserting "or pact" four units
+-            // later). The edit's true position is not ambiguous: the browser
+-            // leaves the caret at the end of an IME edit, so the suffix is
+-            // anchored as "everything after the post-edit caret", and the
+-            // prefix is capped to fit. Greedy matching is only a fallback
+-            // for edits where the anchored suffix doesn't verify.
+             let post_edit_caret = this
+                 .ime_mirror
+                 .selection_start()
+                 .map(|caret| caret as usize);
+-            let anchored_suffix_length = post_edit_caret
+-                .map(|caret| new_units.len().saturating_sub(caret))
+-                .filter(|&suffix_length| {
+-                    suffix_length <= old_units.len()
+-                        && old_units[old_units.len() - suffix_length..]
+-                            == new_units[new_units.len() - suffix_length..]
+-                });
+-            let suffix_length = anchored_suffix_length.unwrap_or_else(|| {
+-                old_units
+-                    .iter()
+-                    .rev()
+-                    .zip(new_units.iter().rev())
+-                    .take_while(|(old_unit, new_unit)| old_unit == new_unit)
+-                    .count()
+-            });
+-            let prefix_length = old_units
+-                .iter()
+-                .zip(&new_units)
+-                .take_while(|(old_unit, new_unit)| old_unit == new_unit)
+-                .count()
+-                .min(old_units.len() - suffix_length)
+-                .min(new_units.len() - suffix_length);
+-
+-            let inserted_text = String::from_utf16_lossy(
+-                &new_units[prefix_length..new_units.len() - suffix_length],
+-            );
+-            let replaced_old_end = old_units.len() - suffix_length;
++            let edit = crate::text_editing::infer_edit(&old_value, &new_value, post_edit_caret);
+ 
+             // The edit's shape relative to the element's pre-edit selection.
+             // The element is private to the IME and these syncs, so the
+@@ -911,9 +874,11 @@ impl WebWindowInner {
+             let (element_selection_start, element_selection_end) =
+                 this.ime_mirror.stored_selection();
+             let removed_before_selection =
+-                (element_selection_start as usize).saturating_sub(prefix_length);
+-            let removed_after_selection =
+-                replaced_old_end.saturating_sub(element_selection_end as usize);
++                (element_selection_start as usize).saturating_sub(edit.replaced.start);
++            let removed_after_selection = edit
++                .replaced
++                .end
++                .saturating_sub(element_selection_end as usize);
+ 
+             let applied = this.with_input_handler(|handler| {
+                 let Some(selection) = handler.selected_text_range(false) else {
+@@ -924,7 +889,7 @@ impl WebWindowInner {
+                     .start
+                     .saturating_sub(removed_before_selection)
+                     ..selection.range.end + removed_after_selection;
+-                handler.replace_text_in_range(Some(range), &inserted_text);
++                handler.replace_text_in_range(Some(range), &edit.inserted);
+                 true
+             });
+             if applied != Some(true) {
+diff --git a/gpui-pre-web/src/gpui_web.rs b/gpui-pre-web/src/gpui_web.rs
+index c915084..3769038 100644
+--- a/gpui-pre-web/src/gpui_web.rs
++++ b/gpui-pre-web/src/gpui_web.rs
+@@ -30,6 +30,8 @@ mod platform;
+ #[cfg(any(target_family = "wasm", test))]
+ mod run_replacements;
+ #[cfg(target_family = "wasm")]
++mod text_editing;
++#[cfg(target_family = "wasm")]
+ mod text_system;
+ #[cfg(target_family = "wasm")]
+ mod viewport;
+diff --git a/gpui-pre-web/src/ime_mirror.rs b/gpui-pre-web/src/ime_mirror.rs
+index 5cb08b5..b26a2b2 100644
+--- a/gpui-pre-web/src/ime_mirror.rs
++++ b/gpui-pre-web/src/ime_mirror.rs
+@@ -17,9 +17,10 @@
+ use std::cell::{Cell, RefCell};
+ use std::rc::Rc;
+ 
+-use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration};
++use gpui::{Bounds, Pixels, TextInputConfiguration};
+ use wasm_bindgen::JsCast;
+ 
++use crate::text_editing;
+ use crate::window::WebWindowInner;
+ 
+ /// UTF-16 code units of document text mirrored on each side of the
+@@ -81,6 +82,12 @@ pub(crate) struct ImeMirror {
+     /// selection has moved; a rejected import means no import is coming,
+     /// so the next sync must reassert the app's state instead of waiting.
+     selection_import_rejected: Cell<bool>,
++    /// Whether the browser runs on iOS or Android, where Flutter sets
++    /// `enterkeyhint` (desktop keyboards have no action key).
++    mobile: bool,
++    /// The `inputmode` the configuration's keyboard type asks for, written
++    /// whenever the virtual keyboard is enabled.
++    input_mode: Cell<&'static str>,
+ }
+ 
+ impl ImeMirror {
+@@ -88,6 +95,7 @@ impl ImeMirror {
+         document: &web_sys::Document,
+         body: &web_sys::HtmlElement,
+         touch_input: bool,
++        mobile: bool,
+     ) -> anyhow::Result<Self> {
+         // A textarea rather than an input: single-line inputs silently strip
+         // newlines from assigned values, which would make the mirror text
+@@ -129,6 +137,8 @@ impl ImeMirror {
+             window_hint: Cell::new(0),
+             sync_scheduled: Cell::new(false),
+             selection_import_rejected: Cell::new(false),
++            mobile,
++            input_mode: Cell::new(text_editing::input_mode(Default::default())),
+         };
+         // Until an input handler asks otherwise, the element is an IME
+         // conduit, not a form field: browser-side text assistance would
+@@ -138,44 +148,45 @@ impl ImeMirror {
+     }
+ 
+     /// Maps a [`TextInputConfiguration`] onto the element's text-assistance
+-    /// attributes. Callers must only invoke this on actual configuration
+-    /// changes (GPUI diffs before forwarding): mutating the focused element
+-    /// can restart the IME's input connection.
++    /// attributes (Flutter's rules, [`text_editing::attributes`]) and keyboard
++    /// layout. Callers must only invoke this on actual configuration changes
++    /// (GPUI diffs before forwarding): mutating the focused element can
++    /// restart the IME's input connection.
+     pub(crate) fn apply_configuration(&self, configuration: &TextInputConfiguration) {
+         let element: &web_sys::Element = self.element.as_ref();
+-        self.element.set_spellcheck(configuration.suggestions);
+-        let on_off = |enabled: bool| if enabled { "on" } else { "off" };
+-        element
+-            .set_attribute("autocomplete", on_off(configuration.suggestions))
+-            .ok();
+-        element
+-            .set_attribute("autocorrect", on_off(configuration.autocorrect))
+-            .ok();
+-        element
+-            .set_attribute(
+-                "autocapitalize",
+-                match configuration.autocapitalize {
+-                    Autocapitalize::None => "off",
+-                    Autocapitalize::Words => "words",
+-                    Autocapitalize::Sentences => "sentences",
+-                    Autocapitalize::Characters => "characters",
+-                },
+-            )
+-            .ok();
+-        let enter_key_hint = match configuration.input_action {
+-            TextInputAction::Unspecified => None,
+-            TextInputAction::Enter => Some("enter"),
+-            TextInputAction::Done => Some("done"),
+-            TextInputAction::Go => Some("go"),
+-            TextInputAction::Next => Some("next"),
+-            TextInputAction::Previous => Some("previous"),
+-            TextInputAction::Search => Some("search"),
+-            TextInputAction::Send => Some("send"),
+-        };
+-        match enter_key_hint {
+-            Some(hint) => element.set_attribute("enterkeyhint", hint).ok(),
+-            None => element.remove_attribute("enterkeyhint").ok(),
+-        };
++        for (name, value) in text_editing::attributes(configuration, self.mobile) {
++            match value {
++                Some(value) => element.set_attribute(name, value).ok(),
++                None => element.remove_attribute(name).ok(),
++            };
++        }
++        self.input_mode
++            .set(text_editing::input_mode(configuration.keyboard_type));
++        // Touch input owns `inputmode` ("none" while it suppresses the
++        // keyboard); an enabled keyboard takes the new layout now.
++        if element.has_attribute("inputmode") && self.virtual_keyboard_enabled() {
++            self.set_virtual_keyboard_enabled(true);
++        }
++    }
++
++    /// Moves the element onto `caret` (window coordinates; the canvas starts
++    /// at `canvas_origin` in the page), as Flutter's `placeElement` puts its
++    /// element over the field, so a desktop IME's candidate window and the
++    /// browser's composition popups open at the caret instead of the page's
++    /// corner. The caller never places it mid-composition (see
++    /// `WebWindow::update_ime_position`).
++    pub(crate) fn place(&self, caret: Bounds<Pixels>, canvas_origin: (f64, f64)) {
++        let style = self.element.style();
++        let left = format!(
++            "{}px",
++            canvas_origin.0 + f64::from(f32::from(caret.origin.x))
++        );
++        let top = format!(
++            "{}px",
++            canvas_origin.1 + f64::from(f32::from(caret.origin.y))
++        );
++        style.set_property("left", &left).ok();
++        style.set_property("top", &top).ok();
+     }
+ 
+     pub(crate) fn event_target(&self) -> &web_sys::EventTarget {
+@@ -217,10 +228,14 @@ impl ImeMirror {
+     }
+ 
+     pub(crate) fn set_virtual_keyboard_enabled(&self, enabled: bool) {
+-        if let Err(error) = self
+-            .element
+-            .set_attribute("inputmode", if enabled { "text" } else { "none" })
+-        {
++        if let Err(error) = self.element.set_attribute(
++            "inputmode",
++            if enabled {
++                self.input_mode.get()
++            } else {
++                "none"
++            },
++        ) {
+             log::warn!("Failed to configure input mode: {error:?}");
+         }
+     }
+diff --git a/gpui-pre-web/src/text_editing.rs b/gpui-pre-web/src/text_editing.rs
+new file mode 100644
+index 0000000..23ef899
+--- /dev/null
++++ b/gpui-pre-web/src/text_editing.rs
+@@ -0,0 +1,401 @@
++// Ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/text_editing/ @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): input_type.dart (`inputmodeAttribute`), input_action.dart
++// (`configureInputAction`), text_capitalization.dart (`setAutocapitalizeAttribute`), autofill_hint.dart
++// (`BrowserAutofillHints`) and text_editing.dart (`DefaultTextEditingStrategy.applyConfiguration`); the test rows
++// from engine/src/flutter/lib/web_ui/test/engine/text_editing_test.dart @ 3.50.1. Copyright 2014 The Flutter
++// Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++//! What the IME mirror's attributes are for a [`TextInputConfiguration`], and what edit an `input` event made to
++//! it. Plain values in, plain values out, so Flutter's web text-editing cases run as tables on any host; the DOM
++//! side is `ime_mirror.rs` and `events.rs`.
++//!
++//! Flutter gives each field its own `<input>` or `<textarea>`; GPUI keeps one mirror `<textarea>`, so Flutter's
++//! `type=password` (`obscureText`) has no counterpart here and secure fields are not yet hidden from keyboards.
++
++use std::ops::Range;
++
++use gpui::{Autocapitalize, AutofillHint, KeyboardType, TextInputAction, TextInputConfiguration};
++
++/// The mirror's text-assistance attributes for `configuration`, as (name, value); `None` removes the attribute.
++/// `mobile` is Flutter's `operatingSystem == iOs || android` test, which gates `enterkeyhint`
++/// (`configureInputAction`: "Only apply `enterkeyhint` in mobile browsers"). To add an attribute: a row.
++pub(crate) fn attributes(
++    configuration: &TextInputConfiguration,
++    mobile: bool,
++) -> [(&'static str, Option<&'static str>); 5] {
++    let on_off = |enabled: bool| Some(if enabled { "on" } else { "off" });
++    [
++        // `applyConfiguration`: the autofill hint's token, or "off" when the field has none.
++        (
++            "autocomplete",
++            Some(configuration.autofill.map_or("off", autocomplete_token)),
++        ),
++        ("autocorrect", on_off(configuration.autocorrect)),
++        // `setAutocapitalizeAttribute`.
++        (
++            "autocapitalize",
++            Some(match configuration.autocapitalize {
++                Autocapitalize::None => "off",
++                Autocapitalize::Words => "words",
++                Autocapitalize::Sentences => "sentences",
++                Autocapitalize::Characters => "characters",
++            }),
++        ),
++        (
++            "enterkeyhint",
++            enter_key_hint(configuration.input_action).filter(|_| mobile),
++        ),
++        // GPUI's own: Flutter's framework sends no spellcheck flag to the web engine.
++        (
++            "spellcheck",
++            Some(if configuration.suggestions {
++                "true"
++            } else {
++                "false"
++            }),
++        ),
++    ]
++}
++
++/// `EngineInputAction.enterkeyhintAttribute`; `Unspecified` sets none.
++fn enter_key_hint(action: TextInputAction) -> Option<&'static str> {
++    match action {
++        TextInputAction::Unspecified => None,
++        TextInputAction::Enter => Some("enter"),
++        TextInputAction::Done => Some("done"),
++        TextInputAction::Go => Some("go"),
++        TextInputAction::Next => Some("next"),
++        TextInputAction::Previous => Some("previous"),
++        TextInputAction::Search => Some("search"),
++        TextInputAction::Send => Some("send"),
++    }
++}
++
++/// `BrowserAutofillHints`' `_flutterToEngineMap`, for the hints GPUI has.
++fn autocomplete_token(hint: AutofillHint) -> &'static str {
++    match hint {
++        AutofillHint::Username => "username",
++        AutofillHint::Password => "current-password",
++        AutofillHint::NewPassword => "new-password",
++        AutofillHint::OneTimeCode => "one-time-code",
++        AutofillHint::Email => "email",
++        AutofillHint::Phone => "tel",
++        AutofillHint::Name => "name",
++        AutofillHint::PostalAddress => "street-address",
++        AutofillHint::PostalCode => "postal-code",
++        AutofillHint::CreditCardNumber => "cc-number",
++    }
++}
++
++/// `inputmodeAttribute` of each `EngineInputType`: the software keyboard layout the mirror asks for while the
++/// keyboard is enabled (`inputmode=none` disables it). Flutter's plain text sets no attribute; here "text" is
++/// written, since the mirror switches back from "none". `Search` is GPUI's own (Flutter has no search type).
++pub(crate) fn input_mode(keyboard_type: KeyboardType) -> &'static str {
++    match keyboard_type {
++        KeyboardType::Text => "text",
++        KeyboardType::Number => "numeric",
++        KeyboardType::Decimal => "decimal",
++        KeyboardType::Phone => "tel",
++        KeyboardType::Email => "email",
++        KeyboardType::Url => "url",
++        KeyboardType::Search => "search",
++    }
++}
++
++/// An IME edit of the mirror: the UTF-16 range `replaced` of the old value became `inserted`.
++#[derive(Debug, PartialEq)]
++pub(crate) struct Edit {
++    pub(crate) replaced: Range<usize>,
++    pub(crate) inserted: String,
++}
++
++/// The edit that turned the mirror's `old` value into `new`, the browser having left the caret at
++/// `post_edit_caret` (UTF-16). Flutter infers the same thing (`TextEditingDeltaState.inferDeltaState`); GPUI's
++/// rule, which the `edits` table checks against Flutter's cases:
++///
++/// A prefix/suffix diff is ambiguous when the inserted text shares characters with what follows it (inserting
++/// "pactor " before "pact" also reads as inserting "or pact" four units later). The edit's true position is not
++/// ambiguous: the browser leaves the caret at the end of an IME edit, so the suffix is anchored as "everything
++/// after the post-edit caret", and the prefix is capped to fit. Greedy matching is only a fallback for edits
++/// where the anchored suffix doesn't verify.
++pub(crate) fn infer_edit(old: &str, new: &str, post_edit_caret: Option<usize>) -> Edit {
++    let old_units: Vec<u16> = old.encode_utf16().collect();
++    let new_units: Vec<u16> = new.encode_utf16().collect();
++    let anchored_suffix_length = post_edit_caret
++        .map(|caret| new_units.len().saturating_sub(caret))
++        .filter(|&suffix_length| {
++            suffix_length <= old_units.len()
++                && old_units[old_units.len() - suffix_length..]
++                    == new_units[new_units.len() - suffix_length..]
++        });
++    let suffix_length = anchored_suffix_length.unwrap_or_else(|| {
++        old_units
++            .iter()
++            .rev()
++            .zip(new_units.iter().rev())
++            .take_while(|(old_unit, new_unit)| old_unit == new_unit)
++            .count()
++    });
++    let prefix_length = old_units
++        .iter()
++        .zip(&new_units)
++        .take_while(|(old_unit, new_unit)| old_unit == new_unit)
++        .count()
++        .min(old_units.len() - suffix_length)
++        .min(new_units.len() - suffix_length);
++    Edit {
++        replaced: prefix_length..old_units.len() - suffix_length,
++        inserted: String::from_utf16_lossy(
++            &new_units[prefix_length..new_units.len() - suffix_length],
++        ),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// text_editing_test.dart's `GloballyPositionedTextEditingStrategy` and `HybridTextEditing` configuration
++    /// cases: (Flutter test, configuration, mobile, attribute, expected value). A row per checked attribute.
++    #[test]
++    fn configuration_attributes() {
++        let default = TextInputConfiguration::default;
++        let rows: [(&str, TextInputConfiguration, bool, &str, Option<&str>); 14] = [
++            (
++                "Knows how to create non-default text actions (mobile)",
++                TextInputConfiguration {
++                    input_action: TextInputAction::Send,
++                    ..default()
++                },
++                true,
++                "enterkeyhint",
++                Some("send"),
++            ),
++            (
++                "Knows how to create non-default text actions (desktop)",
++                TextInputConfiguration {
++                    input_action: TextInputAction::Send,
++                    ..default()
++                },
++                false,
++                "enterkeyhint",
++                None,
++            ),
++            (
++                "Knows to turn autocorrect off",
++                TextInputConfiguration {
++                    autocorrect: false,
++                    ..default()
++                },
++                false,
++                "autocorrect",
++                Some("off"),
++            ),
++            (
++                "Knows to turn autocorrect on",
++                TextInputConfiguration {
++                    autocorrect: true,
++                    ..default()
++                },
++                false,
++                "autocorrect",
++                Some("on"),
++            ),
++            (
++                "Knows to turn autofill off",
++                default(),
++                false,
++                "autocomplete",
++                Some("off"),
++            ),
++            (
++                "input with autofill hint",
++                TextInputConfiguration {
++                    autofill: Some(AutofillHint::Email),
++                    ..default()
++                },
++                false,
++                "autocomplete",
++                Some("email"),
++            ),
++            (
++                "password autofill hint",
++                TextInputConfiguration {
++                    autofill: Some(AutofillHint::Password),
++                    ..default()
++                },
++                false,
++                "autocomplete",
++                Some("current-password"),
++            ),
++            (
++                "No capitalization: setClient, setEditingState, show",
++                default(),
++                true,
++                "autocapitalize",
++                Some("off"),
++            ),
++            (
++                "All characters capitalization: setClient, setEditingState, show",
++                TextInputConfiguration {
++                    autocapitalize: Autocapitalize::Characters,
++                    ..default()
++                },
++                true,
++                "autocapitalize",
++                Some("characters"),
++            ),
++            (
++                "Sentences capitalization: setClient, setEditingState, show",
++                TextInputConfiguration {
++                    autocapitalize: Autocapitalize::Sentences,
++                    ..default()
++                },
++                true,
++                "autocapitalize",
++                Some("sentences"),
++            ),
++            (
++                "Words capitalization: setClient, setEditingState, show",
++                TextInputConfiguration {
++                    autocapitalize: Autocapitalize::Words,
++                    ..default()
++                },
++                true,
++                "autocapitalize",
++                Some("words"),
++            ),
++            (
++                "GPUI: suggestions off turn spellcheck off",
++                default(),
++                false,
++                "spellcheck",
++                Some("false"),
++            ),
++            (
++                "GPUI: suggestions on turn spellcheck on",
++                TextInputConfiguration {
++                    suggestions: true,
++                    ..default()
++                },
++                false,
++                "spellcheck",
++                Some("true"),
++            ),
++            (
++                "GPUI: an unspecified action sets no enterkeyhint",
++                default(),
++                true,
++                "enterkeyhint",
++                None,
++            ),
++        ];
++        for (name, configuration, mobile, attribute, expected) in rows {
++            let value = attributes(&configuration, mobile)
++                .into_iter()
++                .find(|(key, _)| *key == attribute)
++                .map(|(_, value)| value);
++            assert_eq!(value, Some(expected), "{name}");
++        }
++    }
++
++    /// "sets correct input type in Android" / "… in iOS" / "… for Firefox on Android": each keyboard type's
++    /// `inputmode`.
++    #[test]
++    fn input_modes() {
++        let rows = [
++            (KeyboardType::Text, "text"),
++            (KeyboardType::Number, "numeric"),
++            (KeyboardType::Decimal, "decimal"),
++            (KeyboardType::Phone, "tel"),
++            (KeyboardType::Email, "email"),
++            (KeyboardType::Url, "url"),
++            (KeyboardType::Search, "search"),
++        ];
++        for (keyboard_type, expected) in rows {
++            assert_eq!(input_mode(keyboard_type), expected, "{keyboard_type:?}");
++        }
++    }
++
++    /// text_editing_test.dart's `TextEditingDeltaState` cases (Flutter's expected `deltaStart`..`deltaEnd` and
++    /// `deltaText`), plus GPUI's own ambiguity row: (name, old value, new value, post-edit caret, replaced, inserted).
++    #[test]
++    fn edits() {
++        let rows: [(&str, &str, &str, usize, Range<usize>, &str); 8] = [
++            (
++                "Verify correct delta is inferred - insertion",
++                "worl",
++                "world",
++                5,
++                4..4,
++                "d",
++            ),
++            (
++                "Verify correct delta is inferred - Backward deletion - Empty selection",
++                "world",
++                "worl",
++                4,
++                4..5,
++                "",
++            ),
++            (
++                "Verify correct delta is inferred - Forward deletion - Empty selection",
++                "world",
++                "worl",
++                4,
++                4..5,
++                "",
++            ),
++            (
++                "Verify correct delta is inferred - Deletion - Non-empty selection",
++                "world",
++                "w",
++                1,
++                1..5,
++                "",
++            ),
++            (
++                "Verify correct delta is inferred - composing region replacement",
++                "ni hao ma",
++                "你好吗",
++                3,
++                0..9,
++                "你好吗",
++            ),
++            (
++                "Verify correct delta is inferred for double space to insert a period",
++                "hello ",
++                "hello. ",
++                7,
++                5..6,
++                ". ",
++            ),
++            (
++                "Verify correct delta is inferred for accent menu",
++                "a",
++                "à",
++                1,
++                0..1,
++                "à",
++            ),
++            (
++                "GPUI: the caret anchors an ambiguous insertion",
++                "pact",
++                "pactor pact",
++                7,
++                0..0,
++                "pactor ",
++            ),
++        ];
++        for (name, old, new, caret, replaced, inserted) in rows {
++            assert_eq!(
++                infer_edit(old, new, Some(caret)),
++                Edit {
++                    replaced,
++                    inserted: inserted.to_string()
++                },
++                "{name}"
++            );
++        }
++    }
++}
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index 9ba479c..5024601 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -180,7 +180,11 @@ impl WebWindow {
+             .ok()
+             .flatten()
+             .is_some_and(|query| query.matches());
+-        let ime_mirror = ImeMirror::new(&document, &body, touch_input)?;
++        let mobile = matches!(
++            crate::events::platform_info(&browser_window).os,
++            gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android
++        );
++        let ime_mirror = ImeMirror::new(&document, &body, touch_input, mobile)?;
+         let mut viewport = WebViewport::new(&document)?;
+         viewport.update(&browser_window, &canvas)?;
+ 
+@@ -1081,7 +1085,21 @@ impl PlatformWindow for WebWindow {
+         self.inner.state.borrow().renderer.gpu_specs()
+     }
+ 
+-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
++    /// Puts the IME mirror on the caret, so a desktop IME's candidate window
++    /// opens there (Flutter's `placeElement`). Not mid-composition (Flutter's
++    /// `updateElementPlacement`: moving a composing element disturbs the IME),
++    /// and not on touch, where the mirror stays at the top: a focused field
++    /// near the keyboard makes iOS pan the page to it, and mobile keyboards
++    /// show their candidates in the keyboard, not at the caret.
++    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
++        if self.inner.touch_input || self.inner.is_composing.get() {
++            return;
++        }
++        let canvas = self.inner.canvas.get_bounding_client_rect();
++        self.inner
++            .ime_mirror
++            .place(bounds, (canvas.left(), canvas.top()));
++    }
+ 
+     fn request_decorations(&self, _decorations: WindowDecorations) {}
+ 

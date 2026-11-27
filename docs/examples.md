@@ -19,12 +19,14 @@ Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the ap
 (`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them ([android-emoji.md](android-emoji.md#cost)).
 The grid scrolls in a box shorter than its rows, so a swipe past an edge shows the platform's overscroll (stretch on
 Android, bounce on iOS and macOS: [overscroll.md](overscroll.md)). "Record touches" swaps the window for a trace pad
-that logs every touch in the trace format ([traces.md](traces.md)).
+that logs every touch in the trace format ([traces.md](traces.md)). `hello: lifecycle …` logs each app lifecycle
+phase and `hello: keyboard inset …` each change of the keyboard's inset ([web-lifecycle.md](web-lifecycle.md)).
 
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local:
 upstream GPUI has no text field outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs`
 (Apache-2.0) cut down to one `EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes; on Android
-it drives the IME ([android-text-input.md](android-text-input.md)).
+it drives the IME ([android-text-input.md](android-text-input.md)). A paint that moves its caret calls
+`invalidate_character_coordinates`, so the web's IME mirror follows the caret ([web-text-input.md](web-text-input.md)).
 
 What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade.
 
