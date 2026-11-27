@@ -7,7 +7,10 @@
 //! [`TouchEvent`]s, a mouse or trackpad becomes mouse and scroll events. Pure, so it is tested on any host. How
 //! touch and mouse fit together: `docs/android-touch.md`, `docs/android-mouse.md`.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use gpui::{
     Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
@@ -405,6 +408,24 @@ impl Mouse {
     }
 }
 
+/// GPUI's clock and Android's event clock (`SystemClock.uptimeMillis`, which `MotionEvent.getEventTime` reads:
+/// `CLOCK_MONOTONIC`) read together, so a record's time stamp becomes a GPUI `Instant` by its age.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Clock {
+    pub(crate) now: Instant,
+    /// `CLOCK_MONOTONIC` at `now`, in the packet's microseconds.
+    pub(crate) uptime_micros: i64,
+}
+
+impl Clock {
+    /// When a record stamped `time_stamp` happened, on GPUI's clock (Flutter's `PointerEvent.timeStamp`). A stamp
+    /// later than the clock read (none should be) counts as now.
+    fn at(self, time_stamp: i64) -> Option<Instant> {
+        let age = u64::try_from(self.uptime_micros - time_stamp).unwrap_or(0);
+        self.now.checked_sub(Duration::from_micros(age))
+    }
+}
+
 /// The pointers in progress. Touches: Flutter's `device` → GPUI's [`TouchId`]; GPUI ids are never reused, Android's
 /// are.
 #[derive(Debug, Default)]
@@ -417,13 +438,14 @@ pub(crate) struct Pointers {
 }
 
 impl Pointers {
-    /// The GPUI input for one decoded packet, with the keyboard's `modifiers`. A touch move, up or cancel for a
-    /// pointer that never went down is dropped.
+    /// The GPUI input for one decoded packet, with the keyboard's `modifiers`; touches are timed through `clock`. A
+    /// touch move, up or cancel for a pointer that never went down is dropped.
     pub(crate) fn events(
         &mut self,
         packet: &[PointerData],
         density: f32,
         modifiers: Modifiers,
+        clock: Clock,
     ) -> Vec<PlatformInput> {
         let logical = |physical: Point<f64>| {
             point(
@@ -441,7 +463,7 @@ impl Pointers {
                         self.mouse(data.mouse, data, position, logical, modifiers)
                     }
                     (None, Route::Touch(device)) => {
-                        self.touch(data, device, position).into_iter().collect()
+                        self.touch(data, device, position, clock).into_iter().collect()
                     }
                 };
                 if !inputs.is_empty() {
@@ -457,6 +479,7 @@ impl Pointers {
         data: &PointerData,
         device: PointerDevice,
         position: Point<Pixels>,
+        clock: Clock,
     ) -> Option<PlatformInput> {
         let phase = data.touch?;
         let id = match phase {
@@ -479,6 +502,7 @@ impl Pointers {
             force: (range > 0.0)
                 .then(|| ((data.pressure - data.pressure_min) / range).clamp(0.0, 1.0) as f32),
             device,
+            time_stamp: clock.at(data.time_stamp),
         }))
     }
 
@@ -654,6 +678,39 @@ mod tests {
         }
     }
 
+    /// A clock read at `uptime_micros` on Android's event clock.
+    fn clock(uptime_micros: i64) -> Clock {
+        Clock {
+            now: Instant::now(),
+            uptime_micros,
+        }
+    }
+
+    #[test]
+    fn touch_time_stamps() -> Result<(), Error> {
+        // (row name, uptime at the clock read, the record's time stamp, how long before the read the touch was), in
+        // microseconds.
+        let cases = [
+            ("eight_ms_old_is_eight_ms_before_now", 1_008_000, 1_000_000i64, 8_000),
+            ("stamped_at_the_read_is_now", 1_000_000, 1_000_000, 0),
+            ("stamped_after_the_read_is_now", 1_000_000, 1_000_500, 0),
+        ];
+        for (name, uptime, time_stamp, age) in cases {
+            let down = with(
+                record(DOWN, TOUCH, FINGER_0, 20., 40.),
+                &[(Field::TimeStamp, time_stamp.to_le_bytes())],
+            );
+            let clock = clock(uptime);
+            let inputs = Pointers::default().events(&decode(&down)?, 2.0, Modifiers::default(), clock);
+            let got = match inputs.first() {
+                Some(PlatformInput::Touch(event)) => event.time_stamp,
+                _ => None,
+            };
+            assert_eq!(got, clock.now.checked_sub(Duration::from_micros(age)), "{name}");
+        }
+        Ok(())
+    }
+
     /// Sends `packets` in order; the last packet's inputs, described, or its error.
     fn run(packets: &[Vec<u8>]) -> Result<Vec<String>, Error> {
         let mut pointers = Pointers::default();
@@ -661,7 +718,7 @@ mod tests {
         for packet in packets {
             last = decode(packet).map(|data| {
                 pointers
-                    .events(&data, 2.0, Modifiers::default())
+                    .events(&data, 2.0, Modifiers::default(), clock(0))
                     .iter()
                     .map(describe)
                     .collect()
@@ -1210,7 +1267,7 @@ mod tests {
         ];
         for (name, packet, touch, position) in cases {
             let mut pointers = Pointers::default();
-            let inputs = pointers.events(&decode(&packet)?, 2.0, Modifiers::default());
+            let inputs = pointers.events(&decode(&packet)?, 2.0, Modifiers::default(), clock(0));
             let got = if let Some(PlatformInput::Touch(event)) = inputs.first() {
                 Some((event.device, event.force))
             } else {

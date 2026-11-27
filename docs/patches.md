@@ -72,3 +72,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0017](../patches/0017-overscroll-in-scroll-containers.patch) | overscroll (bounce, stretch, glow) in `div` scroll containers, `GestureTuning::overscroll`, `.overscroll(..)` ([overscroll.md](overscroll.md)) |
 | [0018](../patches/0018-haptic-feedback.patch) | `gpui::Haptic`, `PlatformWindow::perform_haptic` / `Window::perform_haptic`, `GestureTuning::long_press_haptic` on a claimed long press; iOS and web backends ([haptics.md](haptics.md)) |
 | [0019](../patches/0019-window-set-gesture-tuning.patch) | `Window::set_gesture_tuning` retunes an open window, for Android's device touch slop ([core-patches.md](core-patches.md#0019-retune-an-open-window)) |
+| [0020](../patches/0020-touch-event-timestamp.patch) | `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, filled by iOS and the web, read by velocity tracking ([touch-time-stamps.md](touch-time-stamps.md)) |

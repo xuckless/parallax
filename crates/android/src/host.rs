@@ -987,12 +987,24 @@ impl Shell {
     /// tap into a click; a mouse clicks itself. The keyboard is read before GPUI runs (it reads modifiers too).
     fn pointer(&self, packet: &[u8]) {
         let modifiers = self.keyboard.borrow().modifiers();
+        let mut uptime = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `uptime` is a valid, writable timespec and CLOCK_MONOTONIC always exists on Android; on the
+        // impossible failure it stays zero, which only makes touches read as dispatched now.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut uptime) };
+        let clock = pointer::Clock {
+            now: Instant::now(),
+            uptime_micros: uptime.tv_sec * 1_000_000 + uptime.tv_nsec / 1_000,
+        };
         let events = match pointer::decode(packet) {
-            Ok(data) => {
-                self.pointers
-                    .borrow_mut()
-                    .events(&data, self.metrics.get().density, modifiers)
-            }
+            Ok(data) => self.pointers.borrow_mut().events(
+                &data,
+                self.metrics.get().density,
+                modifiers,
+                clock,
+            ),
             Err(error) => {
                 log::error!("parallax: pointer packet dropped: {error}");
                 return;

@@ -15,7 +15,9 @@ in [gestures.rs](../upstream/gpui-pre/src/gestures.rs) estimated that with its o
 | `velocity_tracker_test.rs` + `velocity_tracker_data.rs` | [velocity_tracker_test.dart](https://github.com/flutter/flutter/blob/3.50.1/packages/flutter/test/gestures/velocity_tracker_test.dart) + [velocity_tracker_data.dart](https://github.com/flutter/flutter/blob/3.50.1/packages/flutter/test/gestures/velocity_tracker_data.dart) |
 | `lsq_solver_test.rs` | [lsq_solver_test.dart](https://github.com/flutter/flutter/blob/3.50.1/packages/flutter/test/gestures/lsq_solver_test.dart) |
 
-Flutter's three tracker classes are one `VelocityTracker` with a kind. Their names, constants and comments are
+Samples are timed by each touch's platform time stamp, as Flutter's `addPosition(event.timeStamp, …)`, or by dispatch
+where a platform has none ([touch-time-stamps.md](touch-time-stamps.md)). Flutter's three tracker classes are one
+`VelocityTracker` with a kind. Their names, constants and comments are
 Flutter's, so a later Flutter fix diffs straight in.
 
 ## The kinds

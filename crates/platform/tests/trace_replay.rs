@@ -144,6 +144,9 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
                 predicted_position: None,
                 force: None,
                 device: PointerDevice::Touch,
+                // Each touch is dispatched at its `at_ms` (the platform's event time, docs/traces.md), so GPUI's
+                // dispatch time is its time stamp.
+                time_stamp: None,
             };
             (fields[0].parse().unwrap(), event)
         })

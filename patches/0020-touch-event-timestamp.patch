@@ -1,0 +1,414 @@
+Time touches by the platform's event time.
+
+What: `TouchEvent::time_stamp: Option<Instant>` (Flutter's `PointerEvent.timeStamp`): when the platform says the
+touch happened, on the executor's clock (`BackgroundExecutor::now`; `scheduler::Instant`, which is
+`performance.now()` on the web and the OS monotonic clock elsewhere). Each backend moves its OS event time onto that
+clock by the event's age (now minus how long ago the OS says the touch was): gpui_ios from `UITouch.timestamp`
+against `NSProcessInfo.systemUptime`, gpui_web from `Event.timeStamp` against `performance.now()` (web-sys gains
+`Performance`). The touch recognizer's velocity tracker and the pinch arena's scale recognizer sample at the event's
+time stamp, as Flutter's trackers take `timeStamp`; timers, deadlines and momentum ticks stay on the dispatch clock,
+as Flutter's run on its own timers. A `None` time stamp (a platform without event times, synthesized touches, tests)
+is timed at dispatch, explicitly (`event.time_stamp.unwrap_or(now)`, once per recognizer). Adds a recognizer test:
+the same 16 ms samples dispatched on time, at 33 ms frames and 50 ms late fling at the same velocity. Every
+`TouchEvent` literal gains the field.
+
+Why: GPUI timed a touch when it dispatched it. A browser delivers touch moves at its frame rate, late and in
+bunches (headless Chromium every ~33 ms), and Android batches moves per input frame, so the gaps the velocity
+tracker saw were not the finger's: least squares read the web's jittered samples as a slowing finger and flung
+~40 % shorter than the same swipe on iOS (Gate 2 trace replay). Flutter times every sample by the platform's event
+time for this reason. `TouchEvent` is GPUI's type and the recognizers are private, so neither a Parallax crate nor
+an extension trait can add it. No cfg: the field is core; each backend fills it from its own clock.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
+index 7205282..bbea48c 100644
+--- a/gpui-pre-ios/src/ios/events.rs
++++ b/gpui-pre-ios/src/ios/events.rs
+@@ -5,10 +5,12 @@ use gpui::{
+     ScrollDelta, ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
+ };
+ use objc2_core_foundation::CGPoint;
++use objc2_foundation::NSProcessInfo;
+ use objc2_ui_kit::{
+     UIGestureRecognizerState, UIKeyModifierFlags, UIPanGestureRecognizer, UIRectEdge,
+     UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UITouchType, UIView,
+ };
++use std::time::{Duration, Instant};
+ 
+ /// A release faster than this, in points per second toward going back, commits
+ /// a back gesture regardless of how far it travelled.
+@@ -128,6 +130,15 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+     Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
+ }
+ 
++/// When UIKit says the touch happened (`UITouch.timestamp`, which Flutter's
++/// iOS embedder sends as `PointerEvent.timeStamp`), on GPUI's clock: both
++/// `timestamp` and `NSProcessInfo.systemUptime` count seconds since boot, so
++/// the touch's age is taken off the current instant.
++pub fn touch_time_stamp(touch: &UITouch) -> Option<Instant> {
++    let age = NSProcessInfo::processInfo().systemUptime() - touch.timestamp();
++    Instant::now().checked_sub(Duration::try_from_secs_f64(age.max(0.)).ok()?)
++}
++
+ /// The device behind a touch: Apple Pencil is a pen, and an iPad pointer's
+ /// click arrives as an indirect-pointer touch.
+ pub fn touch_device(touch: &UITouch) -> PointerDevice {
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index cda2bdb..d00bb74 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -535,8 +535,8 @@ impl IosWindowState {
+ 
+     /// Delivers a UIKit touch through GPUI's platform-neutral touch API.
+     pub fn handle_touch(&self, touch: &UITouch, _event: Option<&UIEvent>) {
+-        // GPUI timestamps delivery itself. Replaying UIKit's historical coalesced
+-        // samples here would make them appear simultaneous and distort fling velocity.
++        // Each touch carries UIKit's own time stamp. UIKit's historical coalesced
++        // samples are not replayed: one sample per touch callback, as Flutter's embedder.
+         let id = touch_id(touch);
+         self.handle_touch_sample(touch, id);
+     }
+@@ -552,6 +552,7 @@ impl IosWindowState {
+             predicted_position: None,
+             force: touch_force(touch),
+             device: touch_device(touch),
++            time_stamp: touch_time_stamp(touch),
+         };
+         self.handle_keyboard_dismiss_touch(&event);
+         self.input_callback
+diff --git a/gpui-pre-web/Cargo.toml b/gpui-pre-web/Cargo.toml
+index 32ff639..2f99af8 100644
+--- a/gpui-pre-web/Cargo.toml
++++ b/gpui-pre-web/Cargo.toml
+@@ -156,6 +156,7 @@ features = [
+     "Navigator",
+     "OffscreenCanvas",
+     "OffscreenCanvasRenderingContext2d",
++    "Performance",
+     "PointerEvent",
+     "ReadableStream",
+     "ReadableStreamDefaultReader",
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+index b1a18a6..e9f3151 100644
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -1,4 +1,4 @@
+-use std::{collections::HashMap, rc::Rc};
++use std::{collections::HashMap, rc::Rc, time::Duration};
+ 
+ use gpui::{
+     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, Image,
+@@ -8,6 +8,7 @@ use gpui::{
+     TouchEvent, TouchId, TouchPhase, point, px,
+ };
+ use wasm_bindgen::prelude::*;
++use web_time::Instant;
+ 
+ use crate::ime_mirror::ImeMirror;
+ use crate::window::WebWindowInner;
+@@ -275,6 +276,7 @@ impl WebWindowInner {
+                     predicted_position: None,
+                     force: None,
+                     device: PointerDevice::Touch,
++                    time_stamp: event_time_stamp(&event),
+                 }));
+                 // Keyboard and IME focus intentionally do not change here:
+                 // whether this touch is a tap or a pan is only known at
+@@ -349,6 +351,7 @@ impl WebWindowInner {
+                     predicted_position: None,
+                     force: None,
+                     device: PointerDevice::Touch,
++                    time_stamp: event_time_stamp(&event),
+                 }));
+ 
+                 // A keyboard opening or closing mid-gesture reflows the
+@@ -462,6 +465,7 @@ impl WebWindowInner {
+                     predicted_position: None,
+                     force: None,
+                     device: PointerDevice::Touch,
++                    time_stamp: event_time_stamp(&event),
+                 }));
+             } else {
+                 this.pressed_button.set(None);
+@@ -591,6 +595,7 @@ impl WebWindowInner {
+                     predicted_position: predicted_pointer_position(&event, position),
+                     force: None,
+                     device: PointerDevice::Touch,
++                    time_stamp: event_time_stamp(&event),
+                 }));
+                 return;
+             }
+@@ -1407,6 +1412,15 @@ fn compute_key_char(
+     None
+ }
+ 
++/// When the browser says `event` happened (`Event.timeStamp`, Flutter's
++/// `PointerEvent.timeStamp` on the web), on GPUI's clock: `Instant` here is
++/// `performance.now()`, the timeline `timeStamp` is on, so the event's age is
++/// taken off the current instant. `None` without `performance`.
++fn event_time_stamp(event: &web_sys::Event) -> Option<Instant> {
++    let age_ms = web_sys::window()?.performance()?.now() - event.time_stamp();
++    Instant::now().checked_sub(Duration::from_secs_f64(age_ms.max(0.) / 1000.))
++}
++
+ fn pointer_position_in_element(event: &web_sys::PointerEvent) -> Point<Pixels> {
+     let mouse_event: &web_sys::MouseEvent = event.as_ref();
+     mouse_position_in_element(mouse_event)
+diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
+index d93b33d..dcdf695 100644
+--- a/gpui-pre/src/elements/div.rs
++++ b/gpui-pre/src/elements/div.rs
+@@ -5332,6 +5332,7 @@ mod tests {
+                         predicted_position: None,
+                         force: None,
+                         device: PointerDevice::Touch,
++                        time_stamp: None,
+                     }
+                     .to_platform_input(),
+                     cx,
+@@ -5359,6 +5360,7 @@ mod tests {
+                         predicted_position: None,
+                         force: None,
+                         device: PointerDevice::Touch,
++                        time_stamp: None,
+                     }
+                     .to_platform_input(),
+                     cx,
+@@ -5381,6 +5383,7 @@ mod tests {
+                         predicted_position: None,
+                         force: None,
+                         device: PointerDevice::Touch,
++                        time_stamp: None,
+                     }
+                     .to_platform_input(),
+                     cx,
+@@ -5666,6 +5669,7 @@ mod tests {
+                     position: point(px(75.), px(75.)),
+                     force: None,
+                     device: PointerDevice::Touch,
++                    time_stamp: None,
+                     predicted_position: None,
+                 };
+                 window.dispatch_event(started.clone().to_platform_input(), cx);
+@@ -5726,6 +5730,7 @@ mod tests {
+                             predicted_position: None,
+                             force: None,
+                             device: PointerDevice::Touch,
++                            time_stamp: None,
+                         }
+                         .to_platform_input(),
+                         cx,
+@@ -6269,6 +6274,7 @@ mod tests {
+                 predicted_position: None,
+                 force: None,
+                 device: PointerDevice::Touch,
++                time_stamp: None,
+             }
+             .to_platform_input()
+         };
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index 300eafc..54b1812 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -609,6 +609,10 @@ impl TouchGestureRecognizer {
+         now: Instant,
+         target: TapTarget,
+     ) -> SmallVec<[RecognizedTouchGesture; 2]> {
++        // Velocity samples are timed by the platform's event time, as Flutter's
++        // trackers take `PointerEvent.timeStamp`; timers and deadlines stay on
++        // `now`, the dispatch clock, as Flutter's run on its own timers.
++        let sampled_at = event.time_stamp.unwrap_or(now);
+         let mut recognized = SmallVec::new();
+         match event.phase {
+             TouchPhase::Started => {
+@@ -626,7 +630,7 @@ impl TouchGestureRecognizer {
+                 if matches!(self.state, TouchGestureState::Idle) {
+                     let mut velocity_tracker =
+                         VelocityTracker::with_kind(self.tuning.velocity_tracker);
+-                    velocity_tracker.add_position(now, event.position);
++                    velocity_tracker.add_position(sampled_at, event.position);
+                     let touch = ActiveTouch {
+                         id: event.id,
+                         target,
+@@ -669,7 +673,7 @@ impl TouchGestureRecognizer {
+                     long_press_offered,
+                     touch_drag_offered,
+                 } if touch.id == event.id => {
+-                    touch.velocity_tracker.add_position(now, event.position);
++                    touch.velocity_tracker.add_position(sampled_at, event.position);
+                     touch.last_position = event.position;
+                     let accumulated = event.position - touch.start_position;
+                     if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
+@@ -721,7 +725,7 @@ impl TouchGestureRecognizer {
+                     if raw_delta != Point::default() {
+                         touch.last_movement = raw_delta;
+                     }
+-                    touch.velocity_tracker.add_position(now, event.position);
++                    touch.velocity_tracker.add_position(sampled_at, event.position);
+                     touch.last_position = event.position;
+                     let mut target = event.predicted_position.unwrap_or(event.position);
+                     let mut delta = target - touch.emitted_position;
+@@ -833,7 +837,7 @@ impl TouchGestureRecognizer {
+                     let VelocityEstimate {
+                         pixels_per_second: mut velocity,
+                         mut offset,
+-                    } = touch.velocity_tracker.get_velocity_estimate(now);
++                    } = touch.velocity_tracker.get_velocity_estimate(sampled_at);
+                     match axis {
+                         Axis::Vertical => (velocity.x, offset.x) = (0., 0.),
+                         Axis::Horizontal => (velocity.y, offset.y) = (0., 0.),
+@@ -1732,6 +1736,52 @@ mod tests {
+         }
+     }
+ 
++    /// Flutter's trackers take each event's `timeStamp`: a fling sampled every
++    /// 16 ms flings as fast however late the platform delivers the samples.
++    /// (row, dispatch delay of each event after its time stamp, in ms)
++    #[test]
++    fn velocity_follows_event_time_stamps_not_dispatch() {
++        let rows: [(&str, fn(u64) -> u64); 3] = [
++            ("dispatched as they happen", |_| 0),
++            ("dispatched at the next 33 ms frame", |ms| (33 - ms % 33) % 33),
++            ("dispatched 50 ms late", |_| 50),
++        ];
++        let mut velocities = Vec::new();
++        for (name, delay) in rows {
++            let mut recognizer = TouchGestureRecognizer::new(GestureTuning {
++                velocity_tracker: VelocityTrackerKind::LeastSquares,
++                ..GestureTuning::default()
++            });
++            let origin = Instant::now();
++            let at = |ms| origin + Duration::from_millis(ms);
++            let touch = TouchId(1);
++            let mut release_dispatched_at = origin;
++            for (ms, phase, y) in [
++                (0, TouchPhase::Started, 0.),
++                (16, TouchPhase::Moved, 40.),
++                (32, TouchPhase::Moved, 80.),
++                (48, TouchPhase::Moved, 120.),
++                (64, TouchPhase::Moved, 160.),
++                (80, TouchPhase::Moved, 200.),
++                (80, TouchPhase::Ended, 200.),
++            ] {
++                let event = TouchEvent {
++                    time_stamp: Some(at(ms)),
++                    ..touch_event(touch, phase, 0., y)
++                };
++                release_dispatched_at = at(ms + delay(ms));
++                recognizer.handle_event_at(&event, release_dispatched_at, None);
++            }
++            assert!(recognizer.has_momentum(), "{name}");
++            velocities.push((name, recognizer.fling_velocity(release_dispatched_at).y));
++        }
++        let (_, expected) = velocities[0];
++        assert!((expected - 2500.).abs() < 1., "{expected} px/s");
++        for (name, velocity) in velocities {
++            assert!((velocity - expected).abs() < 1., "{name}: {velocity} px/s");
++        }
++    }
++
+     /// A 20000 px/s flick flings at the tuning's `max_fling_velocity`:
+     /// (row, max fling velocity).
+     #[test]
+@@ -2453,6 +2503,7 @@ mod tests {
+             predicted_position: None,
+             force: None,
+             device: PointerDevice::Touch,
++            time_stamp: None,
+         }
+     }
+ }
+diff --git a/gpui-pre/src/gestures/pinch.rs b/gpui-pre/src/gestures/pinch.rs
+index cb86eaf..dd0af38 100644
+--- a/gpui-pre/src/gestures/pinch.rs
++++ b/gpui-pre/src/gestures/pinch.rs
+@@ -88,6 +88,9 @@ impl PinchArena {
+         now: Instant,
+         touch_slop: Pixels,
+     ) -> PinchStep {
++        // Flutter's scale recognizer is timed by `PointerEvent.timeStamp`; the
++        // dispatch time `now` stands in when the platform reports none.
++        let now = event.time_stamp.unwrap_or(now);
+         let mut step = PinchStep {
+             to_recognizer: true,
+             won: SmallVec::new(),
+diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
+index 4c7a1da..187cd79 100644
+--- a/gpui-pre/src/gestures/recognizer_tests.rs
++++ b/gpui-pre/src/gestures/recognizer_tests.rs
+@@ -207,6 +207,7 @@ impl TraceEvent {
+             predicted_position: None,
+             force: None,
+             device: PointerDevice::Touch,
++            time_stamp: None,
+         }
+     }
+ }
+diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
+index 734dce0..0c25b89 100644
+--- a/gpui-pre/src/input.rs
++++ b/gpui-pre/src/input.rs
+@@ -606,6 +606,7 @@ mod tests {
+                                 predicted_position: None,
+                                 force: None,
+                                 device: PointerDevice::Touch,
++                                time_stamp: None,
+                             };
+                             window.dispatch_event(touch.to_platform_input(), cx);
+                         }
+diff --git a/gpui-pre/src/interactive.rs b/gpui-pre/src/interactive.rs
+index 1bbef6e..d68a62d 100644
+--- a/gpui-pre/src/interactive.rs
++++ b/gpui-pre/src/interactive.rs
+@@ -2,6 +2,7 @@ use crate::{
+     BackGestureEvent, Bounds, Capslock, Context, Empty, IntoElement, Keystroke, LongPressEvent,
+     Modifiers, Pixels, Point, Render, TouchDragEvent, Window, point, seal::Sealed,
+ };
++use scheduler::Instant;
+ use smallvec::SmallVec;
+ use std::{any::Any, fmt::Debug, ops::Deref, path::PathBuf};
+ 
+@@ -137,6 +138,14 @@ pub struct TouchEvent {
+     /// The device making contact: a finger, or a stylus or mouse button the
+     /// platform reports as a touch.
+     pub device: PointerDevice,
++    /// When the touch was at `position`, by the platform's own event time
++    /// (Flutter's `PointerEvent.timeStamp`), on the executor's clock
++    /// ([`BackgroundExecutor::now`](crate::BackgroundExecutor::now)): the
++    /// backend moves the OS time onto it by the event's age. Velocity
++    /// estimates read it, so a platform that delivers touches late or in
++    /// bunches still measures the finger's speed. `None` when the platform
++    /// reports no event time: GPUI then times the touch when it dispatches it.
++    pub time_stamp: Option<Instant>,
+ }
+ 
+ /// The kind of device behind a pointer event.
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index ff5002f..b147a73 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -10363,6 +10363,7 @@ mod tests {
+             predicted_position: None,
+             force: None,
+             device: PointerDevice::Touch,
++            time_stamp: None,
+         }
+         .to_platform_input();
+         let rows = [
+@@ -10504,6 +10505,7 @@ mod tests {
+                 predicted_position: None,
+                 force: None,
+                 device,
++                time_stamp: None,
+             }
+             .to_platform_input()
+         };
+@@ -11529,6 +11531,7 @@ mod tests {
+                         predicted_position: None,
+                         force: None,
+                         device: PointerDevice::Touch,
++                        time_stamp: None,
+                     }
+                     .to_platform_input(),
+                     cx,
