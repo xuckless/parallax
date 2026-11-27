@@ -997,9 +997,13 @@ impl Shell {
         // SAFETY: `uptime` is a valid, writable timespec and CLOCK_MONOTONIC always exists on Android; on the
         // impossible failure it stays zero, which only makes touches read as dispatched now.
         unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut uptime) };
+        #[allow(
+            clippy::useless_conversion,
+            reason = "`time_t` and `c_long` are 32 bits on armv7 and x86: widen before multiplying"
+        )]
         let clock = pointer::Clock {
             now: Instant::now(),
-            uptime_micros: uptime.tv_sec * 1_000_000 + uptime.tv_nsec / 1_000,
+            uptime_micros: i64::from(uptime.tv_sec) * 1_000_000 + i64::from(uptime.tv_nsec) / 1_000,
         };
         let events = match pointer::decode(packet) {
             Ok(data) => self.pointers.borrow_mut().events(
