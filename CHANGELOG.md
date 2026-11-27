@@ -35,6 +35,16 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
   secure text entry (patch 0030). Fork `parallax-gpui*` 0.3.14-parallax.11.
 
+## Unreleased (0.1.9)
+
+- iOS hardware keyboard: presses reach GPUI as `KeyDown`, `KeyUp` and `ModifiersChanged` (shortcuts, arrows,
+  Escape, Tab); keys GPUI leaves unhandled still type into the focused field, once; Caps Lock state is reported
+  (patch 0031, ported from Flutter's iOS key responder).
+- iOS keyboard inset: `WindowInsets::ime` counts only the docked keyboard's part over the window (floating and
+  undocked iPad keyboards, Split View, Slide Over, Stage Manager) and follows the keyboard's animation instead of
+  jumping (patch 0032, ported from Flutter's keyboard inset manager).
+- iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`

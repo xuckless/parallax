@@ -5,7 +5,7 @@
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
-# Then it tests gpui_windows's pure modules (windows_pure below) on the host as a scratch crate, windows-pure.
+# Then it tests gpui_windows's and gpui_ios's pure modules (pure_crates below) on the host as scratch crates.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
 # Needs GNU sed (sed -i). Run scripts/apply-patches.sh first. See docs/patch-tests.md.
 set -euo pipefail
@@ -63,17 +63,19 @@ done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
 
-# gpui_windows builds only on Windows and gpui_web only on wasm32, so their pure decision modules (plain values, no
-# `windows` or `web_sys`) are tested here, each backend's as one host crate on parallax-gpui (`windows-pure`,
-# `web-pure`), a member of the scratch workspace. A row per backend: its fork crate, then its module file names.
-# To add a module, add its file name to its backend's row.
-pure_rows=(
-    "parallax-gpui-windows pointer"
-    "parallax-gpui-web text_editing page_lifecycle keyboard_inset"
+# gpui_windows and gpui_ios build only on their own OS and gpui_web only on wasm32, so their pure decision modules
+# (plain values, no `windows`, objc2 or `web_sys` crate) are tested here as one host crate per backend on
+# parallax-gpui, members of the scratch workspace.
+# One row per backend: "scratch crate:fork crate:modules", each module its path under the crate's src/ without
+# ".rs", space-separated. To add a module, add its path to its backend's row. A module listed must use only `gpui`
+# and `std`.
+pure_crates=(
+    "windows-pure:parallax-gpui-windows:pointer"
+    "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset"
 )
-for row in "${pure_rows[@]}"; do
-    read -r backend modules <<<"$row"
-    name="${backend#parallax-gpui-}-pure"
+for row in "${pure_crates[@]}"; do
+    IFS=: read -r name backend modules <<<"$row"
     pure="$out/crates/$name"
     mkdir -p "$pure/src"
     # The modules' edition is their backend's own.
@@ -92,7 +94,7 @@ EOF
     {
         echo "#![allow(dead_code)] // their callers are $backend's target-only glue"
         for module in $modules; do
-            printf '#[path = "../../%s/src/%s.rs"]\nmod %s;\n' "$backend" "$module" "$module"
+            printf '#[path = "../../%s/src/%s.rs"]\nmod %s;\n' "$backend" "$module" "${module##*/}"
         done
     } > "$pure/src/lib.rs"
     sed -i "s/^members = \[\$/members = [\n    \"$name\",/" "$out/crates/Cargo.toml"
