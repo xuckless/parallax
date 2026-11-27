@@ -10,10 +10,10 @@ the rows for 0015 in [PORTED.md](../third_party/flutter/PORTED.md). Their tests 
 
 | Module | Flutter source | What it is |
 |---|---|---|
-| `gpui::scale` (`gestures/scale.rs`) | `gestures/scale.dart` | `ScaleGestureRecognizer<V>`: touches in, `ScaleOutput`s out (Resolve, Start, Update, End) |
-| `gpui::overscroll` `Simulation`, `Tolerance` | `physics/simulation.dart`, `tolerance.dart` | the simulation trait every physics type below implements |
+| `gpui::scale` (`gestures/scale.rs`) | `gestures/scale.dart` | `ScaleGestureRecognizer`: touches in, `ScaleOutput`s out (Resolve, Start, Update, End) |
+| `gpui::overscroll` `near_equal`, `near_zero` | `physics/utils.dart` | float comparisons the springs and indicators use |
 | `SpringSimulation`, `ScrollSpringSimulation` | `physics/spring_simulation.dart` | closed-form springs (f64; GPUI's `SpringConfig` steps f32 state instead) |
-| `BouncingScrollSimulation<F>` | `widgets/scroll_simulation.dart` | iOS fling: friction `F`, then a spring once it would leave the range |
+| `BouncingScrollSimulation` | `widgets/scroll_simulation.dart` | iOS fling: 0012's `FrictionSimulation`, then a spring once it would leave the range |
 | `BouncingScrollPhysics`, `ClampingScrollPhysics` | `widgets/scroll_physics.dart` | overscroll friction on drags, boundary conditions, the ballistic simulation on release |
 | `GlowController`, `StretchController` and the two indicators | `widgets/overscroll_indicator.dart` | Android's glow (opacity, size, displacement over time) and stretch amount |
 
@@ -32,12 +32,12 @@ later one. Flutter's gesture arena is the caller's:
 `Start` / `Update` / `End` carry Flutter's details (focal point and delta in window pixels, scale, horizontal and
 vertical scale, rotation in radians, pointer count, timestamps; `End` the last pointer's velocity clamped to
 Flutter's fling limits and the scale velocity). A pointer joining or leaving ends the gesture and the next move
-starts it again, as in Flutter. Slops: Flutter's (`TOUCH_SLOP` 18, pan 36), or `touch_slop` for the platform's.
+starts it again, as in Flutter. Slops: Flutter's (`kTouchSlop` 18, `kPanSlop` 36), or `touch_slop` for the platform's.
 
 ## Overscroll: how to drive it
 
 - **Drag in overscroll:** pass the drag delta through `BouncingScrollPhysics::apply_physics_to_user_offset`.
-- **Release:** `create_ballistic_simulation::<F>(metrics, velocity)`, then read `x(t)` / `is_done(t)` per frame
+- **Release:** `create_ballistic_simulation(metrics, velocity)`, then read `x(t)` / `is_done(t)` per frame
   (seconds since release).
 - **Clamping platforms:** `ClampingScrollPhysics::apply_boundary_conditions` gives the overscroll a move refuses;
   feed it to the indicators.
@@ -46,14 +46,13 @@ starts it again, as in Flutter. Slops: Flutter's (`TOUCH_SLOP` 18, pan 36), or `
   may disallow the indicator or set a glow's paint offset. Call `tick(now)` every frame with the frame time; draw
   from `GlowController::paint(width, height)` (leading edge at the top; rotate per edge) or `stretch_strength()`.
 
-## Plug points for the merge and Wave 12
+## What it shares with the other ports
 
-| Trait or type | Implemented by | Notes |
-|---|---|---|
-| `scale::PointerVelocityTracker` | gestures.rs's `VelocityTracker` (in scale.rs) | Wave 11's port of Flutter's `VelocityTracker` (agent A) replaces that impl |
-| `overscroll::FrictionSimulation` | nothing yet (tests use a constant-velocity stand-in) | the `FrictionSimulation` port (agent B, patch 0012) implements it; its rows then check Flutter's friction |
-| `overscroll::Simulation`, `Tolerance` | the springs and `BouncingScrollSimulation` | merge with patch 0012's simulation trait, keeping one |
-| scale constants (`TOUCH_SLOP`, `MIN_FLING_VELOCITY`, ...) | scale.rs | merge with other ports of `constants.dart` |
+One copy of each Flutter piece: the scale recognizer tracks velocity with [0011](velocity-tracking.md)'s
+`VelocityTracker` (least squares, as Flutter's `VelocityTracker.withKind`) and reads slops and fling limits from
+[0013](gesture-recognizers.md)'s `gpui::constants`; the overscroll simulations implement
+[0012](scroll-physics.md)'s `Simulation` and `Tolerance`, and `BouncingScrollSimulation`'s friction phase is 0012's
+`FrictionSimulation` (its time-0 test row runs it with Flutter's values).
 
 Wave 12 wires them: the scale recognizer into touch dispatch next to the upstream `TouchGestureRecognizer`
 (claims as the arena; scale results to `on_pinch` or a new listener), bouncing physics and the indicators into

@@ -9,12 +9,13 @@ Flutter's recognizer tests (tap, double tap, long press, drag) are the oracle fo
 
 | Change | Flutter source | Before |
 |---|---|---|
+| `gestures/constants.rs` (`gpui::constants`): all of `constants.dart`, Flutter's names, the one copy | `constants.dart` | `MAX_FLING_VELOCITY` only |
 | `GestureTuning::default()` = Flutter's constants: `touch_slop` 18 px, `multi_tap_interval` 300 ms, `multi_tap_slop` 100 px, `multi_tap_min_interval` 40 ms (new), `long_press_duration` 500 ms, `min_fling_velocity` 50 | `constants.dart` (kTouchSlop, kDoubleTapTimeout, kDoubleTapSlop, kDoubleTapMinTime, kLongPressTimeout, kMinFlingVelocity) | 8 px, 400 ms, 16 px, none |
 | A tap's click count continues when it starts < interval after the last tap's up, within the slop of where that tap started, and ≥ min interval after that tap started | `multitap.dart`, `DoubleTapGestureRecognizer.addAllowedPointer` | up-to-up time and distance |
 | The recognizer reads `cx.background_executor().now()`, not `Instant::now()` | none | wall clock: tests couldn't drive it |
 
-The values are the same on every platform in Flutter. The platform behaviour table feeds per-target values through
-`PlatformGestures::tuning()`; the field names above are what it fills. GPUI keeps counting past 2 (triple click), and a
+The values are the same on every platform in Flutter. The [platform behaviour table](behaviour.md) feeds per-target
+values through `App::set_gesture_tuning` (patch 0014); the field names above are what it fills. GPUI keeps counting past 2 (triple click), and a
 second tap too far from the first starts a new sequence (Flutter's double-tap recognizer ignores it).
 
 ## The test

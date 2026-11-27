@@ -41,8 +41,10 @@ gives iOS the iOS tracker, macOS the macOS one, and Android, Linux and Windows `
 | gpui_web, Android user agent | `LeastSquares` |
 | gpui_web, other user agents | `IOSScrollViewFling` |
 
-The rest of Flutter's rows (Android native, desktop touch) belong in the platform behaviour table
-([ROADMAP](../ROADMAP.md), Phase 2). An app overrides the kind like any other `GestureTuning` field.
+Every target's row (Android native and desktop included) is the [platform behaviour table](behaviour.md)'s
+`velocity_tracker`, which apps get through `parallax::set_platform_gesture_tuning`. An app overrides the kind like any
+other `GestureTuning` field. The scale recognizer ([scale-and-overscroll.md](scale-and-overscroll.md)) uses
+`LeastSquares`, as Flutter's does.
 
 ## Tests
 

@@ -34,15 +34,15 @@ GPUI ran AOSP's spline itself, which fails Flutter's clamping tests (see the pat
 ## Boundaries
 
 Presets model deceleration only. Bounce, glow and clamping at the content's edges belong to the scroll container,
-and the overscroll maths (`BouncingScrollSimulation`'s springs, `frictionFactor`) is separate work. `FrictionSimulation`
-keeps Flutter's `final_x`, `time_at_x` and constant deceleration because those parts build on them.
+and the overscroll maths (`BouncingScrollSimulation`'s springs, `frictionFactor`) is patch 0015's
+([scale-and-overscroll.md](scale-and-overscroll.md)), built on this patch's `Simulation`, `Tolerance` and
+`FrictionSimulation`, whose `final_x`, `time_at_x` and constant deceleration it uses.
 
 ## Not ported yet
 
 | Flutter behaviour | Where it would go |
 |---|---|
-| `BouncingScrollPhysics.minFlingVelocity` = 100 (GPUI's `min_fling_velocity` is 50 on every preset) | platform behaviour table (ROADMAP Phase 2) |
-| macOS `ScrollDecelerationRate.fast`: constant deceleration 1400, max fling velocity x8 | a desktop preset |
+| macOS `ScrollDecelerationRate.fast`: constant deceleration 1400 (GPUI's `ScrollPhysics` has no term; the behaviour table has the x8 max fling) | a desktop preset |
 | `carriedMomentum`: repeated iOS flings speed up | the recognizer's fling catch |
 | `toleranceFor` at the window's real device pixel ratio | passing the scale factor to the recognizer |
 
