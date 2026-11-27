@@ -15,12 +15,21 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Gate 3 replay plumbing: `trace_replay` reads `windows`, `wayland`, `x11` and `macos` trace folders when present
   and compares them with the phone and browser traces under every row; the fixture contract for desktop harnesses is
   docs/traces-desktop.md.
+- Windows touch and pen (patch 0021, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreen and pen input on Windows
+  reaches GPUI as `TouchEvent`s (`device` Touch or Pen, pen pressure as `force`, the pointer's own time stamp), so
+  taps, pans, flings, long presses and pinches work as on a phone. Windows' `WM_POINTER` handling is ported from
+  winit v0.30.13. Cancelled pointers and lost captures cancel the touch, and a hovering pen moves the mouse. The
+  mouse messages Windows makes from touch and pen are dropped (Flutter's `MI_WP_SIGNATURE` check), so a tap clicks
+  once, through GPUI's recognizer. Mouse and touchpad input are unchanged
+  ([docs/desktop-touch-windows.md](docs/desktop-touch-windows.md)).
 
 ### Changed
 
 - Trace lines take an optional sixth field, the device (`Touch` or `Pen`); lines without it read as `Touch`. hello's
   trace pad logs it.
 - hello's desktop window is 400 × 700 logical px (was 400 × 400), so the recorded gestures fit on desktop.
+- `parallax-gpui-windows` is `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` (patch 0021 ports from
+  Flutter's Windows embedder).
 
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 

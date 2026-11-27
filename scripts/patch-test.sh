@@ -4,6 +4,7 @@
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
+# Then it tests gpui_windows's pure modules (pointer.rs) on the host as a scratch crate, windows-pure.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
 # Needs GNU sed (sed -i). Run scripts/apply-patches.sh first. See docs/patch-tests.md.
 set -euo pipefail
@@ -59,3 +60,28 @@ for test in "${skips[@]}"; do
 done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
+
+# gpui_windows builds only on Windows, so its pure decision modules (plain values, no `windows` crate) are tested
+# here as one host crate on parallax-gpui, a member of the scratch workspace. To add one, add its file name here.
+windows_pure=(pointer)
+pure="$out/crates/windows-pure"
+mkdir -p "$pure/src"
+cat > "$pure/Cargo.toml" <<'EOF'
+[package]
+name = "windows-pure"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gpui = { package = "parallax-gpui", path = "../parallax-gpui", features = ["test-support"] }
+EOF
+{
+    echo '#![allow(dead_code)] // their callers are gpui_windows'"'"'s Windows-only glue'
+    for module in "${windows_pure[@]}"; do
+        printf '#[path = "../../parallax-gpui-windows/src/%s.rs"]\nmod %s;\n' "$module" "$module"
+    done
+} > "$pure/src/lib.rs"
+sed -i 's/^members = \[$/members = [\n    "windows-pure",/' "$out/crates/Cargo.toml"
+grep -qx '    "windows-pure",' "$out/crates/Cargo.toml" || die "could not add windows-pure to the scratch workspace"
+cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --target-dir target/patch-tests -- "$@"
