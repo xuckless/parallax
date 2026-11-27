@@ -12,7 +12,7 @@ mod text_field;
 use parallax::gpui::{
     AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity,
     KeyboardType, MouseButton, PinchEvent, TextInputAction, TextInputConfiguration, TouchEvent,
-    TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    TouchPhase, TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use web_time::Instant;
 
@@ -178,17 +178,22 @@ impl Render for Hello {
                         // `delta` is the change since the last event, from a trackpad or the fingers alike.
                         this.zoom =
                             (this.zoom * (1. + event.delta)).clamp(*ZOOM.start(), *ZOOM.end());
-                        match &event.touch {
-                            Some(TouchPinch::Update(update)) => {
+                        match (&event.touch, event.phase) {
+                            (Some(TouchPinch::Update(update)), _) => {
                                 this.rotation = update.rotation.to_degrees()
                             }
-                            Some(TouchPinch::End(end)) => log::info!(
+                            (Some(TouchPinch::End(end)), _) => log::info!(
                                 "pinch end: zoom {:.2}, {} fingers left, velocity {:?}",
                                 this.zoom,
                                 end.pointer_count,
                                 end.velocity
                             ),
-                            Some(TouchPinch::Start(_)) | None => {}
+                            // A trackpad's, so a macOS check can tell AppKit's magnify copy of a touch pinch
+                            // (docs/desktop-touch-macos.md) from the fingers' own.
+                            (None, TouchPhase::Ended) => {
+                                log::info!("trackpad pinch end: zoom {:.2}", this.zoom)
+                            }
+                            (Some(TouchPinch::Start(_)), _) | (None, _) => {}
                         }
                         cx.notify();
                     }))
