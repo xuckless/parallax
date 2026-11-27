@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-parallax"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "resvg",
@@ -2194,7 +2194,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "env_logger",
  "log",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "parallax"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "log",
  "parallax-android",
@@ -3604,7 +3604,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-android"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-ext"
-version = "0.1.6"
+version = "0.1.7"
 
 [[package]]
 name = "parallax-gpui"
@@ -4054,7 +4054,7 @@ version = "0.3.14-parallax.9"
 
 [[package]]
 name = "parallax-platform"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "parallax-android",
  "parallax-gpui",
@@ -4065,7 +4065,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-web"
-version = "0.1.6"
+version = "0.1.7"
 
 [[package]]
 name = "parking"

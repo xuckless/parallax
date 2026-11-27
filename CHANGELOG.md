@@ -6,8 +6,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
+
 Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's
 device touch slop, touch time stamps and Gate 2's trace replay.
+
+Breaking changes (details under Changed): `TouchEvent::time_stamp`, `PinchEvent` built with `PinchEvent::new`, two
+new `GestureTuning` fields, `Behaviour::gesture_tuning(reported)` and `TouchSlop`, and `parallax_android::on_load`'s
+touch slop hook.
 
 ### Added
 
