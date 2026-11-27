@@ -6,6 +6,16 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`
+0.3.14-parallax.10), pen on Windows, the iOS touch id fix, the Windows and Linux injection harnesses and Gate 3's
+desktop trace replay. Gate 3 is synthetic-verified (injected touches; no touchscreen yet); macOS waits on a live
+Sidecar check.
+
+Breaking changes (details under Changed): touchscreens and pens on Windows, Linux and macOS 27 now reach apps as
+`TouchEvent`s through GPUI's recognizers instead of the OS's emulated mouse events (a tap still clicks, once; a long
+press no longer right-clicks); macOS's `min_touch_target` is 36 (was 44); `parallax-gpui-windows`,
+`parallax-gpui-apple` and `parallax-gpui-macos` change licence to `Apache-2.0 AND BSD-3-Clause`.
+
 ### Added
 
 - Desktop touch in the behaviour table: the macOS, Windows and Linux rows give a touch or pen Flutter's touch slops
@@ -59,6 +69,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ### Changed
 
+- Desktop touchscreens and pens (Windows, Wayland, X11, macOS 27) send `TouchEvent`s, and the mouse events the OS
+  emulates from them are dropped: touch → mouse now comes from GPUI's own recognizer (on by default, opt out per
+  element with `.on_touch`), as on phones, so a tap clicks once and the OS's press-and-hold right click is gone.
+  Mouse, trackpad and touchpad input are unchanged.
 - Trace lines take an optional sixth field, the device (`Touch` or `Pen`); lines without it read as `Touch`. hello's
   trace pad logs it.
 - hello's desktop window is 400 × 700 logical px (was 400 × 400), so the recorded gestures fit on desktop.
