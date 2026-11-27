@@ -3,14 +3,15 @@ Feed Windows touch and pen into GPUI's touches, from `WM_POINTER` messages, and 
 What: gpui_windows handles `WM_POINTERDOWN`, `WM_POINTERUPDATE` and `WM_POINTERUP` for touch (`PT_TOUCH`) and pen
 (`PT_PEN`) pointers. The handling is ported from winit v0.30.13 (latest stable release,
 e9809ef54b18499bb4f2cac945719ecc2a61061b), `src/platform_impl/windows/event_loop.rs`. Each message reads its own
-pointer's coalesced history (`GetPointerInfoHistory`, oldest first), as Flutter's embedder reads only the message's
-pointer; winit reads the whole frame and skips its other messages (`SkipPointerFrameMessages`), and with two fingers
+pointer's coalesced history, oldest first (`GetPointerTouchInfoHistory` / `GetPointerPenInfoHistory`, so every
+entry has its own pressure), as Flutter's embedder reads only the message's pointer; winit reads the whole frame and skips its other messages (`SkipPointerFrameMessages`), and with two fingers
 down that stopped Windows sending the frames after the first (injected input on Windows Server 2025, Parallax's
 windows-touch CI job). Positions are sub-pixel, from the HIMETRIC location mapped
-through `GetPointerDeviceRects`; when the digitizer has no rect, `ptPixelLocation` is used. Pressure comes from
-`GetPointerTouchInfo` / `GetPointerPenInfo`, normalized as winit does (1..=1024 → `force`, otherwise `None`). Each
-contact becomes a `TouchEvent` with:
-- a `TouchId` of its own, never reused (Windows reuses pointer ids);
+through `GetPointerDeviceRects`; when the digitizer has no rect, `ptPixelLocation` is used. Pressure is normalized
+as winit does (1..=1024 → `force`, otherwise `None`). A touch or pen message whose read fails is still handled:
+`DefWindowProc` would turn it into mouse messages the copy filter below drops. Each contact becomes a `TouchEvent`
+with:
+- the next `TouchId` (from 0, wrapping), given up at its up or cancel (Windows reuses pointer ids);
 - a phase from a flags table: `POINTER_FLAG_CANCELED` → Cancelled, then DOWN → Started, UP → Ended, UPDATE in
   contact → Moved;
 - `device` Touch or Pen;
@@ -20,8 +21,12 @@ A pointer the window loses while down (`WM_POINTERCAPTURECHANGED`) is cancelled 
 `POINTER_FLAG_CANCELED` one: Windows moves a cancelled pointer's location (a display change cancelled one off the
 window). A move, up or
 cancel for a pointer that never went down in the window (it went down on the title bar or in another window) is
-dropped, and so is a second down. A pen hovering in range (UPDATE without contact) is a mouse move, through the
-existing `WM_MOUSEMOVE` handler; Flutter's embedder sends it as a pointer hover too. Client-area mouse messages that
+dropped. A down or hover of a pointer still down (its up never reached the window) cancels the stale touch where it
+last was first. A pen hovering in range (UPDATE without contact) is a mouse move, through the existing
+`WM_MOUSEMOVE` handler; Flutter's embedder sends it as a pointer hover too, and its `WM_POINTERLEAVE` ends the hover
+as a mouse leave unless the real cursor is over the client area (Flutter's `OnPointerLeave`). Touches reach GPUI
+through a queue: one that comes while GPUI's input callback is busy (a modal loop inside it) is dropped unless it
+ends a touch, which waits for the callback, so no touch stays open. Client-area mouse messages that
 Windows makes from touch or pen go to `DefWindowProc` without reaching GPUI: those whose `GetMessageExtraInfo`,
 masked by 0xFFFFFF00, is `MI_WP_SIGNATURE` 0xFF515700 (Flutter 3.50.1's `GetFlutterPointerDeviceKind` check,
 `flutter_window.cc`). A tap therefore reaches GPUI once, as a touch, and GPUI's recognizer synthesizes its click.
@@ -29,7 +34,7 @@ Non-client messages stay, so a touch on a title bar still moves the window. Mous
 `EnableMouseInPointer` stays off, as in winit, so the mouse stays on `WM_MOUSE*`, and the touchpad stays on Direct
 Manipulation. Pen barrel and eraser buttons, tilt and rotation are not carried (`TouchEvent` has no field for them).
 The decisions are in a new `pointer.rs` on plain values: the device table, the flags table, the contacts state
-machine, the promoted-message table, the clock and the HIMETRIC mapping. Their table tests run on any host, and
+machine, the promoted-message table, the pen-leave rule, the touch queue, the clock and the HIMETRIC mapping. Their table tests run on any host, and
 `events.rs` asserts the WinUser.h values written out there against the `windows` crate.
 
 Why: GPUI's Windows backend handled no touch at all. Windows promoted each touch to mouse messages, so a tap was a
@@ -41,7 +46,7 @@ in (`cfg(target_os = "windows")` is the crate's own); the behaviour follows the 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
-index d308bfa..3a6354e 100644
+index d308bfa..8ba7b5c 100644
 --- a/gpui-pre-windows/src/events.rs
 +++ b/gpui-pre-windows/src/events.rs
 @@ -1,4 +1,4 @@
@@ -50,7 +55,7 @@ index d308bfa..3a6354e 100644
  
  use anyhow::Context as _;
  use gpui_util::ResultExt;
-@@ -6,20 +6,40 @@ use windows::{
+@@ -6,20 +6,56 @@ use windows::{
      Win32::{
          Foundation::*,
          Graphics::Gdi::*,
@@ -90,10 +95,26 @@ index d308bfa..3a6354e 100644
 +    assert!(pointer::WM_XBUTTONDOWN == WM_XBUTTONDOWN && pointer::WM_XBUTTONUP == WM_XBUTTONUP);
 +};
 +
++/// One pointer's coalesced history (`GetPointerTouchInfoHistory`, `GetPointerPenInfoHistory`), newest first as
++/// Windows returns it.
++fn read_pointer_history<T: Clone + Default>(
++    pointer_id: u32,
++    read: unsafe fn(u32, *mut u32, Option<*mut T>) -> windows::core::Result<()>,
++) -> windows::core::Result<Vec<T>> {
++    let mut count = 0u32;
++    // SAFETY: a null buffer asks for the entry count only.
++    unsafe { read(pointer_id, &mut count, None) }?;
++    let mut entries = vec![T::default(); count as usize];
++    // SAFETY: `entries` holds `count` entries, the most Windows writes.
++    unsafe { read(pointer_id, &mut count, Some(entries.as_mut_ptr())) }?;
++    entries.truncate(count as usize);
++    Ok(entries)
++}
++
  pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
  pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
  pub(crate) const WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD: u32 = WM_USER + 3;
-@@ -85,6 +105,11 @@ impl WindowsWindowInner {
+@@ -85,6 +121,11 @@ impl WindowsWindowInner {
          wparam: WPARAM,
          lparam: LPARAM,
      ) -> LRESULT {
@@ -105,7 +126,7 @@ index d308bfa..3a6354e 100644
          let handled = match msg {
              // `DefWindowProc` answers `MA_NOACTIVATE` for a left click on `HTCAPTION`.
              // The activation is only triggered when `DefWindowProc` handles the following `WM_NCLBUTTONDOWN`.
-@@ -146,6 +171,10 @@ impl WindowsWindowInner {
+@@ -146,6 +187,11 @@ impl WindowsWindowInner {
              }
              WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
              WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
@@ -113,10 +134,11 @@ index d308bfa..3a6354e 100644
 +                self.handle_pointer_msg(handle, wparam)
 +            }
 +            WM_POINTERCAPTURECHANGED => self.handle_pointer_capture_changed_msg(wparam),
++            WM_POINTERLEAVE => self.handle_pointer_leave_msg(handle, wparam),
              WM_SYSKEYUP => self.handle_syskeyup_msg(wparam, lparam),
              WM_KEYUP => self.handle_keyup_msg(wparam, lparam),
              WM_CHAR => self.handle_char_msg(wparam),
-@@ -392,6 +421,138 @@ impl WindowsWindowInner {
+@@ -392,6 +438,178 @@ impl WindowsWindowInner {
          if handled { Some(0) } else { Some(1) }
      }
  
@@ -127,25 +149,37 @@ index d308bfa..3a6354e 100644
 +    /// hover, mouse moves) through `pointer::Contacts`. Only this pointer, as Flutter's embedder reads it: winit reads
 +    /// the whole frame and skips the frame's other messages, which stopped Windows sending a two-finger gesture's
 +    /// later frames. Mouse and touchpad pointers go to `DefWindowProc` as before: mouse input stays on WM_MOUSE* (no
-+    /// `EnableMouseInPointer`).
++    /// `EnableMouseInPointer`). A touch or pen message is handled even when reading it fails: `DefWindowProc` would
++    /// turn it into mouse messages that the copy filter drops, so the sample would be lost twice over.
 +    fn handle_pointer_msg(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
 +        let pointer_id = wparam.loword() as u32;
 +        let mut pointer_type = POINTER_INPUT_TYPE::default();
 +        unsafe { GetPointerType(pointer_id, &mut pointer_type) }.ok()?;
-+        pointer::device(pointer_type.0)?;
++        let device = pointer::device(pointer_type.0)?;
 +
-+        let mut entries_count = 0u32;
-+        unsafe { GetPointerInfoHistory(pointer_id, &mut entries_count, None) }.log_err()?;
-+        let mut pointer_infos = vec![POINTER_INFO::default(); entries_count as usize];
-+        unsafe {
-+            GetPointerInfoHistory(
-+                pointer_id,
-+                &mut entries_count,
-+                Some(pointer_infos.as_mut_ptr()),
-+            )
-+        }
-+        .log_err()?;
-+        pointer_infos.truncate(entries_count as usize);
++        // Each entry with its own pressure, from the device's own history.
++        let history = match device {
++            PointerDevice::Touch => read_pointer_history(pointer_id, GetPointerTouchInfoHistory)
++                .map(|entries| {
++                    entries
++                        .iter()
++                        .map(|entry| (entry.pointerInfo, entry.pressure))
++                        .collect::<Vec<_>>()
++                }),
++            PointerDevice::Pen => {
++                read_pointer_history(pointer_id, GetPointerPenInfoHistory).map(|entries| {
++                    entries
++                        .iter()
++                        .map(|entry| (entry.pointerInfo, entry.pressure))
++                        .collect()
++                })
++            }
++            // pointer::device leaves mouse pointers to the mouse messages.
++            PointerDevice::Mouse => return None,
++        };
++        let Some(history) = history.log_err() else {
++            return Some(0);
++        };
 +
 +        let mut performance_count = 0i64;
 +        let mut performance_frequency = 0i64;
@@ -158,15 +192,19 @@ index d308bfa..3a6354e 100644
 +            tick_count: unsafe { GetTickCount() },
 +        };
 +        let mut client_origin = POINT::default();
-+        unsafe { ClientToScreen(handle, &mut client_origin) }
++        if unsafe { ClientToScreen(handle, &mut client_origin) }
 +            .ok()
-+            .log_err()?;
++            .log_err()
++            .is_none()
++        {
++            return Some(0);
++        }
 +        let scale_factor = self.state.scale_factor.get();
 +
 +        // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getpointerinfohistory
 +        // The information retrieved appears in reverse chronological order, with the most
 +        // recent entry in the first row of the returned array
-+        for pointer_info in pointer_infos.iter().rev() {
++        for (pointer_info, pressure) in history.iter().rev() {
 +            let mut device_rect = RECT::default();
 +            let mut display_rect = RECT::default();
 +            let himetric = unsafe {
@@ -193,44 +231,53 @@ index d308bfa..3a6354e 100644
 +                y - f64::from(client_origin.y),
 +            );
 +
-+            let pressure = match pointer_info.pointerType {
-+                PT_TOUCH => {
-+                    let mut touch_info = POINTER_TOUCH_INFO::default();
-+                    unsafe { GetPointerTouchInfo(pointer_info.pointerId, &mut touch_info) }
-+                        .map_or(0, |()| touch_info.pressure)
-+                }
-+                PT_PEN => {
-+                    let mut pen_info = POINTER_PEN_INFO::default();
-+                    unsafe { GetPointerPenInfo(pointer_info.pointerId, &mut pen_info) }
-+                        .map_or(0, |()| pen_info.pressure)
-+                }
-+                _ => 0,
-+            };
-+
 +            let sample = pointer::PointerSample {
 +                pointer_id: pointer_info.pointerId,
 +                pointer_type: pointer_info.pointerType.0,
 +                pointer_flags: pointer_info.pointerFlags.0,
 +                position: logical_point(x as f32, y as f32, scale_factor),
-+                pressure,
++                pressure: *pressure,
 +                time_stamp: clock.at(pointer_info.PerformanceCount, pointer_info.dwTime),
 +            };
-+            let input = self.state.pointer_contacts.borrow_mut().input(sample);
-+            match input {
-+                Some(PointerInput::Touch(event)) => self.dispatch_touch(event),
-+                Some(PointerInput::Hover) => {
-+                    // WM_MOUSEMOVE's LPARAM: client x and y, signed, in its low and high words.
-+                    let (x, y) = (
-+                        x.round() as i16 as u16 as u32,
-+                        y.round() as i16 as u16 as u32,
-+                    );
-+                    let lparam = LPARAM((y << 16 | x) as i32 as isize);
-+                    self.handle_mouse_move_msg(handle, lparam, WPARAM(0));
++            let inputs = self.state.pointer_contacts.borrow_mut().input(sample);
++            for input in inputs {
++                match input {
++                    PointerInput::Touch(event) => self.dispatch_touch(event),
++                    PointerInput::Hover => {
++                        // WM_MOUSEMOVE's LPARAM: client x and y, signed, in its low and high words.
++                        let (x, y) = (
++                            x.round() as i16 as u16 as u32,
++                            y.round() as i16 as u16 as u32,
++                        );
++                        let lparam = LPARAM((y << 16 | x) as i32 as isize);
++                        self.handle_mouse_move_msg(handle, lparam, WPARAM(0));
++                    }
 +                }
-+                None => {}
 +            }
 +        }
 +        Some(0)
++    }
++
++    /// A pen that hovered off the window ends GPUI's hover, as the mouse leaving does (Flutter's `OnPointerLeave`),
++    /// unless the real cursor is still over the client area.
++    fn handle_pointer_leave_msg(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
++        let mut pointer_info = POINTER_INFO::default();
++        unsafe { GetPointerInfo(wparam.loword() as u32, &mut pointer_info) }.ok()?;
++        let mut cursor = POINT::default();
++        let mut client = RECT::default();
++        unsafe { GetCursorPos(&mut cursor) }.ok()?;
++        unsafe { ScreenToClient(handle, &mut cursor) }.ok().ok()?;
++        unsafe { GetClientRect(handle, &mut client) }.ok()?;
++        let cursor_in_client = unsafe { PtInRect(&client, cursor) }.as_bool();
++        if pointer::pen_leave_is_mouse_leave(
++            pointer_info.pointerType.0,
++            pointer_info.pointerFlags.0,
++            cursor_in_client,
++        ) {
++            self.handle_mouse_leave_msg()
++        } else {
++            None
++        }
 +    }
 +
 +    /// A pointer this window lost while down (another window or the system took it) is cancelled.
@@ -245,11 +292,26 @@ index d308bfa..3a6354e 100644
 +        Some(0)
 +    }
 +
++    /// Hands `event` to GPUI through `pointer::TouchQueue`, so an end that arrives while GPUI's callback is busy
++    /// still reaches it.
 +    fn dispatch_touch(&self, event: TouchEvent) {
-+        if let Some(mut func) = self.state.callbacks.input.take() {
++        let func = self.state.callbacks.input.take();
++        self.state
++            .touch_queue
++            .borrow_mut()
++            .push(event, func.is_some());
++        let Some(mut func) = func else {
++            return;
++        };
++        // Every touch waiting, those queued while `func` ran among them.
++        loop {
++            let next = self.state.touch_queue.borrow_mut().pop();
++            let Some(event) = next else {
++                break;
++            };
 +            func(PlatformInput::Touch(event));
-+            self.state.callbacks.input.set(Some(func));
 +        }
++        self.state.callbacks.input.set(Some(func));
 +    }
 +
      fn handle_mouse_leave_msg(&self) -> Option<isize> {
@@ -269,10 +331,10 @@ index e7a45a0..8c9b847 100644
  mod util;
 diff --git a/gpui-pre-windows/src/pointer.rs b/gpui-pre-windows/src/pointer.rs
 new file mode 100644
-index 0000000..7a18562
+index 0000000..2591d4c
 --- /dev/null
 +++ b/gpui-pre-windows/src/pointer.rs
-@@ -0,0 +1,682 @@
+@@ -0,0 +1,831 @@
 +//! Touch and pen from Windows' pointer messages (`WM_POINTERDOWN`, `WM_POINTERUPDATE`, `WM_POINTERUP`) as GPUI
 +//! touches. The decisions live here, on plain values, so they are tested on any host (Parallax's
 +//! `scripts/patch-test.sh` builds this file on its own); `events.rs` reads the OS and dispatches what they return.
@@ -286,7 +348,10 @@ index 0000000..7a18562
 +//! (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 +//! third_party/flutter/LICENSE.
 +
-+use std::time::{Duration, Instant};
++use std::{
++    collections::VecDeque,
++    time::{Duration, Instant},
++};
 +
 +use gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase};
 +
@@ -364,13 +429,6 @@ index 0000000..7a18562
 +    ),
 +];
 +
-+fn sample(pointer_flags: u32) -> Option<Sample> {
-+    SAMPLES
-+        .iter()
-+        .find(|(mask, value, _)| pointer_flags & mask == *value)
-+        .map(|(_, _, sample)| *sample)
-+}
-+
 +/// `POINTER_TOUCH_INFO` / `POINTER_PEN_INFO` pressure (0 to 1024; 0 when the digitizer reports none) as GPUI's
 +/// normalized force (winit's `normalize_pointer_pressure`).
 +fn force(pressure: u32) -> Option<f32> {
@@ -409,8 +467,8 @@ index 0000000..7a18562
 +    position: Point<Pixels>,
 +}
 +
-+/// The pointers in contact with this window. A pointer is down exactly while it is listed. GPUI touch ids are never
-+/// reused; Windows' pointer ids are.
++/// The pointers in contact with this window. A pointer is down exactly while it is listed. GPUI touch ids count from
++/// 0 and wrap, never reused while live; Windows' pointer ids are reused.
 +#[derive(Debug, Default)]
 +pub(crate) struct Contacts {
 +    next_touch: u64,
@@ -418,55 +476,82 @@ index 0000000..7a18562
 +}
 +
 +impl Contacts {
-+    /// GPUI's input for one sample, `None` when GPUI gets nothing: a pointer type left to the mouse messages, flags
-+    /// no row matches, a down for a pointer already down, or a move, up or cancel for a pointer that never went down
-+    /// in this window (it went down on the title bar or in another window).
-+    pub(crate) fn input(&mut self, sample: PointerSample) -> Option<PointerInput> {
-+        let device = device(sample.pointer_type)?;
-+        let kind = self::sample(sample.pointer_flags)?;
++    /// GPUI's input for one sample, in order; empty when GPUI gets nothing: a pointer type left to the mouse
++    /// messages, flags no row matches, or a move, up or cancel for a pointer that never went down in this window
++    /// (it went down on the title bar or in another window).
++    pub(crate) fn input(&mut self, sample: PointerSample) -> Vec<PointerInput> {
++        let Some(device) = device(sample.pointer_type) else {
++            return Vec::new();
++        };
++        let Some(kind) = SAMPLES
++            .iter()
++            .find(|(mask, value, _)| sample.pointer_flags & mask == *value)
++            .map(|(_, _, kind)| *kind)
++        else {
++            return Vec::new();
++        };
 +        let index = self
 +            .down
 +            .iter()
 +            .position(|contact| contact.pointer_id == sample.pointer_id);
++        let force = force(sample.pressure);
++        let touch = |contact: Contact, phase| {
++            PointerInput::Touch(contact.event(phase, force, sample.time_stamp))
++        };
 +        // pointer state × sample → next state and input; the only place a contact starts or ends.
-+        let (contact, phase) = match (index, kind) {
-+            (None, Sample::Hover) => return Some(PointerInput::Hover),
++        match (index, kind) {
++            (None, Sample::Hover) => vec![PointerInput::Hover],
 +            (None, Sample::Contact(TouchPhase::Started)) => {
-+                let contact = Contact {
-+                    pointer_id: sample.pointer_id,
-+                    touch: TouchId(self.next_touch),
-+                    device,
-+                    position: sample.position,
-+                };
-+                self.next_touch += 1;
-+                self.down.push(contact);
-+                (contact, TouchPhase::Started)
++                vec![touch(self.start(&sample, device), TouchPhase::Started)]
 +            }
 +            (
 +                None,
 +                Sample::Contact(TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled),
-+            ) => return None,
-+            (Some(_), Sample::Hover | Sample::Contact(TouchPhase::Started)) => return None,
++            ) => Vec::new(),
++            // A down or a hover of a pointer still down: its up never reached this window, so GPUI's open touch is
++            // cancelled where it last was before the new down starts its own touch, or the hover moves the mouse.
++            (Some(index), Sample::Contact(TouchPhase::Started)) => {
++                let stale = self.down.remove(index);
++                vec![
++                    PointerInput::Touch(stale.event(TouchPhase::Cancelled, None, None)),
++                    touch(self.start(&sample, device), TouchPhase::Started),
++                ]
++            }
++            (Some(index), Sample::Hover) => {
++                let stale = self.down.remove(index);
++                vec![
++                    PointerInput::Touch(stale.event(TouchPhase::Cancelled, None, None)),
++                    PointerInput::Hover,
++                ]
++            }
 +            (Some(index), Sample::Contact(TouchPhase::Moved)) => {
 +                self.down[index].position = sample.position;
-+                (self.down[index], TouchPhase::Moved)
++                vec![touch(self.down[index], TouchPhase::Moved)]
 +            }
 +            (Some(index), Sample::Contact(TouchPhase::Ended)) => {
 +                let mut contact = self.down.remove(index);
 +                contact.position = sample.position;
-+                (contact, TouchPhase::Ended)
++                vec![touch(contact, TouchPhase::Ended)]
 +            }
 +            // Where it last was, as for a lost capture: Windows moves a cancelled pointer's location (a display
 +            // change cancels it off the window).
 +            (Some(index), Sample::Contact(TouchPhase::Cancelled)) => {
-+                (self.down.remove(index), TouchPhase::Cancelled)
++                vec![touch(self.down.remove(index), TouchPhase::Cancelled)]
 +            }
++        }
++    }
++
++    /// A new contact for `sample`'s pointer, with the next touch id.
++    fn start(&mut self, sample: &PointerSample, device: PointerDevice) -> Contact {
++        let contact = Contact {
++            pointer_id: sample.pointer_id,
++            touch: TouchId(self.next_touch),
++            device,
++            position: sample.position,
 +        };
-+        Some(PointerInput::Touch(contact.event(
-+            phase,
-+            force(sample.pressure),
-+            sample.time_stamp,
-+        )))
++        self.next_touch = self.next_touch.wrapping_add(1);
++        self.down.push(contact);
++        contact
 +    }
 +
 +    /// The cancel for a pointer this window lost (`WM_POINTERCAPTURECHANGED`) while it was down, at its last
@@ -526,6 +611,46 @@ index 0000000..7a18562
 +/// (Flutter's `GetFlutterPointerDeviceKind` is not `kFlutterPointerDeviceKindMouse`).
 +pub(crate) fn is_promoted_mouse_message(msg: u32, extra_info: isize) -> bool {
 +    PROMOTED_MOUSE_MESSAGES.contains(&msg) && extra_info & SIGNATURE_MASK == TOUCH_OR_PEN_SIGNATURE
++}
++
++/// Whether a `WM_POINTERLEAVE` ends GPUI's hover: a pen out of contact (its hovers were mouse moves) that left while
++/// the real cursor is off the client area, as Flutter's `OnPointerLeave` ends a hovering pointer. A finger ends with
++/// its up, and a mouse has its own `WM_MOUSELEAVE`.
++pub(crate) fn pen_leave_is_mouse_leave(
++    pointer_type: i32,
++    pointer_flags: u32,
++    cursor_in_client: bool,
++) -> bool {
++    matches!(
++        (
++            device(pointer_type),
++            pointer_flags & POINTER_FLAG_INCONTACT != 0,
++            cursor_in_client
++        ),
++        (Some(PointerDevice::Pen), false, false)
++    )
++}
++
++/// Touches on their way to GPUI's input callback. While the callback runs it cannot take another event (it re-enters
++/// the message loop, in a modal loop say): an end or cancel then waits for it, or GPUI's touch would stay open, and
++/// a start or move is dropped, as other input is then.
++#[derive(Debug, Default)]
++pub(crate) struct TouchQueue(VecDeque<TouchEvent>);
++
++impl TouchQueue {
++    /// Queues `event`, for a callback that is free (`deliverable`) or busy.
++    pub(crate) fn push(&mut self, event: TouchEvent, deliverable: bool) {
++        match (deliverable, event.phase) {
++            (true, _) | (false, TouchPhase::Ended | TouchPhase::Cancelled) => {
++                self.0.push_back(event)
++            }
++            (false, TouchPhase::Started | TouchPhase::Moved) => {}
++        }
++    }
++
++    pub(crate) fn pop(&mut self) -> Option<TouchEvent> {
++        self.0.pop_front()
++    }
 +}
 +
 +/// GPUI's clock read together with Windows' two pointer clocks, so a `POINTER_INFO`'s time becomes a GPUI `Instant`
@@ -606,7 +731,7 @@ index 0000000..7a18562
 +        }
 +    }
 +
-+    /// What a test row expects from one sample: a touch (id, phase, device, x), a hover, or nothing.
++    /// What a test row expects from one sample: touches (id, phase, device, x) and hovers, or nothing.
 +    #[derive(Debug, PartialEq)]
 +    enum Out {
 +        Touch(u64, TouchPhase, PointerDevice, f32),
@@ -614,17 +739,22 @@ index 0000000..7a18562
 +        Nothing,
 +    }
 +
-+    fn out(input: Option<PointerInput>) -> Out {
-+        match input {
-+            Some(PointerInput::Touch(event)) => Out::Touch(
-+                event.id.0,
-+                event.phase,
-+                event.device,
-+                event.position.x.as_f32(),
-+            ),
-+            Some(PointerInput::Hover) => Out::Hover,
-+            None => Out::Nothing,
++    fn out(inputs: Vec<PointerInput>) -> Vec<Out> {
++        if inputs.is_empty() {
++            return vec![Out::Nothing];
 +        }
++        inputs
++            .into_iter()
++            .map(|input| match input {
++                PointerInput::Touch(event) => Out::Touch(
++                    event.id.0,
++                    event.phase,
++                    event.device,
++                    event.position.x.as_f32(),
++                ),
++                PointerInput::Hover => Out::Hover,
++            })
++            .collect()
 +    }
 +
 +    /// One row per (pointer state × sample) → input, each a sequence of samples from a fresh window.
@@ -632,7 +762,7 @@ index 0000000..7a18562
 +    fn pointer_samples_to_touches() {
 +        use PointerDevice::{Pen, Touch};
 +        use TouchPhase::{Cancelled, Ended, Moved, Started};
-+        let rows: [(&str, Vec<PointerSample>, Vec<Out>); 12] = [
++        let rows: [(&str, Vec<PointerSample>, Vec<Out>); 13] = [
 +            (
 +                "finger tap: down, up",
 +                vec![
@@ -729,18 +859,31 @@ index 0000000..7a18562
 +                vec![Out::Nothing, Out::Nothing, Out::Nothing],
 +            ),
 +            (
-+                "rejected: a second down, or a hover, of a pointer already down",
++                "a down of a pointer still down cancels its stale touch, then starts a new one",
 +                vec![
 +                    at(7, PT_TOUCH, TOUCH_DOWN, 1.),
 +                    at(7, PT_TOUCH, TOUCH_DOWN, 2.),
-+                    at(7, PT_TOUCH, HOVER, 3.),
 +                    at(7, PT_TOUCH, TOUCH_MOVE, 4.),
 +                ],
 +                vec![
 +                    Out::Touch(0, Started, Touch, 1.),
++                    Out::Touch(0, Cancelled, Touch, 1.),
++                    Out::Touch(1, Started, Touch, 2.),
++                    Out::Touch(1, Moved, Touch, 4.),
++                ],
++            ),
++            (
++                "a hover of a pen still down cancels its stale touch, then hovers",
++                vec![
++                    at(3, PT_PEN, TOUCH_DOWN, 1.),
++                    at(3, PT_PEN, HOVER, 3.),
++                    at(3, PT_PEN, TOUCH_MOVE, 4.),
++                ],
++                vec![
++                    Out::Touch(0, Started, Pen, 1.),
++                    Out::Touch(0, Cancelled, Pen, 1.),
++                    Out::Hover,
 +                    Out::Nothing,
-+                    Out::Nothing,
-+                    Out::Touch(0, Moved, Touch, 4.),
 +                ],
 +            ),
 +            (
@@ -777,7 +920,7 @@ index 0000000..7a18562
 +            let mut contacts = Contacts::default();
 +            let got: Vec<Out> = samples
 +                .into_iter()
-+                .map(|s| out(contacts.input(s)))
++                .flat_map(|s| out(contacts.input(s)))
 +                .collect();
 +            assert_eq!(got, expected, "{name}");
 +        }
@@ -813,10 +956,78 @@ index 0000000..7a18562
 +            pressure: 512,
 +            ..at(3, PT_PEN, TOUCH_DOWN, 0.)
 +        };
-+        let Some(PointerInput::Touch(event)) = contacts.input(pressed) else {
++        let [PointerInput::Touch(event)] = &contacts.input(pressed)[..] else {
 +            panic!("a pen down is a touch");
 +        };
 +        assert_eq!(event.force, Some(0.5), "the touch carries it");
++    }
++
++    #[test]
++    fn pen_leaves() {
++        const HOVERING: u32 = POINTER_FLAG_UPDATE;
++        let rows = [
++            (
++                "hovering pen, cursor off the window",
++                PT_PEN,
++                HOVERING,
++                false,
++                true,
++            ),
++            (
++                "rejected: hovering pen, cursor still on it",
++                PT_PEN,
++                HOVERING,
++                true,
++                false,
++            ),
++            ("rejected: pen in contact", PT_PEN, TOUCH_MOVE, false, false),
++            ("rejected: finger", PT_TOUCH, HOVERING, false, false),
++            ("rejected: mouse", PT_MOUSE, HOVERING, false, false),
++        ];
++        for (name, pointer_type, flags, cursor_in_client, leaves) in rows {
++            assert_eq!(
++                pen_leave_is_mouse_leave(pointer_type, flags, cursor_in_client),
++                leaves,
++                "{name}"
++            );
++        }
++    }
++
++    /// One row per (callback free or busy × phase): what GPUI gets, in order, once the callback is free.
++    #[test]
++    fn touch_queue() {
++        use TouchPhase::{Cancelled, Ended, Moved, Started};
++        let rows: [(&str, &[(TouchPhase, bool)], &[TouchPhase]); 3] = [
++            (
++                "free: every touch, in order",
++                &[(Started, true), (Moved, true), (Ended, true)],
++                &[Started, Moved, Ended],
++            ),
++            (
++                "busy: ends and cancels wait",
++                &[(Ended, false), (Cancelled, false)],
++                &[Ended, Cancelled],
++            ),
++            (
++                "rejected: busy starts and moves are dropped",
++                &[(Started, false), (Moved, false), (Ended, true)],
++                &[Ended],
++            ),
++        ];
++        for (name, pushes, expected) in rows {
++            let mut queue = TouchQueue::default();
++            for &(phase, deliverable) in pushes {
++                let event = TouchEvent {
++                    phase,
++                    ..TouchEvent::default()
++                };
++                queue.push(event, deliverable);
++            }
++            let got: Vec<_> = std::iter::from_fn(|| queue.pop())
++                .map(|event| event.phase)
++                .collect();
++            assert_eq!(got, expected, "{name}");
++        }
 +    }
 +
 +    #[test]
@@ -956,23 +1167,26 @@ index 0000000..7a18562
 +    }
 +}
 diff --git a/gpui-pre-windows/src/window.rs b/gpui-pre-windows/src/window.rs
-index 5d8415a..f747100 100644
+index 5d8415a..175a9e7 100644
 --- a/gpui-pre-windows/src/window.rs
 +++ b/gpui-pre-windows/src/window.rs
-@@ -91,6 +91,8 @@ pub struct WindowsWindowState {
+@@ -91,6 +91,10 @@ pub struct WindowsWindowState {
      hwnd: HWND,
      pub(crate) a11y: RefCell<Option<A11yState>>,
      pub mouse_position: Cell<Point<Pixels>>,
 +    /// The touches and pen strokes down in this window (pointer.rs).
 +    pub(crate) pointer_contacts: RefCell<crate::pointer::Contacts>,
++    /// Touches waiting for the input callback (pointer.rs).
++    pub(crate) touch_queue: RefCell<crate::pointer::TouchQueue>,
  }
  
  pub(crate) struct WindowsWindowInner {
-@@ -193,6 +195,7 @@ impl WindowsWindowState {
+@@ -193,6 +197,8 @@ impl WindowsWindowState {
              direct_manipulation,
              a11y: RefCell::new(None),
              mouse_position: Cell::new(Point::default()),
 +            pointer_contacts: RefCell::new(crate::pointer::Contacts::default()),
++            touch_queue: RefCell::new(crate::pointer::TouchQueue::default()),
          })
      }
  

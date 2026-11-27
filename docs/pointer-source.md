@@ -32,6 +32,7 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
     are `Pen`; a mouse and trackpad send real mouse events instead ([android-mouse.md](android-mouse.md)).
   - Windows maps the `WM_POINTER` type (`DEVICES` in gpui_windows's `pointer.rs`, patch 0021): `PT_TOUCH` is
     `Touch`, `PT_PEN` is `Pen`; mouse and touchpad stay on the mouse path ([desktop-touch-windows.md](desktop-touch-windows.md)).
+    A hovering pen (in range, not touching) is sent as mouse moves, so it reads as `Mouse` until it touches.
   - Later patches that build a `TouchEvent` or `BackGestureEvent` literal set the new field (0008 does in 0006's test).
 - **Limit:** web pens arrive on the mouse path ([events.rs](../upstream/gpui-pre-web/src/events.rs) treats only
   `pointerType == "touch"` as a touch), so they read as `Mouse`. Fixing that needs a device field on mouse events,
