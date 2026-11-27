@@ -35,7 +35,7 @@ does not reinvent that. It ports Flutter's work, credits it, and keeps tracking 
 | iOS text input (`FlutterTextInputPlugin.mm` and its tests) | **Test oracle.** Its test cases become table-driven tests against upstream `gpui_ios`; failures get Flutter's fix as a patch to our fork. |
 | Web text editing (`text_editing.dart`: per-browser strategies) | Test oracle for upstream `gpui_web`; fixes as patches or in `parallax-web`. |
 | Framework algorithms (`velocity_tracker.dart`, `lsq_solver.dart`, `scroll_physics.dart`, `scroll_simulation.dart`, `friction_simulation.dart`, `scale.dart`, `overscroll_indicator.dart`, `constants.dart`) | Tests first run against upstream `gestures.rs` / `ScrollPhysics` / `SpringConfig`; where upstream fails or lacks the feature, Flutter's code is ported into the fork (Waves 11–12). Upstream's spring passed Flutter's cases, so it stays. |
-| Platform behaviour (`TargetPlatform` defaults, selection handles, magnifier, text toolbar, haptics, touch-target minimums) | Ported as behaviour plus one target → behaviour table. No Material or Cupertino widgets. |
+| Platform behaviour (`TargetPlatform` defaults, selection handles, magnifier, text toolbar, haptics, touch-target minimums) | Ported as behaviour plus one target → behaviour table. No Material or Cupertino widgets on v0.1.x and v0.2.x; v0.3.x's OS style presets draw each OS's look as theme data (owner decision, 2026-11-27). |
 | Accessibility (`AccessibilityBridge.java`, `SemanticsObject.mm`) | Oracle only. Adapters come from AccessKit (`accesskit_android`, others). |
 
 Rules for ported code:
@@ -51,6 +51,10 @@ Rules for ported code:
 8. **Pinned Flutter stable tag:** recorded in `third_party/flutter/PORTED.md`. Track stable release tags, never master. When a new stable tag ships, diff every ledger row and port the fixes.
 9. **Caveman Code applies to Rust translations.** Flutter's state becomes explicit enums and its rules become tables, with behaviour identical (its ported tests prove it). Ported Java is exempt; don't restyle it.
 10. **Ledger records what was dropped.** A ported file that leaves parts of Flutter's original out (engine, plugin or channel code) lists them in its ledger row.
+11. **Other permissive sources** (MIT, BSD, Apache-2.0, ISC, Zlib: React Native, gpui-component, winit and the like) are
+    ported the same way: a header naming the source file and commit, a `NOTICE` credit, the licence file, and the term in
+    the crate's licence expression. Never skip a port to avoid another credit. Copyleft code (GPL, LGPL, MPL) is reference
+    only (owner decision, 2026-11-27).
 
 ## Decisions (settled, do not reopen without the owner)
 
@@ -73,8 +77,8 @@ Rules for ported code:
 | Platform feel | One visible target → behaviour table ([behaviour.md](docs/behaviour.md)), Flutter's per-platform values (they win over GPUI's until upstream matures on touch). Applied automatically by every Parallax entry point (`parallax::run`, the facade's `android_main!`) before app code; apps override with `parallax::set_gesture_tuning(cx, …)`, which keeps the override across device touch slop changes. |
 | Desktop touch | First-class and always compiled in. No `touch` cargo feature. Behaviour depends on pointer type at runtime, never on OS. |
 | Gesture parity | Checked by replaying recorded touch traces (Android emulator, iOS simulator, browser until the owner has devices) through the gesture and physics test tables; outcomes must match on every platform. |
-| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes). Past that, iOS text input moves into its own Parallax crate. |
-| Releases | Two rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. |
+| iOS text input limit | Fixes go in as patches to `gpui_ios` until they total about 800 lines (ported test tables don't count) (the "Zed rejects 3" trigger returns if upstreaming resumes). Past that, iOS text input moves into its own Parallax crate. |
+| Releases | Three rolling lines on crates.io. v0.1.x: 0.1.1 is the working prototype skeleton, then a release whenever `main` holds something new, with no planned last number. v0.2.x: accessibility, same rolling rule. v0.3.x: motion, stylable widgets, real OS UI and OS style presets, same rule (owner decision, 2026-11-27). |
 | Accessibility | AccessKit adapters plus a web semantics DOM. Ships on the v0.2.x line, not in v0.1.x. iOS: a `parallax-ios` crate wires `accesskit_ios`, with a small hook patch to `gpui_ios`. |
 | Gesture oracle tests | Drive GPUI through its test platform (events in, gestures and scroll offsets out). Pure maths (velocity, simulations) is tested in-crate inside its port patch; `scripts/patch-test.sh` runs them. |
 | Android fonts | Loaded on the main thread at startup. Measure; move off it only if startup exceeds the budget. |
