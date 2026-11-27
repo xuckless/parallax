@@ -9,6 +9,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
   (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
   4 standard edit actions stay open for the edit-menu work.
+- iOS: backspace deletes a Thai vowel, not its whole grapheme, and whole emoji; half an emoji from iOS no longer
+  aborts or corrupts the text; `textInRange:` clamps; line granularity of the tokenizer follows the text's line
+  breaks (Flutter's fixes, patch 0029).
 
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
