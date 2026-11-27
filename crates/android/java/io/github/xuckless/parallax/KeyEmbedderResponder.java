@@ -11,7 +11,8 @@
 // ParallaxSurfaceView.nativeDispatchKeyData, tagged with the view's Activity id (the constructor
 // takes it in place of the messenger), which answers synchronously, instead of a
 // BinaryMessenger on the flutter/keydata channel (so the null-reply warning and io.flutter.Log are
-// gone); sendKeyEvent also passes the event's isCanceled(), which key data has no field for;
+// gone); sendKeyEvent also passes the event's isCanceled() and getMetaState(), which key data has
+// no field for;
 // androidx annotations dropped (not on Parallax's classpath).
 // Ledger: third_party/flutter/PORTED.md.
 
@@ -50,7 +51,7 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
 
   // Parallax: no messenger. On `handleEvent`, events are marshalled into byte buffers in the format
   // specified by `KeyData.toBytes` and handed to Rust (see sendKeyEvent) with this Activity id, so
-  // Rust can drop keys from a view whose Activity does not own the window.
+  // Rust routes keys to that Activity's window.
   private final int activity;
   // The keys being pressed currently, mapped from physical keys to logical keys.
   private final HashMap<Long, Long> pressingRecords = new HashMap<>();
@@ -383,7 +384,7 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
     output.character = character;
     output.synthesized = false;
 
-    sendKeyEvent(output, event.isCanceled(), onKeyEventHandledCallback);
+    sendKeyEvent(output, event.isCanceled(), event.getMetaState(), onKeyEventHandledCallback);
     for (final Runnable postSyncEvent : postSynchronizeEvents) {
       postSyncEvent.run();
     }
@@ -402,16 +403,21 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
     if (physicalKey != 0 && logicalKey != 0) {
       updatePressingState(physicalKey, isDown ? logicalKey : null);
     }
-    sendKeyEvent(output, false, null);
+    sendKeyEvent(output, false, 0, null);
   }
 
-  // Parallax: `canceled` is the Android event's isCanceled() (false for synthesized events).
+  // Parallax: `canceled` is the Android event's isCanceled(), `metaState` its getMetaState() (false
+  // and 0 for synthesized events). Virtual keyboards set meta bits without modifier key events (see
+  // synchronizePressingKey): Gboard's select mode sends Shift + arrows as arrows with META_SHIFT_ON.
   private void sendKeyEvent(
-      KeyData data, boolean canceled, OnKeyEventHandledCallback onKeyEventHandledCallback) {
+      KeyData data,
+      boolean canceled,
+      int metaState,
+      OnKeyEventHandledCallback onKeyEventHandledCallback) {
     // Parallax: GPUI runs on this (main) thread, so Rust's answer is the reply; Flutter's
     // BinaryReply decoded the same answer from a one-byte message.
     final boolean handled =
-        ParallaxSurfaceView.nativeDispatchKeyData(activity, data.toBytes(), canceled);
+        ParallaxSurfaceView.nativeDispatchKeyData(activity, data.toBytes(), canceled, metaState);
     if (onKeyEventHandledCallback != null) {
       onKeyEventHandledCallback.onKeyEventHandled(handled);
     }

@@ -9,15 +9,18 @@
   [`ParallaxSurfaceView`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java). The app's
   `JNI_OnLoad` binds the view's static natives from one table (`natives` in [host.rs](../crates/android/src/host.rs)).
   On the first surface, `host.rs` builds the platform ([platform.rs](../crates/android/src/platform.rs)) and starts
-  GPUI with `Application::run_embedded`; the app's launch function opens the one window ([window.rs](../crates/android/src/window.rs)).
+  GPUI with `Application::run_embedded`; the app's launch function opens that Activity's window
+  ([window.rs](../crates/android/src/window.rs)). Each Activity has its own window, and `launch` runs once per
+  Activity ([android-multi-window.md](android-multi-window.md)).
 - **Main thread only.** All JNI calls, GPUI and the renderer run on the Android main thread. They find their state in
-  one thread-local, `MainThreadHost` in `host.rs` (why: static JNI methods carry no user pointer).
+  one thread-local, `MainThreadHost` in `host.rs` (why: static JNI methods carry no user pointer), and each
+  Activity's window by the id Java tags every call with.
 - **Looper dispatcher.** [dispatcher.rs](../crates/android/src/dispatcher.rs): main-thread runnables go into GPUI's
   priority queue (`PriorityQueueSender`/`Receiver`, exported on Android by
   [patch 0001](../patches/0001-export-priority-queue-android.patch)); an eventfd registered with `ALooper_addFd` wakes the Looper, which drains it. Workers and one timer thread as on Linux.
 - **Frames.** `Choreographer` calls `nativeFrame` every vsync between `onResume` and `onPause`; GPUI draws if dirty,
   then Java pulls GPUI's framework calls (`nativeFrameworkCalls`: text input, [android-text-input.md](android-text-input.md), and haptics, [haptics.md](haptics.md)) and runs them.
-- **Surface state machine.** [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
+- **Surface state machine** (one per Activity's window). [surface.rs](../crates/android/src/surface.rs): `Surface::{None, Ready(window), Recovering, Lost}`,
   one `next(state, event) → (state, action)` for the `SurfaceHolder` callbacks, vsync frames and recovery outcomes.
   The shell applies the action: `replace_surface` on a new window (Home → back), `unconfigure_surface` before Android
   destroys it, device recovery after device loss. Tested row by row on the host (`cargo test -p parallax-android`).
@@ -52,7 +55,8 @@ parallax::android_main!(launch);
 ```
 
 `android_main!` defines `JNI_OnLoad` on Android (logging to logcat, tag `parallax`; panics logged there too) and
-nothing elsewhere. `launch` runs when the first surface exists, because GPUI needs one to open its window.
+nothing elsewhere. `launch` runs when an Activity's first surface exists, because GPUI needs one to open its window: once per
+Activity, each run opening that Activity's window ([android-multi-window.md](android-multi-window.md)).
 Apps that pick a platform themselves call `parallax_platform::current_platform`, which routes Android to
 `parallax_android::current_platform` ([platform.md](platform.md)).
 

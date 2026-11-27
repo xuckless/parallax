@@ -7,7 +7,7 @@ Each is marked `Not yet on Android` in the source with where it will come from: 
 
 | Area | Stubs | Comes with |
 |---|---|---|
-| Lifecycle | `quit`, `on_reopen`, `on_system_sleep/wake`, `on_should_close`, `on_close` | `Activity.finish()`, back (keys), screen off/on |
+| Lifecycle | `quit`, `on_reopen`, `on_system_sleep/wake`, `on_should_close` | `Activity.finish()`, back (keys), screen off/on (`on_close` fires on `onDestroy`: [android-multi-window.md](android-multi-window.md)) |
 | Input | `is_hovered`, `keyboard_layout`, `keyboard_mapper`, `on_keyboard_layout_change` | hover enter and exit, keyboard layout |
 | Appearance | `appearance`, `window_appearance`, `on_appearance_changed`, `set_background_appearance`, `toggle_fullscreen`, corner radii | dark mode, immersive mode |
 | System services | clipboard (2), `open_url`, `on_open_urls`, `register_url_scheme`, `open_with_system`, `reveal_path`, `hide`, file prompts (3), credentials (3), `prevent_idle_sleep`, thermal (2), cursor (3), `app_path`, `path_for_auxiliary_executable` | JNI services, later |

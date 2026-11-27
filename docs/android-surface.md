@@ -1,20 +1,17 @@
 # Android surface
 
-How [`parallax-android`](../crates/android/src/lib.rs) keeps the renderer on the `ParallaxSurfaceView` surface across
-`SurfaceHolder` callbacks and GPU device loss. One state machine, [surface.rs](../crates/android/src/surface.rs):
+How [`parallax-android`](../crates/android/src/lib.rs) keeps each Activity's renderer on its `ParallaxSurfaceView`
+surface across `SurfaceHolder` callbacks and GPU device loss. One state machine per Activity's window
+([android-multi-window.md](android-multi-window.md)), [surface.rs](../crates/android/src/surface.rs):
 `Surface::{None, Ready, Recovering, Lost}`, one `next(state, event) → (state, action)`, tested row by row on the host.
 The Activity side: [android-lifecycle.md](android-lifecycle.md). Rules: [AGENTS.md](../AGENTS.md) (Explicit state).
 
 ## Whose surface
 
-`Ready` and `Recovering` record the Activity whose view created the window. Only the owning Activity's view may
-create or resize it ([android-lifecycle.md](android-lifecycle.md#several-activities)), but `surfaceDestroyed` is
-always taken from the window's own view, owner or not: Android needs the `ANativeWindow` released before that
-callback returns, and nothing may draw into it after. Both orders of two views are rows in `surface::tests`:
-
-- **New `surfaceCreated` first:** `Attach` releases the old window at once; the old view's late `surfaceDestroyed`
-  is rejected, since the current window is not its own.
-- **Old `surfaceDestroyed` first:** `Detach` releases it and the state is `Lost` until the new view's surface.
+Each Activity's view feeds only its own window's state machine (Java tags every call with the Activity's id), so no
+state records a view. `surfaceDestroyed` always releases the window (`Detach`): Android needs the `ANativeWindow`
+released before that callback returns, and nothing may draw into it after. A `surfaceCreated` before the old
+surface's `surfaceDestroyed` releases the old window at once (`Attach { previous }`).
 
 ## Resize
 

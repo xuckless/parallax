@@ -3,6 +3,8 @@
 //!
 //! Off Android this crate holds only [`android_main!`], which expands to nothing there.
 
+#[cfg(target_os = "android")]
+mod activity_window;
 #[cfg(any(target_os = "android", test))]
 mod backend;
 #[cfg(target_os = "android")]
@@ -57,19 +59,23 @@ pub use jni;
 /// ```
 ///
 /// On Android it defines `JNI_OnLoad`, which `ParallaxActivity`'s `System.loadLibrary` calls; GPUI then runs
-/// `launch` on the main thread when the first surface exists. On other targets it expands to nothing.
+/// `launch` on the main thread when the first surface exists. Each `ParallaxActivity` has its own GPUI window, so
+/// `launch` runs once per Activity, on its first surface, and must open one window: the first run starts GPUI, a
+/// later Activity (split screen, a deep link, a relaunch after the last one was destroyed) runs it in the same app.
+/// On other targets it expands to nothing.
 ///
 /// Use the facade's `parallax::android_main!`, as above: it applies the platform behaviour table (Android's
 /// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`. This crate's own
 /// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
 /// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
 ///
-/// The optional second argument is a `TouchSlopChanged` hook, run on its own looper turn when the device's touch slop
-/// changes while the app runs (a density change). The facade passes one that re-applies the table's row.
+/// The optional second argument is a `TouchSlopChanged` hook, run on its own looper turn when an Activity's view
+/// reports a new device touch slop while the app runs (a density change), with that Activity's window. The facade
+/// passes one that re-applies the table's row.
 #[macro_export]
 macro_rules! android_main {
     ($launch:expr) => {
-        $crate::android_main!($launch, |_, _| {});
+        $crate::android_main!($launch, |_, _, _| {});
     };
     ($launch:expr, $touch_slop_changed:expr) => {
         #[cfg(target_os = "android")]
@@ -107,6 +113,11 @@ pub enum Error {
     Jni(#[from] jni::errors::Error),
     #[error("no surface yet: GPUI opens its window once ParallaxSurfaceView has one")]
     NoSurface,
+    /// Kept so 0.1.x stays semver-compatible; removed when the enum turns `#[non_exhaustive]` on the next breaking line.
+    #[deprecated(
+        since = "0.1.9",
+        note = "never constructed: each Activity has its own window (see `NoActivityForWindow`)"
+    )]
     #[error("Android has one window per app; it is already open")]
     OneWindow,
     #[error("no GPU backend in the renderer table can drive this surface")]
@@ -152,14 +163,24 @@ pub enum Error {
     KeyEventType(i64),
     #[error("key data packet's character is not UTF-8")]
     KeyCharacter,
+    #[error(
+        "no Activity waits for a window: each ParallaxActivity has one, opened by the launch that runs for it"
+    )]
+    NoActivityForWindow,
 }
 
 /// The device's touch slop in logical pixels: `ViewConfiguration.getScaledTouchSlop()` over the density, which
-/// Flutter's embedding sends as `physicalTouchSlop`. `None` before the first surface, or off the main thread. The
-/// behaviour table's Android row resolves with it (docs/behaviour.md).
+/// Flutter's embedding sends as `physicalTouchSlop`, as the most recently created Activity's view last reported it.
+/// `None` before the first surface, or off the main thread. The behaviour table's Android row resolves with it
+/// (docs/behaviour.md).
 #[cfg(target_os = "android")]
 pub fn touch_slop() -> Option<gpui::Pixels> {
-    host::shell().ok()?.metrics.get().touch_slop()
+    host::shell()
+        .ok()?
+        .newest_window()?
+        .metrics
+        .get()
+        .touch_slop()
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,
