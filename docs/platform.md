@@ -53,11 +53,13 @@ single-threaded on stable Rust: the [workspace](../Cargo.toml) turns off `gpui_p
 feature, which needs nightly (AGENTS.md "Web threading"). It turns on `wayland` and `x11`, which upstream leaves
 off: without them Linux finds no display server, starts headless and draws nothing, with no error.
 
+Per-target behaviour (slops, scroll physics, haptics) is a second table in the same crate: [behaviour.md](behaviour.md).
+
 ## Adding a target or backend
 
 1. Add a `Target` variant, a row in `TABLE`, and its arm in `CURRENT_TARGET`.
 2. Add a named row to the `lookup_table` test.
-3. Update the table above.
+3. Update the table above, and add the target's row to the [behaviour table](behaviour.md).
 
 A new Parallax backend: make its crate a target-only dependency, set its row to `Status::Parallax`, and add its
 `cfg_select!` arm to `current_platform`'s `Status::Parallax` branch.

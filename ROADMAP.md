@@ -223,7 +223,15 @@ patch only for a case that can't be reached that way. Order follows the [oracle 
 - [ ] Overscroll (bounce, glow, clamp): a row in the behaviour table and a scroll-container patch.
 - [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
       Covers scroll physics preset, gesture tuning (GPUI's touch slop is 8 px, Flutter's 18), touch → mouse
-      emulation, overscroll, haptics, touch-target minimum.
+      emulation, overscroll, haptics, touch-target minimum. Wave 11: the table in `parallax_platform::behaviour`
+      and patch 0014's `App::set_gesture_tuning` ([behaviour.md](docs/behaviour.md)). Left for later:
+      - [ ] Haptics: GPUI has no haptics hook, so the table's `haptics` are data only. Needs a platform hook (Android
+            `View.performHapticFeedback`, iOS `UIFeedbackGenerator`) and callers (long press, selection handles, pickers).
+      - [ ] Android touch slop from `ViewConfiguration.getScaledTouchSlop()` at runtime, as Flutter's embedding sends it;
+            the row holds AOSP's default 8 dp.
+      - [ ] Row values GPUI's recognizer doesn't take yet: pan and scale slops, `kDoubleTapMinTime`, max fling velocity,
+            `dragStartDistanceMotionThreshold`, the velocity tracker per platform, macOS's constant deceleration (1400).
+      - [ ] Overscroll style and touch-target minimum are data only until a scroll container and widgets read them.
 - [ ] Trace recorder: capture raw touch traces into test fixtures, starting with the Android emulator, the iOS simulator and a browser until the owner has devices.
 - [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
 
@@ -321,6 +329,8 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-26 | gpui-pre 0.3.14 | The vendored `gpui-pre-ios` example doesn't build as shipped (uses `gpui_platform`, not a dev-dependency). Built from crates.io `=0.3.14` instead; it runs on the iOS 26.5 simulator. |
 | 2026-11-26 | gpui-pre 0.3.14 vs flutter 3.50.1 | GPUI's touch slop is 8 px, Flutter's 18 px. All gesture logic (`VelocityTracker`, fling, recognizers) is private to `gestures.rs`. |
 | 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | `TouchGestureRecognizer` read `Instant::now()` while its long-press timer ran on the executor, so the test platform could not drive tap timing; its click count timed and measured taps up to up (400 ms, 16 px) with no minimum interval, so a split touch counted as a double tap. Patch 0013 ([gesture-recognizers.md](docs/gesture-recognizers.md)). |
+| 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | Core already has `GestureTuning` (touch slop, multi-tap interval and slop, long press, `ScrollPhysics`, min fling) read once per window from `Platform::gestures()`; only `gpui_web` fills it (user-agent physics). Its tap shadow in `events.rs` hard-codes `GestureTuning::default().touch_slop`. |
+| 2026-11-26 | flutter 3.50.1 | Flutter's per-platform gesture values are few: the touch slop comes from the device (Android sends `ViewConfiguration`'s; iOS, web and desktop send none, so 18), the rest is per scroll physics class, plus overscroll, haptics and the velocity tracker per `TargetPlatform`. Android's stretch vs glow follows `useMaterial3`, not the Android version. |
 | 2026-11-26 | fontdb 0.23, swash 0.2.10 | fontdb has no Android font discovery (empty list, no warning); swash draws CBDT and COLR v0, not COLRv1. See the [font audit](docs/audits/android-fonts.md). |
 | 2026-11-26 | gpui-pre 0.3.14 on Android emulator | GPUI draws via `gpui_wgpu` on Vulkan and GLES 3.1 with no glue patch; a backend needs ~10 `Platform` + ~12 `PlatformWindow` methods for real (~1,500 lines). Start with `Application::run_embedded`. `PriorityQueue*` is not exported on Android. Emulator needs `-gpu host` (`swiftshader_indirect` crashed). See the [spike](docs/android-spike.md). |
 | 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | `gpui_web` turns only `pointerType == "touch"` into a `TouchEvent`; pens take the mouse path, so with patch 0003 a web pen reads as `PointerDevice::Mouse` (`events.rs`). |

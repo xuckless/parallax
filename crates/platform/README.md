@@ -4,5 +4,10 @@ Picks the GPUI platform for the current target from one table: upstream `gpui_pl
 [parallax-android](https://crates.io/crates/parallax-android) on Android. Part of
 [Parallax](https://github.com/xuckless/parallax), built on GPUI (`parallax-gpui`: upstream `gpui-pre` plus Parallax patches).
 
-How it works and how to add a target: [docs/platform.md](https://github.com/xuckless/parallax/blob/main/docs/platform.md).
-Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0.
+It also holds the target → behaviour table: Flutter's per-platform gesture slops, timeouts, scroll physics, overscroll,
+haptics and touch-target minimum, which an app hands to GPUI with `App::set_gesture_tuning`.
+
+How it works and how to add a target: [docs/platform.md](https://github.com/xuckless/parallax/blob/main/docs/platform.md),
+[docs/behaviour.md](https://github.com/xuckless/parallax/blob/main/docs/behaviour.md).
+Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0 AND BSD-3-Clause: the behaviour table ports code from Flutter
+(Copyright 2014 The Flutter Authors, LICENSE-FLUTTER).

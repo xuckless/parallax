@@ -4,7 +4,7 @@ description = "Picks the GPUI platform for the current target (desktop, web, iOS
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 readme = "README.md"
 keywords = ["gpui", "gui", "cross-platform", "android", "wasm"]
@@ -23,3 +23,7 @@ gpui_platform.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 parallax-android.workspace = true
+
+# The behaviour table reads navigator.platform, userAgent and maxTouchPoints to pick the browser host OS's row.
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-sys = { version = "0.3", features = ["Navigator", "Window"] }
