@@ -220,10 +220,10 @@ fn recorded_traces_replay_the_same_everywhere() {
     // Every target's row, and the web's (Flutter's slops on an Android host).
     let mut rows: Vec<(String, GestureTuning)> = TABLE
         .iter()
-        .map(|row| (format!("{:?}", row.target), row.gesture_tuning()))
+        .map(|row| (format!("{:?}", row.target), row.gesture_tuning(None)))
         .collect();
     let web = web_behaviour(Target::Android).unwrap();
-    rows.push(("Web on Android".into(), web.gesture_tuning()));
+    rows.push(("Web on Android".into(), web.gesture_tuning(None)));
 
     let mut failures = Vec::new();
     for (gesture, expected) in GESTURES {

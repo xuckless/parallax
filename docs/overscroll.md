@@ -26,7 +26,7 @@ GPUI without Parallax is unchanged.
 // Per container: opt out, or pick another indicator.
 div().id("list").overflow_y_scroll().overscroll(Overscroll::None)
 // Per app: override the row, after the entry point applied it (docs/behaviour.md, "Override").
-cx.set_gesture_tuning(GestureTuning { overscroll: Overscroll::Glow, ..current_behaviour()?.gesture_tuning() });
+cx.set_gesture_tuning(GestureTuning { overscroll: Overscroll::Glow, ..cx.gesture_tuning() });
 ```
 
 ## How it works

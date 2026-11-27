@@ -18,7 +18,7 @@ embedder uses for it, ported (ledger: [PORTED.md](../third_party/flutter/PORTED.
   has the widgets that play them (selection handles, pickers).
 
 To change the long-press haptic, override the tuning as [behaviour.md](behaviour.md#how-gpui-gets-it-automatically)
-shows, e.g. `GestureTuning { long_press_haptic: None, ..current_behaviour()?.gesture_tuning() }`.
+shows, e.g. `GestureTuning { long_press_haptic: None, ..cx.gesture_tuning() }`.
 
 ## Per platform
 
@@ -54,7 +54,7 @@ shows, e.g. `GestureTuning { long_press_haptic: None, ..current_behaviour()?.ges
 | `window::tests::claimed_long_press_plays_the_tuning_haptic_once` (patch 0018, [patch-test.sh](patch-tests.md)) | Through the test platform (`TestWindow::haptics`): claimed with vibrate / heavy impact plays it once over the whole press; unclaimed or `None` plays nothing |
 | `haptics::tests::flutter_argument_table` (`cargo test -p parallax-android`) | Haptic → Flutter's `HapticFeedback.vibrate` argument, one row per kind |
 | [PlatformPluginTest.java](../crates/android/java-tests/src/test/java/io/github/xuckless/parallax/PlatformPluginTest.java) ([android-tests.md](android-tests.md)) | Flutter's two cases: each type → its `HapticFeedbackConstants`, below and from API 30 |
-| `behaviour_table` ([behaviour.rs](../crates/platform/src/behaviour.rs)) | Each row's `gesture_tuning().long_press_haptic` is its `Feedback.forLongPress` |
+| `behaviour_table` ([behaviour.rs](../crates/platform/src/behaviour.rs)) | Each row's `gesture_tuning(None).long_press_haptic` is its `Feedback.forLongPress` |
 
 The iOS and web mappings are exhaustive matches, compile-checked on their targets; they have no host test.
 
