@@ -1,6 +1,6 @@
 # Overscroll in scroll containers
 
-What a GPUI scroll container does when a touch drags or flings it past an edge. [Patch
+What a GPUI scroll container does when a touch or a trackpad drags or flings it past an edge. [Patch
 0017](../patches/0017-overscroll-in-scroll-containers.patch) wires the physics of [0012](scroll-physics.md) and the
 indicators of [0015](scale-and-overscroll.md) into `div`'s scroll offset; the glue is a port of Flutter's
 `ScrollPosition` (ledger rows: [PORTED.md](../third_party/flutter/PORTED.md)). Why port: [flutter.md](flutter.md).
@@ -33,9 +33,9 @@ cx.set_gesture_tuning(GestureTuning { overscroll: Overscroll::Glow, ..cx.gesture
 
 | Piece | Where | Flutter |
 |---|---|---|
-| `AxisPosition`: one `Activity` (`Idle`, `Drag`, `Ballistic`) and one `Indicator` (`Off`, `Stretch`, `Glow`) per axis | `overscroll/scroll_position.rs` | `ScrollPosition`, its activities |
-| `handle_drag`: touch scroll phase × activity → next; drag steps through `apply_physics_to_user_offset` and `set_pixels` | same | `applyUserOffset`, `setPixels`, `ScrollDragController.end` |
-| `tick`: the ballistic simulation per frame; a move the boundary refuses ends it and hits the indicator | same | `BallisticScrollActivity._tick`, `applyMoveTo` |
+| `AxisPosition`: one `Activity` (`Idle`, `Drag` by a touch or trackpad, `Ballistic`) and one `Indicator` (`Off`, `Stretch`, `Glow`) per axis | `overscroll/scroll_position.rs` | `ScrollPosition`, its activities |
+| `handle_drag`: scroll phase × activity → next; drag steps through `apply_physics_to_user_offset` and `set_pixels` | same | `applyUserOffset`, `setPixels`, `ScrollDragController.end` |
+| `layout`: new extents restart the activity, an offset set from outside is a jump, then the ballistic frame | same | `applyNewDimensions`, `jumpTo`, `BallisticScrollActivity._tick` |
 | stretch: each child moves as a `1 + abs(strength)` scale about the stretched edge would move its centre | `div.rs` prepaint | `StretchEffect`'s `Transform` fallback |
 | glow: `GlowController::paint` per edge, mirrored or transposed from the top edge | `div.rs` paint, `glow_shapes` | `_GlowingOverscrollIndicatorPainter` |
 
@@ -44,20 +44,33 @@ cx.set_gesture_tuning(GestureTuning { overscroll: Overscroll::Glow, ..cx.gesture
   extents. The recognizer's momentum steps that follow are ignored by an overscrolling container.
 - **Frames:** prepaint ticks the position, leaves an axis it moves unclamped, and requests the next frame while a
   simulation or an indicator animates.
-- **Wheels and trackpads** (`ScrollSource::Pointer`) stop a drag or fling and never overscroll, as in Flutter.
+- **Trackpads** (pixel deltas with phases, as on macOS) drag like a finger, as Flutter's `PointerPanZoom` events
+  do: the axis tracks the pan's velocity and flings on release; the platform's momentum after it is ignored, as
+  Flutter's macOS embedder skips it. **Wheels** stop a drag or fling and never overscroll (`PointerScrollEvent`).
+- **A touch on a moving container** (a fling, a spring back) holds it (`HoldScrollActivity`): it drags from its
+  first pixel and never taps the content (`shouldIgnorePointer`); released unmoved, the spring back goes on.
+- **Set from outside:** `ScrollHandle::set_offset`, `scroll_to_item` or `scroll_to_bottom` while an axis moves is
+  Flutter's `jumpTo`: the fling stops there. Content or viewport resized mid-fling: the fling goes on with its
+  velocity in the new range (`applyNewDimensions`).
+- **Nothing to scroll:** a horizontal container whose content fits takes no drag (`shouldAcceptUserOffset`); a
+  vertical one still bounces, as Flutter's primary scroll views (`AlwaysScrollableScrollPhysics`).
 
 ## Limits
 
 - GPUI has no scale transform for every primitive, so the stretch moves children but does not resize them; a
   container with one child stretches only by moving it.
-- `uniform_list` and `list` stop hard: their visible range assumes an in-range offset.
+- `uniform_list` (it starts with `.overscroll(Overscroll::None)`) and `list` stop hard: their visible range
+  assumes an in-range offset.
+- A trackpad's platform momentum that outlasts the axis's own fling scrolls on, clamped (GPUI's scroll events
+  carry no momentum phase).
 - Nested containers each overscroll on their own axes; a pan reaches every container under its start (upstream
   routing), so same-axis nesting moves both. `OverscrollIndicatorNotification` has no receiver (every indicator
   shows). The glow tracks the pan's start across the axis (scroll events carry the start position).
 
 ## Tests
 
-`overscroll::scroll_position::tests::touch_overscroll_follows_flutter`: one row per behaviour, replaying a touch trace
-([gesture-recognizers.md](gesture-recognizers.md#trace-format)) frame by frame through the test platform and checking
-the offsets, the stretch (a row's rendered position) and the painted glows. Run `scripts/patch-test.sh
+`overscroll::scroll_position::tests::touch_overscroll_follows_flutter`: one row per behaviour, replaying a touch,
+wheel or trackpad trace ([gesture-recognizers.md](gesture-recognizers.md#trace-format)) through the test platform
+with `gpui::play_trace`, a frame every 16 ms, and checking the offsets, the stretch (a row's rendered position), the
+painted glows and taps. Run `scripts/patch-test.sh
 touch_overscroll` ([patch-tests.md](patch-tests.md)). To add a behaviour, add a row.
