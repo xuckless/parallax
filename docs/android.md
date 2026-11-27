@@ -9,9 +9,9 @@
   [`ParallaxSurfaceView`](../crates/android/java/io/github/xuckless/parallax/ParallaxSurfaceView.java). The app's
   `JNI_OnLoad` binds the view's static natives from one table (`natives` in [host.rs](../crates/android/src/host.rs)).
   On the first surface, `host.rs` builds the platform ([platform.rs](../crates/android/src/platform.rs)) and starts
-  GPUI with `Application::run_embedded`; the app's launch function opens that Activity's window
-  ([window.rs](../crates/android/src/window.rs)). Each Activity has its own window, and `launch` runs once per
-  Activity ([android-multi-window.md](android-multi-window.md)).
+  GPUI with `Application::run_embedded`; the app's `launch` runs, then its `open_window` opens that Activity's window
+  ([window.rs](../crates/android/src/window.rs)). Each Activity has its own window: `launch` runs once per process,
+  `open_window` once per Activity ([android-multi-window.md](android-multi-window.md)).
 - **Main thread only.** All JNI calls, GPUI and the renderer run on the Android main thread. They find their state in
   one thread-local, `MainThreadHost` in `host.rs` (why: static JNI methods carry no user pointer), and each
   Activity's window by the id Java tags every call with.
@@ -47,16 +47,19 @@
 
 ## The app entry point
 
-An app is a `cdylib` crate depending on `parallax`. It writes its launch function and one macro line:
+An app is a `cdylib` crate depending on `parallax`. It writes two functions and one macro line:
 
 ```rust
-fn launch(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
-parallax::android_main!(launch);
+fn launch(cx: &mut parallax::gpui::App) { /* bind keys, set globals */ }
+fn open_window(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
+parallax::android_main!(launch, open_window);
 ```
 
 `android_main!` defines `JNI_OnLoad` on Android (logging to logcat, tag `parallax`; panics logged there too) and
-nothing elsewhere. `launch` runs when an Activity's first surface exists, because GPUI needs one to open its window: once per
-Activity, each run opening that Activity's window ([android-multi-window.md](android-multi-window.md)).
+nothing elsewhere. Both functions are required, so no Activity is left without a window by default. `launch` runs
+once per process, when the first Activity's first surface exists (GPUI needs one to open a window); `open_window`
+runs on every Activity's first surface, the first one's right after `launch`
+([android-multi-window.md](android-multi-window.md)).
 Apps that pick a platform themselves call `parallax_platform::current_platform`, which routes Android to
 `parallax_android::current_platform` ([platform.md](platform.md)).
 

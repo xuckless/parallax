@@ -7,8 +7,9 @@ It covers touch, mouse and trackpad, hardware keys and Back, IME text input (Gbo
 system fonts with locale fallback, colour emoji drawn by Android, lifecycle and device-loss recovery.
 
 ```rust
-fn launch(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
-parallax::android_main!(launch); // the facade's macro also applies Android's gesture tuning
+fn launch(cx: &mut parallax::gpui::App) { /* bind keys, set globals: once per process */ }
+fn open_window(cx: &mut parallax::gpui::App) { /* cx.open_window(...): once per Activity */ }
+parallax::android_main!(launch, open_window); // the facade's macro also applies Android's gesture tuning
 ```
 
 Pre-alpha, verified on the Android emulator (no real-device testing yet). Build and run apps with

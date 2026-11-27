@@ -28,12 +28,13 @@ upstream GPUI has no text field outside Zed's editor (GPL, never copied), so it 
 it drives the IME ([android-text-input.md](android-text-input.md)). A paint that moves its caret calls
 `invalidate_character_coordinates`, so the web's IME mirror follows the caret ([web-text-input.md](web-text-input.md)).
 
-What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade.
+What it shows: one shared `launch(cx)` (setup, once per process) and `open_window(cx)` (one window), and a thin entry
+point per target, all through the `parallax` facade.
 
 | Target | Entry point | How it starts |
 |---|---|---|
-| Desktop | [main.rs](../examples/hello/src/main.rs) | `parallax::run(launch)`: the platform ([platform.md](platform.md)) with its behaviour row ([behaviour.md](behaviour.md)) |
-| Android | `parallax::android_main!(launch)` in lib.rs | `ParallaxActivity` loads the `cdylib` ([android.md](android.md)) |
+| Desktop | [main.rs](../examples/hello/src/main.rs) | `parallax::run`, then `launch` and `open_window`: the platform ([platform.md](platform.md)) with its behaviour row ([behaviour.md](behaviour.md)) |
+| Android | `parallax::android_main!(launch, open_window)` in lib.rs: `open_window` per Activity | `ParallaxActivity` loads the `cdylib` ([android.md](android.md)) |
 | Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs: `parallax::run` | [index.html](../examples/hello/index.html) imports the wasm-pack module; `favicon.svg` links to the brand icon in [assets/brand/](../assets/brand/) |
 | iOS | none yet | |
 

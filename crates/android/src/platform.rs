@@ -169,8 +169,8 @@ impl Platform for AndroidPlatform {
         self.shell.active_window()
     }
 
-    // One window per Activity: the app's launch (the first Activity) or its `on_activity_window` callback (each later
-    // one), run on that Activity's first surface, opens it.
+    // One window per Activity: the app's `open_window` (`android_main!`), run on that Activity's first surface,
+    // opens it.
     fn open_window(
         &self,
         handle: AnyWindowHandle,

@@ -119,12 +119,12 @@ fn natives() -> [NativeMethod; 14] {
 struct MainThreadHost {
     shell: Rc<Shell>,
     app: RefCell<AppState>,
-    /// The app's launch ([`crate::android_main!`]'s first argument): run once, on the first Activity's first surface,
-    /// where it starts GPUI and opens that Activity's window.
+    /// The app's setup ([`crate::android_main!`]'s first argument): run once, on the first Activity's first surface,
+    /// where it starts GPUI, as desktop GPUI runs its launch.
     launch: fn(&mut App),
-    /// How the running app opens each later Activity's window ([`crate::on_activity_window`]); unset, a later
-    /// Activity stays black (logged).
-    open_activity_window: Slot<dyn FnMut(&mut App)>,
+    /// How the app opens one Activity's window ([`crate::android_main!`]'s second argument): run on every
+    /// Activity's first surface, the first one's right after `launch`.
+    open_window: fn(&mut App),
     /// The app's hook for a changed device touch slop ([`crate::android_main!`]'s second argument).
     touch_slop_changed: TouchSlopChanged,
 }
@@ -176,9 +176,9 @@ impl MainThreadHost {
         rescaled.density_moved
     }
 
-    /// Asks the app for `window`'s Activity's GPUI window, on its first surface: the first Activity's starts GPUI,
-    /// whose `launch` (once per process, as on desktop) opens it; each later one runs the app's
-    /// [`crate::on_activity_window`] callback in the running app. [`Shell::open_window`] binds the window either opens.
+    /// Asks the app for `window`'s Activity's GPUI window, on its first surface: the app's `open_window`, after
+    /// starting GPUI and running its `launch` for the first Activity (once per process, as on desktop).
+    /// [`Shell::open_window`] binds the window it opens.
     fn request_window(&self, window: &ActivityWindow, locales: &[String]) {
         *window.gpui.borrow_mut() = Gpui::Requested;
         // Cloned so the borrow ends before GPUI runs: the app's code may reach `self.app` again.
@@ -187,14 +187,7 @@ impl MainThreadHost {
             AppState::Running { app, .. } => Some(app.clone()),
         };
         match running {
-            Some(app) => {
-                let opener = app.update(|cx| self.open_activity_window.with(|open| open(cx)));
-                if opener.is_none() {
-                    log::warn!(
-                        "parallax: the app set no on_activity_window to open a later Activity's window"
-                    );
-                }
-            }
+            Some(app) => app.update(self.open_window),
             None => self.start(locales),
         }
         if window.is_requested() {
@@ -205,7 +198,7 @@ impl MainThreadHost {
         }
     }
 
-    /// Starts GPUI, whose launch opens the first Activity's window.
+    /// Starts GPUI: the app's `launch`, then its `open_window` for the first Activity.
     fn start(&self, locales: &[String]) {
         let fonts = crate::text_system::load(&self.shell.vm, locales);
         let platform =
@@ -214,7 +207,11 @@ impl MainThreadHost {
                 Err(error) => return log::error!("parallax: cannot start the app: {error}"),
             };
         let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
-        let app = Application::with_platform(platform).run_embedded(self.launch);
+        let (launch, open_window) = (self.launch, self.open_window);
+        let app = Application::with_platform(platform).run_embedded(move |cx| {
+            launch(cx);
+            open_window(cx);
+        });
         *self.app.borrow_mut() = AppState::Running {
             cx: app.to_async(),
             app: Rc::new(app),
@@ -288,6 +285,7 @@ pub(crate) fn shell() -> Result<Rc<Shell>, Error> {
 pub unsafe fn on_load(
     vm: *mut jni::sys::JavaVM,
     launch: fn(&mut App),
+    open_window: fn(&mut App),
     touch_slop_changed: TouchSlopChanged,
 ) -> jint {
     android_logger::init_once(
@@ -312,7 +310,7 @@ pub unsafe fn on_load(
                     shell: Rc::new(Shell::new(vm)),
                     app: RefCell::new(AppState::NotStarted),
                     launch,
-                    open_activity_window: Slot::default(),
+                    open_window,
                     touch_slop_changed,
                 });
             });
@@ -323,19 +321,6 @@ pub unsafe fn on_load(
             JNI_ERR
         }
     }
-}
-
-/// Sets how the running app opens the GPUI window of each `ParallaxActivity` after the first (split screen, a deep
-/// link, a relaunch after the last Activity was destroyed in the same process): `open` runs on the main thread, on
-/// that Activity's first surface, and must open one window (`cx.open_window`), as a desktop app opens a window from
-/// a reopen callback. Call it in `launch`, which runs once per process; a later call replaces the earlier `open`.
-/// The facade's `parallax::android_main!` sets the app's `launch` as the default (docs/android-multi-window.md).
-pub fn on_activity_window(open: impl FnMut(&mut App) + 'static) -> Result<(), Error> {
-    HOST.with(|host| {
-        let host = host.get().ok_or(Error::NotLoaded)?;
-        host.open_activity_window.set(Box::new(open));
-        Ok(())
-    })
 }
 
 fn with_host(f: impl FnOnce(&MainThreadHost)) {

@@ -112,7 +112,7 @@ pub(crate) enum FirstFrame {
 pub(crate) enum Gpui {
     /// No GPUI window yet: the Activity's first surface asks the app for one.
     Waiting,
-    /// The app was asked for this Activity's window (its `launch`, or `on_activity_window` for a later Activity);
+    /// The app was asked for this Activity's window (its `open_window`, `android_main!`);
     /// the window it opens (`Platform::open_window`) binds here.
     Requested,
     /// GPUI's window for this Activity, drawn by its renderer.
