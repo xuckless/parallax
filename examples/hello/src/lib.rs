@@ -1,5 +1,6 @@
 //! One window: a prose field, an email field (with autofill), a line in several scripts, and a centred box; each
-//! click or tap moves the box to the next colour in `COLOURS`. Tapping outside a field blurs it (Android hides the
+//! click or tap moves the box to the next colour in `COLOURS`, and a two-finger (or trackpad) pinch resizes it
+//! within `ZOOM`, showing the zoom and the pinch's rotation. Tapping outside a field blurs it (Android hides the
 //! keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long the frame that draws
 //! the grid took.
 //! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
@@ -8,14 +9,17 @@ mod text_field;
 
 use parallax::gpui::{
     App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity, KeyboardType,
-    MouseButton, TextInputAction, TextInputConfiguration, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rgb, size,
+    MouseButton, PinchEvent, TextInputAction, TextInputConfiguration, TouchPinch, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 
 use text_field::TextField;
 
 /// The box shows these in order, wrapping around. Add a row to add a colour.
 const COLOURS: [u32; 4] = [0x3b82f6, 0xef4444, 0x22c55e, 0xeab308];
+
+/// How far a pinch may shrink or grow the box (160 px at 1).
+const ZOOM: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
 /// Shaping and fallback check: Latin, CJK (Chinese, Japanese), Arabic (right to left) and emoji in one line.
 /// 直骨 are Han whose glyphs differ between Chinese and Japanese fonts: they follow the app's locales.
@@ -31,6 +35,10 @@ const GRID_COLUMNS: usize = 10;
 struct Hello {
     /// Index into `COLOURS`.
     colour: usize,
+    /// The box's size factor, within `ZOOM`.
+    zoom: f32,
+    /// The last touch pinch's rotation since it started, in degrees.
+    rotation: f32,
     prose: Entity<TextField>,
     email: Entity<TextField>,
     shown: Shown,
@@ -118,9 +126,32 @@ impl Render for Hello {
                 }
                 Shown::Box => div()
                     .id("box")
-                    .size(px(160.))
+                    .size(px(160.) * self.zoom)
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_lg()
                     .bg(rgb(COLOURS[self.colour]))
+                    .text_color(rgb(0x1e1e2e))
+                    .child(format!("×{:.2} {:.0}°", self.zoom, self.rotation))
+                    .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
+                        // `delta` is the change since the last event, from a trackpad or the fingers alike.
+                        this.zoom =
+                            (this.zoom * (1. + event.delta)).clamp(*ZOOM.start(), *ZOOM.end());
+                        match &event.touch {
+                            Some(TouchPinch::Update(update)) => {
+                                this.rotation = update.rotation.to_degrees()
+                            }
+                            Some(TouchPinch::End(end)) => log::info!(
+                                "pinch end: zoom {:.2}, {} fingers left, velocity {:?}",
+                                this.zoom,
+                                end.pointer_count,
+                                end.velocity
+                            ),
+                            Some(TouchPinch::Start(_)) | None => {}
+                        }
+                        cx.notify();
+                    }))
                     .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                         this.colour = (this.colour + 1) % COLOURS.len();
                         let source = match event {
@@ -151,6 +182,8 @@ pub fn launch(cx: &mut App) {
     let opened = cx.open_window(options, |_, cx| {
         cx.new(|cx| Hello {
             colour: 0,
+            zoom: 1.,
+            rotation: 0.,
             // Prose: the keyboard may suggest, correct and capitalize (GPUI's default turns all of that off).
             prose: cx.new(|cx| {
                 TextField::new(
