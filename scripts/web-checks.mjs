@@ -107,8 +107,7 @@ if (mode === "desktop") {
   check("keyboard closed", heard(/keyboard inset/), ["0"]);
 }
 
-// The phases hello logs, waiting up to 3 s for `want` of them (headless Chromium may deliver a hidden page's events
-// late), then 300 ms for any extra.
+// The phases hello logs, waiting up to 3 s for `want` of them, then 300 ms for any extra.
 const phases = async (want) => {
   let got = heard(/ lifecycle /);
   for (let i = 0; i < 30 && got.length < want; i++) {
@@ -119,16 +118,20 @@ const phases = async (want) => {
   return got.concat(heard(/ lifecycle /));
 };
 heard(/ lifecycle /);
+// A tab opened in front hides this one (blur, then visibilitychange), as in a desktop browser. Turning focus
+// emulation off alone hides nothing: a fresh headless Chromium's only tab is visible and focused, and stays so.
 await send("Emulation.setFocusEmulationEnabled", { enabled: false });
+const { targetId: front } = await send("Target.createTarget", { url: "about:blank" });
 check("page hidden", await phases(2), ["Inactive", "Background"]);
 await send("Page.setWebLifecycleState", { state: "frozen" });
 await sleep(300);
 await send("Page.setWebLifecycleState", { state: "active" });
 await sleep(400);
 check("frozen and resumed while hidden", await phases(0), []);
-await send("Emulation.setFocusEmulationEnabled", { enabled: true });
-await sleep(400);
+await send("Target.activateTarget", { targetId: page.id });
 check("page shown and focused", await phases(2), ["Foreground", "Active"]);
+await send("Target.closeTarget", { targetId: front });
+await send("Emulation.setFocusEmulationEnabled", { enabled: true });
 await js(`window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))`);
 await sleep(200);
 check("into the back/forward cache", await phases(2), ["Inactive", "Background"]);

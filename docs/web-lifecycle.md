@@ -47,7 +47,10 @@ and `insets` (8 rows, 3 of them Flutter's tests). Flutter's one lifecycle test (
 no counterpart: the web has one window.
 
 In a browser, [hello](examples.md) logs `lifecycle <phase>` and `keyboard inset <px>`.
-[web-checks.mjs](../scripts/web-checks.mjs) drives headless Chromium through both (and the text-input checks of
-[web-text-input.md](web-text-input.md)): focus emulation off and on (headless pages are hidden and unfocused
-without it), `Page.setWebLifecycleState` frozen and active, synthetic `pagehide`/`pageshow`, and a visual
-viewport made 300 px shorter.
+[web-checks.mjs](../scripts/web-checks.mjs) checks both (and the text-input checks of
+[web-text-input.md](web-text-input.md)). In headless Chromium it hides the page with a tab opened in front (blur,
+then `visibilitychange`) and shows it with `Target.activateTarget`, freezes and resumes it with
+`Page.setWebLifecycleState`, and makes the visual viewport 300 px shorter. Turning focus emulation off is no way to
+hide it: a fresh headless Chromium's only tab stays visible and focused, and the hidden phases arrived only at the
+next lifecycle step, which made the old check flaky. Synthetic `pagehide`/`pageshow` cover the back/forward cache
+and unloading.
