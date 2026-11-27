@@ -2,10 +2,12 @@
 // FlutterView as reference. How it fits together: docs/android.md.
 package io.github.xuckless.parallax;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.os.Build;
+import android.util.Log;
 import android.util.SparseArray;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
@@ -59,6 +61,11 @@ final class ParallaxSurfaceView extends SurfaceView
   // GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a JSON array, for
   // TextInputChannel.handleFrameworkCalls), or null when there are none.
   private static native String nativeTextInputCalls(int activity);
+
+  // GPUI's pending haptics, oldest first: Flutter's `HapticFeedback.vibrate` arguments (null for
+  // HapticFeedback.vibrate()), for PlatformChannel.HapticFeedbackType.fromValue; null when there
+  // are none.
+  private static native String[] nativeHapticFeedbackCalls(int activity);
 
   private static native void nativeInsets(
       int activity,
@@ -169,6 +176,7 @@ final class ParallaxSurfaceView extends SurfaceView
   public void doFrame(long frameTimeNanos) {
     nativeFrame(activity);
     runTextInputCalls();
+    runHapticFeedbackCalls();
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -277,6 +285,25 @@ final class ParallaxSurfaceView extends SurfaceView
     String calls = nativeTextInputCalls(activity);
     if (calls != null) {
       textInputChannel.handleFrameworkCalls(calls);
+    }
+  }
+
+  // GPUI's pending haptics, played as PlatformChannel's handler plays `HapticFeedback.vibrate`
+  // (an unknown type is logged, as its result.error). Every vsync: a long press GPUI recognizes on a
+  // timer plays within a frame. The view's context is the ParallaxActivity that made it.
+  private void runHapticFeedbackCalls() {
+    String[] calls = nativeHapticFeedbackCalls(activity);
+    if (calls == null) {
+      return;
+    }
+    PlatformPlugin platformPlugin = new PlatformPlugin((Activity) getContext());
+    for (String feedbackType : calls) {
+      try {
+        platformPlugin.vibrateHapticFeedback(
+            PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
+      } catch (NoSuchFieldException exception) {
+        Log.e("ParallaxSurfaceView", exception.getMessage());
+      }
     }
   }
 

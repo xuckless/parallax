@@ -11,20 +11,23 @@ use std::{
 
 use gpui::{
     App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
-    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
+    DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
     RequestFrameOptions, Size, WindowInsets, WindowVisibility, point, px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
     objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
-    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
+    sys::{
+        JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jobjectArray,
+        jstring,
+    },
 };
 
 use crate::{
     Error,
     backend::Device,
-    keys,
+    haptics, keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     pointer,
     renderer::{self, NativeWindow},
@@ -38,7 +41,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 14] {
+fn natives() -> [NativeMethod; 15] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -70,6 +73,11 @@ fn natives() -> [NativeMethod; 14] {
             "nativeTextInputCalls",
             "(I)Ljava/lang/String;",
             text_input_calls as *mut c_void,
+        ),
+        row(
+            "nativeHapticFeedbackCalls",
+            "(I)[Ljava/lang/String;",
+            haptic_feedback_calls as *mut c_void,
         ),
         row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
         row(
@@ -399,6 +407,35 @@ extern "system" fn text_input_calls(env: JNIEnv, _class: JClass, activity: jint)
     }
 }
 
+/// GPUI's pending haptics as Flutter's `HapticFeedback.vibrate` arguments (null for `vibrate()`), for
+/// `PlatformPlugin.vibrateHapticFeedback`, or a null array when there are none. Java asks every vsync.
+extern "system" fn haptic_feedback_calls(
+    mut env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+) -> jobjectArray {
+    let mut pending = Vec::new();
+    with_owner(activity, |host| pending = host.shell.haptics.take());
+    if pending.is_empty() {
+        return std::ptr::null_mut();
+    }
+    let calls = (|| -> jni::errors::Result<jobjectArray> {
+        let length = i32::try_from(pending.len()).unwrap_or(i32::MAX);
+        let calls = env.new_object_array(length, "java/lang/String", JObject::null())?;
+        for (index, haptic) in (0..length).zip(pending) {
+            if let Some(argument) = haptics::flutter_argument(haptic) {
+                let argument = env.new_string(argument)?;
+                env.set_object_array_element(&calls, index, argument)?;
+            }
+        }
+        Ok(calls.into_raw())
+    })();
+    calls.unwrap_or_else(|error| {
+        log::error!("parallax: haptics dropped: {error}");
+        std::ptr::null_mut()
+    })
+}
+
 /// `TextInputChannel.updateEditingState`: Java's editing state after an IME edit (UTF-16 offsets, -1 for none).
 extern "system" fn update_editing_state(
     mut env: JNIEnv,
@@ -678,6 +715,8 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
+    /// Haptics GPUI played since Java last asked ([`haptic_feedback_calls`]), oldest first.
+    pub(crate) haptics: RefCell<Vec<Haptic>>,
     /// A plain `Cell`: only the main thread draws and attaches surfaces.
     pub(crate) first_frame: Cell<FirstFrame>,
 }
@@ -697,6 +736,7 @@ impl Shell {
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
+            haptics: RefCell::new(Vec::new()),
             first_frame: Cell::new(FirstFrame::Pending),
         }
     }

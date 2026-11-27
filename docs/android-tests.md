@@ -77,4 +77,4 @@ are). The shadow extends `ShadowSurfaceView`, so a test can also build a `Parall
 
 Ported so far (cases kept of Flutter's; the ledger names the dropped ones): `AndroidTouchProcessorTest` 14/15,
 `KeyboardManagerTest` 25/29, `InputConnectionAdaptorTest` 26/36, `TextInputPluginTest` 42/53, `ListenableEditingStateTest`
-13/13, `TextEditingDeltaTest` 2/2.
+13/13, `TextEditingDeltaTest` 2/2, `PlatformPluginTest` 2/30 (the haptic cases, [haptics.md](haptics.md)).

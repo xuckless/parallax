@@ -11,6 +11,8 @@ mod dispatcher;
 mod emoji;
 #[cfg(any(target_os = "android", test))]
 mod fonts;
+#[cfg(any(target_os = "android", test))]
+mod haptics;
 #[cfg(target_os = "android")]
 mod host;
 #[cfg(any(target_os = "android", test))]
