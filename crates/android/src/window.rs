@@ -118,9 +118,12 @@ impl PlatformWindow for AndroidWindow {
     }
 
     // Queued for Java, which plays it after the next vsync's frame: GPUI may be mid-dispatch here, and a long press
-    // fires from a timer, where no JNI call from Java is on the stack to call back through.
+    // fires from a timer, where no JNI call from Java is on the stack to call back through. Dropped while frames stop
+    // (`Lifecycle::runs_frames`).
     fn perform_haptic(&self, haptic: Haptic) {
-        self.shell.haptics.borrow_mut().push(haptic);
+        if self.shell.lifecycle.borrow().runs_frames() {
+            self.shell.haptics.borrow_mut().push(haptic);
+        }
     }
 
     fn prompt(

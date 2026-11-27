@@ -671,7 +671,7 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
-    /// Haptics GPUI played since Java last asked ([`Shell::framework_calls`]), oldest first.
+    /// Haptics GPUI played since Java last asked ([`Shell::framework_calls`]), oldest first; none while frames stop.
     pub(crate) haptics: RefCell<Vec<Haptic>>,
     /// A plain `Cell`: only the main thread draws and attaches surfaces.
     pub(crate) first_frame: Cell<FirstFrame>,
@@ -833,6 +833,10 @@ impl Shell {
         let (next, effect) = before.next(event);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
         let (active, visibility, owner) = (next.is_active(), next.visibility(), next.owner());
+        if !next.runs_frames() {
+            // Paused: nobody pulls them now, and a haptic must not play late, on resume.
+            self.haptics.borrow_mut().clear();
+        }
         *self.lifecycle.borrow_mut() = next;
         if owner.is_some() && owner != was_owner {
             self.text_input.borrow_mut().owner_changed();

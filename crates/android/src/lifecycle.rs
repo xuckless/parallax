@@ -333,6 +333,18 @@ impl Lifecycle {
         }
     }
 
+    /// Whether the owner's view runs frames: Java posts them between `onResume` and `onPause`, and pulls GPUI's
+    /// framework calls with each. Haptics are kept only then: Flutter plays none while its app is not in front.
+    pub fn runs_frames(&self) -> bool {
+        match self {
+            Lifecycle::Live { owner, .. } => match owner.stage {
+                Stage::Resumed { .. } => true,
+                Stage::Created { .. } | Stage::Started { .. } => false,
+            },
+            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => false,
+        }
+    }
+
     /// The phases an observer registered at launch has missed: GPUI launches on the first surface, after
     /// `onStart` and usually `onResume`. Replayed once after launch, as iOS reports them after its scene connects.
     pub fn launch_phases(&self) -> &'static [AppLifecyclePhase] {
@@ -393,6 +405,27 @@ mod tests {
     }
     const fn no(why: &'static str) -> Effect {
         Reject { why }
+    }
+
+    #[test]
+    fn runs_frames_table() {
+        // (row name, lifecycle, whether the owner's view runs frames and so keeps GPUI's haptics)
+        let rows = [
+            ("loaded: no view", Lifecycle::Loaded, false),
+            ("created: stopped", one(c(true)), false),
+            ("started, or paused: stopFrames ran", one(s(true)), false),
+            ("resumed without focus: frames run", one(r(false)), true),
+            ("resumed and focused", one(r(true)), true),
+            (
+                "the owner is paused, another resumed below it",
+                on_a(s(true), r(true)),
+                false,
+            ),
+            ("disconnected: no view", D, false),
+        ];
+        for (name, lifecycle, runs) in rows {
+            assert_eq!(lifecycle.runs_frames(), runs, "{name}");
+        }
     }
 
     #[test]

@@ -41,7 +41,8 @@ shows, e.g. `GestureTuning { long_press_haptic: None, ..cx.gesture_tuning() }`.
   and plays each with the ported `PlatformChannel.HapticFeedbackType.fromValue` and the Activity's
   `PlatformPlugin.vibrateHapticFeedback` (`View.performHapticFeedback` on the decor view). A pull: a long press fires
   from a GPUI timer, where Rust holds no Java frame to call through. So it plays up to one frame late; Flutter's
-  channel is async too. `performHapticFeedback` follows the touch-feedback setting.
+  channel is async too. Paused (no frames), the queue is dropped and new haptics are not kept
+  (`Lifecycle::runs_frames`): none plays late on resume. `performHapticFeedback` follows the touch-feedback setting.
 - **iOS.** A fresh generator per call, as Flutter's. Compile-checked on the iOS target; run on a device to feel it
   (the simulator has no haptics).
 - **Web.** Flutter web's durations; browsers without `navigator.vibrate` (Safari, iOS) play nothing, as in Flutter.
@@ -52,7 +53,7 @@ shows, e.g. `GestureTuning { long_press_haptic: None, ..cx.gesture_tuning() }`.
 | Where | Checks |
 |---|---|
 | `window::tests::claimed_long_press_plays_the_tuning_haptic_once` (patch 0018, [patch-test.sh](patch-tests.md)) | Through the test platform (`TestWindow::haptics`): claimed with vibrate / heavy impact plays it once over the whole press; unclaimed or `None` plays nothing |
-| `haptics::tests::platform_calls_table` (`cargo test -p parallax-android`) | The `flutter/platform` calls' order and null `vibrate()` argument |
+| `haptics::tests::platform_calls_table`, `lifecycle::tests::runs_frames_table` (`cargo test -p parallax-android`) | The `flutter/platform` calls' order and null `vibrate()` argument; haptics kept only while frames run |
 | [PlatformPluginTest.java](../crates/android/java-tests/src/test/java/io/github/xuckless/parallax/PlatformPluginTest.java) ([android-tests.md](android-tests.md)) | Flutter's two cases: each type → its `HapticFeedbackConstants`, below and from API 30 |
 | `behaviour_table` ([behaviour.rs](../crates/platform/src/behaviour.rs)) | Each row's `gesture_tuning(None).long_press_haptic` is its `Feedback.forLongPress` |
 
