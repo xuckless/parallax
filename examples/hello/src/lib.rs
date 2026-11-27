@@ -142,11 +142,6 @@ impl Render for Hello {
 
 /// Opens the one window. Android and the web size it themselves and ignore the bounds.
 pub fn launch(cx: &mut App) {
-    // Flutter's gesture feel for this platform (docs/behaviour.md), set before the window opens.
-    match parallax::parallax_platform::behaviour::current_behaviour() {
-        Ok(behaviour) => cx.set_gesture_tuning(behaviour.gesture_tuning()),
-        Err(error) => log::warn!("keeping the platform's gesture tuning: {error}"),
-    }
     text_field::bind_keys(cx);
     let bounds = Bounds::centered(None, size(px(400.), px(400.)), cx);
     let options = WindowOptions {
@@ -213,6 +208,7 @@ pub fn start() {
     match parallax::parallax_platform::current_platform(false) {
         Ok(platform) => parallax::gpui::Application::with_platform(platform).run(|cx| {
             let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
+            parallax::set_platform_gesture_tuning(cx);
             match cx.text_system().add_fonts(fonts) {
                 Ok(()) => launch(cx),
                 Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),

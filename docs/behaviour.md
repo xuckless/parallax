@@ -17,11 +17,12 @@ comment next to each names its Flutter source. Flutter's tuning wins over GPUI's
 
 | Scroll physics | GPUI fling model | Min / max fling (px/s) | Drag start threshold |
 |---|---|---|---|
-| `BOUNCING` (`BouncingScrollPhysics`) | `Exponential { 0.998 }` | 100 / 8000 | 3.5 |
-| `BOUNCING_DESKTOP` (`decelerationRate: fast`) | `Exponential { 0.998 }` | 100 / 64000 | 3.5 |
-| `CLAMPING` (`ClampingScrollPhysics`) | `FrictionSpline { 0.015, 160 }` | 50 / 8000 | none |
+| `BOUNCING` (`BouncingScrollPhysics`) | `ScrollPhysics::ios()` | 100 / 8000 | 3.5 |
+| `BOUNCING_DESKTOP` (`decelerationRate: fast`) | `ScrollPhysics::ios()`, no 1400 deceleration yet | 100 / 64000 | 3.5 |
+| `CLAMPING` (`ClampingScrollPhysics`) | `ScrollPhysics::android()` | 50 / 8000 | none |
 
-The same on every row (Flutter's `gestures/constants.dart`, kept under Flutter's names): long press 500 ms, double tap
+The same on every row (Flutter's `gestures/constants.dart`, ported once into GPUI as `gpui::constants` by
+[patch 0013](gesture-recognizers.md), under Flutter's names): long press 500 ms, double tap
 within 300 ms (`kDoubleTapTimeout`), at least 40 ms apart, 100 px apart at most; a mouse's slops are 1 / 2 / 1
 (`PRECISE_POINTER_SLOPS`); `touch_to_mouse` is `true` (GPUI's tap → click; opt out per element with `on_touch`,
 [core-patches.md](core-patches.md)).
@@ -41,20 +42,17 @@ within 300 ms (`kDoubleTapTimeout`), at least 40 ms apart, 100 px apart at most;
 
 GPUI's touch recognizer reads a `GestureTuning` when a window opens. Upstream takes it only from the platform
 (`Platform::gestures()`); [patch 0014](../patches/0014-app-gesture-tuning-override.patch) adds the app's override:
-`App::set_gesture_tuning`. `Behaviour::gesture_tuning()` maps a row onto GPUI's fields (`touch_slop` ← hit slop,
-`multi_tap_interval` ← `kDoubleTapTimeout`, `multi_tap_slop` ← `kDoubleTapSlop`, `long_press_duration` ←
-`kLongPressTimeout`, `scroll_physics` and `min_fling_velocity` ← the scroll physics row). An app sets it first in
-its launch function, as [hello](../examples/hello/src/lib.rs) does:
+`App::set_gesture_tuning`. `Behaviour::gesture_tuning()` fills every GPUI field from a row (`touch_slop` ← hit
+slop, `multi_tap_interval` / `multi_tap_slop` / `multi_tap_min_interval` / `long_press_duration` ← the constants,
+`scroll_physics` and `min_fling_velocity` ← the scroll physics row, `velocity_tracker` ← the row's).
 
-```rust
-if let Ok(behaviour) = parallax::parallax_platform::behaviour::current_behaviour() {
-    cx.set_gesture_tuning(behaviour.gesture_tuning());
-}
-```
+[`parallax::set_platform_gesture_tuning`](../crates/parallax/src/lib.rs) sets the current target's row. The
+facade's `android_main!` calls it before the app's `launch`, so Android apps get their row with no code. Desktop
+and web entry points call it themselves first, as [hello](../examples/hello/src/main.rs)'s `main` and `start` do.
+Windows opened later use it; open windows keep theirs. Without it GPUI keeps the platform's own tuning.
 
-Windows opened later use it; open windows keep theirs. Without the call GPUI keeps the platform's own tuning.
-
-**Override:** pass a changed copy, e.g. `GestureTuning { touch_slop: px(12.), ..behaviour.gesture_tuning() }`.
+**Override:** call `cx.set_gesture_tuning` in `launch` (after the facade's call) with a changed copy, e.g.
+`GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`.
 Row values GPUI doesn't take yet (pan and scale slops, max fling, haptics, overscroll, touch target) are data for
 the widgets and patches that will read them: see ROADMAP Phase 2.
 
