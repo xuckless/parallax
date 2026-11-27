@@ -1,7 +1,8 @@
 //! One window: a prose field, an email field (with autofill), a line in several scripts, and a centred box; each
-//! click or tap moves the box to the next colour in `COLOURS`. Tapping outside a field blurs it (Android hides the
-//! keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long the frame that draws
-//! the grid took.
+//! click or tap moves the box to the next colour in `COLOURS`; hovering or long-pressing it shows its colour as a
+//! tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
+//! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how
+//! long the frame that draws the grid took.
 //! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
@@ -121,6 +122,10 @@ impl Render for Hello {
                     .size(px(160.))
                     .rounded_lg()
                     .bg(rgb(COLOURS[self.colour]))
+                    .tooltip({
+                        let colour = COLOURS[self.colour];
+                        move |_, cx| cx.new(|_| ColourTip(colour)).into()
+                    })
                     .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                         this.colour = (this.colour + 1) % COLOURS.len();
                         let source = match event {
@@ -137,6 +142,22 @@ impl Render for Hello {
                     }))
                     .into_any_element(),
             })
+    }
+}
+
+/// The box's tooltip: its colour. On touch a long press shows it, which claims the press, so GPUI plays the
+/// behaviour table's long-press haptic itself (docs/haptics.md); the app plays none.
+struct ColourTip(u32);
+
+impl Render for ColourTip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .rounded_md()
+            .bg(rgb(0x313244))
+            .text_color(rgb(0xcdd6f4))
+            .child(format!("#{:06x}", self.0))
     }
 }
 
