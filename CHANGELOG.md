@@ -6,6 +6,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+- iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
+  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
+  4 standard edit actions stay open for the edit-menu work.
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`

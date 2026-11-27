@@ -50,6 +50,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
+| [ios-text-input.md](ios-text-input.md) | Patches 0028–0030: Flutter's `FlutterTextInputPluginTest.mm` cases as a table against gpui_ios's `UITextInput` view on the simulator (ios-text-oracle.sh), the failures and Flutter's fixes, cases left out, the size limit |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |
 | [android-autofill.md](android-autofill.md) | Android autofill: GPUI's hint → Flutter's `Configuration.Autofill`, the field id, AutofillManager calls, filled values through the merge path, the hint table |
 | [android-emoji.md](android-emoji.md) | Android colour emoji: fonts.xml emoji faces drawn by Android over JNI, one glyph per cluster, metrics, emoji-picker cost |
