@@ -1,5 +1,6 @@
 // Parallax's own view. Surface and inset handling read from Flutter's FlutterSurfaceView and
-// FlutterView as reference. One line is ported: touchSlop() from
+// FlutterView as reference. Ported: touchSlop() and guessBottomKeyboardInset() (with its use in
+// onApplyWindowInsets before API 30) from
 // engine/src/flutter/shell/platform/android/io/flutter/embedding/android/FlutterView.java @ 3.50.1
 // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause,
 // see third_party/flutter/LICENSE. How it fits together: docs/android.md.
@@ -375,9 +376,12 @@ final class ParallaxSurfaceView extends SurfaceView
           touchSlop(),
           safe.left, safe.top, safe.right, safe.bottom, ime.left, ime.top, ime.right, ime.bottom);
     } else {
-      // API 28-29: system window insets cover the bars (and the keyboard, which is not split out
-      // before API 30); the cutout is reported separately.
+      // API 28-29: system window insets cover the bars and the keyboard, which is not split out
+      // before API 30 (it arrives only with the manifest's adjustResize). As FlutterView, a bottom
+      // inset guessBottomKeyboardInset calls a keyboard is the ime inset, not the bars' padding;
+      // the cutout is reported separately.
       DisplayCutout cutout = insets.getDisplayCutout();
+      int keyboard = guessBottomKeyboardInset(insets);
       nativeInsets(
           activity,
           density(),
@@ -387,13 +391,40 @@ final class ParallaxSurfaceView extends SurfaceView
           Math.max(
               insets.getSystemWindowInsetRight(), cutout == null ? 0 : cutout.getSafeInsetRight()),
           Math.max(
-              insets.getSystemWindowInsetBottom(), cutout == null ? 0 : cutout.getSafeInsetBottom()),
+              keyboard == 0 ? insets.getSystemWindowInsetBottom() : 0,
+              cutout == null ? 0 : cutout.getSafeInsetBottom()),
           0,
           0,
           0,
-          0);
+          keyboard);
     }
     return super.onApplyWindowInsets(insets);
+  }
+
+  // Uses inset heights and screen heights as a heuristic to determine if the insets should
+  // be padded. When the on-screen keyboard is detected, we want to include the full inset
+  // but when the inset is just the hidden nav bar, we want to provide a zero inset so the space
+  // can be used.
+  //
+  // This method is replaced by Android API 30 (R/11) getInsets() method which can take the
+  // android.view.WindowInsets.Type.ime() flag to find the keyboard inset.
+  private int guessBottomKeyboardInset(WindowInsets insets) {
+    int screenHeight = getRootView().getHeight();
+    // Parallax change: the first insets arrive before the first layout, when the root view is 0
+    // high, and Flutter's guess calls the navigation bar a keyboard; the display's height stands in.
+    if (screenHeight == 0) {
+      screenHeight = getResources().getDisplayMetrics().heightPixels;
+    }
+    // Magic number due to this being a heuristic. This should be replaced, but we have not
+    // found a clean way to do it yet (Sept. 2018)
+    final double keyboardHeightRatioHeuristic = 0.18;
+    if (insets.getSystemWindowInsetBottom() < screenHeight * keyboardHeightRatioHeuristic) {
+      // Is not a keyboard, so return zero as inset.
+      return 0;
+    } else {
+      // Is a keyboard, so return the full inset.
+      return insets.getSystemWindowInsetBottom();
+    }
   }
 
   private float density() {

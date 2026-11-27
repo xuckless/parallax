@@ -46,7 +46,7 @@ the focused window (`dumpsys window`, `mCurrentFocus`); while it is an `Applicat
 `Application Error:` dialog for another app, it force-stops that app (its dialog closes with the process) and
 broadcasts `CLOSE_SYSTEM_DIALOGS`, up to 5 times. A dialog for hello is left to fail the step (`ANR in` the app).
 
-**Rotation:** `rotate N` writes `user_rotation` and waits up to 10 s for `dumpsys window displays` to report
+**Rotation:** `rotate N` writes `user_rotation` and waits up to 10 s for `dumpsys window` (whole: API 28 prints it outside `displays`) to report
 `mCurrentRotation` N. One CI emulator never changed configuration, so a second try writes the setting again plus
 `wm user-rotation lock N`; after that it fails with `the emulator did not rotate to N`, before the frame wait.
 

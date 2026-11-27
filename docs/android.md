@@ -32,8 +32,10 @@
 - **Lifecycle.** Activity callbacks, focus and trim-memory go through one state machine
   ([lifecycle.rs](../crates/android/src/lifecycle.rs)) to upstream's `on_app_lifecycle`, `on_memory_warning`, window
   activity and visibility; `onDestroy` is `Disconnected`. Details: [android-lifecycle.md](android-lifecycle.md).
-- **Insets.** The view sends `systemBars | displayCutout` and `ime` insets (API 28–29: system-window insets and the
-  cutout) in pixels; GPUI reads them through `Window::insets()` and gets `on_insets_changed`.
+- **Insets.** The view sends `systemBars | displayCutout` and `ime` insets in pixels; GPUI reads them through
+  `Window::insets()` and gets `on_insets_changed`. API 28–29 has no `ime` type: the view sends the system-window
+  insets and the cutout, and a keyboard-sized bottom inset (Flutter's `guessBottomKeyboardInset`) as the `ime` one.
+  The keyboard reaches those insets only with the manifest's `adjustResize` (Flutter's app template's).
 - **Rotation** keeps the Activity (manifest `configChanges`, as Flutter); [a new surface](android-surface.md#resize). Android's default focus highlight is off: it greyed the whole frame out of touch mode.
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
