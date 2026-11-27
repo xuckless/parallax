@@ -216,7 +216,10 @@ windows_launch() {
   windows_stop
   # The cursor off the window, so no stray mouse move reaches the pad.
   "$windows_bin/touch-inject.exe" park
-  hello_pid=$("$windows_bin/touch-inject.exe" launch "$(cygpath -w "$windows_bin/hello.exe")" "$(cygpath -w "$work/hello.log")")
+  # The pid through a file, not `$(…)`: hello inherits touch-inject's handles, so a pipe would stay open while it runs.
+  "$windows_bin/touch-inject.exe" launch "$(cygpath -w "$windows_bin/hello.exe")" "$(cygpath -w "$work/hello.log")" \
+    >"$work/hello.pid"
+  hello_pid=$(<"$work/hello.pid")
   # Above the runner's console window, which comes back on top now and then.
   windows_inject raise
 }
