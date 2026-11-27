@@ -6,6 +6,22 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Desktop touch in the behaviour table: the macOS, Windows and Linux rows give a touch or pen Flutter's touch slops
+  (18 / 36 / 18; the desktop embedders send none) and a mouse the precise-pointer ones, checked by
+  `desktop_pointer_slops_table`; documented with Flutter's drag devices and desktop tap-target rules
+  (docs/desktop-touch-behaviour.md).
+- Gate 3 replay plumbing: `trace_replay` reads `windows`, `wayland`, `x11` and `macos` trace folders when present
+  and compares them with the phone and browser traces under every row; the fixture contract for desktop harnesses is
+  docs/traces-desktop.md.
+
+### Changed
+
+- Trace lines take an optional sixth field, the device (`Touch` or `Pen`); lines without it read as `Touch`. hello's
+  trace pad logs it.
+- hello's desktop window is 400 × 700 logical px (was 400 × 400), so the recorded gestures fit on desktop.
+
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
 Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's
