@@ -25,6 +25,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Wayland touch (patch 0022, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreens on Wayland reach GPUI as
   `TouchEvent`s (taps, pans, flings and pinches through GPUI's recognizer, as on mobile), with the compositor's event
   time as `time_stamp`. Ported from winit's Wayland touch handling ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md)).
+- X11 touchscreens (patch 0023, ported from winit 0.30.13): gpui_linux's X11 windows select XInput 2 touch
+  events (XInput 2.2 and later) and send them as `TouchEvent`s (`device: Touch`, the server's event time as
+  `time_stamp`), so taps, pans, pinches and overscroll work on X11 as on phones. The pointer events the X server
+  emulates from a touch are dropped, so a tap clicks once ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md#x11)).
 
 ### Changed
 

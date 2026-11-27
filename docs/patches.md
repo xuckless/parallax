@@ -75,3 +75,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0020](../patches/0020-touch-event-timestamp.patch) | `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, filled by iOS and the web, read by velocity tracking ([touch-time-stamps.md](touch-time-stamps.md)) |
 | [0021](../patches/0021-touch-windows.patch) | Windows touch and pen from `WM_POINTER` (winit's handling) as `TouchEvent`s, the mouse messages Windows makes from them dropped ([desktop-touch-windows.md](desktop-touch-windows.md)) |
 | [0022](../patches/0022-touch-wayland.patch) | Wayland `wl_touch` → `TouchEvent` in `gpui_linux`, ported from winit ([desktop-touch-linux.md](desktop-touch-linux.md#wayland)) |
+| [0023](../patches/0023-touch-x11.patch) | X11 XInput 2 touch → `TouchEvent` in gpui_linux, emulated pointer events dropped, from winit ([desktop-touch-linux.md](desktop-touch-linux.md#x11)) |

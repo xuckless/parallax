@@ -90,7 +90,7 @@ cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --targ
 # Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
 # builds. Add a row when a backend patch ships tests the host can run.
 host_backends=()
-[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland touch tables
+[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland and 0023's X11 touch tables
 for crate in "${host_backends[@]}"; do
     cargo test --manifest-path "$out/crates/Cargo.toml" -p "$crate" --features test-support --lib \
         --target-dir target/patch-tests -- "$@"

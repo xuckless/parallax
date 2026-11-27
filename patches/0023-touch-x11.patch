@@ -1,0 +1,598 @@
+Feed X11 XInput 2 touch into GPUI's TouchEvent and drop the pointer events the server emulates from it.
+
+What: gpui_linux's X11 client, ported from winit v0.30.13 (e9809ef54b18499bb4f2cac945719ecc2a61061b)
+`src/platform_impl/linux/x11/event_processor.rs` (`XI_Touch*` arm, `xinput2_touch`, the `XIPointerEmulated` check
+of `xinput2_button_input`) and `window.rs` (the touch masks), Apache-2.0:
+- Windows select XI_TouchBegin / Update / End on the master devices, with the pointer and gesture masks, from one
+  table by XInput version (`XinputVersion::window_events`: touch from 2.2, pinch gestures from 2.4). The client's
+  `supports_xinput_gestures: bool` becomes the negotiated `XinputVersion`, so a server older than 2.2 never gets a
+  touch mask (it would fail the whole selection).
+- XinputTouchBegin / Update / End → `PlatformInput::Touch` (`touch_from_xinput`, table `XI2_TOUCH_PHASES`): the
+  detail is the `TouchId` (XI2 touch ids are globally unique and increase per touch), `device: Touch`, the position
+  in logical pixels as the pointer events convert theirs, `time_stamp` from the server's ms `time` moved onto GPUI's
+  clock by its age (`X11Clock`: Xorg and Xwayland stamp with CLOCK_MONOTONIC ms, read locally the same way; an age
+  over 10 s either way means a remote server's clock: `None`, timed at dispatch). No `Cancelled`, as in winit and
+  GDK: without XI_TouchOwnership a client gets a touch only once it owns it, and an owned touch ends only with
+  XI_TouchEnd.
+- XinputButtonPress / Release / Motion with `POINTER_EMULATED` are dropped, as winit drops them: those the server
+  makes from a touch, so a tap clicks once (GPUI makes its own mouse events from the touch), and the scroll-button
+  clicks emulated from smooth scrolling, which upstream already skipped (its check inside the scroll arm goes). The
+  dropped emulated scroll clicks no longer reset the IME composition, as real clicks do.
+- Table tests in x11/event.rs: XI2 touch event fixtures → TouchEvent, X11 time stamps (wrap, foreign clock), masks
+  per XInput version, the emulation filter.
+
+Pen: X11 tablets send pointer events with pressure valuators, not touches, and GPUI's mouse events carry no
+device (docs/pointer-source.md), so a pen stays `Mouse`, as on the web. Deferred.
+
+Why: upstream's X11 backend selects no touch events, so a touchscreen only drives the server's emulated pointer: no
+TouchEvent, no gestures, no multi-touch. Selecting touch and dropping the emulation is backend code in gpui_linux's
+private X11 client, which neither a Parallax crate nor an extension trait can reach. cfg: the X11 module is already
+Linux/FreeBSD with the `x11` feature.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
+index 6667170..5847a5a 100644
+--- a/gpui-pre-linux/src/linux/x11/client.rs
++++ b/gpui-pre-linux/src/linux/x11/client.rs
+@@ -41,11 +41,11 @@ use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSIO
+ use xkbcommon::xkb::{self as xkbc, STATE_LAYOUT_EFFECTIVE};
+ 
+ use super::{
+-    ButtonOrScroll, ScrollDirection, X11Display, X11WindowStatePtr, XcbAtoms, XimCallbackEvent,
+-    XimHandler, button_or_scroll_from_event_detail, check_reply,
++    ButtonOrScroll, ScrollDirection, X11Clock, X11Display, X11WindowStatePtr, XcbAtoms,
++    XimCallbackEvent, XimHandler, XinputVersion, button_or_scroll_from_event_detail, check_reply,
+     clipboard::{self, Clipboard},
+-    get_reply, get_valuator_axis_index, handle_connection_error, modifiers_from_state,
+-    pressed_button_from_mask, xcb_flush,
++    get_reply, get_valuator_axis_index, handle_connection_error, is_pointer_emulated,
++    modifiers_from_state, pressed_button_from_mask, touch_from_xinput, xcb_flush,
+ };
+ 
+ use crate::linux::{
+@@ -233,7 +233,7 @@ pub struct X11ClientState {
+ 
+     pointer_device_states: BTreeMap<xinput::DeviceId, PointerDeviceState>,
+ 
+-    pub(crate) supports_xinput_gestures: bool,
++    pub(crate) xinput_version: XinputVersion,
+ 
+     pub(crate) common: Rc<RefCell<LinuxCommon>>,
+     pub(crate) clipboard: Clipboard,
+@@ -387,9 +387,9 @@ impl X11Connection {
+         xcb_connection.prefetch_extension_information(xinput::X11_EXTENSION_NAME)?;
+ 
+         // Announce to X server that XInput up to 2.4 is supported.
+-        // Version 2.4 is needed for gesture events (GesturePinchBegin/Update/End).
+-        // The server responds with the highest version it supports; if < 2.4,
+-        // we must not request gesture event masks in XISelectEvents.
++        // Version 2.2 is needed for touch events, 2.4 for gesture events (GesturePinchBegin/Update/End).
++        // The server responds with the highest version it supports; windows must not
++        // request masks it lacks in XISelectEvents (`XinputVersion::window_events`).
+         let xinput_version = get_reply(
+             || "XInput XiQueryVersion failed",
+             xcb_connection.xinput_xi_query_version(2, 4),
+@@ -398,13 +398,14 @@ impl X11Connection {
+             xinput_version.major_version >= 2,
+             "XInput version >= 2 required."
+         );
+-        let supports_xinput_gestures = xinput_version.major_version > 2
+-            || (xinput_version.major_version == 2 && xinput_version.minor_version >= 4);
++        let xinput_version =
++            XinputVersion(xinput_version.major_version, xinput_version.minor_version);
+         log::info!(
+-            "XInput version: {}.{}, gesture support: {}",
+-            xinput_version.major_version,
+-            xinput_version.minor_version,
+-            supports_xinput_gestures,
++            "XInput version: {}.{}, touch support: {}, gesture support: {}",
++            xinput_version.0,
++            xinput_version.1,
++            xinput_version >= XinputVersion(2, 2),
++            xinput_version >= XinputVersion(2, 4),
+         );
+ 
+         let pointer_device_states =
+@@ -549,7 +550,7 @@ impl X11Connection {
+ 
+                 pointer_device_states,
+ 
+-                supports_xinput_gestures,
++                xinput_version,
+ 
+                 clipboard,
+                 clipboard_item: None,
+@@ -1228,6 +1229,11 @@ impl X11Client {
+                 drop(state);
+                 window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }));
+             }
++            // Pointer events the server emulates from a touch are dropped: the touch arrives as an
++            // XinputTouch* event, so a tap clicks once (winit's `xinput2_button_input`).
++            Event::XinputButtonPress(event) if is_pointer_emulated(event.flags) => {}
++            Event::XinputButtonRelease(event) if is_pointer_emulated(event.flags) => {}
++            Event::XinputMotion(event) if is_pointer_emulated(event.flags) => {}
+             Event::XinputButtonPress(event) => {
+                 let window = self.get_window(event.event)?;
+                 let mut state = self.0.borrow_mut();
+@@ -1283,24 +1289,19 @@ impl X11Client {
+                     }
+                     Some(ButtonOrScroll::Scroll(direction)) => {
+                         drop(state);
+-                        // Emulated scroll button presses are sent simultaneously with smooth scrolling XinputMotion events.
+-                        // Since handling those events does the scrolling, they are skipped here.
+-                        if !event
+-                            .flags
+-                            .contains(xinput::PointerEventFlags::POINTER_EMULATED)
+-                        {
+-                            let scroll_delta = match direction {
+-                                ScrollDirection::Up => Point::new(0.0, SCROLL_LINES),
+-                                ScrollDirection::Down => Point::new(0.0, -SCROLL_LINES),
+-                                ScrollDirection::Left => Point::new(SCROLL_LINES, 0.0),
+-                                ScrollDirection::Right => Point::new(-SCROLL_LINES, 0.0),
+-                            };
+-                            window.handle_input(PlatformInput::Scroll(make_scroll_wheel_event(
+-                                position,
+-                                scroll_delta,
+-                                modifiers,
+-                            )));
+-                        }
++                        // Emulated scroll button presses, sent with smooth scrolling XinputMotion
++                        // events, were dropped above: those motion events do the scrolling.
++                        let scroll_delta = match direction {
++                            ScrollDirection::Up => Point::new(0.0, SCROLL_LINES),
++                            ScrollDirection::Down => Point::new(0.0, -SCROLL_LINES),
++                            ScrollDirection::Left => Point::new(SCROLL_LINES, 0.0),
++                            ScrollDirection::Right => Point::new(-SCROLL_LINES, 0.0),
++                        };
++                        window.handle_input(PlatformInput::Scroll(make_scroll_wheel_event(
++                            position,
++                            scroll_delta,
++                            modifiers,
++                        )));
+                     }
+                     None => {
+                         log::error!("Unknown x11 button: {}", event.detail);
+@@ -1445,6 +1446,14 @@ impl X11Client {
+                     reset_pointer_device_scroll_positions(pointer);
+                 }
+             }
++            Event::XinputTouchBegin(event)
++            | Event::XinputTouchUpdate(event)
++            | Event::XinputTouchEnd(event) => {
++                let window = self.get_window(event.event)?;
++                let scale_factor = self.0.borrow().scale_factor;
++                let touch = touch_from_xinput(&event, scale_factor, X11Clock::read())?;
++                window.handle_input(PlatformInput::Touch(touch));
++            }
+             Event::XinputGesturePinchBegin(event) => {
+                 let window = self.get_window(event.event)?;
+                 let mut state = self.0.borrow_mut();
+@@ -1706,7 +1715,7 @@ impl X11Client {
+         let scale_factor = state.scale_factor;
+         let appearance = state.common.borrow().appearance;
+         let compositor_gpu = state.compositor_gpu.take();
+-        let supports_xinput_gestures = state.supports_xinput_gestures;
++        let xinput_version = state.xinput_version;
+         let is_bgr = state
+             .resource_database
+             .get_string("Xft.rgba", "Xft.Rgba")
+@@ -1726,7 +1735,7 @@ impl X11Client {
+             scale_factor,
+             appearance,
+             parent_window,
+-            supports_xinput_gestures,
++            xinput_version,
+             is_bgr,
+         )?;
+         check_reply(
+diff --git a/gpui-pre-linux/src/linux/x11/event.rs b/gpui-pre-linux/src/linux/x11/event.rs
+index 3fb9164..ced17f5 100644
+--- a/gpui-pre-linux/src/linux/x11/event.rs
++++ b/gpui-pre-linux/src/linux/x11/event.rs
+@@ -1,9 +1,14 @@
++use std::time::{Duration, Instant};
++
+ use x11rb::protocol::{
+     xinput,
+     xproto::{self, ModMask},
+ };
+ 
+-use gpui::{Modifiers, MouseButton, NavigationDirection};
++use gpui::{
++    Modifiers, MouseButton, NavigationDirection, PointerDevice, TouchEvent, TouchId, TouchPhase,
++    point, px,
++};
+ 
+ pub(crate) enum ButtonOrScroll {
+     Button(MouseButton),
+@@ -65,6 +70,138 @@ pub(crate) fn pressed_button_from_mask(button_mask: u32) -> Option<MouseButton>
+     })
+ }
+ 
++// XInput 2 touch, ported from rust-windowing/winit src/platform_impl/linux/x11/event_processor.rs @ v0.30.13
++// (e9809ef54b18499bb4f2cac945719ecc2a61061b): the `XI_Touch*` arm of `process_xevent`, `xinput2_touch`, and the
++// `XIPointerEmulated` check of `xinput2_button_input`; window.rs's touch masks. Copyright the winit contributors.
++// Apache-2.0.
++
++/// XInput 2 touch event type → GPUI phase, winit's `XI_Touch*` arm. There is no cancel row, as in winit and GDK:
++/// a client that selects touch events without `XI_TouchOwnership` gets a touch only once it owns it, and an owned
++/// touch ends only with `XI_TouchEnd` (XI2proto, "Ownership of touch sequences"). Extend: one row per XI2 touch
++/// event type the window selects.
++const XI2_TOUCH_PHASES: [(u16, TouchPhase); 3] = [
++    (xinput::TOUCH_BEGIN_EVENT, TouchPhase::Started),
++    (xinput::TOUCH_UPDATE_EVENT, TouchPhase::Moved),
++    (xinput::TOUCH_END_EVENT, TouchPhase::Ended),
++];
++
++/// The XInput version the server agreed to (`XIQueryVersion`), as (major, minor); orders like versions.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) struct XinputVersion(pub(crate) u16, pub(crate) u16);
++
++impl XinputVersion {
++    /// The XInput 2 events a window selects on this server. Selecting a mask the server's version lacks fails the
++    /// whole selection, so each row names the version that defines its events. Extend: one row per XI2 version.
++    pub(crate) fn window_events(self) -> xinput::XIEventMask {
++        let rows = [
++            (
++                XinputVersion(2, 0),
++                xinput::XIEventMask::MOTION
++                    | xinput::XIEventMask::BUTTON_PRESS
++                    | xinput::XIEventMask::BUTTON_RELEASE
++                    | xinput::XIEventMask::ENTER
++                    | xinput::XIEventMask::LEAVE,
++            ),
++            // The server takes the three touch masks only together (XI2proto, XISelectEvents).
++            (
++                XinputVersion(2, 2),
++                xinput::XIEventMask::TOUCH_BEGIN
++                    | xinput::XIEventMask::TOUCH_UPDATE
++                    | xinput::XIEventMask::TOUCH_END,
++            ),
++            // x11rb 0.13 has no XIEventMask constants for gesture events: XInput event type N is mask bit N.
++            (
++                XinputVersion(2, 4),
++                xinput::XIEventMask::from(
++                    1u32 << xinput::GESTURE_PINCH_BEGIN_EVENT
++                        | 1u32 << xinput::GESTURE_PINCH_UPDATE_EVENT
++                        | 1u32 << xinput::GESTURE_PINCH_END_EVENT,
++                ),
++            ),
++        ];
++        rows.into_iter()
++            .filter(|(since, _)| *since <= self)
++            .fold(xinput::XIEventMask::from(0u32), |mask, (_, events)| {
++                mask | events
++            })
++    }
++}
++
++/// Whether the server made this XI2 pointer event up from other input: from a touch (dropped: the touch arrives
++/// as a [`TouchEvent`] and GPUI makes its own mouse events from it, so a tap clicks once) or from a smooth-scroll
++/// valuator (dropped: its motion event scrolls). winit's `xinput2_button_input` check.
++pub(crate) fn is_pointer_emulated(flags: xinput::PointerEventFlags) -> bool {
++    flags.contains(xinput::PointerEventFlags::POINTER_EMULATED)
++}
++
++/// GPUI's clock and the X server's event clock read together, so an event's `time` becomes a GPUI `Instant` by its
++/// age, as [`TouchEvent::time_stamp`] wants.
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct X11Clock {
++    pub(crate) now: Instant,
++    /// The X server's clock at `now`, in ms. Xorg and Xwayland stamp events with `CLOCK_MONOTONIC` in ms, wrapping
++    /// at `u32` (`GetTimeInMillis`), so this reads the local monotonic clock the same way.
++    pub(crate) server_millis: xproto::Timestamp,
++}
++
++impl X11Clock {
++    /// An age past this, either way, means the server stamps on another clock (a remote display): no time stamp.
++    const FOREIGN_CLOCK_MILLIS: u32 = 10_000;
++
++    pub(crate) fn read() -> Self {
++        let mut time = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        // SAFETY: `time` is a valid, writable timespec, and CLOCK_MONOTONIC exists on every Linux and FreeBSD.
++        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
++        Self {
++            now: Instant::now(),
++            // Truncating to u32 wraps as the server's CARD32 time does.
++            server_millis: (time.tv_sec as u64 * 1000 + time.tv_nsec as u64 / 1_000_000) as u32,
++        }
++    }
++
++    /// When an event stamped `time` happened, on GPUI's clock. A stamp a little after the clock read counts as now;
++    /// one too far either way is from another clock.
++    fn at(self, time: xproto::Timestamp) -> Option<Instant> {
++        // The wrapping difference read as signed, so an age across the u32 wrap stays small.
++        let age = self.server_millis.wrapping_sub(time) as i32;
++        if age.unsigned_abs() > Self::FOREIGN_CLOCK_MILLIS {
++            return None;
++        }
++        self.now
++            .checked_sub(Duration::from_millis(age.max(0) as u64))
++    }
++}
++
++/// The GPUI touch for an XI2 touch event (winit's `xinput2_touch`), in logical pixels at `scale_factor`. XI2 touch
++/// ids are globally unique and increase for each new touch (XI2proto), so the detail is the [`TouchId`]. `None` for
++/// an event type without an [`XI2_TOUCH_PHASES`] row.
++pub(crate) fn touch_from_xinput(
++    event: &xinput::TouchBeginEvent,
++    scale_factor: f32,
++    clock: X11Clock,
++) -> Option<TouchEvent> {
++    let (_, phase) = XI2_TOUCH_PHASES
++        .iter()
++        .find(|(event_type, _)| *event_type == event.event_type)?;
++    Some(TouchEvent {
++        id: TouchId(u64::from(event.detail)),
++        phase: *phase,
++        // Converted as client.rs converts pointer positions, so touch and mouse agree.
++        position: point(
++            px(event.event_x as f32 / u16::MAX as f32 / scale_factor),
++            px(event.event_y as f32 / u16::MAX as f32 / scale_factor),
++        ),
++        predicted_position: None,
++        // winit leaves force a TODO: XI2 reports pressure only as a per-device valuator.
++        force: None,
++        device: PointerDevice::Touch,
++        time_stamp: clock.at(event.time),
++    })
++}
++
+ pub(crate) fn get_valuator_axis_index(
+     valuator_mask: &Vec<u32>,
+     valuator_number: u16,
+@@ -126,6 +263,181 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
+ mod tests {
+     use super::*;
+ 
++    /// An XI2 touch event as the server sends it: the fields `touch_from_xinput` reads, the rest as parsed from
++    /// a wire event with zeros. Positions are FP16.16.
++    struct Xi2Touch {
++        event_type: u16,
++        detail: u32,
++        time: xproto::Timestamp,
++        event_x: i32,
++        event_y: i32,
++    }
++
++    impl Xi2Touch {
++        fn event(&self) -> xinput::TouchBeginEvent {
++            xinput::TouchBeginEvent {
++                event_type: self.event_type,
++                detail: self.detail,
++                time: self.time,
++                event_x: self.event_x,
++                event_y: self.event_y,
++                ..Default::default()
++            }
++        }
++    }
++
++    // Extend: one row per XI2 touch event shape; batch 2's recorded X11 touch traces add rows here.
++    #[test]
++    fn xi2_touch_events() {
++        let clock = X11Clock {
++            now: Instant::now(),
++            server_millis: 50_000,
++        };
++        // (name, event, scale factor, expected (id, phase, x, y, age in ms))
++        let rows: [(
++            &str,
++            Xi2Touch,
++            f32,
++            Option<(u64, TouchPhase, f32, f32, u64)>,
++        ); 5] = [
++            (
++                "begin at scale 1",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: 7,
++                    time: 50_000,
++                    event_x: 100 * 65535,
++                    event_y: 40 * 65535,
++                },
++                1.0,
++                Some((7, TouchPhase::Started, 100.0, 40.0, 0)),
++            ),
++            (
++                "update at scale 2 is in logical pixels",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_UPDATE_EVENT,
++                    detail: 7,
++                    time: 49_984,
++                    event_x: 300 * 65535,
++                    event_y: 80 * 65535,
++                },
++                2.0,
++                Some((7, TouchPhase::Moved, 150.0, 40.0, 16)),
++            ),
++            (
++                "end",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_END_EVENT,
++                    detail: 7,
++                    time: 49_990,
++                    event_x: 0,
++                    event_y: 0,
++                },
++                1.0,
++                Some((7, TouchPhase::Ended, 0.0, 0.0, 10)),
++            ),
++            (
++                "the detail is the touch id",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_BEGIN_EVENT,
++                    detail: u32::MAX,
++                    time: 50_000,
++                    event_x: 0,
++                    event_y: 0,
++                },
++                1.0,
++                Some((u64::from(u32::MAX), TouchPhase::Started, 0.0, 0.0, 0)),
++            ),
++            (
++                "ownership is not a phase",
++                Xi2Touch {
++                    event_type: xinput::TOUCH_OWNERSHIP_EVENT,
++                    detail: 7,
++                    time: 50_000,
++                    event_x: 0,
++                    event_y: 0,
++                },
++                1.0,
++                None,
++            ),
++        ];
++        for (name, row, scale_factor, expected) in rows {
++            let touch = touch_from_xinput(&row.event(), scale_factor, clock);
++            let expected = expected.map(|(id, phase, x, y, age)| TouchEvent {
++                id: TouchId(id),
++                phase,
++                position: point(px(x), px(y)),
++                predicted_position: None,
++                force: None,
++                device: PointerDevice::Touch,
++                time_stamp: Some(clock.now - Duration::from_millis(age)),
++            });
++            // TouchEvent has no PartialEq; its Debug form shows every field.
++            assert_eq!(format!("{touch:?}"), format!("{expected:?}"), "{name}");
++        }
++    }
++
++    #[test]
++    fn x11_time_stamps() {
++        let now = Instant::now();
++        // (name, server clock at the read, event time, expected age in ms or None)
++        let rows: [(&str, u32, u32, Option<u64>); 6] = [
++            ("on time", 1_000, 1_000, Some(0)),
++            ("a frame old", 1_000, 984, Some(16)),
++            ("after the clock read is now", 1_000, 1_003, Some(0)),
++            ("across the u32 wrap", 5, u32::MAX - 10, Some(16)),
++            ("a foreign clock behind", 100_000, 30_000, None),
++            ("a foreign clock ahead", 30_000, 100_000, None),
++        ];
++        for (name, server_millis, time, age) in rows {
++            let clock = X11Clock { now, server_millis };
++            let expected = age.map(|age| now - Duration::from_millis(age));
++            assert_eq!(clock.at(time), expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn xi2_window_events_by_version() {
++        let touch = xinput::XIEventMask::TOUCH_BEGIN
++            | xinput::XIEventMask::TOUCH_UPDATE
++            | xinput::XIEventMask::TOUCH_END;
++        let pinch = xinput::XIEventMask::from(1u32 << xinput::GESTURE_PINCH_BEGIN_EVENT);
++        // (version, selects touch, selects pinch gestures)
++        let rows = [
++            (XinputVersion(2, 0), false, false),
++            (XinputVersion(2, 1), false, false),
++            (XinputVersion(2, 2), true, false),
++            (XinputVersion(2, 3), true, false),
++            (XinputVersion(2, 4), true, true),
++            (XinputVersion(3, 0), true, true),
++        ];
++        for (version, selects_touch, selects_pinch) in rows {
++            let mask = version.window_events();
++            assert!(
++                mask.contains(xinput::XIEventMask::BUTTON_PRESS),
++                "{version:?}"
++            );
++            assert_eq!(mask.contains(touch), selects_touch, "{version:?} touch");
++            assert_eq!(mask.contains(pinch), selects_pinch, "{version:?} pinch");
++        }
++    }
++
++    #[test]
++    fn pointer_emulation_filter() {
++        // (name, XI2 pointer event flags as sent, dropped)
++        let rows: [(&str, u32, bool); 2] = [
++            ("a real mouse press", 0, false),
++            ("a press emulated from a touch", 1 << 16, true),
++        ];
++        for (name, flags, dropped) in rows {
++            assert_eq!(
++                is_pointer_emulated(xinput::PointerEventFlags::from(flags)),
++                dropped,
++                "{name}"
++            );
++        }
++    }
++
+     #[test]
+     fn test_get_valuator_axis_index() {
+         assert!(get_valuator_axis_index(&vec![0b11], 0) == Some(0));
+diff --git a/gpui-pre-linux/src/linux/x11/window.rs b/gpui-pre-linux/src/linux/x11/window.rs
+index fc280b8..b224328 100644
+--- a/gpui-pre-linux/src/linux/x11/window.rs
++++ b/gpui-pre-linux/src/linux/x11/window.rs
+@@ -33,7 +33,7 @@ use std::{
+     cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ptr::NonNull, rc::Rc, sync::Arc,
+ };
+ 
+-use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
++use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES, XinputVersion};
+ 
+ x11rb::atom_manager! {
+     pub XcbAtoms: AtomsCookie {
+@@ -476,7 +476,7 @@ impl X11WindowState {
+         scale_factor: f32,
+         appearance: WindowAppearance,
+         parent_window: Option<X11WindowStatePtr>,
+-        supports_xinput_gestures: bool,
++        xinput_version: XinputVersion,
+         is_bgr: bool,
+     ) -> anyhow::Result<Self> {
+         // Native popups are not implemented on X11 yet. Rejecting lets callers fall back to
+@@ -721,27 +721,13 @@ impl X11WindowState {
+                 ),
+             )?;
+ 
+-            let mut xi_event_mask = xinput::XIEventMask::MOTION
+-                | xinput::XIEventMask::BUTTON_PRESS
+-                | xinput::XIEventMask::BUTTON_RELEASE
+-                | xinput::XIEventMask::ENTER
+-                | xinput::XIEventMask::LEAVE;
+-            if supports_xinput_gestures {
+-                // x11rb 0.13 doesn't define XIEventMask constants for gesture
+-                // events, so we construct them from the event opcodes (each
+-                // XInput event type N maps to mask bit N).
+-                xi_event_mask |=
+-                    xinput::XIEventMask::from(1u32 << xinput::GESTURE_PINCH_BEGIN_EVENT)
+-                        | xinput::XIEventMask::from(1u32 << xinput::GESTURE_PINCH_UPDATE_EVENT)
+-                        | xinput::XIEventMask::from(1u32 << xinput::GESTURE_PINCH_END_EVENT);
+-            }
+             check_reply(
+                 || "X11 XiSelectEvents failed.",
+                 xcb.xinput_xi_select_events(
+                     x_window,
+                     &[xinput::EventMask {
+                         deviceid: XINPUT_ALL_DEVICE_GROUPS,
+-                        mask: vec![xi_event_mask],
++                        mask: vec![xinput_version.window_events()],
+                     }],
+                 ),
+             )?;
+@@ -938,7 +924,7 @@ impl X11Window {
+         scale_factor: f32,
+         appearance: WindowAppearance,
+         parent_window: Option<X11WindowStatePtr>,
+-        supports_xinput_gestures: bool,
++        xinput_version: XinputVersion,
+         is_bgr: bool,
+     ) -> anyhow::Result<Self> {
+         let ptr = X11WindowStatePtr {
+@@ -957,7 +943,7 @@ impl X11Window {
+                 scale_factor,
+                 appearance,
+                 parent_window,
+-                supports_xinput_gestures,
++                xinput_version,
+                 is_bgr,
+             )?)),
+             callbacks: Rc::new(RefCell::new(Callbacks::default())),
