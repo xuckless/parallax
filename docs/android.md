@@ -42,6 +42,8 @@
   `CosmicTextSystem` and orders CJK by the app's current locales. Details: [android-fonts.md](android-fonts.md).
 - **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →
   `nativeDispatchKeyData` → [keys.rs](../crates/android/src/keys.rs): key, modifier and back events. Details: [android-keys.md](android-keys.md).
+- **OS settings.** Java's `AccessibilityInfoModule` (React Native's, ported) sends the animation scales;
+  "Remove animations" becomes `App::reduce_motion` ([os-settings.md](os-settings.md)).
 - **Text input.** Flutter's `TextInputPlugin` and `InputConnectionAdaptor` (ported Java) serve the IME; GPUI's `InputHandler` answers on the same thread
   ([text_input.rs](../crates/android/src/text_input.rs)), IME edits synchronously, GPUI's changes after each frame. Details: [android-text-input.md](android-text-input.md).
 

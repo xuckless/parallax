@@ -3,7 +3,7 @@
 //! ([`ActivityWindow`]). How the windows fit together: docs/android-multi-window.md.
 
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
     ffi::c_void,
     rc::Rc,
@@ -12,8 +12,8 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, AppLifecyclePhase, Application, ApplicationHandle, AsyncApp,
-    DevicePixels, Edges, Pixels, PlatformAtlas, size,
+    AccessibilityDisplaySettings, AnyWindowHandle, App, AppLifecyclePhase, Application,
+    ApplicationHandle, AsyncApp, DevicePixels, Edges, Pixels, PlatformAtlas, size,
 };
 use gpui_wgpu::GpuContext;
 use jni::{
@@ -39,7 +39,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 14] {
+fn natives() -> [NativeMethod; 15] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -107,6 +107,11 @@ fn natives() -> [NativeMethod; 14] {
             "nativeBoundsForRange",
             "(III[F)Z",
             bounds_for_range as *mut c_void,
+        ),
+        row(
+            "nativeAccessibilitySettings",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            accessibility_settings as *mut c_void,
         ),
     ]
 }
@@ -467,6 +472,32 @@ extern "system" fn locales_changed(
     with_host(|host| host.follow_locales(&locales));
 }
 
+/// `AccessibilityInfoModule`: the two animation scales' raw `Settings.Global` strings (null when never written), on
+/// each Activity's create and resume and when either changes. The app's settings, not one Activity's. GPUI hears
+/// only a change ([`Shell::follow_accessibility_display`]).
+extern "system" fn accessibility_settings(
+    mut env: JNIEnv,
+    _class: JClass,
+    transition_animation_scale: JString,
+    animator_duration_scale: JString,
+) {
+    let mut read = |scale: &JString| -> Option<String> {
+        if scale.is_null() {
+            return None;
+        }
+        env.get_string(scale)
+            .map(String::from)
+            .inspect_err(|error| log::error!("parallax: unreadable animation scale: {error}"))
+            .ok()
+    };
+    let (transition, animator) = (
+        read(&transition_animation_scale),
+        read(&animator_duration_scale),
+    );
+    let settings = crate::accessibility::settings(transition.as_deref(), animator.as_deref());
+    with_host(|host| host.shell.follow_accessibility_display(settings));
+}
+
 /// Every vsync: GPUI draws if anything changed. Java then asks for GPUI's framework calls ([`framework_calls`]) and
 /// runs them after this returns, outside GPUI's draw.
 extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
@@ -659,6 +690,7 @@ extern "system" fn insets(
 pub(crate) struct AppCallbacks {
     pub(crate) app_lifecycle: Slot<dyn FnMut(AppLifecyclePhase)>,
     pub(crate) memory_warning: Slot<dyn FnMut()>,
+    pub(crate) accessibility_display_change: Slot<dyn FnMut(AccessibilityDisplaySettings)>,
 }
 
 /// The app as Android sees it: its Activities and their windows, one each. Main thread only.
@@ -674,6 +706,8 @@ pub(crate) struct Shell {
     /// lifecycle's live Activities and these keys change together, in [`Shell::lifecycle`] only.
     windows: RefCell<BTreeMap<ActivityId, Rc<ActivityWindow>>>,
     pub(crate) callbacks: AppCallbacks,
+    /// As Java last sent them; GPUI's app reads them when it starts, after the first Activity's create.
+    pub(crate) accessibility_display: Cell<AccessibilityDisplaySettings>,
 }
 
 impl Shell {
@@ -685,6 +719,18 @@ impl Shell {
             device: renderer::device(),
             windows: RefCell::new(BTreeMap::new()),
             callbacks: AppCallbacks::default(),
+            accessibility_display: Cell::new(crate::accessibility::settings(None, None)),
+        }
+    }
+
+    /// Java's latest settings: GPUI's callback runs when they moved. From a looper turn of its own (a `ContentObserver`
+    /// or an Activity callback), never inside GPUI, so the callback runs at once.
+    fn follow_accessibility_display(&self, settings: AccessibilityDisplaySettings) {
+        if self.accessibility_display.replace(settings) != settings {
+            log::info!("parallax: accessibility display settings: {settings:?}");
+            self.callbacks
+                .accessibility_display_change
+                .with(|callback| callback(settings));
         }
     }
 

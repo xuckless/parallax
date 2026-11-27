@@ -131,6 +131,11 @@ final class ParallaxSurfaceView extends SurfaceView
   // GPUI's bounds of the UTF-16 range [start, end) in view pixels into `ltrb`; false if none.
   static native boolean nativeBoundsForRange(int activity, int start, int end, float[] ltrb);
 
+  // AccessibilityInfoModule: Settings.Global's TRANSITION_ANIMATION_SCALE and ANIMATOR_DURATION_SCALE
+  // as stored (null when never written); Rust decides whether motion is reduced.
+  static native void nativeAccessibilitySettings(
+      String transitionAnimationScale, String animatorDurationScale);
+
   // Both tag what they send with `activity`, so they are built once it is set.
   private final AndroidTouchProcessor touchProcessor;
 
