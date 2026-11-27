@@ -16,7 +16,9 @@ contact becomes a `TouchEvent` with:
 - `device` Touch or Pen;
 - `time_stamp`: the pointer's `PerformanceCount` (else its `dwTime`) moved onto GPUI's clock by its age against
   `QueryPerformanceCounter` (else `GetTickCount`), as patch 0020 does on iOS and the web.
-A pointer the window loses while down (`WM_POINTERCAPTURECHANGED`) is cancelled at its last position. A move, up or
+A pointer the window loses while down (`WM_POINTERCAPTURECHANGED`) is cancelled at its last position, and so is a
+`POINTER_FLAG_CANCELED` one: Windows moves a cancelled pointer's location (a display change cancelled one off the
+window). A move, up or
 cancel for a pointer that never went down in the window (it went down on the title bar or in another window) is
 dropped, and so is a second down. A pen hovering in range (UPDATE without contact) is a mouse move, through the
 existing `WM_MOUSEMOVE` handler; Flutter's embedder sends it as a pointer hover too. Client-area mouse messages that
@@ -270,7 +272,7 @@ new file mode 100644
 index 0000000..7a18562
 --- /dev/null
 +++ b/gpui-pre-windows/src/pointer.rs
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,682 @@
 +//! Touch and pen from Windows' pointer messages (`WM_POINTERDOWN`, `WM_POINTERUPDATE`, `WM_POINTERUP`) as GPUI
 +//! touches. The decisions live here, on plain values, so they are tested on any host (Parallax's
 +//! `scripts/patch-test.sh` builds this file on its own); `events.rs` reads the OS and dispatches what they return.
@@ -449,10 +451,15 @@ index 0000000..7a18562
 +                self.down[index].position = sample.position;
 +                (self.down[index], TouchPhase::Moved)
 +            }
-+            (Some(index), Sample::Contact(phase @ (TouchPhase::Ended | TouchPhase::Cancelled))) => {
++            (Some(index), Sample::Contact(TouchPhase::Ended)) => {
 +                let mut contact = self.down.remove(index);
 +                contact.position = sample.position;
-+                (contact, phase)
++                (contact, TouchPhase::Ended)
++            }
++            // Where it last was, as for a lost capture: Windows moves a cancelled pointer's location (a display
++            // change cancels it off the window).
++            (Some(index), Sample::Contact(TouchPhase::Cancelled)) => {
++                (self.down.remove(index), TouchPhase::Cancelled)
 +            }
 +        };
 +        Some(PointerInput::Touch(contact.event(
@@ -651,11 +658,11 @@ index 0000000..7a18562
 +                ],
 +            ),
 +            (
-+                "cancelled up cancels",
++                "cancelled up cancels where the pointer last was",
 +                vec![at(7, PT_TOUCH, TOUCH_DOWN, 1.), at(7, PT_TOUCH, CANCEL, 3.)],
 +                vec![
 +                    Out::Touch(0, Started, Touch, 1.),
-+                    Out::Touch(0, Cancelled, Touch, 3.),
++                    Out::Touch(0, Cancelled, Touch, 1.),
 +                ],
 +            ),
 +            (

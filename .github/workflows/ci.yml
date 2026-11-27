@@ -159,9 +159,12 @@ jobs:
         with:
           key: windows-touch
       - run: scripts/apply-patches.sh
+      # A hung launch or injection fails its step, not the whole job, after this long.
       - run: scripts/record-traces.sh windows
+        timeout-minutes: 15
       - if: ${{ !cancelled() }}
         run: scripts/windows-touch-checks.sh
+        timeout-minutes: 15
       - if: ${{ !cancelled() }}
         run: cargo test -p parallax-platform --test trace_replay -- --nocapture
       # The fresh traces (commit them when they change) and every launch's log.

@@ -15,7 +15,7 @@ as second reference ([PORTED.md](../third_party/flutter/PORTED.md)).
 | Touch (`PT_TOUCH`) down, move, up | `TouchEvent`, `device: Touch`, phases Started, Moved, Ended |
 | Pen (`PT_PEN`) in contact | `TouchEvent`, `device: Pen`, `force` from its pressure |
 | Pen hovering in range | `MouseMove` (Flutter: a hover), through the usual `WM_MOUSEMOVE` handler |
-| `POINTER_FLAG_CANCELED`, or the pointer's capture lost (`WM_POINTERCAPTURECHANGED`) | `TouchEvent` Cancelled |
+| `POINTER_FLAG_CANCELED`, or the pointer's capture lost (`WM_POINTERCAPTURECHANGED`) | `TouchEvent` Cancelled, where it last was |
 | Mouse messages Windows makes from touch or pen (`MI_WP_SIGNATURE`) | nothing: the touch already came, so a tap fires once |
 | Mouse, touchpad | unchanged: `WM_MOUSE*` and Direct Manipulation (`EnableMouseInPointer` stays off) |
 | Touch on a title bar (non-client) | unchanged: Windows' mouse copies still move the window |

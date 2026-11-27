@@ -35,7 +35,7 @@ about 1920 × 1080, so a scaled check moves the runner from 1024 × 768 first an
 | drag-order, fling-order | per id Started, Moved…, Ended, time stamps rising | pass |
 | pinch | two ids, no line twice, two Started and two Ended | pass (after the fix below) |
 | reused-id | a double tap is two ids | pass, but see below |
-| cancel | a held touch cancelled by a display change logs Cancelled, no Ended | see below |
+| cancel | a held touch cancelled by a display change logs Cancelled, no Ended | pass (after the fix below) |
 | pen | every line `Pen`, moves carry `force 0.50` | pass; the lift carries no pressure |
 | pen-hover | a hovering pen: mouse moves only, no touch, no press | pass |
 | title-bar | a touch drag on the title bar moves the window, no touch | pass |
@@ -52,7 +52,8 @@ about 1920 × 1080, so a scaled check moves the runner from 1024 × 768 first an
 - **Pointer ids:** every injected contact gets a new Windows pointer id, so Windows' id reuse cannot be forced; the
   "a reused pointer id is a new touch" row of 0021's `pointer_samples_to_touches` covers it.
 - **Cancels:** an injected up marked `POINTER_FLAG_CANCELED` arrives as a plain up, so the harness cancels a held touch
-  by changing the display, which cancels every injected contact.
+  by changing the display, which cancels every injected contact. That cancel came with a location off the window
+  (x −72), so 0021 now cancels where the pointer last was, as it already did for a lost capture.
 - **Mouse copies:** none reached hello: Windows promotes no mouse messages from a pointer whose `WM_POINTER` messages
   the window handles, so the promoted-message filter is not exercised here.
 - **Replay:** all six Windows traces replay as their gestures under every row and match android, web and ios within
