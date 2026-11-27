@@ -616,7 +616,7 @@ index 0000000..b7bec92
 +                let mut scale = new_scale();
 +                let first = TouchEvent {
 +                    phase: TouchPhase::Started,
-+                    ..touch.clone()
++                    ..touch
 +                };
 +                let mut outputs = Vec::new();
 +                for started in [&first, event] {
