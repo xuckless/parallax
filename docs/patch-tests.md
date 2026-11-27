@@ -34,6 +34,14 @@ pass. Add a row only for a test this setup can't run, never for one a patch brok
 libtest's `--skip` matches substrings, so the script lists the tests first (`--list`) and fails unless each row
 names exactly one test; your own filters still pass straight to libtest.
 
+## gpui_windows's pure modules
+
+gpui_windows compiles only on Windows, and CI's Windows row never builds a dependency's tests. Its pure decision
+modules (plain values, no `windows` crate) therefore run here: after GPUI's tests, the script adds the scratch crate
+`windows-pure` to the scratch workspace, with each module in its `windows_pure` row included by `#[path]` on
+`parallax-gpui`, and runs its lib tests. Today that is `pointer.rs` ([desktop-touch-windows.md](desktop-touch-windows.md)).
+A module listed there must use only `gpui` and `std`.
+
 ## CI
 
 The `patch-tests` job in [ci.yml](../.github/workflows/ci.yml) ([ci.md](ci.md)) runs the script on Linux, separate
