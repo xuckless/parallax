@@ -4,7 +4,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased] (0.1.6)
+## [Unreleased]
+
+## [0.1.6] - 2026-11-26 — Phase 2 gestures and physics
 
 Wave 11: Phase 2's gestures and physics, ported from Flutter 3.50.1 into our GPUI fork (patches 0011–0015, fork
 `parallax-gpui*` 0.3.14-parallax.8) with Flutter's tests as the oracle.
