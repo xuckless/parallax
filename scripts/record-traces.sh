@@ -218,6 +218,8 @@ windows_launch() {
   "$windows_bin/touch-inject.exe" park
   "$windows_bin/hello.exe" 2>"$work/hello.log" &
   hello_pid=$(cat "/proc/$!/winpid")
+  # Above the runner's console window, which comes back on top now and then.
+  windows_inject raise
 }
 windows_log() { cat "$work/hello.log"; }
 windows_screenshot() { windows_inject screenshot "$(cygpath -w "$1")"; }

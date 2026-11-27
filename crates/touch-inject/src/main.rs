@@ -6,6 +6,7 @@
 //!
 //! Usage: touch-inject park                move the mouse cursor to the screen's top-left corner, off the window
 //!        touch-inject <pid> <command>, every point in the process's window's logical px:
+//!   raise                  keep the window above all others (the CI runner's own console can cover it)
 //!   scale                  the window's scale factor (its DPI / 96)
 //!   screenshot <file>      the client area as a raw RGBA image (scripts/locate-colour.py reads it)
 //!   window-rect            the window's frame on screen, physical px: left top right bottom
@@ -69,9 +70,10 @@ mod windows_tool {
                 },
             },
             WindowsAndMessaging::{
-                EnumWindows, GetClientRect, GetWindowRect, GetWindowThreadProcessId,
+                EnumWindows, GetClientRect, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST,
                 IsWindowVisible, PEN_MASK_PRESSURE, POINTER_INPUT_TYPE, PT_PEN, PT_TOUCH,
-                SetCursorPos, TOUCH_MASK_CONTACTAREA, TOUCH_MASK_PRESSURE,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursorPos, SetWindowPos,
+                TOUCH_MASK_CONTACTAREA, TOUCH_MASK_PRESSURE,
             },
         },
     };
@@ -94,6 +96,9 @@ mod windows_tool {
     /// Pressure of an injected contact (0 to 1024, POINTER_TOUCH_INFO and POINTER_PEN_INFO): half, so a pen's
     /// `force` reads 0.5.
     const PRESSURE: u32 = 512;
+
+    /// How long a command waits for the process's window to open.
+    const WINDOW_WAIT: Duration = Duration::from_secs(30);
 
     /// Most touch contacts injected at once (a pinch uses two).
     const MAX_TOUCHES: u32 = 10;
@@ -121,6 +126,20 @@ mod windows_tool {
         // SAFETY: `window` is a live window handle found above.
         let scale = f64::from(unsafe { GetDpiForWindow(window) }) / 96.;
         match (command.as_str(), rest) {
+            ("raise", []) => {
+                // SAFETY: `window` is live; no pointers. Topmost needs no foreground rights, unlike activation.
+                unsafe {
+                    SetWindowPos(
+                        window,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    )
+                }?;
+            }
             ("scale", []) => println!("{scale}"),
             ("screenshot", [file]) => std::fs::write(file, screenshot(origin, width, height)?)?,
             ("window-rect", []) => {
@@ -143,7 +162,7 @@ mod windows_tool {
         Ok(())
     }
 
-    /// The process's visible top-level window.
+    /// The process's visible top-level window, waiting up to `WINDOW_WAIT` for it to open.
     fn find_window(pid: u32) -> Result<HWND, Box<dyn Error>> {
         struct Search {
             pid: u32,
@@ -162,13 +181,21 @@ mod windows_tool {
             }
             true.into()
         }
-        let mut search = Search { pid, found: None };
-        // SAFETY: `visit` only reads `search` through the LPARAM during this call. EnumWindows reports the early
-        // stop as an error, so its result says nothing; `found` does.
-        let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
-        search
-            .found
-            .ok_or_else(|| format!("touch-inject: process {pid} has no visible window").into())
+        let started = Instant::now();
+        loop {
+            let mut search = Search { pid, found: None };
+            // SAFETY: `visit` only reads `search` through the LPARAM during this call. EnumWindows reports the
+            // early stop as an error, so its result says nothing; `found` does.
+            let _ =
+                unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
+            match search.found {
+                Some(window) => return Ok(window),
+                None if started.elapsed() < WINDOW_WAIT => sleep(Duration::from_millis(100)),
+                None => {
+                    return Err(format!("touch-inject: process {pid} has no visible window").into());
+                }
+            }
+        }
     }
 
     /// The client area: its top-left on screen and its size, physical px.
