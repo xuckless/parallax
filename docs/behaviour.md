@@ -12,7 +12,7 @@ GPUI's, ported once by patches 0012-0013; a row holds only what Flutter picks pe
 |---|---|---|---|---|---|---|
 | Android | `Device { fallback: 8 }`: the device's (8 / 16 / 18 at 8) | `Clamping` | `Stretch` | `LeastSquares` | long press `Vibrate`, selection handle `SelectionClick` | 48 |
 | iOS | `Unset`: 18 / 36 / 18 | `Bouncing { Normal }` | `Bounce` | `IOSScrollViewFling` | long press `HeavyImpact`, picker item `SelectionClick` | 44 |
-| macOS | `Unset`: 18 / 36 / 18 | `Bouncing { Fast }` | `Bounce` | `MacOSScrollViewFling` | none | 36 (Apple) |
+| macOS | `Unset`: 18 / 36 / 18 | `Bouncing { Fast }` | `Bounce` | `MacOSScrollViewFling` | none | 36 (Apple, `APPLE_MACOS_MIN_TOUCH_TARGET`) |
 | Windows | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 | Linux | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 

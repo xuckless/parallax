@@ -31,6 +31,10 @@ use crate::{Error, Target};
 // material/constants.dart and cupertino/constants.dart.
 pub const kMinInteractiveDimension: Pixels = px(48.0);
 pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
+/// Apple's minimum touch hit area on macOS 27, 36 pt on each axis ("Bring Touch to your Mac app",
+/// https://developer.apple.com/videos/play/tech-talks/111468/, "Expand hit targets for touch"). Flutter has no macOS
+/// touch value (its 44 is Cupertino's, for iOS).
+pub const APPLE_MACOS_MIN_TOUCH_TARGET: Pixels = px(36.0);
 
 /// What a scrollable shows past its edge: GPUI's `Overscroll` (bounce, Material 3's stretch, Material 2's glow, or a
 /// hard stop), the one copy, re-exported so a row reads as data.
@@ -144,9 +148,7 @@ pub const TABLE: [Behaviour; 5] = [
         velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
-        // Flutter has no macOS touch value (its 44 is Cupertino's, for iOS); Apple's macOS 27 touch guidance asks
-        // for a touch target of at least 36 pt.
-        min_touch_target: px(36.0),
+        min_touch_target: APPLE_MACOS_MIN_TOUCH_TARGET,
     },
     Behaviour {
         target: Target::Windows,
@@ -477,6 +479,7 @@ mod tests {
     #[test]
     fn desktop_pointer_slops_table() {
         use PointerDevice::{Mouse, Pen, Touch};
+        // One row per pointer, each on another desktop target (the slops follow the pointer, not the target).
         // (row name with its Flutter sources, target, pointer, expected hit / pan / scale slop)
         let rows = [
             (
@@ -486,44 +489,8 @@ mod tests {
                 [18., 36., 18.],
             ),
             (
-                "macos pen: stylus slops are touch's",
-                Target::MacOs,
-                Pen,
-                [18., 36., 18.],
-            ),
-            (
-                "macos mouse: kPrecisePointer slops",
-                Target::MacOs,
-                Mouse,
-                [1., 2., 1.],
-            ),
-            (
-                "windows touch: kTouchSlop, kPanSlop, kScaleSlop",
-                Target::Windows,
-                Touch,
-                [18., 36., 18.],
-            ),
-            (
                 "windows pen: stylus slops are touch's",
                 Target::Windows,
-                Pen,
-                [18., 36., 18.],
-            ),
-            (
-                "windows mouse: kPrecisePointer slops",
-                Target::Windows,
-                Mouse,
-                [1., 2., 1.],
-            ),
-            (
-                "linux touch: kTouchSlop, kPanSlop, kScaleSlop",
-                Target::Linux,
-                Touch,
-                [18., 36., 18.],
-            ),
-            (
-                "linux pen: stylus slops are touch's",
-                Target::Linux,
                 Pen,
                 [18., 36., 18.],
             ),
