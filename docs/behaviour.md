@@ -47,8 +47,8 @@ rest from `GestureTuning::default()` (Flutter's constants), through `App::set_ge
 `GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`. Windows opened later use it.
 
 **Read from Wave 12:** `overscroll`, `haptics`, `min_touch_target`, the pan and scale slops and
-`drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the scroll containers, widgets and scale
-recognizer that Wave 12 wires read them (ROADMAP Phase 2).
+`drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the scroll containers and widgets that Wave 12 wires read them (ROADMAP Phase 2). The
+touch pinch's scale recognizer takes its pan and scale slops from `touch_slop` ([pinch.md](pinch.md)).
 
 ## Extending
 

@@ -53,6 +53,6 @@ One copy of each Flutter piece: the scale recognizer tracks velocity with [0011]
 [0012](scroll-physics.md)'s `SpringSimulation` (GPUI's `SpringConfig`), the metrics its `ScrollMetrics`.
 
 Wave 12 wires them: the scale recognizer into touch dispatch next to the upstream `TouchGestureRecognizer`
-(claims as the arena; scale results to `on_pinch` or a new listener), bouncing physics and the indicators into
-GPUI's scroll containers, chosen per target from the platform behaviour table
+(patch 0016: claims as the arena, results to `on_pinch`; [pinch.md](pinch.md)), bouncing physics and the
+indicators into GPUI's scroll containers, chosen per target from the platform behaviour table
 ([AGENTS.md](../AGENTS.md#decisions-settled-do-not-reopen-without-the-owner), "Platform feel").
