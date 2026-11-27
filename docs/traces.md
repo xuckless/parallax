@@ -23,13 +23,14 @@ scripts/record-traces.sh web            # or android, ios; optional gesture name
 
 It sets the platform up, finds the button by colour ([locate-colour.py](../scripts/locate-colour.py)), then per row of
 its `gestures` table relaunches hello, taps the button, performs the gesture and writes
-`crates/platform/tests/traces/<platform>/<gesture>.trace`. Gestures are in logical px and ms, the same everywhere.
+`crates/platform/tests/traces/<platform>/<gesture>.trace`, only if the pad logged touches (else the old fixture
+stays). Gestures are in logical px and ms, the same everywhere.
 
 | Platform | App | Driver | Limits |
 |---|---|---|---|
-| web | `wasm-pack` build served on 127.0.0.1:8765, headless Chromium | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
+| web | `wasm-pack` build served on 127.0.0.1, headless Chromium (free ports, or `HTTP_PORT` / `CDP_PORT`) | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
 | ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | idb's 150 ms swipe takes ~200 ms |
-| android | `cargo parallax run android` on an emulator | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
+| android | `cargo parallax run android` on an emulator ([hello-android.sh](../scripts/hello-android.sh), shared with the smoke test) | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
 
 **iOS on the Mac** (`ssh pixl-mac`, everything under `/Users/Shared/parallax/`): the checkout is rsynced to
 `traces/parallax`, built with `traces/cargo` and `traces/target` and the gap audit's 1.98.1 toolchain (read-only),
@@ -53,8 +54,7 @@ element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
   compared at the script's speed (`at_scripted_speed` stretches a trace so its last move comes 150 ms after its
   first touch): momentum grows with the finger's speed, and idb swipes slower than asked. `slow-drag` moves at
   40 px/s, under every row's minimum fling velocity, so how long a driver waits before lifting cannot make it fling.
-- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. None today: flings
-  agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
+- **No known differences:** every platform's outcome is compared; flings agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
   web driver stamped each move when its fingers were there, its last move, clamped to the end point a frame late,
   read as the finger slowing (~35 % short).
 

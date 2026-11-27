@@ -53,6 +53,8 @@ android {
             jvmArgumentProviders.add({ ["-javaagent:${agent.asPath}".toString()] } as CommandLineArgumentProvider)
             // One sandbox per emulated SDK stays loaded; the default 512 MB runs out (Flutter uses 8g).
             maxHeapSize = '2g'
+            // HapticArgumentsTest reads Rust's one list of haptic arguments from its source.
+            systemProperty 'parallax.hapticsRs', file('../src/haptics.rs').absolutePath
             testLogging {
                 events 'failed'
                 exceptionFormat 'full'

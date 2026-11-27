@@ -1,0 +1,19 @@
+Zed's manifest change for patches/0018-haptic-feedback.patch, which patch-paths.sh cannot translate: in Zed,
+gpui_ios's objc2-ui-kit features live in the workspace Cargo.toml, not in gpui_ios's. sync-fork.sh translates 0018
+with --drop-manifests and appends this file's diff (docs/patch-translation.md). Change it only when 0018's
+gpui-pre-ios/Cargo.toml hunk changes.
+
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -723,6 +723,10 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
+     "UICornerConfiguration",
+     "UICornerRadius",
+     "UIEvent",
++    "UIFeedbackGenerator",
++    "UIImpactFeedbackGenerator",
++    "UINotificationFeedbackGenerator",
++    "UISelectionFeedbackGenerator",
+     "UIGeometry",
+     "UIGestureRecognizer",
+     "UIPanGestureRecognizer",

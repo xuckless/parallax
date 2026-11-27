@@ -14,8 +14,8 @@ use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
 use gpui::{
     AnyWindowHandle, App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement,
     LongPressEvent, MouseDownEvent, PinchEvent, Pixels, Point, PointerDevice, Render, ScrollDelta,
-    ScrollEvent, TestAppContext, TouchEvent, TouchId, TouchPhase, TouchPinch, VelocityTrackerKind,
-    Window, canvas, div, point, prelude::*, px,
+    ScrollEvent, TestAppContext, TouchEvent, TouchId, TouchPhase, TouchPinch, Window, canvas, div,
+    point, prelude::*, px,
 };
 use parallax_platform::{
     Target,
@@ -63,10 +63,6 @@ const SCROLL_TOLERANCE: f32 = 0.10;
 /// them by under 0.1 px.
 const PINCH_SCALE_TOLERANCE: f32 = 0.01;
 const PINCH_FOCAL_TOLERANCE: f32 = 1.;
-
-/// Differences the replay found and their open fix: (gesture, the rows' velocity tracker, why). Their scroll is
-/// printed, not compared; recognition is still checked. Remove a row once its fix lands.
-const KNOWN_DIFFERENCES: [(&str, VelocityTrackerKind, &str); 0] = [];
 
 /// One replay's result: the window's gestures, summed.
 #[derive(Debug, Default, PartialEq)]
@@ -339,9 +335,6 @@ fn recorded_traces_replay_the_same_everywhere() {
                 .map(|(platform, trace)| (*platform, replay(trace, *tuning)))
                 .collect();
             println!("{gesture} under {row}: {outcomes:?}");
-            let known = KNOWN_DIFFERENCES
-                .iter()
-                .find(|(name, tracker, _)| *name == gesture && *tracker == tuning.velocity_tracker);
             let (first, reference) = &outcomes[0];
             for (platform, outcome) in &outcomes {
                 if let Err(why) = recognized(expected, outcome) {
@@ -349,12 +342,7 @@ fn recorded_traces_replay_the_same_everywhere() {
                         "{gesture} from {platform} under {row}: {why}, got {outcome:?}"
                     ));
                 }
-                let same = same(outcome, reference);
-                if let (false, Some((_, _, why))) = (same, known) {
-                    println!(
-                        "known difference, {gesture} under {row}: {platform} {outcome:?}, {first} {reference:?}: {why}"
-                    );
-                } else if !same {
+                if !same(outcome, reference) {
                     failures.push(format!(
                         "{gesture} under {row}: {platform} scrolls {outcome:?}, {first} {reference:?}"
                     ));

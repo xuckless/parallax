@@ -5,7 +5,6 @@
 // see third_party/flutter/LICENSE. How it fits together: docs/android.md.
 package io.github.xuckless.parallax;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Insets;
@@ -27,6 +26,9 @@ import android.view.autofill.AutofillValue;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import java.nio.ByteBuffer;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * The surface GPUI draws into. Forwards the surface lifecycle, vsync frames and system-bar insets
@@ -40,6 +42,8 @@ import java.nio.ByteBuffer;
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
+  private static final String TAG = "ParallaxSurfaceView";
+
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
   // Every call that sends the density also sends `touchSlop`, the device's touch slop in pixels, as
   // FlutterView.sendViewportMetricsToFlutter sends devicePixelRatio and physicalTouchSlop together.
@@ -69,14 +73,11 @@ final class ParallaxSurfaceView extends SurfaceView
   // Every vsync: GPUI draws if anything changed.
   private static native void nativeFrame(int activity);
 
-  // GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a JSON array, for
-  // TextInputChannel.handleFrameworkCalls), or null when there are none.
-  private static native String nativeTextInputCalls(int activity);
-
-  // GPUI's pending haptics, oldest first: Flutter's `HapticFeedback.vibrate` arguments (null for
-  // HapticFeedback.vibrate()), for PlatformChannel.HapticFeedbackType.fromValue; null when there
-  // are none.
-  private static native String[] nativeHapticFeedbackCalls(int activity);
+  // GPUI's pending calls to the platform, or null when there are none: a JSON object of Flutter
+  // channel name → that channel's calls, each {"method", "args"} in Flutter's encoding, in order.
+  // "flutter/textinput" goes to TextInputChannel.handleFrameworkCalls; "flutter/platform" holds
+  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()). One pull for both.
+  private static native String nativeFrameworkCalls(int activity);
 
   // Also after a density change: ParallaxActivity.onConfigurationChanged re-applies the insets, and
   // the surface keeps its pixel size, so no surfaceChanged follows.
@@ -137,15 +138,21 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private final TextInputPlugin textInputPlugin;
 
+  // Plays GPUI's haptics on the Activity's decor view, as Flutter's embedding does.
+  private final PlatformPlugin platformPlugin;
+
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
 
   /** The id nativeActivityCreated gave the Activity showing this view; tags every event it sends. */
   private final int activity;
 
-  ParallaxSurfaceView(Context context, int activity) {
+  // `platformPlugin`: the Activity's, as Flutter's Activity delegate builds the PlatformPlugin (on
+  // the Activity, whose decor view plays the haptics); a test without an Activity passes a mock.
+  ParallaxSurfaceView(Context context, int activity, PlatformPlugin platformPlugin) {
     super(context);
     this.activity = activity;
+    this.platformPlugin = platformPlugin;
     // As FlutterView: no platform views, so motion events are not tracked.
     touchProcessor = new AndroidTouchProcessor(activity, /* trackMotionEvents= */ false);
     // A key GPUI handles may edit the field: the IME's mirror takes GPUI's state before the IME's
@@ -156,7 +163,7 @@ final class ParallaxSurfaceView extends SurfaceView
           @Override
           public boolean handleEvent(KeyEvent keyEvent) {
             boolean handled = super.handleEvent(keyEvent);
-            runTextInputCalls();
+            runFrameworkCalls();
             return handled;
           }
         };
@@ -190,8 +197,7 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public void doFrame(long frameTimeNanos) {
     nativeFrame(activity);
-    runTextInputCalls();
-    runHapticFeedbackCalls();
+    runFrameworkCalls();
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -295,30 +301,45 @@ final class ParallaxSurfaceView extends SurfaceView
     textInputPlugin.autofill(values);
   }
 
-  // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's
-  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free.
-  private void runTextInputCalls() {
-    String calls = nativeTextInputCalls(activity);
-    if (calls != null) {
-      textInputChannel.handleFrameworkCalls(calls);
-    }
-  }
-
-  // GPUI's pending haptics, played as PlatformChannel's handler plays `HapticFeedback.vibrate`
-  // (an unknown type is logged, as its result.error). Every vsync: a long press GPUI recognizes on a
-  // timer plays within a frame. The view's context is the ParallaxActivity that made it.
-  private void runHapticFeedbackCalls() {
-    String[] calls = nativeHapticFeedbackCalls(activity);
+  // GPUI's pending framework calls, run outside GPUI's draw and key dispatch, so the IME's
+  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free. Every
+  // vsync: a long press GPUI recognizes on a timer plays its haptic within a frame.
+  private void runFrameworkCalls() {
+    String calls = nativeFrameworkCalls(activity);
     if (calls == null) {
       return;
     }
-    PlatformPlugin platformPlugin = new PlatformPlugin((Activity) getContext());
-    for (String feedbackType : calls) {
+    try {
+      JSONObject channels = new JSONObject(calls);
+      JSONArray textInput = channels.optJSONArray("flutter/textinput");
+      if (textInput != null) {
+        textInputChannel.handleFrameworkCalls(textInput);
+      }
+      JSONArray platform = channels.optJSONArray("flutter/platform");
+      if (platform != null) {
+        runPlatformCalls(platform);
+      }
+    } catch (JSONException exception) {
+      Log.e(TAG, "unreadable framework calls: " + exception.getMessage());
+    }
+  }
+
+  // The `flutter/platform` calls GPUI makes, played as PlatformChannel's handler plays
+  // `HapticFeedback.vibrate` (an unknown type is logged, as its result.error).
+  private void runPlatformCalls(JSONArray calls) throws JSONException {
+    for (int i = 0; i < calls.length(); i++) {
+      JSONObject call = calls.getJSONObject(i);
+      String method = call.getString("method");
+      if (!method.equals("HapticFeedback.vibrate")) {
+        Log.e(TAG, "unknown flutter/platform call " + method);
+        continue;
+      }
+      String feedbackType = call.isNull("args") ? null : call.getString("args");
       try {
         platformPlugin.vibrateHapticFeedback(
             PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
       } catch (NoSuchFieldException exception) {
-        Log.e("ParallaxSurfaceView", exception.getMessage());
+        Log.e(TAG, exception.getMessage());
       }
     }
   }

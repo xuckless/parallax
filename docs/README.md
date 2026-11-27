@@ -32,12 +32,16 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [audits/oracle-inventory-a11y.md](audits/oracle-inventory-a11y.md) | Oracle inventory part: Flutter's accessibility tests for Phase 6 |
 | [android-spike.md](android-spike.md) | Phase 1 emulator spike: ALooper dispatcher, minimum Platform/PlatformWindow surface, wgpu Vulkan vs GL on the emulator, tap→click, upstream Android status, emulator setup |
 | [cli.md](cli.md) | cargo-parallax: parallax.toml keys and defaults, what run android does step by step, the generated Gradle project, SDK/NDK/JDK requirements and env vars |
-| [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, stubs, running on the emulator |
+| [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, running on the emulator |
+| [android-stubs.md](android-stubs.md) | What GPUI asks of a platform that Android does not do yet, and what happens instead |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent per device route, what is not yet wired, following Flutter packet changes |
 | [android-mouse.md](android-mouse.md) | Android mouse, trackpad and wheel: device-kind routes, mouse action and button tables, click counting, scroll signs |
-| [android-smoke.md](android-smoke.md) | android-smoke.sh: hello on an emulator, the step table (tap, type, rotate, background), finding tap targets by colour, limits |
-| [examples.md](examples.md) | The hello example: what it shows, and running it on desktop, web, Android and iOS (CI build only) |
-| [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, versions, native shadow, ported tests, porting the next Flutter test |
+| [android-smoke.md](android-smoke.md) | android-smoke.sh: hello on an emulator, the step table (tap, type, rotate, background) |
+| [android-smoke-ci.md](android-smoke-ci.md) | android-smoke.sh: finding tap targets by colour, the CI job, limits |
+| [examples.md](examples.md) | The hello example: what it shows, its entry point per target |
+| [examples-run.md](examples-run.md) | Running hello on desktop, web, Android and iOS (CI build only) |
+| [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
+| [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |

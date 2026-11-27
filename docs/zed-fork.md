@@ -4,8 +4,9 @@
 ([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 14). Its
 [`parallax`](https://github.com/xuckless/zed/tree/parallax) branch is the Zed commit in
 [`upstream/UPSTREAM`](../upstream/UPSTREAM) plus one commit per patch in [`patches/`](../patches/), translated with
-[`patch-paths.sh`](../scripts/patch-paths.sh) ([patches.md](patches.md#translating-for-filing-upstream)), or taken
-from its hand-written Zed version in `patches/zed/` when it has a manifest hunk ([patch-translation.md](patch-translation.md)).
+[`patch-paths.sh`](../scripts/patch-paths.sh) ([patches.md](patches.md#translating-for-filing-upstream)); a patch with
+a manifest hunk gets its hand-written Zed manifest change from `patches/zed/<name>.manifest.patch` appended
+([patch-translation.md](patch-translation.md)).
 Upstream PRs are cut from it; drafts of them live in `drafts/upstream/` (git-ignored, owner-only).
 
 ## Rebuilding the branch: sync-fork.sh
@@ -24,7 +25,8 @@ and commits it: subject = the patch's first header line, body = the rest of its 
 **only** `refs/heads/parallax` to the fork. Commit dates are pinned to the base commit's, so rerunning on the same
 inputs rebuilds the same SHAs and the push is a no-op.
 
-It stops (exit 1) on a patch that does not translate or apply, or a failed fetch or push. Fix the patch in
+It stops (exit 1) on a patch that does not translate or apply, a patch changing a `Cargo.toml` with no
+`patches/zed/<name>.manifest.patch`, or a failed fetch or push. Fix the patch in
 `patches/` (see [upstream.md](upstream.md#when-a-patch-stops-applying)) and rerun; never commit to the fork by hand,
 since the next run throws hand-made commits away. Pushing needs `gh auth login` as the fork's owner.
 

@@ -19,6 +19,15 @@ mod host;
 mod keys;
 #[cfg(any(target_os = "android", test))]
 mod lifecycle;
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "the shell and window, which read most of it, are Android only"
+    )
+)]
+mod metrics;
 #[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]
@@ -55,12 +64,12 @@ pub use jni;
 /// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
 /// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
 ///
-/// The optional second argument is a `TouchSlopChanged` hook, called when the device's touch slop changes while the
-/// app runs (a density change). The facade passes one that re-applies the table's row.
+/// The optional second argument is a `TouchSlopChanged` hook, run on its own looper turn when the device's touch slop
+/// changes while the app runs (a density change). The facade passes one that re-applies the table's row.
 #[macro_export]
 macro_rules! android_main {
     ($launch:expr) => {
-        $crate::android_main!($launch, |_, _, _| {});
+        $crate::android_main!($launch, |_, _| {});
     };
     ($launch:expr, $touch_slop_changed:expr) => {
         #[cfg(target_os = "android")]

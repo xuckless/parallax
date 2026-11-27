@@ -40,7 +40,7 @@ public class FlutterViewTest {
 
   @Test
   public void ViewportMetrics_initializedPhysicalTouchSlop() {
-    ParallaxSurfaceView flutterView = new ParallaxSurfaceView(ctx, 0);
+    ParallaxSurfaceView flutterView = new ParallaxSurfaceView(ctx, 0, mock(PlatformPlugin.class));
     ShadowParallaxSurfaceView.Renderer flutterRenderer =
         mock(ShadowParallaxSurfaceView.Renderer.class);
     ShadowParallaxSurfaceView.renderer = flutterRenderer;

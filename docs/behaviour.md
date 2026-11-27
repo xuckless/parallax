@@ -50,17 +50,17 @@ the hit slop of the resolved touch slop: Android passes `parallax_android::touch
 `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
 `parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
 
-**Density changes (Android):** when the device's logical slop changes while the app runs, parallax-android calls the
-hook the facade's `android_main!` passes (`TouchSlopChanged`), and `Behaviour::retune` sets the new hit slop on the
-app's tuning and its open window (`Window::set_gesture_tuning`, patch 0019), unless the app set its own slop. Logcat:
+**Density changes (Android):** when the device's logical slop changes while the app runs, parallax-android runs the
+hook the facade's `android_main!` passes (`TouchSlopChanged`) on the next looper turn, and `Behaviour::retune` sets
+the new hit slop on the app's tuning and on each open window's own (`Window::set_gesture_tuning`, patch 0019), while
+the tuning's owner (`TuningSource`, recorded by the facade) is the platform. Logcat:
 `parallax: touch slop <px> px at density <d>` from parallax-android whenever the density or slop moves (the density
-reaches it through `onApplyWindowInsets`, the surface keeps its size), then `gesture tuning's touch slop now …` only
-when the logical slop moved: Android scales the slop with the density, so most changes keep it (8 at 420 and 560 dpi;
-`wm density 450` makes it 23 px / 2.8125 = 8.18).
+reaches it through `onApplyWindowInsets`), then `gesture tuning's touch slop now …` when the logical slop moved:
+Android scales it with the density, so most changes keep it (`wm density 450` makes it 23 px / 2.8125 = 8.18).
 
-**Override:** call `cx.set_gesture_tuning` in `launch`, after the entry point's call, with a changed copy, e.g.
-`GestureTuning { touch_slop: px(12.), ..cx.gesture_tuning() }`. Windows opened later use it; an overridden slop
-survives density changes.
+**Override:** call `parallax::set_gesture_tuning(cx, tuning)` in `launch` with a changed copy, e.g.
+`GestureTuning { touch_slop: px(12.), ..cx.gesture_tuning() }`. Windows opened later use it, and the app owns the
+tuning from then on: density changes never touch it, even when it equals the platform's.
 
 **Read by GPUI:** `overscroll` is `GestureTuning::overscroll`, the default every scroll container follows (a
 container may set its own): [overscroll.md](overscroll.md). `haptics.long_press` plays on a claimed long press

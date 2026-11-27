@@ -37,7 +37,11 @@ device touch slop, touch time stamps and Gate 2's trace replay.
 - Android reads its device touch slop at runtime: `ParallaxSurfaceView` sends `ViewConfiguration.getScaledTouchSlop()`
   with every density (as Flutter's FlutterView sends `physicalTouchSlop`), and `parallax_android::touch_slop()` gives
   it in logical pixels. The behaviour table's Android row uses it, with 8 dp as the fallback, and the facade's
-  `android_main!` applies it again to the open window when a density change moves it (an app's own slop wins).
+  `android_main!` applies it again, on the next looper turn, to the app's tuning and each open window's own when a
+  density change moves it, while the platform owns the tuning.
+- `parallax::set_gesture_tuning(cx, tuning)`: the app's own gesture tuning, recorded as the app's
+  (`parallax_platform::behaviour::TuningSource`), so a density change never overrides it, even when it equals the
+  platform's. Use it in place of `cx.set_gesture_tuning`.
 - Touch time stamps (patch 0020, [docs/touch-time-stamps.md](docs/touch-time-stamps.md)): `TouchEvent::time_stamp`,
   when the platform says the touch happened (Flutter's `PointerEvent.timeStamp`), on GPUI's executor clock. Android
   fills it from `MotionEvent.getEventTime()`, iOS (gpui_ios) from `UITouch.timestamp`, the web (gpui_web) from
@@ -45,7 +49,7 @@ device touch slop, touch time stamps and Gate 2's trace replay.
   platform delivers late or in bunches fling as fast as the finger moved; `None` is timed at dispatch, as before.
 - Trace replay for Gate 2 ([docs/traces.md](docs/traces.md)): hello's trace pad ("Record touches") logs every touch
   in the trace format, timed by its time stamp; `scripts/record-traces.sh` records it on the web (headless Chromium
-  over CDP, `scripts/cdp-touch.mjs`), the iOS simulator (idb on the owner's Mac) and Android (`adb input`); the
+  over CDP, `scripts/cdp-touch.mjs`), the iOS simulator (idb on the owner's Mac) and the Android emulator (multi-touch events on its touchscreen); the
   `trace_replay` test replays every trace under every behaviour row and checks the platforms agree.
   `scripts/locate-colour.py` finds a colour on a screenshot (PNG too) for it and `android-smoke.sh`.
 - hello: the box zooms with a two-finger or trackpad pinch and shows the zoom and rotation, shows its colour as a
@@ -59,11 +63,13 @@ device touch slop, touch time stamps and Gate 2's trace replay.
   `overscroll` and `long_press_haptic`: literals without `..GestureTuning::default()` need them.
 - **Breaking** (`parallax-platform`): `Behaviour::gesture_tuning` takes the reported touch slop
   (`gesture_tuning(None)` keeps the table's values) and now fills `overscroll` and `long_press_haptic` from the row;
-  `Behaviour::touch_slop` is a `TouchSlop` (`Unset`, or `Device { fallback }`) in place of `Option<Pixels>`; new
-  `Behaviour::retune`. `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants) and
-  `behaviour::Haptic` is `gpui::Haptic` (eight kinds, not three), both re-exported.
-- **Breaking** (`parallax-android`): `on_load` takes a `TouchSlopChanged` hook, and `android_main!` takes one as an
-  optional second argument.
+  `Behaviour::touch_slop` is a `TouchSlop` (`Unset`, or `Device { fallback }`) in place of `Option<Pixels>`.
+  `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants) and
+  `behaviour::Haptic` is `gpui::Haptic` (eight kinds, not three), both re-exported; new
+  `Behaviour::retune(source, current, reported)` with `TuningSource`.
+- **Breaking** (`parallax-android`): `on_load` takes a `TouchSlopChanged` hook (`fn(&mut App, Pixels)`, run on its
+  own looper turn), and `android_main!` takes one as an optional second argument. Java pulls text-input calls and
+  haptics in one `nativeFrameworkCalls` per frame; haptics are dropped while the Activity is paused.
 - An element with `on_pinch` and an id now decides its touches like one with `on_click`: an ancestor's `on_touch`
   no longer takes them.
 

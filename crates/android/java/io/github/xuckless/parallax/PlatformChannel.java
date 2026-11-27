@@ -8,8 +8,8 @@
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
 // Parallax changes: package. Only HapticFeedbackType is kept. The `flutter/platform`
-// MethodChannel becomes JNI: Rust (GPUI) hands over the `HapticFeedback.vibrate` arguments as the
-// return value of ParallaxSurfaceView.nativeHapticFeedbackCalls, and the view plays each as the
+// MethodChannel becomes JNI: Rust (GPUI) hands over the `HapticFeedback.vibrate` calls in the
+// return value of ParallaxSurfaceView.nativeFrameworkCalls, and the view plays each as the
 // channel's handler did. Dropped: the channel and its MethodCallHandler, PlatformMessageHandler
 // and every other call (sounds, system chrome, orientation, clipboard, share, navigation) with
 // their types; androidx annotations; io.flutter.Log. The bridge: docs/haptics.md. Ledger:

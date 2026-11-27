@@ -177,20 +177,25 @@ impl Behaviour {
         }
     }
 
-    /// `current` after the platform's reported touch slop moved from `old` to `new` (Android: a density change):
-    /// `current` with the new hit slop, or `None` when the hit slop stays or when `current`'s is not the one this row
-    /// gave for `old` (the app set its own, which wins).
+    /// `current` after the platform's reported touch slop changed to `reported` (Android: a density change): with the
+    /// row's new hit slop when the platform owns the tuning; `None` when the slop stays or the app owns it (the app's
+    /// tuning always wins, even one equal to the platform's).
     pub fn retune(
         &self,
+        source: TuningSource,
         current: GestureTuning,
-        old: Option<Pixels>,
-        new: Option<Pixels>,
+        reported: Option<Pixels>,
     ) -> Option<GestureTuning> {
-        let (old, new) = (self.hit_slop(old), self.hit_slop(new));
-        (current.touch_slop == old && old != new).then_some(GestureTuning {
-            touch_slop: new,
-            ..current
-        })
+        match source {
+            TuningSource::App => None,
+            TuningSource::Platform => {
+                let touch_slop = self.hit_slop(reported);
+                (current.touch_slop != touch_slop).then_some(GestureTuning {
+                    touch_slop,
+                    ..current
+                })
+            }
+        }
     }
 
     fn hit_slop(&self, reported_touch_slop: Option<Pixels>) -> Pixels {
@@ -200,6 +205,14 @@ impl Behaviour {
         )
         .hit
     }
+}
+
+/// Who set the app's gesture tuning last, so who may change it: the facade records `Platform` when it applies the
+/// row and `App` when the app sets its own (`parallax::set_gesture_tuning`). [`Behaviour::retune`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TuningSource {
+    Platform,
+    App,
 }
 
 /// `target`'s row; the web, which has none, and an unlisted target are [`Error::UnsupportedTarget`].
@@ -455,59 +468,71 @@ mod tests {
             touch_slop: px(touch_slop),
             ..android.gesture_tuning(None)
         };
-        // (row name, behaviour, current tuning, reported slop before, after, expected touch slop or no change)
+        use TuningSource::{App, Platform};
+        // (row name, behaviour, who owns the tuning, current tuning, reported slop now, expected slop or no change)
         let rows = [
             (
                 "android: the first report replaces the 8 dp fallback",
                 android,
+                Platform,
                 tuning(8.),
-                None,
                 Some(10.5),
                 Some(10.5),
             ),
             (
                 "android: a density change moves the device slop",
                 android,
+                Platform,
                 tuning(10.5),
-                Some(10.5),
                 Some(8.),
                 Some(8.),
             ),
             (
                 "android: the same logical slop after a density change, no change",
                 android,
+                Platform,
                 tuning(8.),
-                Some(8.),
-                Some(8.),
-                None,
-            ),
-            (
-                "android: a report equal to the fallback, no change",
-                android,
-                tuning(8.),
-                None,
                 Some(8.),
                 None,
             ),
             (
                 "android: the app's own slop wins",
                 android,
+                App,
                 tuning(12.),
-                Some(8.),
                 Some(10.5),
                 None,
             ),
             (
+                "android: the app set the platform's own value, still app-owned",
+                android,
+                App,
+                tuning(8.),
+                Some(10.5),
+                None,
+            ),
+            (
+                "android: a platform-owned window the app retuned keeps its other values",
+                android,
+                Platform,
+                GestureTuning {
+                    long_press_haptic: None,
+                    ..tuning(8.)
+                },
+                Some(10.5),
+                Some(10.5),
+            ),
+            (
                 "ios: its embedder sends no slop, a report changes nothing",
                 ios,
+                Platform,
                 ios.gesture_tuning(None),
-                None,
                 Some(8.),
                 None,
             ),
         ];
-        for (name, row, current, old, new, expected) in rows {
-            let retuned = row.retune(current, old.map(px), new.map(px));
+        for (name, row, source, current, reported, expected) in rows {
+            let retuned = row.retune(source, current, reported.map(px));
             assert_eq!(
                 retuned.map(|tuning| tuning.touch_slop),
                 expected.map(px),
