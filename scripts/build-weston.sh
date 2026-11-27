@@ -10,21 +10,22 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-# Weston 14.0.2: builds against Ubuntu 24.04's wayland 1.22. Bump both lines together.
+# Weston 14.0.2: needs wayland 1.22 (Ubuntu 24.04) or later. Bump both lines together.
 tag=14.0.2
 commit=015b3b4d4c05da44a22349ea6e651d1a8f678c59
 dir=$repo/target/weston
 src=$dir/src-$tag
 out=$dir/build-$tag
 
-# A cache (CI's rust-cache keeps target/) may restore the files without .git: start again from a fresh clone.
-if [[ ! -d $src/.git ]]; then
+# Clone unless $src is already that commit's own checkout. A cache (CI's rust-cache keeps target/) can restore part
+# of it, or none of its .git, so git would answer for the enclosing repository: start again then.
+if [[ $(git -C "$src" rev-parse --show-toplevel HEAD 2>/dev/null) != "$src"$'\n'"$commit" ]]; then
   rm -rf "$src" "$out"
   git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" https://gitlab.freedesktop.org/wayland/weston.git "$src"
-  # The plugin assumes Weston's test runner; standalone it needs two NULL guards (see the patch's header).
+  # The plugin assumes Weston's test runner; standalone it needs four NULL guards (see the patch's header).
   git -C "$src" apply "$repo/scripts/weston-test-standalone.patch"
 fi
-[[ $(git -C "$src" rev-parse HEAD) == "$commit" ]] || { echo "build-weston: $src is not $commit" >&2; exit 1; }
+[[ $(git -C "$src" rev-parse HEAD) == "$commit" ]] || { echo "build-weston: $tag is not $commit" >&2; exit 1; }
 
 # Everything off but what the harness runs: headless backend, pixman renderer, kiosk shell (toplevels fill the
 # output, so window px are output px), Xwayland, the screenshooter and the tests (for the plugin).
