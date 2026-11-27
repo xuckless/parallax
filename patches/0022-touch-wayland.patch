@@ -13,7 +13,7 @@ press, so moves, popup grabs, selections and activation tokens work from a tap. 
 events from `wl_touch`, so nothing is deduplicated.
 
 New file `wayland/touch.rs`, ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @
-v0.30.13 (45a6f047c7eb0d68f37138cbdd38eec9cd4c1575), Apache-2.0, Copyright the winit contributors (credited in
+v0.30.13 (e9809ef54b18499bb4f2cac945719ecc2a61061b), Apache-2.0, Copyright the winit contributors (credited in
 NOTICE); Flutter's Linux fl_touch_manager.cc @ 3.50.1 is the second reference. Its touch map is pure, with a
 table test (`touches_follow_wl_touch_events`); `client.rs` holds only the dispatch glue. New file `linux/clock.rs`:
 the `CLOCK_MONOTONIC` ms event clock (`Clock`, table test `event_time_stamps`), shared with X11 (patch 0023).
@@ -325,7 +325,7 @@ index 0000000..f1d2d88
 +//! Touch handling.
 +//!
 +//! Ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @ v0.30.13
-+//! (45a6f047c7eb0d68f37138cbdd38eec9cd4c1575). Copyright the winit contributors. Apache-2.0, see NOTICE.
++//! (e9809ef54b18499bb4f2cac945719ecc2a61061b). Copyright the winit contributors. Apache-2.0, see NOTICE.
 +//! Second reference: Flutter's Linux embedder, engine/src/flutter/shell/platform/linux/fl_touch_manager.cc
 +//! @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
 +//!
