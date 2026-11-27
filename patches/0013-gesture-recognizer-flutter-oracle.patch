@@ -1,15 +1,21 @@
-Recognize taps with Flutter's constants and double-tap rules, and drive the recognizer by the executor's clock.
+Recognize taps and flings with Flutter's constants and rules, and drive the recognizer by the executor's clock.
 
 What: adds `gestures/constants.rs` (public as `gpui::constants`), a port of Flutter's constants.dart @ 3.50.1 with
 Flutter's names (`kTouchSlop`, `kDoubleTapTimeout`, ...), the one copy GPUI's recognizers and Parallax's platform
 behaviour table read. `GestureTuning::default()` holds those constants (the same on every platform): `touch_slop`
 kTouchSlop 18 px (was 8), `multi_tap_interval` kDoubleTapTimeout 300 ms (was 400), `multi_tap_slop` kDoubleTapSlop 100
 px (was 16), the new `multi_tap_min_interval` kDoubleTapMinTime 40 ms, `long_press_duration` kLongPressTimeout 500 ms,
-`min_fling_velocity` kMinFlingVelocity 50 px/s; the fling ceiling is kMaxFlingVelocity (was a private copy of it). A
-tap's click count follows `DoubleTapGestureRecognizer`: it continues the sequence when the new touch starts less than
-the interval after the previous tap's up, within the slop of where the previous tap started, and at least the min
-interval after the previous tap started; otherwise it starts a new sequence at 1. GPUI kept counting past 2 (triple
-click) and still does. `TouchGestureRecognizer::handle_event`, `pending_long_press` and `tick_momentum` take `now`
+and the fling limits of its `ScrollPhysics::ios()` (`BouncingScrollPhysics`: `min_fling_velocity` kMinFlingVelocity * 2
+= 100 px/s, was 50), so the defaults are one Flutter platform, not a mix; the fling ceiling is kMaxFlingVelocity (was
+a private copy of it). `ScrollPhysics` gains Flutter's `min_fling_distance` (kTouchSlop), `min_fling_velocity` and
+`max_fling_velocity`, and the public `Slops` / `slops(kind, touch_slop)` port events.dart's `computeHitSlop`,
+`computePanSlop` and `computeScaleSlop`, the one copy of that rule. A tap's click count follows
+`DoubleTapGestureRecognizer`: it continues the sequence when the new touch starts less than the interval after the
+previous tap's up, within the slop of where the previous tap started, at least the min interval after the previous
+tap started, and on the same target (the innermost hitbox under the touch: the window passes it to the recognizer);
+otherwise it starts a new sequence at 1. GPUI kept counting past 2 (triple click) and still does. A release flings
+only as Flutter's `isFlingGesture` allows: velocity above the minimum and the velocity estimate's offset along the
+axis (0011's `VelocityEstimate.offset`) beyond the physics' `min_fling_distance`. `TouchGestureRecognizer::handle_event`, `pending_long_press` and `tick_momentum` take `now`
 from the window's `cx.background_executor().now()` instead of `Instant::now()`. `Window::set_gesture_tuning`
 (`#[cfg(test)]`) lets a test pass its own tuning.
 
@@ -17,29 +23,35 @@ Why: Flutter's recognizer tests, ported as table rows (`gestures/recognizer_test
 and tap counting: 5 of 44 rows. An 8 px slop makes a 17 px wiggle a pan ("Short distance does not cancel tap") and
 starts a pan at 14 px ("Should recognize pan"); with no minimum interval, a touch screen's split touch counts as a
 double tap ("Should not recognize two over-rapid taps", "Over-rapid taps resets double tap…", "No duplicate tap
-events"). Flutter raised its slop from 8 to 18 after complaints that targets were too hard to hit. The wall clock made
+events"). GPUI counts taps window-wide, so with Flutter's 100 px double-tap slop a tap on one button and then on
+another 60 px away counted as a double tap on the second; Flutter's recognizer only sees its own widget's pointers.
+A slow drag (60 px/s over 6 px) flung, where Flutter's minimum fling distance stops it. Flutter raised its slop from 8 to 18 after complaints that targets were too hard to hit. The wall clock made
 the recognizer impossible to drive from GPUI's test platform (the executor docs: "Calling this instead of
 `std::time::Instant::now` allows the use of fake timers in tests"); the long-press timer already ran on the executor,
 so its deadline and its timer now read the same clock. 0003's pointer-source test relied on wall time passing between
 dispatches for its fling; it now advances the test clock 8 ms per input.
 
 Test: `gestures::recognizer_tests::flutter_recognizer_tests_pass`, 44 rows from tap_test.dart (12),
-double_tap_test.dart (10), long_press_test.dart (11) and drag_test.dart (11). Each row is a recorded touch trace
+double_tap_test.dart (10), long_press_test.dart (11) and drag_test.dart (11), and two per-target rows (same target
+counts 2, another target 1). Each row is a recorded touch trace
 (time, touch id, phase, position) replayed into a test window, Flutter's tuning passed explicitly, and the gestures
 the window dispatched with their times (tap with click count, scroll steps, claimed long press and touch drag). Arena,
 button, device-kind, multi-pointer and velocity cases are not rows: docs/gesture-recognizers.md lists them.
+`fling_needs_flutters_velocity_and_distance` checks the fling rule (a 6 px slow drag doesn't fling, 30 px does).
 
-Ported code: constants.dart (`gestures/constants.rs`, whole), the tap-count rule (multitap.dart), and the test rows
-(the four test files). Copyright 2014 The Flutter Authors, BSD-3-Clause.
+Ported code: constants.dart (`gestures/constants.rs`, whole), the slop functions (events.dart), the tap-count rule
+(multitap.dart), the fling rule (monodrag.dart), the fling limits (scroll_physics.dart), and the test rows (the four
+test files). Copyright 2014 The Flutter Authors, BSD-3-Clause.
 
-Size: ~1300 lines, ~790 of them the new test table and ~120 constants.rs; the recognizer and window changes are ~170,
-most of it rustfmt rewrapping call sites that gained the `now` argument.
+Size: ~1500 lines, ~890 of them the new test table and ~120 constants.rs; the recognizer and window changes are ~450,
+most of it rustfmt rewrapping test call sites that gained the `now` and target arguments (Flutter ports are exempt
+from the size limit).
 
 Upstream PR: not filed yet.
 
 
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index cad12f6..f6197b3 100644
+index 7ef84a0..f165502 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -6,6 +6,7 @@
@@ -50,18 +62,35 @@ index cad12f6..f6197b3 100644
  mod lsq_solver;
  #[cfg(test)]
  mod lsq_solver_test;
-@@ -15,6 +16,10 @@ mod velocity_tracker_data;
+@@ -15,8 +16,13 @@ mod velocity_tracker_data;
  #[cfg(test)]
  mod velocity_tracker_test;
  
+-use velocity_tracker::VelocityTracker;
 +use constants::{
 +    kDoubleTapMinTime, kDoubleTapSlop, kDoubleTapTimeout, kLongPressTimeout, kMaxFlingVelocity,
-+    kMinFlingVelocity, kTouchSlop,
++    kPanSlop, kPrecisePointerHitSlop, kPrecisePointerPanSlop, kPrecisePointerScaleSlop, kScaleSlop,
++    kTouchSlop,
 +};
- use velocity_tracker::VelocityTracker;
  pub use velocity_tracker::VelocityTrackerKind;
++use velocity_tracker::{VelocityEstimate, VelocityTracker};
  
-@@ -115,17 +120,24 @@ impl OngoingScroll {
+ use std::mem;
+ use std::time::Duration;
+@@ -25,9 +31,9 @@ use scheduler::Instant;
+ use smallvec::SmallVec;
+ 
+ use crate::{
+-    Axis, GestureEvent, InputEvent, IsZero, Modifiers, MouseButton, MouseDownEvent, MouseEvent,
+-    MouseUpEvent, Pixels, PlatformInput, Point, PointerDevice, ScrollDelta, ScrollEvent,
+-    ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
++    Axis, Bounds, GestureEvent, InputEvent, IsZero, Modifiers, MouseButton, MouseDownEvent,
++    MouseEvent, MouseUpEvent, Pixels, PlatformInput, Point, PointerDevice, ScrollDelta,
++    ScrollEvent, ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
+ };
+ 
+ const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
+@@ -115,17 +121,24 @@ impl OngoingScroll {
  }
  
  /// Feel constants consumed by gesture recognizers. Provided on a best-effort
@@ -90,7 +119,7 @@ index cad12f6..f6197b3 100644
      /// How long a touch must remain within [`Self::touch_slop`] to be
      /// recognized as a long press.
      pub long_press_duration: Duration,
-@@ -139,15 +151,22 @@ pub struct GestureTuning {
+@@ -139,20 +152,63 @@ pub struct GestureTuning {
      pub velocity_tracker: VelocityTrackerKind,
  }
  
@@ -114,11 +143,52 @@ index cad12f6..f6197b3 100644
 +            long_press_duration: kLongPressTimeout,
              scroll_physics: ScrollPhysics::ios(),
 -            min_fling_velocity: 50.,
-+            min_fling_velocity: kMinFlingVelocity,
++            // BouncingScrollPhysics' kMinFlingVelocity * 2, with the iOS physics above.
++            min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
              velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
          }
      }
-@@ -409,10 +428,6 @@ pub struct NullPlatformGestures;
+ }
+ 
++/// How far a pointer travels before it stops being a tap (`hit`), starts a
++/// pan (`pan`) or a scale (`scale`), in logical pixels.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Slops {
++    /// The distance a tap may travel (`computeHitSlop`).
++    pub hit: Pixels,
++    /// The distance a pan must travel to start (`computePanSlop`).
++    pub pan: Pixels,
++    /// The span change a scale must make to start (`computeScaleSlop`).
++    pub scale: Pixels,
++}
++
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/events.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7) (computeHitSlop, computePanSlop, computeScaleSlop, and
++// gesture_settings.dart's DeviceGestureSettings.panSlop). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE.
++/// The slops for a pointer of `kind`. `touch_slop` is the device's setting
++/// (`DeviceGestureSettings.touchSlop`: Android's `ViewConfiguration`), `None`
++/// for Flutter's [`kTouchSlop`]; its pan slop is twice it. A new device kind
++/// gets one arm.
++pub fn slops(kind: PointerDevice, touch_slop: Option<Pixels>) -> Slops {
++    match kind {
++        PointerDevice::Mouse => Slops {
++            hit: kPrecisePointerHitSlop,
++            pan: kPrecisePointerPanSlop,
++            scale: kPrecisePointerScaleSlop,
++        },
++        PointerDevice::Touch | PointerDevice::Pen => Slops {
++            hit: touch_slop.unwrap_or(kTouchSlop),
++            pan: touch_slop.map_or(kPanSlop, |slop| slop * 2.0),
++            scale: kScaleSlop,
++        },
++    }
++}
++
+ pub mod physics;
+ mod scroll_physics;
+ mod scroll_simulation;
+@@ -345,10 +401,6 @@ pub struct NullPlatformGestures;
  
  impl PlatformGestures for NullPlatformGestures {}
  
@@ -126,75 +196,110 @@ index cad12f6..f6197b3 100644
 -/// Flutter's `kMaxFlingVelocity`).
 -const MAX_FLING_VELOCITY: f32 = 8000.;
 -
- /// Momentum below this speed, in pixels per second, is imperceptible. The
- /// exponential model, which never mathematically stops, treats reaching this
- /// speed as the end of the fling. (The friction spline has a finite duration
-@@ -480,6 +495,8 @@ enum TouchGestureState {
+ /// The portable recognizer behind raw touch input: it watches the
+ /// [`TouchEvent`] stream for one touch at a time and resolves it into either
+ /// a tap or a pan, following the competition model described in the module
+@@ -408,8 +460,18 @@ enum TouchGestureState {
+     TouchDragging(ActiveTouch),
+ }
  
++/// What a tap lands on: the bounds of the innermost hitbox under the touch
++/// where it starts, `None` when it hits none. Flutter counts double taps per
++/// recognizer, so per widget; GPUI's one recognizer per window counts them per
++/// target instead.
++pub(crate) type TapTarget = Option<Bounds<Pixels>>;
++
  struct ActiveTouch {
      id: TouchId,
++    /// What the touch started on; read when it ends as a tap.
++    target: TapTarget,
 +    /// When the touch started: a tap's count is decided from it.
 +    start_time: Instant,
      /// What the gestures recognized from this touch report as their device.
      device: PointerDevice,
      start_position: Point<Pixels>,
-@@ -497,8 +514,9 @@ struct ActiveTouch {
+@@ -427,8 +489,10 @@ struct ActiveTouch {
  }
  
  struct CompletedTap {
 -    position: Point<Pixels>,
 -    time: Instant,
++    target: TapTarget,
 +    start_position: Point<Pixels>,
 +    start_time: Instant,
 +    end_time: Instant,
      count: usize,
  }
  
-@@ -534,15 +552,17 @@ impl TouchGestureRecognizer {
+@@ -464,15 +528,19 @@ impl TouchGestureRecognizer {
      /// Each gesture is paired with the device it reports: the touch's own,
      /// except the closing step of a fling this touch catches, which keeps the
      /// device of the touch that flung, like the momentum steps before it.
-+    /// `now` is the executor's clock, so tests can drive time.
++    /// `now` is the executor's clock, so tests can drive time. `target` is
++    /// what the event's position hits; a touch keeps the one it started on.
      pub(crate) fn handle_event(
          &mut self,
          event: &TouchEvent,
 +        now: Instant,
++        target: TapTarget,
      ) -> SmallVec<[(PointerDevice, RecognizedTouchGesture); 2]> {
          let flung_by = match event.phase {
              TouchPhase::Started => self.momentum.as_ref().map(|momentum| momentum.device),
              TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled => None,
          };
 -        let mut gestures = self.handle_event_at(event, Instant::now()).into_iter();
-+        let mut gestures = self.handle_event_at(event, now).into_iter();
++        let mut gestures = self.handle_event_at(event, now, target).into_iter();
          // A touch that catches a fling closes the fling's scroll first.
          let fling_end = flung_by.and_then(|device| Some((device, gestures.next()?)));
          fling_end
-@@ -576,6 +596,7 @@ impl TouchGestureRecognizer {
+@@ -485,6 +553,7 @@ impl TouchGestureRecognizer {
+         &mut self,
+         event: &TouchEvent,
+         now: Instant,
++        target: TapTarget,
+     ) -> SmallVec<[RecognizedTouchGesture; 2]> {
+         let mut recognized = SmallVec::new();
+         match event.phase {
+@@ -506,6 +575,8 @@ impl TouchGestureRecognizer {
                      velocity_tracker.add_position(now, event.position);
                      let touch = ActiveTouch {
                          id: event.id,
++                        target,
 +                        start_time: now,
                          device: event.device,
                          start_position: event.position,
                          last_position: event.position,
-@@ -713,19 +734,30 @@ impl TouchGestureRecognizer {
+@@ -587,7 +658,7 @@ impl TouchGestureRecognizer {
+                         // is an ordinary pan, so let the pan arm emit it.
+                         let axis = dominant_axis(accumulated);
+                         self.state = TouchGestureState::Panning { touch, axis };
+-                        return self.handle_event_at(event, now);
++                        return self.handle_event_at(event, now, target);
+                     }
+                 }
+                 TouchGestureState::Panning { mut touch, axis } if touch.id == event.id => {
+@@ -643,19 +714,35 @@ impl TouchGestureRecognizer {
              },
              TouchPhase::Ended => match mem::replace(&mut self.state, TouchGestureState::Idle) {
                  TouchGestureState::Pending { touch, .. } if touch.id == event.id => {
 +                    // Ported from flutter/flutter packages/flutter/lib/src/gestures/multitap.dart
-+                    // @ 3.50.1 (DoubleTapGestureRecognizer.addAllowedPointer, _TapTracker).
++                    // @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7)
++                    // (DoubleTapGestureRecognizer.addAllowedPointer, _TapTracker).
 +                    // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +                    // The double-tap timer runs from the previous tap's up event and
 +                    // resets the sequence when it fires. Out-of-bounds second taps, and
 +                    // ones too close to the first (touch screens often detect touches
-+                    // intermittently), start a new sequence.
++                    // intermittently), start a new sequence. So does a tap on
++                    // another target: Flutter's recognizer only sees its own
++                    // widget's pointers.
                      let tap_count = match &self.last_tap {
                          Some(tap)
 -                            if now.duration_since(tap.time) <= self.tuning.multi_tap_interval
 -                                && (event.position - tap.position).magnitude()
 -                                    <= f64::from(self.tuning.multi_tap_slop) =>
-+                            if touch.start_time.duration_since(tap.end_time)
-+                                < self.tuning.multi_tap_interval
++                            if touch.target == tap.target
++                                && touch.start_time.duration_since(tap.end_time)
++                                    < self.tuning.multi_tap_interval
 +                                && (touch.start_position - tap.start_position).magnitude()
 +                                    <= f64::from(self.tuning.multi_tap_slop)
 +                                && touch.start_time.duration_since(tap.start_time)
@@ -207,22 +312,45 @@ index cad12f6..f6197b3 100644
                      self.last_tap = Some(CompletedTap {
 -                        position: event.position,
 -                        time: now,
++                        target: touch.target,
 +                        start_position: touch.start_position,
 +                        start_time: touch.start_time,
 +                        end_time: now,
                          count: tap_count,
                      });
                      recognized.push(RecognizedTouchGesture::Tap {
-@@ -769,7 +801,7 @@ impl TouchGestureRecognizer {
+@@ -689,17 +776,25 @@ impl TouchGestureRecognizer {
+                     // estimate. A release long after the last movement
+                     // means the finger had already stopped: the tracker
+                     // reports zero, so nothing flings.
+-                    let mut velocity = touch.velocity_tracker.get_velocity(now);
++                    let VelocityEstimate {
++                        pixels_per_second: mut velocity,
++                        mut offset,
++                    } = touch.velocity_tracker.get_velocity_estimate(now);
+                     match axis {
+-                        Axis::Vertical => velocity.x = 0.,
+-                        Axis::Horizontal => velocity.y = 0.,
++                        Axis::Vertical => (velocity.x, offset.x) = (0., 0.),
++                        Axis::Horizontal => (velocity.y, offset.y) = (0., 0.),
+                     }
+                     let speed = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
++                    let distance = (offset.x.powi(2) + offset.y.powi(2)).sqrt();
+                     let mut release_delta = event.position - touch.emitted_position;
                      lock_delta_to_axis(&mut release_delta, axis);
-                     if speed >= self.tuning.min_fling_velocity {
+-                    if speed >= self.tuning.min_fling_velocity {
++                    // Flutter's isFlingGesture (monodrag.dart): fast enough,
++                    // and far enough over the samples the estimate used.
++                    if speed > self.tuning.min_fling_velocity
++                        && distance > f32::from(self.tuning.scroll_physics.min_fling_distance())
++                    {
                          let direction = point(velocity.x / speed, velocity.y / speed);
 -                        let speed = speed.min(MAX_FLING_VELOCITY);
 +                        let speed = speed.min(kMaxFlingVelocity);
-                         let simulation = self.tuning.scroll_physics.simulation(speed);
-                         if !simulation.is_done(0.) {
-                             let total_distance = simulation.x(f64::INFINITY) as f32;
-@@ -852,7 +884,10 @@ impl TouchGestureRecognizer {
+                         if let Some(simulation) =
+                             fling_simulation(self.tuning.scroll_physics, speed)
+                         {
+@@ -783,7 +878,10 @@ impl TouchGestureRecognizer {
          recognized
      }
  
@@ -234,7 +362,7 @@ index cad12f6..f6197b3 100644
          let TouchGestureState::Pending {
              touch,
              deadline,
-@@ -865,7 +900,7 @@ impl TouchGestureRecognizer {
+@@ -796,7 +894,7 @@ impl TouchGestureRecognizer {
          Some((
              touch.id,
              touch.device,
@@ -243,7 +371,7 @@ index cad12f6..f6197b3 100644
          ))
      }
  
-@@ -947,9 +982,12 @@ impl TouchGestureRecognizer {
+@@ -878,9 +976,12 @@ impl TouchGestureRecognizer {
      /// to dispatch, or `None` when no momentum is in progress. The final step
      /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
      /// Paired with the device of the touch that flung.
@@ -258,7 +386,7 @@ index cad12f6..f6197b3 100644
      }
  
      fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
-@@ -996,6 +1034,9 @@ fn scroll_event(
+@@ -927,6 +1028,9 @@ fn scroll_event(
      }
  }
  
@@ -268,7 +396,728 @@ index cad12f6..f6197b3 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -2017,11 +2058,17 @@ mod tests {
+@@ -1050,18 +1154,23 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        let recognized =
+-            recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 10., 10.), now);
++        let recognized = recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 10., 10.),
++            now,
++            None,
++        );
+         assert!(recognized.is_empty());
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 12., 11.),
+             now + Duration::from_millis(20),
++            None,
+         );
+         assert!(recognized.is_empty());
+ 
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 12., 11.),
+             now + Duration::from_millis(60),
++            None,
+         );
+         let [RecognizedTouchGesture::Tap { down, up }] = recognized.as_slice() else {
+             panic!("expected tap, got {recognized:?}");
+@@ -1076,20 +1185,27 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let now = Instant::now();
+ 
+-        recognizer.handle_event_at(&touch_event(TouchId(1), TouchPhase::Started, 10., 10.), now);
++        recognizer.handle_event_at(
++            &touch_event(TouchId(1), TouchPhase::Started, 10., 10.),
++            now,
++            None,
++        );
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Ended, 10., 10.),
+             now + Duration::from_millis(40),
++            None,
+         );
+ 
+         let second_down = now + Duration::from_millis(200);
+         recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Started, 14., 10.),
+             second_down,
++            None,
+         );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Ended, 14., 10.),
+             second_down + Duration::from_millis(40),
++            None,
+         );
+         let [RecognizedTouchGesture::Tap { down, .. }] = recognized.as_slice() else {
+             panic!("expected tap, got {recognized:?}");
+@@ -1100,10 +1216,12 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(3), TouchPhase::Started, 14., 10.),
+             late_down,
++            None,
+         );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(3), TouchPhase::Ended, 14., 10.),
+             late_down + Duration::from_millis(40),
++            None,
+         );
+         let [RecognizedTouchGesture::Tap { down, .. }] = recognized.as_slice() else {
+             panic!("expected tap, got {recognized:?}");
+@@ -1117,11 +1235,16 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+ 
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 100., 120.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1133,6 +1256,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 100., 135.),
+             now + Duration::from_millis(32),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1144,6 +1268,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 100., 135.),
+             now + Duration::from_millis(48),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1157,11 +1282,16 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+ 
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 104., 120.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1171,6 +1301,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 134., 125.),
+             now + Duration::from_millis(32),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1184,11 +1315,16 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+ 
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 120., 104.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1202,12 +1338,16 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+ 
+         // The first pan step scrolls to the predicted position, not the raw one.
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 120.);
+         moved.predicted_position = Some(point(px(106.), px(128.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(16));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(16), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1217,7 +1357,7 @@ mod tests {
+         // the content, so an overshoot is paid back here.
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 130.);
+         moved.predicted_position = Some(point(px(104.), px(134.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(32));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(32), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1229,6 +1369,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 100., 130.),
+             now + Duration::from_millis(120),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1244,11 +1385,15 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+ 
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 120.);
+         moved.predicted_position = Some(point(px(100.), px(130.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(16));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(16), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1256,7 +1401,7 @@ mod tests {
+ 
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 125.);
+         moved.predicted_position = Some(point(px(100.), px(127.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(32));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(32), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1267,7 +1412,7 @@ mod tests {
+ 
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 125.);
+         moved.predicted_position = Some(point(px(100.), px(126.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(40));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(40), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1278,7 +1423,7 @@ mod tests {
+ 
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 132.);
+         moved.predicted_position = Some(point(px(100.), px(136.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(48));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(48), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1286,7 +1431,7 @@ mod tests {
+ 
+         let mut moved = touch_event(touch, TouchPhase::Moved, 100., 124.);
+         moved.predicted_position = Some(point(px(100.), px(140.)));
+-        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(64));
++        let recognized = recognizer.handle_event_at(&moved, now + Duration::from_millis(64), None);
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+         };
+@@ -1320,6 +1465,7 @@ mod tests {
+             recognizer.handle_event_at(
+                 &touch_event(TouchId(1), TouchPhase::Started, 100., 500.),
+                 now,
++                None,
+             );
+             for step in 1..=5u64 {
+                 let raw_y = 500. - step as f32 * 40.;
+@@ -1327,8 +1473,11 @@ mod tests {
+                 if use_prediction {
+                     moved.predicted_position = Some(point(px(100.), px(raw_y - 25.)));
+                 }
+-                let recognized =
+-                    recognizer.handle_event_at(&moved, now + Duration::from_millis(step * 16));
++                let recognized = recognizer.handle_event_at(
++                    &moved,
++                    now + Duration::from_millis(step * 16),
++                    None,
++                );
+                 drain(&recognized, use_prediction);
+             }
+             // The release leaves the emitted position 25px ahead of the raw
+@@ -1336,6 +1485,7 @@ mod tests {
+             let recognized = recognizer.handle_event_at(
+                 &touch_event(TouchId(1), TouchPhase::Ended, 100., 300.),
+                 now + Duration::from_millis(90),
++                None,
+             );
+             drain(&recognized, use_prediction);
+             assert!(recognizer.has_momentum());
+@@ -1367,16 +1517,22 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 300.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 300.),
++            now,
++            None,
++        );
+         for step in 1..=5 {
+             recognizer.handle_event_at(
+                 &touch_event(touch, TouchPhase::Moved, 100., 300. - step as f32 * 20.),
+                 now + Duration::from_millis(step * 16),
++                None,
+             );
+         }
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 100., 200.),
+             now + Duration::from_millis(6 * 16),
++            None,
+         );
+         assert!(recognizer.has_momentum());
+ 
+@@ -1420,7 +1576,11 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 300.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 300.),
++            now,
++            None,
++        );
+         for step in 1..=5 {
+             let recognized = recognizer.handle_event_at(
+                 &touch_event(
+@@ -1430,6 +1590,7 @@ mod tests {
+                     300. - step as f32 * 20.,
+                 ),
+                 now + Duration::from_millis(step * 16),
++                None,
+             );
+             let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+                 panic!("expected scroll, got {recognized:?}");
+@@ -1439,6 +1600,7 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 115., 200.),
+             now + Duration::from_millis(6 * 16),
++            None,
+         );
+         assert!(recognizer.has_momentum());
+ 
+@@ -1454,24 +1616,80 @@ mod tests {
+         }
+     }
+ 
++    /// Flutter's `isFlingGesture` (monodrag.dart): a release flings only when
++    /// its estimate is over `minFlingVelocity` and spans more than the
++    /// physics' `minFlingDistance` (kTouchSlop). (row, y step per 25 ms over
++    /// the last 100 ms, flings)
++    #[test]
++    fn fling_needs_flutters_velocity_and_distance() {
++        let rows = [
++            (
++                "slow 60 px/s drag moving 6 px: too short to fling",
++                1.5,
++                false,
++            ),
++            ("300 px/s drag moving 30 px flings", 7.5, true),
++        ];
++        for (name, step, flings) in rows {
++            let mut recognizer = TouchGestureRecognizer::new(GestureTuning {
++                scroll_physics: ScrollPhysics::Clamping,
++                min_fling_velocity: ScrollPhysics::Clamping.min_fling_velocity(),
++                velocity_tracker: VelocityTrackerKind::LeastSquares,
++                ..GestureTuning::default()
++            });
++            let now = Instant::now();
++            let at = |ms| now + Duration::from_millis(ms);
++            let touch = TouchId(1);
++            recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now, None);
++            // Past the slop; the pause before the slow part keeps it out of the estimate.
++            recognizer.handle_event_at(
++                &touch_event(touch, TouchPhase::Moved, 0., 30.),
++                at(50),
++                None,
++            );
++            let mut y = 30.;
++            for ms in (200..=300).step_by(25) {
++                recognizer.handle_event_at(
++                    &touch_event(touch, TouchPhase::Moved, 0., y),
++                    at(ms),
++                    None,
++                );
++                y += step;
++            }
++            recognizer.handle_event_at(
++                &touch_event(touch, TouchPhase::Ended, 0., y - step),
++                at(300),
++                None,
++            );
++            assert_eq!(recognizer.has_momentum(), flings, "{name}");
++        }
++    }
++
+     #[test]
+     fn slow_release_does_not_start_momentum() {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 300.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 300.),
++            now,
++            None,
++        );
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 100., 280.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 100., 279.),
+             now + Duration::from_millis(500),
++            None,
+         );
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 100., 279.),
+             now + Duration::from_millis(600),
++            None,
+         );
+         assert!(!recognizer.has_momentum());
+     }
+@@ -1484,6 +1702,7 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Started, 100., 300.),
+             now,
++            None,
+         );
+         for step in 1..=3 {
+             recognizer.handle_event_at(
+@@ -1494,17 +1713,20 @@ mod tests {
+                     300. - step as f32 * 33.,
+                 ),
+                 now + Duration::from_millis(step * 16),
++                None,
+             );
+         }
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Ended, 100., 200.),
+             now + Duration::from_millis(64),
++            None,
+         );
+         assert!(recognizer.has_momentum());
+ 
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Started, 100., 200.),
+             now + Duration::from_millis(200),
++            None,
+         );
+         assert!(!recognizer.has_momentum());
+         let [
+@@ -1528,6 +1750,7 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Started, 100., 300.),
+             now,
++            None,
+         );
+         for step in 1..=3 {
+             recognizer.handle_event_at(
+@@ -1538,23 +1761,27 @@ mod tests {
+                     300. - step as f32 * 33.,
+                 ),
+                 now + Duration::from_millis(step * 16),
++                None,
+             );
+         }
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Ended, 100., 200.),
+             now + Duration::from_millis(64),
++            None,
+         );
+         assert!(recognizer.has_momentum());
+ 
+         recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Started, 100., 200.),
+             now + Duration::from_millis(200),
++            None,
+         );
+ 
+         // A movement well within the slop scrolls immediately.
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Moved, 100., 197.),
+             now + Duration::from_millis(216),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1566,6 +1793,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Ended, 100., 197.),
+             now + Duration::from_millis(232),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1582,6 +1810,7 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Started, 300., 300.),
+             now,
++            None,
+         );
+         for step in 1..=3 {
+             recognizer.handle_event_at(
+@@ -1592,11 +1821,13 @@ mod tests {
+                     300.,
+                 ),
+                 now + Duration::from_millis(step * 16),
++                None,
+             );
+         }
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Ended, 200., 300.),
+             now + Duration::from_millis(64),
++            None,
+         );
+         assert!(recognizer.has_momentum());
+ 
+@@ -1605,10 +1836,12 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Started, 200., 300.),
+             now + Duration::from_millis(200),
++            None,
+         );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Moved, 201., 280.),
+             now + Duration::from_millis(216),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1620,6 +1853,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Moved, 205., 260.),
+             now + Duration::from_millis(232),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1633,14 +1867,20 @@ mod tests {
+         let now = Instant::now();
+         let touch = TouchId(1);
+ 
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+         recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 100., 150.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Cancelled, 100., 150.),
+             now + Duration::from_millis(32),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected cancelled scroll, got {recognized:?}");
+@@ -1649,10 +1889,15 @@ mod tests {
+         assert!(!recognizer.has_momentum());
+ 
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 100., 100.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 100., 100.),
++            now,
++            None,
++        );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Cancelled, 100., 102.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         assert!(recognized.is_empty(), "cancelled tap must not click");
+     }
+@@ -1665,20 +1910,24 @@ mod tests {
+         recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Started, 100., 100.),
+             now,
++            None,
+         );
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Started, 200., 200.),
+             now + Duration::from_millis(8),
++            None,
+         );
+         assert!(recognized.is_empty());
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Moved, 200., 300.),
+             now + Duration::from_millis(16),
++            None,
+         );
+         assert!(recognized.is_empty());
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(2), TouchPhase::Ended, 200., 300.),
+             now + Duration::from_millis(24),
++            None,
+         );
+         assert!(recognized.is_empty());
+ 
+@@ -1686,6 +1935,7 @@ mod tests {
+         let recognized = recognizer.handle_event_at(
+             &touch_event(TouchId(1), TouchPhase::Moved, 100., 150.),
+             now + Duration::from_millis(32),
++            None,
+         );
+         let [RecognizedTouchGesture::Scroll(scroll)] = recognized.as_slice() else {
+             panic!("expected scroll, got {recognized:?}");
+@@ -1733,6 +1983,7 @@ mod tests {
+             recognizer.handle_event_at(
+                 &touch_event(TouchId(1), TouchPhase::Started, 100., 500.),
+                 now,
++                None,
+             );
+             for step in 1..=3 {
+                 recognizer.handle_event_at(
+@@ -1743,11 +1994,13 @@ mod tests {
+                         500. - step as f32 * 40.,
+                     ),
+                     now + Duration::from_millis(step * 16),
++                    None,
+                 );
+             }
+             recognizer.handle_event_at(
+                 &touch_event(TouchId(1), TouchPhase::Ended, 100., 380.),
+                 now + Duration::from_millis(64),
++                None,
+             );
+             assert!(recognizer.has_momentum());
+ 
+@@ -1823,7 +2076,11 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let touch = TouchId(1);
+         let now = Instant::now();
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 10., 20.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 10., 20.),
++            now,
++            None,
++        );
+         let Some(RecognizedTouchGesture::TouchDrag(started)) = recognizer.offer_touch_drag(touch)
+         else {
+             panic!("expected touch drag");
+@@ -1835,6 +2092,7 @@ mod tests {
+         let moved = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 40., 50.),
+             now + Duration::from_millis(10),
++            None,
+         );
+         let [RecognizedTouchGesture::TouchDrag(moved)] = moved.as_slice() else {
+             panic!("expected moved touch drag, got {moved:?}");
+@@ -1845,6 +2103,7 @@ mod tests {
+         let ended = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 45., 55.),
+             now + Duration::from_millis(20),
++            None,
+         );
+         let [RecognizedTouchGesture::TouchDrag(ended)] = ended.as_slice() else {
+             panic!("expected ended touch drag, got {ended:?}");
+@@ -1858,13 +2117,14 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let touch = TouchId(1);
+         let now = Instant::now();
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now);
++        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now, None);
+         assert!(recognizer.offer_touch_drag(touch).is_some());
+         recognizer.resolve_touch_drag(false);
+ 
+         let moved = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 20., 0.),
+             now + Duration::from_millis(10),
++            None,
+         );
+         assert!(matches!(
+             moved.as_slice(),
+@@ -1880,7 +2140,11 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let touch = TouchId(1);
+         let now = Instant::now();
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 10., 20.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 10., 20.),
++            now,
++            None,
++        );
+         let Some(RecognizedTouchGesture::LongPress(started)) = recognizer.offer_long_press(touch)
+         else {
+             panic!("expected long press");
+@@ -1892,6 +2156,7 @@ mod tests {
+         let moved = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 12., 21.),
+             now + Duration::from_millis(510),
++            None,
+         );
+         let [RecognizedTouchGesture::LongPress(moved)] = moved.as_slice() else {
+             panic!("expected moved long press, got {moved:?}");
+@@ -1901,6 +2166,7 @@ mod tests {
+         let ended = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 12., 21.),
+             now + Duration::from_millis(520),
++            None,
+         );
+         let [RecognizedTouchGesture::LongPress(ended)] = ended.as_slice() else {
+             panic!("expected ended long press, got {ended:?}");
+@@ -1913,13 +2179,18 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let touch = TouchId(1);
+         let now = Instant::now();
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 10., 20.), now);
++        recognizer.handle_event_at(
++            &touch_event(touch, TouchPhase::Started, 10., 20.),
++            now,
++            None,
++        );
+         assert!(recognizer.offer_long_press(touch).is_some());
+         recognizer.resolve_long_press(false);
+ 
+         let ended = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Ended, 10., 20.),
+             now + Duration::from_millis(510),
++            None,
+         );
+         assert!(matches!(
+             ended.as_slice(),
+@@ -1932,13 +2203,14 @@ mod tests {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+         let touch = TouchId(1);
+         let now = Instant::now();
+-        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now);
++        recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now, None);
+         assert!(recognizer.offer_long_press(touch).is_some());
+         recognizer.resolve_long_press(false);
+ 
+         let moved = recognizer.handle_event_at(
+             &touch_event(touch, TouchPhase::Moved, 20., 0.),
+             now + Duration::from_millis(510),
++            None,
+         );
+         assert!(matches!(
+             moved.as_slice(),
+@@ -1953,11 +2225,19 @@ mod tests {
      fn long_press_offer_is_one_shot_and_specific_to_pending_touch() {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let touch = TouchId(1);
@@ -276,6 +1125,7 @@ index cad12f6..f6197b3 100644
 +        recognizer.handle_event(
 +            &touch_event(touch, TouchPhase::Started, 0., 0.),
 +            Instant::now(),
++            None,
 +        );
  
          assert!(
@@ -283,12 +1133,27 @@ index cad12f6..f6197b3 100644
 -                .handle_event(&touch_event(TouchId(2), TouchPhase::Moved, 20., 0.))
 +                .handle_event(
 +                    &touch_event(TouchId(2), TouchPhase::Moved, 20., 0.),
-+                    Instant::now()
++                    Instant::now(),
++                    None
 +                )
                  .is_empty()
          );
          assert!(recognizer.offer_long_press(TouchId(2)).is_none());
-@@ -2049,16 +2096,25 @@ mod tests {
+@@ -1971,11 +2251,12 @@ mod tests {
+             let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+             let touch = TouchId(1);
+             let now = Instant::now();
+-            recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now);
++            recognizer.handle_event_at(&touch_event(touch, TouchPhase::Started, 0., 0.), now, None);
+             let position = if phase == TouchPhase::Moved { 20. } else { 0. };
+             recognizer.handle_event_at(
+                 &touch_event(touch, phase, position, 0.),
+                 now + Duration::from_millis(10),
++                None,
+             );
+             assert!(recognizer.offer_long_press(touch).is_none());
+         }
+@@ -1985,16 +2266,28 @@ mod tests {
      fn claimed_long_press_emits_cancelled_for_its_touch_only() {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let touch = TouchId(1);
@@ -296,6 +1161,7 @@ index cad12f6..f6197b3 100644
 +        recognizer.handle_event(
 +            &touch_event(touch, TouchPhase::Started, 4., 5.),
 +            Instant::now(),
++            None,
 +        );
          assert!(recognizer.offer_long_press(touch).is_some());
          recognizer.resolve_long_press(true);
@@ -305,7 +1171,8 @@ index cad12f6..f6197b3 100644
 -                .handle_event(&touch_event(TouchId(2), TouchPhase::Cancelled, 9., 9.))
 +                .handle_event(
 +                    &touch_event(TouchId(2), TouchPhase::Cancelled, 9., 9.),
-+                    Instant::now()
++                    Instant::now(),
++                    None
 +                )
                  .is_empty()
          );
@@ -313,11 +1180,12 @@ index cad12f6..f6197b3 100644
 +        let cancelled = recognizer.handle_event(
 +            &touch_event(touch, TouchPhase::Cancelled, 6., 7.),
 +            Instant::now(),
++            None,
 +        );
          let [(_, RecognizedTouchGesture::LongPress(cancelled))] = cancelled.as_slice() else {
              panic!("expected cancelled long press, got {cancelled:?}");
          };
-@@ -2072,11 +2128,14 @@ mod tests {
+@@ -2008,11 +2301,19 @@ mod tests {
          for phase in [TouchPhase::Ended, TouchPhase::Cancelled] {
              let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
              let touch = TouchId(1);
@@ -325,16 +1193,21 @@ index cad12f6..f6197b3 100644
 +            recognizer.handle_event(
 +                &touch_event(touch, TouchPhase::Started, 4., 5.),
 +                Instant::now(),
++                None,
 +            );
  
              assert!(
                  recognizer
 -                    .handle_event(&touch_event(TouchId(2), phase, 9., 9.))
-+                    .handle_event(&touch_event(TouchId(2), phase, 9., 9.), Instant::now())
++                    .handle_event(
++                        &touch_event(TouchId(2), phase, 9., 9.),
++                        Instant::now(),
++                        None
++                    )
                      .is_empty()
              );
              assert!(recognizer.offer_long_press(touch).is_some());
-@@ -2088,9 +2147,18 @@ mod tests {
+@@ -2024,9 +2325,21 @@ mod tests {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let completed_touch = TouchId(1);
          let replacement_touch = TouchId(2);
@@ -344,14 +1217,17 @@ index cad12f6..f6197b3 100644
 +        recognizer.handle_event(
 +            &touch_event(completed_touch, TouchPhase::Started, 0., 0.),
 +            Instant::now(),
++            None,
 +        );
 +        recognizer.handle_event(
 +            &touch_event(completed_touch, TouchPhase::Cancelled, 0., 0.),
 +            Instant::now(),
++            None,
 +        );
 +        recognizer.handle_event(
 +            &touch_event(replacement_touch, TouchPhase::Started, 5., 5.),
 +            Instant::now(),
++            None,
 +        );
  
          assert!(recognizer.offer_long_press(completed_touch).is_none());
@@ -483,13 +1359,13 @@ index 0000000..8addabb
 +pub const kPrecisePointerScaleSlop: Pixels = kPrecisePointerHitSlop; // Logical pixels
 diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
 new file mode 100644
-index 0000000..aec081f
+index 0000000..fb3aa12
 --- /dev/null
 +++ b/gpui-pre/src/gestures/recognizer_tests.rs
-@@ -0,0 +1,789 @@
+@@ -0,0 +1,886 @@
 +// Ported from flutter/flutter packages/flutter/test/gestures/tap_test.dart, double_tap_test.dart,
-+// long_press_test.dart and drag_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors.
-+// BSD-3-Clause, see third_party/flutter/LICENSE.
++// long_press_test.dart and drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +
 +//! Flutter's recognizer tests as the oracle for the touch recognizer, driven
 +//! through the test platform: a recorded touch trace goes into a window, the
@@ -502,9 +1378,10 @@ index 0000000..aec081f
 +use scheduler::Instant;
 +
 +use crate::{
-+    App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement, LongPressEvent,
-+    MouseDownEvent, PointerDevice, Render, ScrollDelta, ScrollEvent, TestAppContext,
-+    TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, canvas, point, px,
++    App, Bounds, Context, DispatchPhase, GestureTuning, HitboxBehavior, InputEvent as _,
++    IntoElement, LongPressEvent, MouseDownEvent, Pixels, PointerDevice, Render, ScrollDelta,
++    ScrollEvent, TestAppContext, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, canvas,
++    point, px, size,
 +};
 +
 +use TouchPhase::{Cancelled, Ended, Moved, Started};
@@ -559,6 +1436,9 @@ index 0000000..aec081f
 +    name: &'static str,
 +    tuning: GestureTuning,
 +    claim: Claim,
++    /// Hitboxes the element inserts: what a tap lands on (none: every tap
++    /// lands on nothing, the same target).
++    targets: &'a [Bounds<Pixels>],
 +    trace: &'a [TraceEvent],
 +    /// The clock runs on to here after the trace, for timers still pending.
 +    until_ms: u64,
@@ -568,6 +1448,7 @@ index 0000000..aec081f
 +
 +struct Recorder {
 +    claim: Claim,
++    targets: Vec<Bounds<Pixels>>,
 +    started_at: Instant,
 +    seen: Rc<RefCell<Vec<(u64, Seen)>>>,
 +}
@@ -575,12 +1456,17 @@ index 0000000..aec081f
 +impl Render for Recorder {
 +    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
 +        let (seen, started_at, claim) = (self.seen.clone(), self.started_at, self.claim);
++        let targets = self.targets.clone();
 +        let record = move |cx: &App, gesture| {
 +            let at = cx.background_executor().now().duration_since(started_at);
 +            seen.borrow_mut().push((at.as_millis() as u64, gesture));
 +        };
 +        canvas(
-+            |_, _, _| {},
++            move |_, window, _| {
++                for bounds in targets {
++                    window.insert_hitbox(bounds, HitboxBehavior::Normal);
++                }
++            },
 +            move |_, _, window, _| {
 +                let on_tap = record.clone();
 +                window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
@@ -635,8 +1521,10 @@ index 0000000..aec081f
 +    let window = cx.add_window({
 +        let seen = seen.clone();
 +        let claim = row.claim;
++        let targets = row.targets.to_vec();
 +        move |_, _| Recorder {
 +            claim,
++            targets,
 +            started_at,
 +            seen,
 +        }
@@ -671,6 +1559,16 @@ index 0000000..aec081f
 +    seen.take()
 +}
 +
++/// Two side-by-side tap targets for the per-target rows.
++const BUTTON_A: Bounds<Pixels> = Bounds {
++    origin: point(px(0.), px(0.)),
++    size: size(px(50.), px(50.)),
++};
++const BUTTON_B: Bounds<Pixels> = Bounds {
++    origin: point(px(60.), px(0.)),
++    size: size(px(50.), px(50.)),
++};
++
 +#[crate::test]
 +fn flutter_recognizer_tests_pass(cx: &mut TestAppContext) {
 +    // Flutter's constants.dart values, which every row starts from.
@@ -681,6 +1579,7 @@ index 0000000..aec081f
 +            name: "Should recognize tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 11., 9.)],
 +            until_ms: 0,
 +            expected: &[(0, Tap(1))],
@@ -690,6 +1589,7 @@ index 0000000..aec081f
 +            name: "No duplicate tap events",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -703,6 +1603,7 @@ index 0000000..aec081f
 +            name: "Should not recognize two overlapping taps (FIFO)",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 2, Started, 30., 30.),
@@ -716,6 +1617,7 @@ index 0000000..aec081f
 +            name: "Should not recognize two overlapping taps (FILO)",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 2, Started, 30., 30.),
@@ -730,6 +1632,7 @@ index 0000000..aec081f
 +            name: "Distance cancels tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 3, Started, 10., 10.),
 +                touch(0, 3, Moved, 25., 25.),
@@ -743,6 +1646,7 @@ index 0000000..aec081f
 +            name: "Short distance does not cancel tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 4, Started, 10., 10.),
 +                touch(0, 4, Moved, 22., 22.),
@@ -755,6 +1659,7 @@ index 0000000..aec081f
 +            name: "Timeout does not cancel tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(500, 1, Ended, 11., 9.),
@@ -766,6 +1671,7 @@ index 0000000..aec081f
 +            name: "PointerCancelEvent cancels tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(5000, 5, Cancelled, 10., 10.),
@@ -777,6 +1683,7 @@ index 0000000..aec081f
 +            name: "PointerCancelEvent after exceeding deadline cancels tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(1000, 5, Cancelled, 10., 10.),
@@ -788,6 +1695,7 @@ index 0000000..aec081f
 +            name: "losing tap gesture recognizer does not send onTapCancel",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 3, Started, 10., 10.), touch(0, 3, Moved, 25., 25.)],
 +            until_ms: 0,
 +            expected: &[(0, Scroll(Started, 0., 15.))],
@@ -796,6 +1704,7 @@ index 0000000..aec081f
 +            name: "non-primary pointers does not trigger timeout",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 2, Started, 30., 30.),
@@ -809,6 +1718,7 @@ index 0000000..aec081f
 +            name: "A second tap after rejection is ignored",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 0., 0.),
 +                touch(0, 1, Moved, 50., 0.),
@@ -824,6 +1734,7 @@ index 0000000..aec081f
 +            name: "Should recognize double tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -837,6 +1748,7 @@ index 0000000..aec081f
 +            name: "Inter-tap distance cancels double tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -850,6 +1762,7 @@ index 0000000..aec081f
 +            name: "Intra-tap distance cancels double tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 4, Started, 10., 10.),
 +                touch(0, 4, Moved, 25., 25.),
@@ -868,6 +1781,7 @@ index 0000000..aec081f
 +            name: "Inter-tap delay cancels double tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -881,6 +1795,7 @@ index 0000000..aec081f
 +            name: "Inter-tap delay resets double tap, allowing third tap to be a double-tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -896,6 +1811,7 @@ index 0000000..aec081f
 +            name: "Intra-tap delay does not cancel double tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(1000, 1, Ended, 11., 9.),
@@ -909,6 +1825,7 @@ index 0000000..aec081f
 +            name: "Should not recognize two overlapping taps",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 2, Started, 12., 12.),
@@ -922,6 +1839,7 @@ index 0000000..aec081f
 +            name: "Should recognize one tap of group followed by second tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 2, Started, 12., 12.),
@@ -937,6 +1855,7 @@ index 0000000..aec081f
 +            name: "Should not recognize two over-rapid taps",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -950,6 +1869,7 @@ index 0000000..aec081f
 +            name: "Over-rapid taps resets double tap, allowing third tap to be a double-tap",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 1, Started, 10., 10.),
 +                touch(0, 1, Ended, 11., 9.),
@@ -966,6 +1886,7 @@ index 0000000..aec081f
 +            name: "Long press: Should recognize long press",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.)],
 +            until_ms: 1000,
 +            expected: &[(500, LongPress(Started, 10., 10.))],
@@ -977,6 +1898,7 @@ index 0000000..aec081f
 +                ..flutter
 +            },
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.)],
 +            until_ms: 100,
 +            expected: &[(100, LongPress(Started, 10., 10.))],
@@ -986,6 +1908,7 @@ index 0000000..aec081f
 +            name: "Long press: Up cancels long press",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(300, 5, Ended, 11., 9.),
@@ -997,6 +1920,7 @@ index 0000000..aec081f
 +            name: "Long press: Moving before accept cancels",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(300, 5, Moved, 100., 200.),
@@ -1012,6 +1936,7 @@ index 0000000..aec081f
 +            name: "Long press: Moving after accept is ok",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(1000, 5, Moved, 100., 200.),
@@ -1028,6 +1953,7 @@ index 0000000..aec081f
 +            name: "Long press: Should recognize long press up",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(1000, 5, Ended, 11., 9.),
@@ -1042,6 +1968,7 @@ index 0000000..aec081f
 +            name: "long press drag: Should recognize long press down",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.)],
 +            until_ms: 1000,
 +            expected: &[(500, LongPress(Started, 10., 10.))],
@@ -1050,6 +1977,7 @@ index 0000000..aec081f
 +            name: "long press drag: Short up cancels long press",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(300, 5, Ended, 11., 9.),
@@ -1061,6 +1989,7 @@ index 0000000..aec081f
 +            name: "long press drag: Moving before accept cancels",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(300, 5, Moved, 100., 200.),
@@ -1076,6 +2005,7 @@ index 0000000..aec081f
 +            name: "long press drag: Moving after accept does not cancel",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(1000, 5, Moved, 100., 200.),
@@ -1092,6 +2022,7 @@ index 0000000..aec081f
 +            name: "A primary long press recognizer forms competition with a primary tap recognizer",
 +            tuning: flutter,
 +            claim: Claim::LongPress,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Ended, 11., 9.)],
 +            until_ms: 0,
 +            expected: &[(0, Tap(1))],
@@ -1105,6 +2036,7 @@ index 0000000..aec081f
 +            name: "Should recognize pan",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(0, 5, Moved, 20., 20.),
@@ -1123,6 +2055,7 @@ index 0000000..aec081f
 +            name: "Should report most recent point to onStart by default",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
 +            until_ms: 0,
 +            expected: &[(0, Scroll(Started, 20., 0.))],
@@ -1131,6 +2064,7 @@ index 0000000..aec081f
 +            name: "Should report most recent point to onStart with a start configuration",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
 +            until_ms: 0,
 +            expected: &[(0, Scroll(Started, 20., 0.))],
@@ -1140,6 +2074,7 @@ index 0000000..aec081f
 +            name: "Should report initial down point to onStart with a down configuration",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
 +            until_ms: 0,
 +            expected: &[(0, Scroll(Started, 20., 0.))],
@@ -1148,6 +2083,7 @@ index 0000000..aec081f
 +            name: "Should recognize drag (line 137)",
 +            tuning: flutter,
 +            claim: Claim::TouchDrag,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(0, 5, Moved, 20., 25.),
@@ -1166,6 +2102,7 @@ index 0000000..aec081f
 +            name: "DragGestureRecognizer.onStart behavior test (no competing)",
 +            tuning: flutter,
 +            claim: Claim::TouchDrag,
++            targets: &[],
 +            trace: &[
 +                touch(100, 5, Started, 10., 10.),
 +                touch(200, 5, Moved, 20., 25.),
@@ -1184,6 +2121,7 @@ index 0000000..aec081f
 +            name: "DragGestureRecognizer.onStart behavior test (with competing)",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[
 +                touch(600, 5, Started, 10., 10.),
 +                touch(700, 5, Moved, 30., 10.),
@@ -1199,6 +2137,7 @@ index 0000000..aec081f
 +            name: "Should report original timestamps",
 +            tuning: flutter,
 +            claim: Claim::TouchDrag,
++            targets: &[],
 +            trace: &[
 +                touch(100, 5, Started, 10., 10.),
 +                touch(200, 5, Moved, 20., 25.),
@@ -1215,6 +2154,7 @@ index 0000000..aec081f
 +            name: "Should recognize drag (line 1603)",
 +            tuning: flutter,
 +            claim: Claim::TouchDrag,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(0, 5, Moved, 20., 25.),
@@ -1233,6 +2173,7 @@ index 0000000..aec081f
 +            name: "Should recognize drag (line 1665)",
 +            tuning: flutter,
 +            claim: Claim::TouchDrag,
++            targets: &[],
 +            trace: &[
 +                touch(0, 5, Started, 10., 10.),
 +                touch(0, 5, Moved, 20., 25.),
@@ -1251,9 +2192,41 @@ index 0000000..aec081f
 +            name: "A primary pan recognizer forms competition with a primary tap recognizer",
 +            tuning: flutter,
 +            claim: Claim::Nothing,
++            targets: &[],
 +            trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 10., 10.)],
 +            until_ms: 0,
 +            expected: &[(0, Tap(1))],
++        },
++        // Not a Flutter test: Flutter counts double taps per widget, GPUI's
++        // one recognizer per window counts them per target (the innermost
++        // hitbox). Two 50 px buttons side by side, taps 60 px apart.
++        Row {
++            name: "Double tap on one target counts 2",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            targets: &[BUTTON_A, BUTTON_B],
++            trace: &[
++                touch(0, 1, Started, 10., 10.),
++                touch(0, 1, Ended, 10., 10.),
++                touch(100, 2, Started, 40., 10.),
++                touch(100, 2, Ended, 40., 10.),
++            ],
++            until_ms: 100,
++            expected: &[(0, Tap(1)), (100, Tap(2))],
++        },
++        Row {
++            name: "A tap on another target starts a new count",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            targets: &[BUTTON_A, BUTTON_B],
++            trace: &[
++                touch(0, 1, Started, 10., 10.),
++                touch(0, 1, Ended, 10., 10.),
++                touch(100, 2, Started, 70., 10.),
++                touch(100, 2, Ended, 70., 10.),
++            ],
++            until_ms: 100,
++            expected: &[(0, Tap(1)), (100, Tap(1))],
 +        },
 +    ];
 +    let failures: Vec<String> = rows
@@ -1276,8 +2249,69 @@ index 0000000..aec081f
 +        failures.join("\n")
 +    );
 +}
+diff --git a/gpui-pre/src/gestures/scroll_physics.rs b/gpui-pre/src/gestures/scroll_physics.rs
+index 2fedf54..819458e 100644
+--- a/gpui-pre/src/gestures/scroll_physics.rs
++++ b/gpui-pre/src/gestures/scroll_physics.rs
+@@ -1,7 +1,7 @@
+ // Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_physics.dart @ 3.50.1
+-// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ScrollDecelerationRate`, `ScrollPhysics`' spring, drag threshold and
+-// `toleranceFor`, and its `BouncingScrollPhysics` and `ClampingScrollPhysics` subclasses. Copyright 2014 The Flutter
+-// Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ScrollDecelerationRate`, `ScrollPhysics`' fling limits, spring,
++// drag threshold and `toleranceFor`, and its `BouncingScrollPhysics` and `ClampingScrollPhysics` subclasses.
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+ //
+ // Flutter's class and its two subclasses are one enum, a variant per subclass, so a const table can name them.
+ // Dropped: the `parent` chain (`applyTo`, `buildParent`, `shouldUpdate`); `shouldAcceptUserOffset`,
+@@ -9,6 +9,7 @@
+ // other physics classes; `ClampingScrollPhysics.applyBoundaryConditions`' debug assertion that the call is redundant
+ // (it returns 0.0 then, as Flutter does in release builds); `ScrollMetrics`' axis direction.
+ 
++use super::constants::{kMaxFlingVelocity, kMinFlingVelocity, kTouchSlop};
+ use super::physics::{ScrollSpringSimulation, Simulation, Tolerance};
+ use super::scroll_simulation::{BouncingScrollSimulation, ClampingScrollSimulation};
+ use crate::{Pixels, SpringConfig, px};
+@@ -93,6 +94,37 @@ impl ScrollPhysics {
+         Self::Clamping
+     }
+ 
++    /// The minimum distance an input pointer drag must have moved to be
++    /// considered a scroll fling gesture.
++    ///
++    /// This value is typically compared with the distance traveled along the
++    /// scrolling axis.
++    pub fn min_fling_distance(&self) -> Pixels {
++        kTouchSlop
++    }
++
++    /// The minimum velocity for an input pointer drag to be considered a
++    /// scroll fling.
++    pub fn min_fling_velocity(&self) -> f32 {
++        match self {
++            Self::Bouncing { .. } => kMinFlingVelocity * 2.0,
++            Self::Clamping => kMinFlingVelocity,
++        }
++    }
++
++    /// Scroll fling velocity magnitudes will be clamped to this value.
++    pub fn max_fling_velocity(&self) -> f32 {
++        match self {
++            Self::Bouncing {
++                deceleration_rate: ScrollDecelerationRate::Fast,
++            } => kMaxFlingVelocity * 8.0,
++            Self::Bouncing {
++                deceleration_rate: ScrollDecelerationRate::Normal,
++            }
++            | Self::Clamping => kMaxFlingVelocity,
++        }
++    }
++
+     /// The minimum amount of pixel distance drags must move by to start motion
+     /// the first time or after each time the drag motion stopped.
+     ///
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index aff770f..d93beac 100644
+index aff770f..f43d430 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -3900,6 +3900,13 @@ impl Window {
@@ -1294,14 +2328,23 @@ index aff770f..d93beac 100644
      /// The current state of the keyboard's modifiers
      pub fn modifiers(&self) -> Modifiers {
          self.modifiers
-@@ -6472,14 +6479,19 @@ impl Window {
+@@ -6472,14 +6479,28 @@ impl Window {
          if !self.touch_prediction_enabled {
              event.predicted_position = None;
          }
 -        let recognized_gestures = self.touch_gestures.handle_event(&event);
-+        let recognized_gestures = self
-+            .touch_gestures
-+            .handle_event(&event, cx.background_executor().now());
++        // The innermost hitbox under the touch: taps count per target.
++        let frame = &self.rendered_frame;
++        let target = frame.hit_test(event.position).ids.first().and_then(|id| {
++            frame
++                .hitboxes
++                .iter()
++                .find(|hitbox| hitbox.id == *id)
++                .map(|hitbox| hitbox.bounds)
++        });
++        let recognized_gestures =
++            self.touch_gestures
++                .handle_event(&event, cx.background_executor().now(), target);
          if event.phase == crate::TouchPhase::Started
              && let Some(touch_drag) = self.touch_gestures.offer_touch_drag(event.id)
          {
@@ -1316,7 +2359,7 @@ index aff770f..d93beac 100644
          {
              self.long_press_capture = None;
          }
-@@ -6490,7 +6502,11 @@ impl Window {
+@@ -6490,7 +6511,11 @@ impl Window {
          }
          if event.phase == crate::TouchPhase::Started {
              self.schedule_long_press_timer(cx);
@@ -1329,7 +2372,7 @@ index aff770f..d93beac 100644
              self.long_press_timer.take();
          }
          if tapped {
-@@ -6583,7 +6599,10 @@ impl Window {
+@@ -6583,7 +6608,10 @@ impl Window {
  
      fn schedule_long_press_timer(&mut self, cx: &mut App) {
          self.long_press_timer.take();
@@ -1341,7 +2384,7 @@ index aff770f..d93beac 100644
              return;
          };
          self.long_press_timer = Some(self.spawn(cx, async move |cx| {
-@@ -6606,7 +6625,10 @@ impl Window {
+@@ -6606,7 +6634,10 @@ impl Window {
  
      fn schedule_touch_momentum_tick(&mut self) {
          self.on_next_frame(|window, cx| {
@@ -1353,7 +2396,7 @@ index aff770f..d93beac 100644
                  window.dispatch_recognized_touch_gesture(gesture, device, cx);
              }
              if window.touch_gestures.has_momentum() {
-@@ -10504,6 +10526,9 @@ mod tests {
+@@ -10504,6 +10535,9 @@ mod tests {
                      assert_eq!(window.pointer_source(), None, "{name}: after dispatch");
                  })
                  .unwrap();

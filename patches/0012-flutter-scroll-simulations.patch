@@ -1,105 +1,103 @@
-Run touch flings on Flutter's scroll simulations.
+Run touch flings on Flutter's scroll physics: one `ScrollPhysics` type for flings, overscroll and the platform table.
 
-What: adds `gestures/physics.rs`, a Rust translation of Flutter's `Tolerance`, `Simulation`, `FrictionSimulation` and
-`ClampingScrollSimulation` (flutter/flutter 3.50.1, ae9b586f34; names, constants and comments kept), exported from the
-crate root. `ScrollPhysics` keeps its public API (`Exponential { decay_per_ms }`, `FrictionSpline { friction,
-pixels_per_inch }`, `ios()`, `android()`), but its private `fling_duration`/`fling_distance` give way to
-`ScrollPhysics::simulation(speed)` (and `ios()` / `android()` become `const fn`, so a const table can name them),
-which builds what Flutter's `createBallisticSimulation` builds for a position in range: iOS a `FrictionSimulation`
-with drag `decay_per_ms^1000` (0.998^1000, Flutter's "~0.135"), Android a `ClampingScrollSimulation`
-(`pixels_per_inch` stands in for Flutter's 160 logical pixels per inch). `Momentum` holds that simulation and ends on
-the first tick it is done at, as Flutter's ballistic scroll does; the tolerance is Flutter's `toleranceFor` at a
-device pixel ratio of 2 (velocity 10 px/s, GPUI's `MOMENTUM_STOP_VELOCITY`). The transcribed AOSP `friction_spline`
-module and its table test go; the "fling curves are sane" test is rewritten on the simulations. Ports Flutter's tests
-as tables, named after the Flutter test per row: all 3 of `friction_simulation_test.dart`, `test_friction` and
-`scroll_with_inf_edge_ends` of `newton_test.dart`, all 5 of `scroll_simulation_test.dart`, and the bounce/clamp rows
-of `scroll_physics_test.dart`'s "doesn't alter the velocity for time 0".
+What: ports Flutter 3.50.1's physics (flutter/flutter ae9b586f34; names, constants and comments kept) into
+`gestures/`, one Rust type per Flutter class:
+- `gestures/physics.rs` (`gpui::physics`): physics/*.dart in one module: `Tolerance`, `Simulation`,
+  `FrictionSimulation`, `SpringSimulation` and `ScrollSpringSimulation`, `near_equal` / `near_zero`, and
+  foundation's `precisionErrorTolerance` (lsq_solver.rs now reads it from here). Springs run on GPUI's own
+  `SpringConfig` (`SpringDescription` is `SpringConfig`, plus `SpringConfig::with_damping_ratio`), because it passes
+  every spring case of Flutter's newton_test.dart (spring_types, crit_spring, overdamped_spring, underdamped_spring,
+  and through `BouncingScrollSimulation` test_kinetic_scroll and over/under scroll spring) and the rubber-band rows
+  of scroll_physics_test.dart; `SpringSimulation` is glue over `SpringConfig::step` with Flutter's `isDone`, and
+  Flutter's `_SpringSolution` classes are not ported.
+- `gestures/scroll_simulation.rs`: widgets/scroll_simulation.dart, `BouncingScrollSimulation` (friction drag 0.135,
+  UIScrollView's 0.998 per ms, written once) and `ClampingScrollSimulation` (Android's `OverScroller`, made
+  ballistic; Flutter's fixed 160 logical pixels per inch).
+- `gestures/scroll_physics.rs`: widgets/scroll_physics.dart. GPUI's public `ScrollPhysics` becomes Flutter's class
+  with a variant per subclass: `Bouncing { deceleration_rate: ScrollDecelerationRate }` (`Normal`, or macOS's `Fast`
+  with its 1400 constant deceleration and spring) and `Clamping`, replacing upstream's `Exponential { decay_per_ms }`
+  and `FrictionSpline { friction, pixels_per_inch }`. `ios()` and `android()` keep their names (Bouncing normal,
+  Clamping), so gpui_web's user-agent rows compile unchanged. Its methods are Flutter's: `spring`,
+  `drag_start_distance_motion_threshold`, `apply_physics_to_user_offset` (overscroll friction),
+  `apply_boundary_conditions`, `create_ballistic_simulation(metrics, velocity)`, with `ScrollMetrics`,
+  `tolerance_for(device_pixel_ratio)` and `ScrollDecelerationRate::friction_factor`.
+The recognizer's momentum runs `create_ballistic_simulation` with no extents (the scroll container clamps) at
+`tolerance_for(2.0)` (it doesn't know the window's ratio yet); `Momentum` ends on the first tick its simulation is
+done at, as Flutter's ballistic scroll does. `MOMENTUM_STOP_VELOCITY` and the transcribed AOSP `friction_spline`
+module and its table test go; the "fling curves are sane" test runs on the new simulations. Flutter's tests are
+ported as tables, one row per Flutter test: all of friction_simulation_test.dart, scroll_simulation_test.dart, the
+friction, spring and bouncing cases of newton_test.dart, and scroll_physics_test.dart's BouncingScrollPhysics /
+ClampingScrollPhysics maths (one "doesn't alter the velocity for time 0" row over both physics).
 
 Why: Flutter's tests fail on the old maths. Android's fling was AOSP's `SplineOverScroller` curve, which Flutter
 replaced because it is not ballistic (flutter/flutter#113424, #120338): its starting velocity is not the release
 velocity (2863.6 px/s for a 2866.9 px/s release), it stops with a jump (from 4.9 px/s to 0; a 187 px/s step in one
 frame against the test's 85.5 bound), and a fling restarted from its own position and velocity does not retrace it.
-Flutter's `ClampingScrollSimulation` travels the same total distance and passes. iOS used the same exponential law as
-Flutter's `FrictionSimulation`, which now runs it directly; its `finalX`, `timeAtX` and constant deceleration come
-with it, since Flutter's iOS overscroll and macOS preset build on them. Overscroll and bounce at the edges are not
-part of this patch. Not platform-specific, so no cfg.
+iOS used Flutter's friction law with no `Fast` rate, so macOS flings could not decelerate as Flutter's do. Keeping
+GPUI's two-preset enum next to Flutter's physics classes would have held each platform's scroll feel twice (fling,
+overscroll, platform table); one type holds it once. Not platform-specific, so no cfg.
 
 Upstream: not filed (upstreaming paused, AGENTS.md patch rule 14).
 
-
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 1062e60..cad12f6 100644
+index 1062e60..7ef84a0 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -153,24 +153,31 @@ impl Default for GestureTuning {
+@@ -153,206 +153,31 @@ impl Default for GestureTuning {
      }
  }
  
-+mod physics;
-+pub use physics::{ClampingScrollSimulation, FrictionSimulation, Simulation, Tolerance};
-+
- /// How free scrolling decelerates after a fling.
- ///
- /// This models deceleration only. Boundary behavior — bouncing, edge glow,
- /// clamping — is the scroll container's policy: the container is the one that
- /// knows its extents.
-+///
-+/// Each preset runs one of the fling simulations ported from Flutter.
- #[derive(Clone, Copy, Debug, PartialEq)]
- pub enum ScrollPhysics {
-     /// Exponential velocity decay, the `UIScrollView` model:
+-/// How free scrolling decelerates after a fling.
+-///
+-/// This models deceleration only. Boundary behavior — bouncing, edge glow,
+-/// clamping — is the scroll container's policy: the container is the one that
+-/// knows its extents.
+-#[derive(Clone, Copy, Debug, PartialEq)]
+-pub enum ScrollPhysics {
+-    /// Exponential velocity decay, the `UIScrollView` model:
 -    /// `velocity(t) = v₀ · decay_per_msᵐˢ`.
-+    /// `velocity(t) = v₀ · decay_per_msᵐˢ`. Runs Flutter's
-+    /// [`FrictionSimulation`] (the in-range part of its
-+    /// `BouncingScrollSimulation`) with drag `decay_per_ms¹⁰⁰⁰`.
-     Exponential {
-         /// Per-millisecond velocity decay factor. `UIScrollView`'s normal
-         /// deceleration rate is `0.998`.
-         decay_per_ms: f32,
-     },
+-    Exponential {
+-        /// Per-millisecond velocity decay factor. `UIScrollView`'s normal
+-        /// deceleration rate is `0.998`.
+-        decay_per_ms: f32,
+-    },
 -    /// The friction spline of Android's `OverScroller`: fling duration and
 -    /// distance follow a logarithmic deceleration law, and progress along
 -    /// the fling follows a cubic-Bezier ease-out curve. Transcribed from
 -    /// AOSP's `SplineOverScroller` (Apache-2.0).
-+    /// The deceleration law of Android's `OverScroller`, as Flutter's
-+    /// [`ClampingScrollSimulation`] makes it ballistic: the same total fling
-+    /// distance as Android, with a deceleration that depends only on the
-+    /// current velocity.
-     FrictionSpline {
-         /// The scroll friction coefficient;
-         /// `ViewConfiguration.getScrollFriction()` is `0.015` on Android.
-@@ -184,8 +191,9 @@ pub enum ScrollPhysics {
- }
- 
- impl ScrollPhysics {
+-    FrictionSpline {
+-        /// The scroll friction coefficient;
+-        /// `ViewConfiguration.getScrollFriction()` is `0.015` on Android.
+-        friction: f32,
+-        /// Pixels per physical inch of the display, in the coordinate space
+-        /// the fling runs in. Android folds display density into its
+-        /// deceleration coefficient, so the same finger speed flings
+-        /// further in pixels on a denser screen.
+-        pixels_per_inch: f32,
+-    },
+-}
+-
+-impl ScrollPhysics {
 -    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate.
 -    pub fn ios() -> Self {
-+    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate, as
-+    /// Flutter's `BouncingScrollPhysics` (`0.998¹⁰⁰⁰ ≈ 0.135`).
-+    pub const fn ios() -> Self {
-         Self::Exponential {
-             decay_per_ms: 0.998,
-         }
-@@ -193,167 +201,48 @@ impl ScrollPhysics {
- 
-     /// Android scroll feel: `OverScroller` with stock friction, at Android's
-     /// nominal density of 160 density-independent pixels per inch — the
+-        Self::Exponential {
+-            decay_per_ms: 0.998,
+-        }
+-    }
+-
+-    /// Android scroll feel: `OverScroller` with stock friction, at Android's
+-    /// nominal density of 160 density-independent pixels per inch — the
 -    /// right pairing when fling distances are in logical pixels. Platforms
 -    /// that fling in physical pixels, or know the display's true density in
 -    /// their logical space, should construct
 -    /// [`ScrollPhysics::FrictionSpline`] directly.
 -    pub fn android() -> Self {
-+    /// right pairing when fling distances are in logical pixels, and
-+    /// Flutter's `ClampingScrollPhysics`. Platforms that fling in physical
-+    /// pixels, or know the display's true density in their logical space,
-+    /// should construct [`ScrollPhysics::FrictionSpline`] directly.
-+    pub const fn android() -> Self {
-         Self::FrictionSpline {
-             friction: 0.015,
-             pixels_per_inch: 160.,
-         }
-     }
- 
+-        Self::FrictionSpline {
+-            friction: 0.015,
+-            pixels_per_inch: 160.,
+-        }
+-    }
+-
 -    /// How long a fling released at `speed` pixels per second coasts before
 -    /// it stops.
 -    fn fling_duration(self, speed: f32) -> Duration {
@@ -134,26 +132,16 @@ index 1062e60..cad12f6 100644
 -            return 0.;
 -        }
 -        let elapsed = elapsed.min(duration);
-+    /// The fling released at `speed` pixels per second, starting at 0, as
-+    /// Flutter's `createBallisticSimulation` builds it for a position in range.
-+    fn simulation(self, speed: f32) -> Box<dyn Simulation> {
-         match self {
+-        match self {
 -            Self::Exponential { decay_per_ms } => {
 -                // ∫₀ᵗ v₀·kᵐˢ dms, with speed converted to pixels per
 -                // millisecond.
 -                let milliseconds = elapsed.as_secs_f32() * 1000.;
 -                (speed / 1000.) * (decay_per_ms.powf(milliseconds) - 1.) / decay_per_ms.ln()
 -            }
-+            Self::Exponential { decay_per_ms } => Box::new(FrictionSimulation::new(
-+                (decay_per_ms as f64).powi(1000),
-+                0.,
-+                speed as f64,
-+                MOMENTUM_TOLERANCE,
-+                0.,
-+            )),
-             Self::FrictionSpline {
-                 friction,
-                 pixels_per_inch,
+-            Self::FrictionSpline {
+-                friction,
+-                pixels_per_inch,
 -            } => {
 -                let deceleration = friction_spline::deceleration(speed, friction, pixels_per_inch);
 -                let rate = friction_spline::deceleration_rate();
@@ -163,16 +151,10 @@ index 1062e60..cad12f6 100644
 -                let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
 -                total_distance as f32 * friction_spline::distance_coefficient(progress as f32)
 -            }
-+            } => Box::new(ClampingScrollSimulation::new(
-+                0.,
-+                speed as f64,
-+                friction as f64,
-+                pixels_per_inch as f64,
-+            )),
-         }
-     }
- }
- 
+-        }
+-    }
+-}
+-
 -/// The fling model of Android's `OverScroller.SplineOverScroller`,
 -/// transcribed from AOSP (Apache-2.0). `SPLINE_TIME`, which AOSP uses for
 -/// programmatic scroll animations rather than flings, is intentionally not
@@ -265,18 +247,48 @@ index 1062e60..cad12f6 100644
 -    pub(super) fn spline_position_samples() -> &'static [f32; NB_SAMPLES + 1] {
 -        &SPLINE_POSITION
 -    }
--}
-+/// Flutter's `ScrollPhysics.toleranceFor` at a device pixel ratio of 2:
-+/// velocity `1 / (0.050 · 2)` (= [`MOMENTUM_STOP_VELOCITY`]), distance `1 / 2`.
-+const MOMENTUM_TOLERANCE: Tolerance = Tolerance {
-+    distance: 0.5,
-+    time: Tolerance::DEFAULT_TOLERANCE.time,
-+    velocity: MOMENTUM_STOP_VELOCITY as f64,
-+};
++pub mod physics;
++mod scroll_physics;
++mod scroll_simulation;
++use physics::Simulation;
++pub use scroll_physics::{ScrollDecelerationRate, ScrollMetrics, ScrollPhysics, tolerance_for};
++pub use scroll_simulation::{BouncingScrollSimulation, ClampingScrollSimulation};
++
++/// The window's device pixel ratio isn't passed to the recognizer yet, so its
++/// flings use Flutter's `toleranceFor` at a ratio of 2.
++const FLING_DEVICE_PIXEL_RATIO: f64 = 2.0;
++
++/// The fling released at `speed` pixels per second, starting at 0: Flutter's
++/// `createBallisticSimulation` with no extents, since the recognizer knows
++/// none (the scroll container clamps). `None` when there is nothing to fling.
++fn fling_simulation(physics: ScrollPhysics, speed: f32) -> Option<Box<dyn Simulation>> {
++    physics.create_ballistic_simulation(
++        &ScrollMetrics {
++            min_scroll_extent: f64::NEG_INFINITY,
++            max_scroll_extent: f64::INFINITY,
++            pixels: 0.,
++            viewport_dimension: f64::INFINITY,
++            device_pixel_ratio: FLING_DEVICE_PIXEL_RATIO,
++        },
++        f64::from(speed),
++    )
+ }
  
  /// The set of gesture kinds that participate in recognition.
- ///
-@@ -614,9 +503,9 @@ struct CompletedTap {
+@@ -524,12 +349,6 @@ impl PlatformGestures for NullPlatformGestures {}
+ /// Flutter's `kMaxFlingVelocity`).
+ const MAX_FLING_VELOCITY: f32 = 8000.;
+ 
+-/// Momentum below this speed, in pixels per second, is imperceptible. The
+-/// exponential model, which never mathematically stops, treats reaching this
+-/// speed as the end of the fling. (The friction spline has a finite duration
+-/// of its own.)
+-const MOMENTUM_STOP_VELOCITY: f32 = 10.;
+-
+ /// The portable recognizer behind raw touch input: it watches the
+ /// [`TouchEvent`] stream for one touch at a time and resolves it into either
+ /// a tap or a pan, following the competition model described in the module
+@@ -614,9 +433,9 @@ struct CompletedTap {
  }
  
  /// One fling in progress. The trajectory is a closed-form curve of elapsed
@@ -289,7 +301,7 @@ index 1062e60..cad12f6 100644
  struct Momentum {
      /// The device of the touch that flung.
      device: PointerDevice,
-@@ -625,10 +514,9 @@ struct Momentum {
+@@ -625,10 +444,9 @@ struct Momentum {
      position: Point<Pixels>,
      /// Unit vector of the release velocity.
      direction: Point<f32>,
@@ -302,7 +314,7 @@ index 1062e60..cad12f6 100644
      /// Distance already emitted along `direction`, in pixels.
      emitted_distance: f32,
  }
-@@ -882,10 +770,9 @@ impl TouchGestureRecognizer {
+@@ -882,10 +700,10 @@ impl TouchGestureRecognizer {
                      if speed >= self.tuning.min_fling_velocity {
                          let direction = point(velocity.x / speed, velocity.y / speed);
                          let speed = speed.min(MAX_FLING_VELOCITY);
@@ -310,13 +322,14 @@ index 1062e60..cad12f6 100644
 -                        if !duration.is_zero() {
 -                            let total_distance =
 -                                self.tuning.scroll_physics.fling_distance(speed, duration);
-+                        let simulation = self.tuning.scroll_physics.simulation(speed);
-+                        if !simulation.is_done(0.) {
++                        if let Some(simulation) =
++                            fling_simulation(self.tuning.scroll_physics, speed)
++                        {
 +                            let total_distance = simulation.x(f64::INFINITY) as f32;
                              // Prediction may have left the content ahead of
                              // the raw release position. Emitting that
                              // correction here would visibly snap the content
-@@ -906,9 +793,8 @@ impl TouchGestureRecognizer {
+@@ -906,9 +724,8 @@ impl TouchGestureRecognizer {
                                  device: touch.device,
                                  position: touch.start_position,
                                  direction,
@@ -327,7 +340,7 @@ index 1062e60..cad12f6 100644
                                  emitted_distance,
                              });
                          }
-@@ -1068,11 +954,8 @@ impl TouchGestureRecognizer {
+@@ -1068,11 +885,8 @@ impl TouchGestureRecognizer {
  
      fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
          let momentum = self.momentum.as_mut()?;
@@ -341,7 +354,7 @@ index 1062e60..cad12f6 100644
          // Prediction overshoot can start momentum ahead of its curve. Hold
          // that position until the curve catches up instead of stepping back.
          let step = (distance - momentum.emitted_distance).max(0.);
-@@ -1082,7 +965,7 @@ impl TouchGestureRecognizer {
+@@ -1082,7 +896,7 @@ impl TouchGestureRecognizer {
              px(momentum.direction.y * step),
          );
          let position = momentum.position;
@@ -350,7 +363,7 @@ index 1062e60..cad12f6 100644
              self.momentum = None;
              Some(RecognizedTouchGesture::Scroll(scroll_event(
                  position,
-@@ -1879,60 +1762,23 @@ mod tests {
+@@ -1879,60 +1693,28 @@ mod tests {
          assert_eq!(scroll.touch_phase, TouchPhase::Started);
      }
  
@@ -402,7 +415,12 @@ index 1062e60..cad12f6 100644
 -            let halfway = physics.fling_distance(4000., fast / 2);
 -            let total = physics.fling_distance(4000., fast);
 -            assert!(halfway > 0. && halfway < total, "{physics:?}");
-+            let (slow, fast) = (physics.simulation(500.), physics.simulation(4000.));
++            let (Some(slow), Some(fast)) = (
++                fling_simulation(physics, 500.),
++                fling_simulation(physics, 4000.),
++            ) else {
++                panic!("{physics:?}: both releases fling");
++            };
 +            let stop_time = |simulation: &dyn Simulation| {
 +                (1..)
 +                    .map(|frame| frame as f64 / 60.)
@@ -422,20 +440,72 @@ index 1062e60..cad12f6 100644
                  "faster flings must travel further: {physics:?}"
              );
          }
+diff --git a/gpui-pre/src/gestures/lsq_solver.rs b/gpui-pre/src/gestures/lsq_solver.rs
+index 22fe747..661292e 100644
+--- a/gpui-pre/src/gestures/lsq_solver.rs
++++ b/gpui-pre/src/gestures/lsq_solver.rs
+@@ -1,8 +1,7 @@
+ // Ported from flutter/flutter packages/flutter/lib/src/gestures/lsq_solver.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
+ // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+ 
+-// Flutter's `precisionErrorTolerance` (foundation/constants.dart).
+-const PRECISION_ERROR_TOLERANCE: f64 = 1e-10;
++use super::physics::precisionErrorTolerance;
+ 
+ // TODO(abarth): Consider using vector_math.
+ struct Vector<'a> {
+@@ -139,7 +138,7 @@ impl LeastSquaresSolver<'_> {
+             }
+ 
+             let norm = q.get_row(j).norm();
+-            if norm < PRECISION_ERROR_TOLERANCE {
++            if norm < precisionErrorTolerance {
+                 // Vectors are linearly dependent or zero so no solution.
+                 return None;
+             }
+@@ -199,7 +198,7 @@ impl LeastSquaresSolver<'_> {
+             sum_squared_total += w[h] * w[h] * v * v;
+         }
+ 
+-        let confidence = if sum_squared_total <= PRECISION_ERROR_TOLERANCE {
++        let confidence = if sum_squared_total <= precisionErrorTolerance {
+             1.0
+         } else {
+             1.0 - (sum_squared_error / sum_squared_total)
 diff --git a/gpui-pre/src/gestures/physics.rs b/gpui-pre/src/gestures/physics.rs
 new file mode 100644
-index 0000000..f172529
+index 0000000..9f88e8e
 --- /dev/null
 +++ b/gpui-pre/src/gestures/physics.rs
-@@ -0,0 +1,702 @@
-+// Ported from flutter/flutter packages/flutter/lib/src/physics/{tolerance,simulation,friction_simulation}.dart
-+// and packages/flutter/lib/src/widgets/scroll_simulation.dart @ ae9b586f34a8443573f82ef57c3bf914a908cbf7 (3.50.1).
-+// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,652 @@
++// Ported from flutter/flutter packages/flutter/lib/src/physics/{tolerance,simulation,friction_simulation,
++// spring_simulation,utils}.dart and packages/flutter/lib/src/foundation/constants.dart (`precisionErrorTolerance`)
++// @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE.
++//
++// Flutter's physics library, one module. Springs run on GPUI's own `SpringConfig` (spring.rs), which passes Flutter's
++// newton_test.dart spring cases (the table below), so `SpringDescription` is `SpringConfig` and `SpringSimulation` is
++// glue over `SpringConfig::step` with Flutter's `isDone`; Flutter's `_SpringSolution` classes are not ported.
++// Dropped: `FrictionSimulation.through`, `BoundedFrictionSimulation`, `GravitySimulation`, `ClampedSimulation`,
++// `SpringDescription.withDurationAndBounce` (and `duration`, `bounce`), `SpringType` (GPUI's
++// `SpringConfig::canonical` gives the damping ratio), `SpringSimulation`'s `snapToEnd` (unused); `nearEqual`'s null
++// arguments.
 +
-+//! The fling simulations behind [`ScrollPhysics`](super::ScrollPhysics),
-+//! translated from Flutter: [`FrictionSimulation`] (iOS) and
-+//! [`ClampingScrollSimulation`] (Android). Times are in seconds, positions
-+//! in pixels, velocities in pixels per second.
++//! Flutter's physics simulations: [`FrictionSimulation`], [`SpringSimulation`]
++//! and [`ScrollSpringSimulation`], with [`Tolerance`] and the [`Simulation`]
++//! trait the scroll simulations (`scroll_simulation.rs`) build on. Times are in
++//! seconds, positions in pixels, velocities in pixels per second.
++
++#![allow(
++    non_upper_case_globals,
++    reason = "Flutter's constant names, kept so Flutter changes diff in"
++)]
++
++use crate::{SpringConfig, SpringState};
++
++/// A tolerance for floating point comparisons (foundation/constants.dart),
++/// `moreOrLessEquals`' default epsilon in Flutter's tests.
++pub const precisionErrorTolerance: f64 = 1e-10;
 +
 +/// Structure that specifies maximum allowable magnitudes for distances,
 +/// durations, and velocity differences to be considered equal.
@@ -613,119 +683,139 @@ index 0000000..f172529
 +    }
 +}
 +
-+/// An implementation of scroll physics that aligns with Android.
-+///
-+/// For any value of `velocity`, this travels the same total distance as the
-+/// Android scroll physics.
-+///
-+/// This scroll physics has been adjusted relative to Android's in order to make
-+/// it ballistic, meaning that the deceleration at any moment is a function only
-+/// of the current velocity [`Simulation::dx`] and does not depend on how long ago the
-+/// simulation was started. Compared to this scroll physics, Android's moves
-+/// faster at the very beginning, then slower, and it ends at the same place but
-+/// a little later.
-+//
-+// This class is based on OverScroller.java from Android:
-+//   https://android.googlesource.com/platform/frameworks/base/+/android-13.0.0_r24/core/java/android/widget/OverScroller.java#738
-+// and in particular class SplineOverScroller (at the end of the file), starting
-+// at method "fling".  (A very similar algorithm is in Scroller.java in the same
-+// directory, but OverScroller is what's used by RecyclerView.)
-+//
-+// In the Android implementation, times are in milliseconds, positions are in
-+// physical pixels, but velocity is in physical pixels per whole second.
-+//
-+// The "See..." comments below refer to SplineOverScroller methods and values.
-+#[derive(Clone, Copy, Debug, PartialEq)]
-+pub struct ClampingScrollSimulation {
-+    /// The position of the particle at the beginning of the simulation, in
-+    /// pixels.
-+    position: f64,
-+    /// The velocity at which the particle is traveling at the beginning of the
-+    /// simulation, in pixels per second.
-+    velocity: f64,
-+    /// The total time the simulation will run, in seconds.
-+    duration: f64,
-+    /// The total, signed, distance the simulation will travel, in pixels.
-+    distance: f64,
++impl SpringConfig {
++    /// Flutter's `SpringDescription.withDampingRatio`: creates a spring given
++    /// the mass (m), stiffness (k), and damping ratio (ζ). The damping ratio
++    /// describes a gradual reduction in a spring oscillation.
++    ///
++    /// A ratio of 1.0 creates a critically damped spring, > 1.0 creates an
++    /// overdamped spring and < 1.0 an underdamped one.
++    pub fn with_damping_ratio(mass: f32, stiffness: f32, ratio: f32) -> Self {
++        Self::new(stiffness, ratio * 2.0 * (mass * stiffness).sqrt(), mass)
++    }
 +}
 +
-+impl ClampingScrollSimulation {
-+    // See INFLEXION.
-+    const K_INFLEXION: f64 = 0.35;
++/// A spring simulation.
++///
++/// Models a particle attached to a spring that follows Hooke's law. Flutter's
++/// closed forms are GPUI's [`SpringConfig::step`], which evaluates the spring
++/// at any time from its start.
++#[derive(Clone, Copy, Debug)]
++pub struct SpringSimulation {
++    spring: SpringConfig,
++    start: SpringState,
++    end_position: f64,
++    /// How close to the end of the simulation a value must be before
++    /// [`Simulation::is_done`] holds.
++    pub tolerance: Tolerance,
++}
 +
-+    /// Creates a scroll physics simulation that aligns with Android scrolling.
++impl SpringSimulation {
++    /// Creates a spring simulation from the provided spring description, start
++    /// distance, end distance, and initial velocity.
 +    ///
-+    /// `friction` is the amount of friction the particle experiences as it
-+    /// travels: the more, the sooner it stops and the less far it travels.
-+    /// `0.015` travels the same total distance as the Android scroll physics
-+    /// (see mFlingFriction).
-+    ///
-+    /// `pixels_per_inch` stands in for Flutter's `160.0 // 1 inch / 1 logical pixel`
-+    /// in `_physicalCoeff`, so a fling can run in a space of another density.
-+    pub fn new(position: f64, velocity: f64, friction: f64, pixels_per_inch: f64) -> Self {
-+        // See mPhysicalCoeff.  This has a value of 0.84 times Earth gravity,
-+        // expressed in units of pixels per second^2.
-+        let physical_coeff = 9.80665 // g, in meters per second^2
-+            * 39.37 // 1 meter / 1 inch
-+            * pixels_per_inch // 1 inch / 1 pixel
-+            * 0.84; // "look and feel tuning"
-+        // See DECELERATION_RATE.
-+        let k_deceleration_rate = Self::k_deceleration_rate();
-+
-+        // See getSplineFlingDuration().
-+        // See getSplineDeceleration().  That function's value is
-+        // math.log(velocity.abs() / referenceVelocity).
-+        let reference_velocity = friction * physical_coeff / Self::K_INFLEXION;
-+        // This is the value getSplineFlingDuration() would return, but in seconds.
-+        let android_duration =
-+            (velocity.abs() / reference_velocity).powf(1. / (k_deceleration_rate - 1.0));
-+        // We finish a bit sooner than Android, in order to travel the
-+        // same total distance.
-+        let duration = k_deceleration_rate * Self::K_INFLEXION * android_duration;
-+
-+        // See getSplineFlingDistance().  This returns the same value but with the
-+        // sign of [velocity], and in pixels.
-+        let distance = velocity * duration / k_deceleration_rate;
-+
++    /// The units for distance and velocity are arbitrary, but must be consistent
++    /// with the units used for other lengths in the system.
++    pub fn new(
++        spring: SpringConfig,
++        start: f64,
++        end: f64,
++        velocity: f64,
++        tolerance: Tolerance,
++    ) -> Self {
 +        Self {
-+            position,
-+            velocity,
-+            duration,
-+            distance,
++            spring,
++            start: SpringState {
++                position: start as f32,
++                velocity: velocity as f32,
++            },
++            end_position: end,
++            tolerance,
 +        }
 +    }
 +
-+    // See DECELERATION_RATE.
-+    fn k_deceleration_rate() -> f64 {
-+        0.78f64.ln() / 0.9f64.ln()
++    fn state(&self, time: f64) -> SpringState {
++        self.spring
++            .step(self.start, self.end_position as f32, time as f32)
 +    }
 +}
 +
-+impl Simulation for ClampingScrollSimulation {
++impl Simulation for SpringSimulation {
 +    fn x(&self, time: f64) -> f64 {
-+        let t = (time / self.duration).clamp(0.0, 1.0);
-+        self.position + self.distance * (1.0 - (1.0 - t).powf(Self::k_deceleration_rate()))
++        f64::from(self.state(time).position)
 +    }
 +
 +    fn dx(&self, time: f64) -> f64 {
-+        let t = (time / self.duration).clamp(0.0, 1.0);
-+        self.velocity * (1.0 - t).powf(Self::k_deceleration_rate() - 1.0)
++        f64::from(self.state(time).velocity)
 +    }
 +
 +    fn is_done(&self, time: f64) -> bool {
-+        time >= self.duration
++        near_zero(self.x(time) - self.end_position, self.tolerance.distance)
++            && near_zero(self.dx(time), self.tolerance.velocity)
 +    }
++}
++
++/// A [`SpringSimulation`] where the value of [`Simulation::x`] is guaranteed to
++/// have exactly the end value when the simulation [`Simulation::is_done`].
++#[derive(Clone, Copy, Debug)]
++pub struct ScrollSpringSimulation(pub SpringSimulation);
++
++impl ScrollSpringSimulation {
++    /// Creates a spring simulation from the provided spring description, start
++    /// distance, end distance, and initial velocity.
++    pub fn new(
++        spring: SpringConfig,
++        start: f64,
++        end: f64,
++        velocity: f64,
++        tolerance: Tolerance,
++    ) -> Self {
++        Self(SpringSimulation::new(
++            spring, start, end, velocity, tolerance,
++        ))
++    }
++}
++
++impl Simulation for ScrollSpringSimulation {
++    fn x(&self, time: f64) -> f64 {
++        if self.is_done(time) {
++            self.0.end_position
++        } else {
++            self.0.x(time)
++        }
++    }
++
++    fn dx(&self, time: f64) -> f64 {
++        self.0.dx(time)
++    }
++
++    fn is_done(&self, time: f64) -> bool {
++        self.0.is_done(time)
++    }
++}
++
++/// Whether two doubles are within a given distance of each other.
++///
++/// The `epsilon` argument must be positive.
++pub fn near_equal(a: f64, b: f64, epsilon: f64) -> bool {
++    debug_assert!(epsilon >= 0.0);
++    (a > (b - epsilon)) && (a < (b + epsilon)) || a == b
++}
++
++/// Whether a double is within a given distance of zero.
++///
++/// The epsilon argument must be positive.
++pub fn near_zero(a: f64, epsilon: f64) -> bool {
++    near_equal(a, 0.0, epsilon)
 +}
 +
 +/// Flutter's tests as the spec (AGENTS.md, Flutter rule 6): each row is named
 +/// after the Flutter test it ports. Add a row per new Flutter case.
 +#[cfg(test)]
 +mod tests {
-+    use super::super::ScrollPhysics;
 +    use super::*;
 +
-+    /// flutter_test's `precisionErrorTolerance`, `moreOrLessEquals`' default epsilon.
-+    const PRECISION: f64 = 1e-10;
++    const PRECISION: f64 = precisionErrorTolerance;
 +    const INF: f64 = f64::INFINITY;
 +
 +    /// One `expect` on a [`FrictionSimulation`].
@@ -847,27 +937,6 @@ index 0000000..f172529
 +                XBetween(5.0, 431.0, 432.0),
 +            ],
 +        },
-+        // BouncingScrollSimulation inside its extents is a FrictionSimulation
-+        // with drag 0.135; only that part is ported here.
-+        FrictionCase {
-+            flutter_test: "newton_test.dart: scroll_with_inf_edge_ends",
-+            drag: 0.135,
-+            position: 100.0,
-+            velocity: 400.0,
-+            tolerance_velocity: 1.0,
-+            constant_deceleration: 0.,
-+            expects: &[
-+                IsDone(0.0, false),
-+                X(0.0, 100.0, 0.0),
-+                Dx(0.0, 400.0, 0.0),
-+                X(1.0, 272.0, 1.0),
-+                Dx(1.0, 54.0, 1.0),
-+                Dx(2.0, 7.0, 1.0),
-+                DxBelow(3.0, 1.0),
-+                IsDone(5.0, true),
-+                X(5.0, 300.0, 1.0),
-+            ],
-+        },
 +    ];
 +
 +    #[test]
@@ -928,6 +997,935 @@ index 0000000..f172529
 +        assert!(failures.is_empty(), "{failures:#?}");
 +    }
 +
++    type SpringCheck = fn() -> Result<(), String>;
++
++    fn expect(ok: bool, what: impl FnOnce() -> String) -> Result<(), String> {
++        if ok { Ok(()) } else { Err(what()) }
++    }
++
++    /// Flutter's `expect(x(t).floor(), …)` and `expect(dx(t).floor(), …)` rows.
++    fn floors(
++        simulation: &SpringSimulation,
++        x: &[(f64, f64)],
++        dx: &[(f64, f64)],
++    ) -> Result<(), String> {
++        for &(time, want) in x {
++            let got = simulation.x(time);
++            expect(got.floor() == want, || {
++                format!("x({time}) = {got}, floor wanted {want}")
++            })?;
++        }
++        for &(time, want) in dx {
++            let got = simulation.dx(time);
++            expect(got.floor() == want, || {
++                format!("dx({time}) = {got}, floor wanted {want}")
++            })?;
++        }
++        Ok(())
++    }
++
++    const SPRING_TOLERANCE: Tolerance = Tolerance {
++        distance: 0.01,
++        velocity: 0.01,
++        ..Tolerance::DEFAULT_TOLERANCE
++    };
++
++    /// `newton_test.dart`'s spring tests, one row per test, run on GPUI's
++    /// `SpringConfig`. Each check is one of Flutter's `expect`s.
++    const SPRING_CASES: &[(&str, SpringCheck)] = &[
++        ("newton_test.dart: spring_types", || {
++            // (spring, Flutter's SpringType): GPUI's damping ratio decides it.
++            let springs = [
++                (
++                    SpringConfig::with_damping_ratio(1.0, 100.0, 1.0),
++                    "criticallyDamped",
++                ),
++                (
++                    SpringConfig::with_damping_ratio(1.0, 100.0, 0.75),
++                    "underDamped",
++                ),
++                (
++                    SpringConfig::with_damping_ratio(1.0, 100.0, 1.25),
++                    "overDamped",
++                ),
++                // Just so we don't forget how to create a desc without the ratio.
++                (SpringConfig::new(100.0, 20.0, 1.0), "criticallyDamped"),
++            ];
++            for (spring, want) in springs {
++                let (_, ratio) = spring.canonical();
++                let got = if ratio < 1.0 {
++                    "underDamped"
++                } else if ratio > 1.0 {
++                    "overDamped"
++                } else {
++                    "criticallyDamped"
++                };
++                expect(got == want, || format!("{spring:?}: {got}, wanted {want}"))?;
++            }
++            Ok(())
++        }),
++        ("newton_test.dart: crit_spring", || {
++            let spring = SpringConfig::with_damping_ratio(1.0, 100.0, 1.0);
++            let crit = SpringSimulation::new(spring, 0.0, 500.0, 0.0, SPRING_TOLERANCE);
++            expect(!crit.is_done(0.0), || "done at 0".into())?;
++            expect(crit.x(0.0) == 0.0 && crit.dx(0.0) == 0.0, || {
++                "moves at 0".into()
++            })?;
++            floors(
++                &crit,
++                &[(0.25, 356.0), (0.5, 479.0), (0.75, 497.0)],
++                &[(0.25, 1026.0), (0.5, 168.0), (0.75, 20.0)],
++            )?;
++            expect(crit.x(1.5) > 499.0 && crit.x(1.5) < 501.0, || {
++                format!("x(1.5) = {}", crit.x(1.5))
++            })?;
++            // basically within tolerance
++            expect(crit.dx(1.5) < 0.1, || format!("dx(1.5) = {}", crit.dx(1.5)))?;
++            expect(crit.is_done(1.60), || "not done at 1.6".into())
++        }),
++        ("newton_test.dart: overdamped_spring", || {
++            let spring = SpringConfig::with_damping_ratio(1.0, 100.0, 1.25);
++            let over = SpringSimulation::new(spring, 0.0, 500.0, 0.0, SPRING_TOLERANCE);
++            expect(!over.is_done(0.0), || "done at 0".into())?;
++            expect(
++                over.x(0.0) == 0.0 && over.dx(0.0).abs() <= PRECISION,
++                || "moves at 0".into(),
++            )?;
++            floors(
++                &over,
++                &[(0.5, 445.0), (1.0, 495.0), (1.5, 499.0)],
++                &[(0.5, 273.0), (1.0, 22.0), (1.5, 1.0)],
++            )?;
++            expect(over.is_done(3.0), || "not done at 3".into())
++        }),
++        ("newton_test.dart: underdamped_spring", || {
++            let spring = SpringConfig::with_damping_ratio(1.0, 100.0, 0.25);
++            let under =
++                SpringSimulation::new(spring, 0.0, 300.0, 0.0, Tolerance::DEFAULT_TOLERANCE);
++            expect(!under.is_done(0.0), || "done at 0".into())?;
++            expect(
++                under.x(0.0).abs() <= PRECISION && under.dx(0.0).abs() <= PRECISION,
++                || "moves at 0".into(),
++            )?;
++            // Overshot with negative velocity
++            floors(
++                &under,
++                &[(1.0, 325.0), (6.0, 299.0)],
++                &[(1.0, -65.0), (6.0, 0.0)],
++            )?;
++            expect(under.is_done(6.0), || "not done at 6".into())
++        }),
++    ];
++
++    #[test]
++    fn spring_simulation_matches_flutter() {
++        let failures: Vec<String> = SPRING_CASES
++            .iter()
++            .filter_map(|(flutter_test, check)| {
++                check()
++                    .err()
++                    .map(|error| format!("{flutter_test}: {error}"))
++            })
++            .collect();
++        assert!(failures.is_empty(), "{failures:#?}");
++    }
++}
+diff --git a/gpui-pre/src/gestures/scroll_physics.rs b/gpui-pre/src/gestures/scroll_physics.rs
+new file mode 100644
+index 0000000..2fedf54
+--- /dev/null
++++ b/gpui-pre/src/gestures/scroll_physics.rs
+@@ -0,0 +1,327 @@
++// Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_physics.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ScrollDecelerationRate`, `ScrollPhysics`' spring, drag threshold and
++// `toleranceFor`, and its `BouncingScrollPhysics` and `ClampingScrollPhysics` subclasses. Copyright 2014 The Flutter
++// Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++//
++// Flutter's class and its two subclasses are one enum, a variant per subclass, so a const table can name them.
++// Dropped: the `parent` chain (`applyTo`, `buildParent`, `shouldUpdate`); `shouldAcceptUserOffset`,
++// `adjustPositionForNewDimensions`, `recommendDeferredLoading`, `allowImplicitScrolling`, `carriedMomentum` and the
++// other physics classes; `ClampingScrollPhysics.applyBoundaryConditions`' debug assertion that the call is redundant
++// (it returns 0.0 then, as Flutter does in release builds); `ScrollMetrics`' axis direction.
++
++use super::physics::{ScrollSpringSimulation, Simulation, Tolerance};
++use super::scroll_simulation::{BouncingScrollSimulation, ClampingScrollSimulation};
++use crate::{Pixels, SpringConfig, px};
++
++/// The rate at which scroll momentum will be decelerated.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum ScrollDecelerationRate {
++    /// Standard deceleration, aligned with mobile software expectations.
++    #[default]
++    Normal,
++    /// Increased deceleration, aligned with desktop software expectations.
++    ///
++    /// Appropriate for use with input devices more precise than touch screens,
++    /// such as trackpads or mouse wheels.
++    Fast,
++}
++
++/// Flutter's `FixedScrollMetrics`: a description of a scrollable's contents, useful for modeling the state of its
++/// viewport. All values are in logical pixels.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct ScrollMetrics {
++    /// The minimum in-range value for `pixels`.
++    pub min_scroll_extent: f64,
++    /// The maximum in-range value for `pixels`.
++    pub max_scroll_extent: f64,
++    /// The current scroll position, in logical pixels along the axis direction.
++    pub pixels: f64,
++    /// The extent of the viewport along the axis direction.
++    pub viewport_dimension: f64,
++    /// The number of device pixels per logical pixel.
++    pub device_pixel_ratio: f64,
++}
++
++impl ScrollMetrics {
++    /// Whether the `pixels` value is outside the `min_scroll_extent` and `max_scroll_extent`.
++    pub fn out_of_range(&self) -> bool {
++        self.pixels < self.min_scroll_extent || self.pixels > self.max_scroll_extent
++    }
++}
++
++/// `ScrollPhysics.toleranceFor`: the tolerance to use for ballistic simulations on a display of
++/// `device_pixel_ratio` device pixels per logical pixel.
++pub fn tolerance_for(device_pixel_ratio: f64) -> Tolerance {
++    Tolerance {
++        velocity: 1.0 / (0.050 * device_pixel_ratio), // logical pixels per second
++        distance: 1.0 / device_pixel_ratio,           // logical pixels
++        time: Tolerance::DEFAULT_TOLERANCE.time,
++    }
++}
++
++/// How a scrollable decelerates after a fling and behaves past its edges: Flutter's `ScrollPhysics` subclasses.
++///
++/// A fling with no extents (GPUI's touch recognizer) runs the friction part only; bouncing, glow and clamping at the
++/// edges are the scroll container's, which knows its extents and passes them in [`ScrollMetrics`].
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum ScrollPhysics {
++    /// `BouncingScrollPhysics`: scroll physics for environments that allow the
++    /// scroll offset to go beyond the bounds of the content, but then bounce the
++    /// content back to the edge of those bounds. This is the behavior typically
++    /// seen on iOS.
++    Bouncing {
++        /// Used to determine parameters for friction simulations.
++        deceleration_rate: ScrollDecelerationRate,
++    },
++    /// `ClampingScrollPhysics`: scroll physics for environments that prevent the
++    /// scroll offset from reaching beyond the bounds of the content. This is the
++    /// behavior typically seen on Android.
++    Clamping,
++}
++
++impl ScrollPhysics {
++    /// iOS scroll feel: `BouncingScrollPhysics` at `UIScrollView`'s normal
++    /// deceleration rate.
++    pub const fn ios() -> Self {
++        Self::Bouncing {
++            deceleration_rate: ScrollDecelerationRate::Normal,
++        }
++    }
++
++    /// Android scroll feel: `ClampingScrollPhysics`, Android's `OverScroller`.
++    pub const fn android() -> Self {
++        Self::Clamping
++    }
++
++    /// The minimum amount of pixel distance drags must move by to start motion
++    /// the first time or after each time the drag motion stopped.
++    ///
++    /// If `None`, no minimum threshold is enforced.
++    pub fn drag_start_distance_motion_threshold(&self) -> Option<Pixels> {
++        match self {
++            Self::Bouncing { .. } => Some(px(3.5)),
++            Self::Clamping => None,
++        }
++    }
++
++    /// The spring to use for ballistic simulations.
++    pub fn spring(&self) -> SpringConfig {
++        match self {
++            Self::Bouncing {
++                deceleration_rate: ScrollDecelerationRate::Fast,
++            } => SpringConfig::with_damping_ratio(0.3, 75.0, 1.3),
++            Self::Bouncing {
++                deceleration_rate: ScrollDecelerationRate::Normal,
++            }
++            // ScrollPhysics._kDefaultSpring
++            | Self::Clamping => SpringConfig::with_damping_ratio(0.5, 100.0, 1.1),
++        }
++    }
++
++    /// Used by `DragScrollActivity` and other user-driven activities to convert
++    /// an offset in logical pixels as provided by the `DragUpdateDetails` into a
++    /// delta to apply (subtract from the current position).
++    ///
++    /// `offset` must not be zero, and the metrics' extents must be ordered.
++    pub fn apply_physics_to_user_offset(&self, position: &ScrollMetrics, offset: f64) -> f64 {
++        let Self::Bouncing { deceleration_rate } = *self else {
++            return offset;
++        };
++        if !position.out_of_range() {
++            return offset;
++        }
++
++        let overscroll_past_start = (position.min_scroll_extent - position.pixels).max(0.0);
++        let overscroll_past_end = (position.pixels - position.max_scroll_extent).max(0.0);
++        let overscroll_past = overscroll_past_start.max(overscroll_past_end);
++        let easing = (overscroll_past_start > 0.0 && offset < 0.0)
++            || (overscroll_past_end > 0.0 && offset > 0.0);
++
++        let friction = if easing {
++            // Apply less resistance when easing the overscroll vs tensioning.
++            deceleration_rate
++                .friction_factor((overscroll_past - offset.abs()) / position.viewport_dimension)
++        } else {
++            deceleration_rate.friction_factor(overscroll_past / position.viewport_dimension)
++        };
++        let direction = offset.signum();
++
++        if easing && deceleration_rate == ScrollDecelerationRate::Fast {
++            return direction * offset.abs();
++        }
++        direction * apply_friction(overscroll_past, offset.abs(), friction)
++    }
++
++    /// Determines the overscroll by applying the boundary conditions: the part of the move from `position.pixels`
++    /// to `value` that would leave the range, which the scrollable refuses (and reports as overscroll). Bouncing
++    /// physics lets the position leave the range: none.
++    pub fn apply_boundary_conditions(&self, position: &ScrollMetrics, value: f64) -> f64 {
++        if let Self::Bouncing { .. } = self {
++            return 0.0;
++        }
++        if value < position.pixels && position.pixels <= position.min_scroll_extent {
++            // Underscroll.
++            return value - position.pixels;
++        }
++        if position.max_scroll_extent <= position.pixels && position.pixels < value {
++            // Overscroll.
++            return value - position.pixels;
++        }
++        if value < position.min_scroll_extent && position.min_scroll_extent < position.pixels {
++            // Hit top edge.
++            return value - position.min_scroll_extent;
++        }
++        if position.pixels < position.max_scroll_extent && position.max_scroll_extent < value {
++            // Hit bottom edge.
++            return value - position.max_scroll_extent;
++        }
++        0.0
++    }
++
++    /// Returns a simulation for ballistic scrolling starting from the given
++    /// position with the given velocity (logical pixels per second), or `None`
++    /// when there is nothing to animate.
++    pub fn create_ballistic_simulation(
++        &self,
++        position: &ScrollMetrics,
++        velocity: f64,
++    ) -> Option<Box<dyn Simulation>> {
++        let tolerance = tolerance_for(position.device_pixel_ratio);
++        match *self {
++            Self::Bouncing { deceleration_rate } => {
++                let is_stationary = velocity.abs() < tolerance.velocity;
++                let is_rubber_band = is_stationary && position.out_of_range();
++
++                if !is_stationary || position.out_of_range() {
++                    return Some(Box::new(BouncingScrollSimulation::new(
++                        position.pixels,
++                        velocity,
++                        position.min_scroll_extent,
++                        position.max_scroll_extent,
++                        if is_rubber_band {
++                            rubber_band_spring()
++                        } else {
++                            self.spring()
++                        },
++                        match deceleration_rate {
++                            ScrollDecelerationRate::Fast => 1400.0,
++                            ScrollDecelerationRate::Normal => 0.0,
++                        },
++                        tolerance,
++                    )));
++                }
++                None
++            }
++            Self::Clamping => {
++                if position.out_of_range() {
++                    let end = if position.pixels > position.max_scroll_extent {
++                        position.max_scroll_extent
++                    } else {
++                        position.min_scroll_extent
++                    };
++                    return Some(Box::new(ScrollSpringSimulation::new(
++                        self.spring(),
++                        position.pixels,
++                        end,
++                        velocity.min(0.0),
++                        tolerance,
++                    )));
++                }
++                if velocity.abs() < tolerance.velocity {
++                    return None;
++                }
++                if velocity > 0.0 && position.pixels >= position.max_scroll_extent {
++                    return None;
++                }
++                if velocity < 0.0 && position.pixels <= position.min_scroll_extent {
++                    return None;
++                }
++                Some(Box::new(ClampingScrollSimulation::new(
++                    position.pixels,
++                    velocity,
++                    ClampingScrollSimulation::DEFAULT_FRICTION,
++                )))
++            }
++        }
++    }
++}
++
++impl ScrollDecelerationRate {
++    /// `BouncingScrollPhysics.frictionFactor`: the multiple applied to
++    /// overscroll to make it appear that scrolling past the edge of the
++    /// scrollable contents is harder than scrolling within bounds. This is done
++    /// by reducing the ratio of the scroll effect output vs the scroll gesture
++    /// input.
++    ///
++    /// This factor starts at 0.52 for [`ScrollDecelerationRate::Normal`] and 0.26 for
++    /// [`ScrollDecelerationRate::Fast`].
++    ///
++    /// The `overscroll_fraction` represents how far past the edge the user has
++    /// dragged, where 0.0 means no overscroll. As this value increases, the
++    /// friction factor decreases quadratically, making further overscroll harder.
++    pub fn friction_factor(self, overscroll_fraction: f64) -> f64 {
++        (1.0 - overscroll_fraction).powi(2)
++            * match self {
++                Self::Fast => 0.26,
++                Self::Normal => 0.52,
++            }
++    }
++}
++
++// BouncingScrollPhysics._applyFriction
++fn apply_friction(extent_outside: f64, mut abs_delta: f64, gamma: f64) -> f64 {
++    let mut total = 0.0;
++    if extent_outside > 0.0 {
++        let delta_to_limit = extent_outside / gamma;
++        if abs_delta < delta_to_limit {
++            return abs_delta * gamma;
++        }
++        total += extent_outside;
++        abs_delta -= delta_to_limit;
++    }
++    total + abs_delta
++}
++
++// Approximation of iOS native rubber band decay rate.
++const RUBBER_BAND_HALF_LIFE_SECONDS: f64 = 0.07;
++
++/// `BouncingScrollPhysics._rubberBandSpring`: spring used to animate
++/// overscroll bounce from a stationary release in iOS native style.
++///
++/// Research indicates that iOS employs a distinct decay function when a
++/// scrollable area is released in an overscroll and stationary state (zero
++/// initial velocity), conforming to an exponential decay model.
++//
++// ## Mathematical derivation
++//
++// A standard spring-damper system follows the second-order differential equation:
++// m*x'' + c*x' + k*x = 0
++//
++// To force this second-order system to behave like a first-order exponential
++// decay x(t) = C * e^(-lambda * t), we configure it as an overdamped spring
++// with two explicitly defined roots (r1 and r2) for its characteristic
++// equation:
++//
++// * r1 = -lambda (the primary root driving the visible exponential decay)
++// * r2 = -100000 * lambda (an extremely large negative root)
++//
++// Because r2 is massive and negative, its corresponding term in the exact
++// mathematical solution (C2 * e^(r2 * t)) decays to zero almost
++// instantaneously. The system movement becomes dominated by r1.
++//
++// Using Vieta's formulas for the characteristic equation r^2 + (c/m)r + (k/m) = 0:
++// * r1 + r2 = -c/m => damping (c) = -(r1 + r2) * m
++// * r1 * r2 = k/m  => stiffness (k) = (r1 * r2) * m
++fn rubber_band_spring() -> SpringConfig {
++    // Decay constant (lambda) for rubber band spring simulation.
++    let rubber_band_lambda = (2f64.ln() / RUBBER_BAND_HALF_LIFE_SECONDS) as f32;
++    SpringConfig {
++        mass: 1.0,
++        stiffness: 1e5 * rubber_band_lambda * rubber_band_lambda,
++        damping: (1e5 + 1.0) * rubber_band_lambda,
++    }
++}
++
++#[cfg(test)]
++#[path = "scroll_physics_tests.rs"]
++mod tests;
+diff --git a/gpui-pre/src/gestures/scroll_physics_tests.rs b/gpui-pre/src/gestures/scroll_physics_tests.rs
+new file mode 100644
+index 0000000..38c9b00
+--- /dev/null
++++ b/gpui-pre/src/gestures/scroll_physics_tests.rs
+@@ -0,0 +1,192 @@
++// Ported from flutter/flutter packages/flutter/test/widgets/scroll_physics_test.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE.
++
++//! Flutter's `BouncingScrollPhysics` and `ClampingScrollPhysics` maths tests, one table row per Flutter test,
++//! named after it. Dropped (widget or `ScrollPhysics` API, not ported): `allowSelectionEdgeScrolling`,
++//! `applyTo()`, `subclasses applyTo()`, `PageScrollPhysics work with NestedScrollView`, the `shouldUpdate` and
++//! shorthand tests, and the three `testWidgets` updating a position; the `PageScrollPhysics` row of "Creating the
++//! simulation doesn't alter the velocity for time 0" (not ported).
++
++use super::*;
++
++/// Flutter's `FixedScrollMetrics(minScrollExtent: 0.0, ..., axisDirection: AxisDirection.down)`.
++fn metrics(
++    max_scroll_extent: f64,
++    pixels: f64,
++    viewport_dimension: f64,
++    device_pixel_ratio: f64,
++) -> ScrollMetrics {
++    ScrollMetrics {
++        min_scroll_extent: 0.0,
++        max_scroll_extent,
++        pixels,
++        viewport_dimension,
++        device_pixel_ratio,
++    }
++}
++
++const MOBILE: ScrollPhysics = ScrollPhysics::Bouncing {
++    deceleration_rate: ScrollDecelerationRate::Normal,
++};
++const DESKTOP: ScrollPhysics = ScrollPhysics::Bouncing {
++    deceleration_rate: ScrollDecelerationRate::Fast,
++};
++
++/// Flutter's `moreOrLessEquals`.
++fn more_or_less_equals(got: f64, wanted: f64) -> bool {
++    (got - wanted).abs() <= super::super::physics::precisionErrorTolerance
++}
++
++#[test]
++fn creating_the_simulation_does_not_alter_the_velocity_for_time_0() {
++    // Calls to createBallisticSimulation may happen on every frame (i.e. when the maxScrollExtent changes)
++    // Changing velocity for time 0 may cause a sudden, unwanted damping/speedup effect
++    let position = metrics(100.0, 20.0, 500.0, 3.0);
++    for physics in [MOBILE, ScrollPhysics::Clamping] {
++        let simulation = physics
++            .create_ballistic_simulation(&position, 1000.0)
++            .expect("a moving release makes a simulation");
++        assert!(
++            more_or_less_equals(simulation.dx(0.0), 1000.0),
++            "{physics:?}"
++        );
++    }
++}
++
++#[test]
++fn bouncing_scroll_physics_test() {
++    // (Flutter test, check)
++    let cases: &[(&str, fn() -> bool)] = &[
++        ("overscroll is progressively harder", || {
++            let less =
++                MOBILE.apply_physics_to_user_offset(&metrics(1000.0, -20.0, 100.0, 3.0), 10.0);
++            let more =
++                MOBILE.apply_physics_to_user_offset(&metrics(1000.0, -40.0, 100.0, 3.0), 10.0);
++            // Scrolling from a more overscrolled position meets more resistance.
++            less > 1.0 && less < 20.0 && more > 1.0 && more < 20.0 && less.abs() > more.abs()
++        }),
++        ("easing an overscroll still has resistance", || {
++            let easing =
++                MOBILE.apply_physics_to_user_offset(&metrics(1000.0, -20.0, 100.0, 3.0), -10.0);
++            easing < -1.0 && easing > -10.0
++        }),
++        ("no resistance when not overscrolled", || {
++            let position = metrics(1000.0, 300.0, 100.0, 3.0);
++            MOBILE.apply_physics_to_user_offset(&position, 10.0) == 10.0
++                && MOBILE.apply_physics_to_user_offset(&position, -10.0) == -10.0
++        }),
++        (
++            "easing an overscroll meets less resistance than tensioning",
++            || {
++                let position = metrics(1000.0, -20.0, 100.0, 3.0);
++                let easing = MOBILE.apply_physics_to_user_offset(&position, -10.0);
++                let tensioning = MOBILE.apply_physics_to_user_offset(&position, 10.0);
++                easing.abs() > tensioning.abs()
++            },
++        ),
++        (
++            "no easing resistance for ScrollDecelerationRate.fast",
++            || {
++                let position = metrics(1000.0, -20.0, 100.0, 3.0);
++                let easing = DESKTOP.apply_physics_to_user_offset(&position, -10.0);
++                let tensioning = DESKTOP.apply_physics_to_user_offset(&position, 10.0);
++                tensioning.abs() < easing.abs() && easing == -10.0
++            },
++        ),
++        (
++            "overscroll a small list and a big list works the same way",
++            || {
++                let small =
++                    MOBILE.apply_physics_to_user_offset(&metrics(10.0, -20.0, 100.0, 3.0), 10.0);
++                let big =
++                    MOBILE.apply_physics_to_user_offset(&metrics(1000.0, -20.0, 100.0, 3.0), 10.0);
++                small == big && small > 1.0 && small < 20.0
++            },
++        ),
++        ("frictionFactor", || {
++            ScrollDecelerationRate::Fast.friction_factor(0.0) == 0.26
++                && ScrollDecelerationRate::Normal.friction_factor(0.0) == 0.52
++                && more_or_less_equals(ScrollDecelerationRate::Fast.friction_factor(0.4), 0.0936)
++                && more_or_less_equals(ScrollDecelerationRate::Normal.friction_factor(0.4), 0.1872)
++                && more_or_less_equals(ScrollDecelerationRate::Fast.friction_factor(0.8), 0.0104)
++                && more_or_less_equals(ScrollDecelerationRate::Normal.friction_factor(0.8), 0.0208)
++        }),
++    ];
++    for (name, check) in cases {
++        assert!(check(), "BouncingScrollPhysics test: {name}");
++    }
++}
++
++#[test]
++fn bouncing_scroll_physics_selects_correct_spring_for_create_ballistic_simulation() {
++    // (Flutter test, pixels, stationary x(0.1), x(0.2), x(0.3), x(0.4))
++    let cases = [
++        (
++            "on leading edge overscroll",
++            -500.0,
++            [
++                -185.7511436536831,
++                -69.00628466755506,
++                -25.635736232654022,
++                -9.523639409892818,
++            ],
++        ),
++        (
++            "on trailing edge overscroll",
++            1500.0,
++            [
++                1185.7511436536831,
++                1069.006284667555,
++                1025.635736232654,
++                1009.5236394098928,
++            ],
++        ),
++    ];
++    for (name, pixels, stationary_x) in cases {
++        let position = metrics(1000.0, pixels, 500.0, 1.0);
++        let sim_stationary = MOBILE
++            .create_ballistic_simulation(&position, 0.0)
++            .expect("an out-of-range release makes a simulation");
++        let sim_moving = MOBILE
++            .create_ballistic_simulation(&position, -100.0)
++            .expect("an out-of-range release makes a simulation");
++        // Stationary simulation should follow the expected spring trajectory.
++        for (index, wanted) in stationary_x.into_iter().enumerate() {
++            let time = 0.1 * (index + 1) as f64;
++            let got = sim_stationary.x(time);
++            assert!(
++                (got - wanted).abs() <= 0.01,
++                "{name}: x({time}) = {got}, wanted {wanted}"
++            );
++        }
++        // Stationary and moving simulations should produce different positions.
++        assert!(
++            !more_or_less_equals(sim_stationary.x(0.2), sim_moving.x(0.2)),
++            "{name}: the moving release uses the other spring"
++        );
++    }
++}
++
++#[test]
++fn clamping_scroll_physics_apply_boundary_conditions() {
++    // (case, pixels, value, boundary overscroll); the range is 0..1000.
++    let cases = [
++        // Flutter's "ClampingScrollPhysics assertion test": a redundant call (value == pixels). Flutter asserts in
++        // debug builds; the port returns what Flutter's release builds do.
++        ("ClampingScrollPhysics assertion test", 500.0, 500.0, 0.0),
++        ("underscroll", 0.0, -10.0, -10.0),
++        ("overscroll", 1000.0, 1010.0, 10.0),
++        ("hit top edge", 5.0, -10.0, -10.0),
++        ("hit bottom edge", 995.0, 1010.0, 10.0),
++        ("in range", 500.0, 510.0, 0.0),
++    ];
++    for (name, pixels, value, wanted) in cases {
++        let position = metrics(1000.0, pixels, 0.0, 3.0);
++        assert_eq!(
++            ScrollPhysics::Clamping.apply_boundary_conditions(&position, value),
++            wanted,
++            "{name}"
++        );
++    }
++}
+diff --git a/gpui-pre/src/gestures/scroll_simulation.rs b/gpui-pre/src/gestures/scroll_simulation.rs
+new file mode 100644
+index 0000000..0a0eb45
+--- /dev/null
++++ b/gpui-pre/src/gestures/scroll_simulation.rs
+@@ -0,0 +1,609 @@
++// Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_simulation.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7), with its tests from packages/flutter/test/widgets/
++// scroll_simulation_test.dart and the BouncingScrollSimulation cases of packages/flutter/test/physics/newton_test.dart.
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++//
++// Dropped: the `leadingExtent <= trailingExtent` assertion, `BouncingScrollSimulation`'s mutable `tolerance` (fixed at
++// construction; Flutter copies it into the inner simulations on every call), and `ClampingScrollSimulation`'s
++// `tolerance` (its `isDone` never reads it).
++
++//! The ballistic scroll simulations [`ScrollPhysics`](super::ScrollPhysics)
++//! creates: [`BouncingScrollSimulation`] (iOS, macOS) and
++//! [`ClampingScrollSimulation`] (Android and the other platforms).
++
++use super::physics::{FrictionSimulation, ScrollSpringSimulation, Simulation, Tolerance};
++use crate::SpringConfig;
++
++/// An implementation of scroll physics that matches iOS.
++///
++/// The simulation starts in a friction phase (or in a spring phase if it starts out of range), and switches to the
++/// spring once the friction would carry the position past an edge.
++#[derive(Clone, Copy, Debug)]
++pub struct BouncingScrollSimulation {
++    /// When [`Simulation::x`] falls below this value the simulation switches from an internal friction model to a
++    /// spring model which causes [`Simulation::x`] to "spring" back to [`Self::leading_extent`].
++    pub leading_extent: f64,
++    /// When [`Simulation::x`] exceeds this value the simulation switches from an internal friction model to a
++    /// spring model which causes [`Simulation::x`] to "spring" back to [`Self::trailing_extent`].
++    pub trailing_extent: f64,
++    /// The spring used to return [`Simulation::x`] to either [`Self::leading_extent`] or [`Self::trailing_extent`].
++    pub spring: SpringConfig,
++    /// How close the simulation must come to rest before it is done.
++    pub tolerance: Tolerance,
++    phase: BouncingPhase,
++}
++
++/// Flutter's `_frictionSimulation`, `_springSimulation` and `_springTime`, as the one phase plan they encode.
++#[derive(Clone, Copy, Debug)]
++enum BouncingPhase {
++    /// Started out of range (`_springTime` is negative infinity): only the spring runs.
++    Spring(ScrollSpringSimulation),
++    /// Friction, then the spring from `spring_time` when the friction would leave the range (`_springTime` is
++    /// infinite when `then` is `None`).
++    Friction {
++        friction: FrictionSimulation,
++        then: Option<(f64, ScrollSpringSimulation)>,
++    },
++}
++
++impl BouncingScrollSimulation {
++    /// The maximum velocity that can be transferred from the inertia of a ballistic scroll into overscroll.
++    pub const MAX_SPRING_TRANSFER_VELOCITY: f64 = 5000.0;
++
++    /// Creates a simulation group for scrolling on iOS, with the given parameters.
++    ///
++    /// The position and velocity arguments must use the same units as will be expected from the [`Simulation::x`]
++    /// and [`Simulation::dx`] methods respectively (typically logical pixels and logical pixels per second
++    /// respectively).
++    ///
++    /// The leading and trailing extents must use the unit of length, the same unit as used for the position
++    /// argument and as expected from the [`Simulation::x`] method (typically logical pixels).
++    ///
++    /// The units used with the provided spring must similarly be consistent with the other
++    /// arguments. A default set of constants is used for the `spring` description if it is omitted; these
++    /// defaults assume that the unit of length is the logical pixel.
++    pub fn new(
++        position: f64,
++        velocity: f64,
++        leading_extent: f64,
++        trailing_extent: f64,
++        spring: SpringConfig,
++        constant_deceleration: f64,
++        tolerance: Tolerance,
++    ) -> Self {
++        let spring_to =
++            |x: f64, end: f64, dx: f64| ScrollSpringSimulation::new(spring, x, end, dx, tolerance);
++        let phase = if position < leading_extent {
++            // _underscrollSimulation
++            BouncingPhase::Spring(spring_to(position, leading_extent, velocity))
++        } else if position > trailing_extent {
++            // _overscrollSimulation
++            BouncingPhase::Spring(spring_to(position, trailing_extent, velocity))
++        } else {
++            // Taken from UIScrollView.decelerationRate (.normal = 0.998)
++            // 0.998^1000 = ~0.135
++            let friction = FrictionSimulation::new(
++                0.135,
++                position,
++                velocity,
++                tolerance,
++                constant_deceleration,
++            );
++            let final_x = friction.final_x();
++            let edge = if velocity > 0.0 && final_x > trailing_extent {
++                Some(trailing_extent)
++            } else if velocity < 0.0 && final_x < leading_extent {
++                Some(leading_extent)
++            } else {
++                None
++            };
++            let then = edge.map(|edge| {
++                let spring_time = friction.time_at_x(edge);
++                let dx = friction
++                    .dx(spring_time)
++                    .min(Self::MAX_SPRING_TRANSFER_VELOCITY);
++                (spring_time, spring_to(edge, edge, dx))
++            });
++            BouncingPhase::Friction { friction, then }
++        };
++        Self {
++            leading_extent,
++            trailing_extent,
++            spring,
++            tolerance,
++            phase,
++        }
++    }
++
++    /// Flutter's `_simulation(time)`: the simulation that runs at `time`, and the time it started (`_timeOffset`).
++    fn simulation(&self, time: f64) -> (&dyn Simulation, f64) {
++        match &self.phase {
++            BouncingPhase::Spring(spring) => (spring, 0.0),
++            BouncingPhase::Friction {
++                then: Some((spring_time, spring)),
++                ..
++            } if time > *spring_time => (spring, *spring_time),
++            BouncingPhase::Friction { friction, .. } => (friction, 0.0),
++        }
++    }
++}
++
++impl Simulation for BouncingScrollSimulation {
++    fn x(&self, time: f64) -> f64 {
++        let (simulation, time_offset) = self.simulation(time);
++        simulation.x(time - time_offset)
++    }
++
++    fn dx(&self, time: f64) -> f64 {
++        let (simulation, time_offset) = self.simulation(time);
++        simulation.dx(time - time_offset)
++    }
++
++    fn is_done(&self, time: f64) -> bool {
++        let (simulation, time_offset) = self.simulation(time);
++        simulation.is_done(time - time_offset)
++    }
++}
++
++/// An implementation of scroll physics that aligns with Android.
++///
++/// For any value of `velocity`, this travels the same total distance as the
++/// Android scroll physics.
++///
++/// This scroll physics has been adjusted relative to Android's in order to make
++/// it ballistic, meaning that the deceleration at any moment is a function only
++/// of the current velocity [`Simulation::dx`] and does not depend on how long ago the
++/// simulation was started. Compared to this scroll physics, Android's moves
++/// faster at the very beginning, then slower, and it ends at the same place but
++/// a little later.
++//
++// This class is based on OverScroller.java from Android:
++//   https://android.googlesource.com/platform/frameworks/base/+/android-13.0.0_r24/core/java/android/widget/OverScroller.java#738
++// and in particular class SplineOverScroller (at the end of the file), starting
++// at method "fling".  (A very similar algorithm is in Scroller.java in the same
++// directory, but OverScroller is what's used by RecyclerView.)
++//
++// In the Android implementation, times are in milliseconds, positions are in
++// physical pixels, but velocity is in physical pixels per whole second.
++//
++// The "See..." comments below refer to SplineOverScroller methods and values.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct ClampingScrollSimulation {
++    /// The position of the particle at the beginning of the simulation, in
++    /// pixels.
++    position: f64,
++    /// The velocity at which the particle is traveling at the beginning of the
++    /// simulation, in pixels per second.
++    velocity: f64,
++    /// The total time the simulation will run, in seconds.
++    duration: f64,
++    /// The total, signed, distance the simulation will travel, in pixels.
++    distance: f64,
++}
++
++impl ClampingScrollSimulation {
++    // See INFLEXION.
++    const K_INFLEXION: f64 = 0.35;
++
++    // See mPhysicalCoeff.  This has a value of 0.84 times Earth gravity,
++    // expressed in units of logical pixels per second^2.
++    const PHYSICAL_COEFF: f64 = 9.80665 // g, in meters per second^2
++        * 39.37 // 1 meter / 1 inch
++        * 160.0 // 1 inch / 1 logical pixel
++        * 0.84; // "look and feel tuning"
++
++    /// Flutter's default `friction`.
++    pub const DEFAULT_FRICTION: f64 = 0.015;
++
++    /// Creates a scroll physics simulation that aligns with Android scrolling.
++    ///
++    /// `friction` is the amount of friction the particle experiences as it
++    /// travels: the more, the sooner it stops and the less far it travels.
++    /// `0.015` travels the same total distance as the Android scroll physics
++    /// (see mFlingFriction).
++    pub fn new(position: f64, velocity: f64, friction: f64) -> Self {
++        // See DECELERATION_RATE.
++        let k_deceleration_rate = Self::k_deceleration_rate();
++
++        // See getSplineFlingDuration().
++        // See getSplineDeceleration().  That function's value is
++        // math.log(velocity.abs() / referenceVelocity).
++        let reference_velocity = friction * Self::PHYSICAL_COEFF / Self::K_INFLEXION;
++        // This is the value getSplineFlingDuration() would return, but in seconds.
++        let android_duration =
++            (velocity.abs() / reference_velocity).powf(1. / (k_deceleration_rate - 1.0));
++        // We finish a bit sooner than Android, in order to travel the
++        // same total distance.
++        let duration = k_deceleration_rate * Self::K_INFLEXION * android_duration;
++
++        // See getSplineFlingDistance().  This returns the same value but with the
++        // sign of [velocity], and in pixels.
++        let distance = velocity * duration / k_deceleration_rate;
++
++        Self {
++            position,
++            velocity,
++            duration,
++            distance,
++        }
++    }
++
++    // See DECELERATION_RATE.
++    fn k_deceleration_rate() -> f64 {
++        0.78f64.ln() / 0.9f64.ln()
++    }
++}
++
++impl Simulation for ClampingScrollSimulation {
++    fn x(&self, time: f64) -> f64 {
++        let t = (time / self.duration).clamp(0.0, 1.0);
++        self.position + self.distance * (1.0 - (1.0 - t).powf(Self::k_deceleration_rate()))
++    }
++
++    fn dx(&self, time: f64) -> f64 {
++        let t = (time / self.duration).clamp(0.0, 1.0);
++        self.velocity * (1.0 - t).powf(Self::k_deceleration_rate() - 1.0)
++    }
++
++    fn is_done(&self, time: f64) -> bool {
++        time >= self.duration
++    }
++}
++
++/// Flutter's tests as the spec (AGENTS.md, Flutter rule 6): each row is named
++/// after the Flutter test it ports. Add a row per new Flutter case.
++#[cfg(test)]
++mod tests {
++    use super::super::physics::precisionErrorTolerance as PRECISION;
++    use super::*;
++
 +    /// The (position, velocity) pairs Flutter's clamping tests start from.
 +    const CLAMPING_STARTS: &[(f64, f64)] = &[
 +        (51.0, 2866.91537),
@@ -942,7 +1940,11 @@ index 0000000..f172529
 +    ];
 +
 +    fn clamping(position: f64, velocity: f64) -> ClampingScrollSimulation {
-+        ClampingScrollSimulation::new(position, velocity, 0.015, 160.0)
++        ClampingScrollSimulation::new(
++            position,
++            velocity,
++            ClampingScrollSimulation::DEFAULT_FRICTION,
++        )
 +    }
 +
 +    type ClampingCheck = fn() -> Result<(), String>;
@@ -1119,14 +2121,158 @@ index 0000000..f172529
 +        assert!(failures.is_empty(), "{failures:#?}");
 +    }
 +
-+    /// `scroll_physics_test.dart`: "ScrollPhysics scrolling subclasses -
-+    /// Creating the simulation doesn't alter the velocity for time 0", for the
-+    /// presets standing in for `BouncingScrollPhysics` and `ClampingScrollPhysics`.
++    fn bouncing(
++        position: f64,
++        velocity: f64,
++        trailing_extent: f64,
++        spring: SpringConfig,
++        tolerance: Tolerance,
++    ) -> BouncingScrollSimulation {
++        BouncingScrollSimulation::new(
++            position,
++            velocity,
++            0.0,
++            trailing_extent,
++            spring,
++            0.0,
++            tolerance,
++        )
++    }
++
++    /// One `expect` on a [`BouncingScrollSimulation`].
++    enum Expect {
++        IsDone(f64, bool),
++        /// `x(time)` within epsilon of a value.
++        X(f64, f64, f64),
++        /// `dx(time)` within epsilon of a value.
++        Dx(f64, f64, f64),
++        /// `dx(time)` strictly below a value.
++        DxBelow(f64, f64),
++    }
++    use Expect::*;
++
++    /// newton_test.dart's `BouncingScrollSimulation` tests: (Flutter test,
++    /// position, velocity, trailing extent, spring (mass, stiffness, ratio),
++    /// tolerance (velocity, distance), expects). The leading extent is 0.
++    const BOUNCING_CASES: &[(&str, f64, f64, f64, (f32, f32, f32), (f64, f64), &[Expect])] = &[
++        (
++            "newton_test.dart: test_kinetic_scroll",
++            100.0,
++            800.0,
++            300.0,
++            (1.0, 50.0, 0.5),
++            (0.5, 0.1),
++            // switch from friction to spring at 0.5
++            &[IsDone(0.0, false), IsDone(0.5, false), IsDone(3.5, true)],
++        ),
++        (
++            "newton_test.dart: test_kinetic_scroll (negative velocity)",
++            100.0,
++            -800.0,
++            300.0,
++            (1.0, 50.0, 0.5),
++            (0.5, 0.1),
++            &[IsDone(0.0, false), IsDone(0.5, false), IsDone(3.5, true)],
++        ),
++        (
++            "newton_test.dart: scroll_with_inf_edge_ends",
++            100.0,
++            400.0,
++            f64::INFINITY,
++            (1.0, 50.0, 0.5),
++            (1.0, Tolerance::DEFAULT_TOLERANCE.distance),
++            &[
++                IsDone(0.0, false),
++                X(0.0, 100.0, 0.0),
++                Dx(0.0, 400.0, 0.0),
++                X(1.0, 272.0, 1.0),
++                Dx(1.0, 54.0, 1.0),
++                Dx(2.0, 7.0, 1.0),
++                DxBelow(3.0, 1.0),
++                IsDone(5.0, true),
++                X(5.0, 300.0, 1.0),
++            ],
++        ),
++        (
++            "newton_test.dart: over/under scroll spring",
++            500.0,
++            -7500.0,
++            1000.0,
++            (1.0, 170.0, 1.1),
++            (45.0, 1.5),
++            &[
++                IsDone(0.0, false),
++                X(0.0, 500.0, PRECISION),
++                Dx(0.0, -7500.0, PRECISION),
++                // Expect to reach 0.0 at about t=.07 at which point the simulation will
++                // switch from friction to the spring
++                IsDone(0.065, false),
++                X(0.065, 42.0, 1.0),
++                Dx(0.065, -6584.0, 1.0),
++                // We've overscrolled (0.1 > 0.07). Trigger the underscroll
++                // simulation, and reverse direction
++                IsDone(0.1, false),
++                X(0.1, -123.0, 1.0),
++                Dx(0.1, -2613.0, 1.0),
++                // Headed back towards 0.0 and slowing down.
++                IsDone(0.5, false),
++                X(0.5, -15.0, 1.0),
++                Dx(0.5, 124.0, 1.0),
++                // Now jump back to the beginning, because we can.
++                IsDone(0.0, false),
++                X(0.0, 500.0, PRECISION),
++                Dx(0.0, -7500.0, PRECISION),
++                IsDone(2.0, true),
++                X(2.0, 0.0, 0.0),
++                Dx(2.0, 0.0, 1.0),
++            ],
++        ),
++    ];
++
 +    #[test]
-+    fn presets_keep_the_release_velocity_at_time_0() {
-+        for physics in [ScrollPhysics::ios(), ScrollPhysics::android()] {
-+            let dx = physics.simulation(1000.).dx(0.);
-+            assert!((dx - 1000.).abs() <= PRECISION, "{physics:?}: {dx}");
++    fn bouncing_scroll_simulation_matches_flutter() {
++        let mut failures = Vec::new();
++        for &(
++            flutter_test,
++            position,
++            velocity,
++            trailing,
++            (mass, stiffness, ratio),
++            (tv, td),
++            expects,
++        ) in BOUNCING_CASES
++        {
++            let tolerance = Tolerance {
++                velocity: tv,
++                distance: td,
++                ..Tolerance::DEFAULT_TOLERANCE
++            };
++            let spring = SpringConfig::with_damping_ratio(mass, stiffness, ratio);
++            let scroll = bouncing(position, velocity, trailing, spring, tolerance);
++            for (index, expect) in expects.iter().enumerate() {
++                let (got, ok) = match *expect {
++                    IsDone(time, want) => {
++                        let got = scroll.is_done(time);
++                        (f64::from(u8::from(got)), got == want)
++                    }
++                    X(time, want, epsilon) => {
++                        let got = scroll.x(time);
++                        (got, (got - want).abs() <= epsilon)
++                    }
++                    Dx(time, want, epsilon) => {
++                        let got = scroll.dx(time);
++                        (got, (got - want).abs() <= epsilon)
++                    }
++                    DxBelow(time, high) => {
++                        let got = scroll.dx(time);
++                        (got, got < high)
++                    }
++                };
++                if !ok {
++                    failures.push(format!("{flutter_test}, expect #{index}: got {got}"));
++                }
++            }
 +        }
++        assert!(failures.is_empty(), "{failures:#?}");
 +    }
 +}

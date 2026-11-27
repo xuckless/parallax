@@ -1,6 +1,5 @@
 // Ported from flutter/flutter @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): the per-TargetPlatform
-// defaults of (under packages/flutter/lib/src/) gestures/events.dart (computeHitSlop and friends), gestures/gesture_settings.dart,
-// widgets/scroll_configuration.dart, widgets/scroll_physics.dart, widgets/scroll_simulation.dart,
+// defaults of (under packages/flutter/lib/src/) gestures/gesture_settings.dart, widgets/scroll_configuration.dart,
 // widgets/feedback.dart, widgets/text_selection.dart, cupertino/picker.dart, material/app.dart, material/constants.dart,
 // cupertino/constants.dart; Android's touch slop from engine/src/flutter/shell/platform/android/io/flutter/embedding/
 // android/FlutterView.java; the browser OS detection of engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/
@@ -15,102 +14,19 @@
     reason = "Flutter's constant names, kept so Flutter changes diff in"
 )]
 
-use gpui::constants::{
-    kDoubleTapMinTime, kDoubleTapSlop, kDoubleTapTimeout, kLongPressTimeout, kMaxFlingVelocity,
-    kMinFlingVelocity, kPanSlop, kPrecisePointerHitSlop, kPrecisePointerPanSlop,
-    kPrecisePointerScaleSlop, kScaleSlop, kTouchSlop,
+use gpui::{
+    GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics,
+    VelocityTrackerKind, px, slops,
 };
-use gpui::{GestureTuning, Pixels, PointerDevice, ScrollPhysics, VelocityTrackerKind, px};
 
 use crate::{Error, Target};
 
-// Flutter's gesture constants (gestures/constants.dart) are GPUI's `gpui::constants`, the one copy; Flutter uses
-// them on every platform, only the touch slop is a device setting (below).
+// Flutter's gesture constants (gestures/constants.dart), slop rules (`gpui::slops`) and scroll physics
+// (`gpui::ScrollPhysics`) are GPUI's, the one copy; this table holds only what Flutter picks per platform.
 
 // material/constants.dart and cupertino/constants.dart.
 pub const kMinInteractiveDimension: Pixels = px(48.0);
 pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
-
-/// How far a pointer travels before it stops being a tap (`hit`), starts a pan (`pan`) or a scale (`scale`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Slops {
-    pub hit: Pixels,
-    pub pan: Pixels,
-    pub scale: Pixels,
-}
-
-/// `computeHitSlop`, `computePanSlop`, `computeScaleSlop` for a mouse: the same on every platform.
-pub const PRECISE_POINTER_SLOPS: Slops = Slops {
-    hit: kPrecisePointerHitSlop,
-    pan: kPrecisePointerPanSlop,
-    scale: kPrecisePointerScaleSlop,
-};
-
-/// Touch slops with no device setting (`DeviceGestureSettings.touchSlop` null): iOS, web and desktop embedders.
-const FLUTTER_TOUCH_SLOPS: Slops = Slops {
-    hit: kTouchSlop,
-    pan: kPanSlop,
-    scale: kScaleSlop,
-};
-
-/// Android's embedding sends `ViewConfiguration.getScaledTouchSlop()` (AOSP `config_viewConfigurationTouchSlop`,
-/// 8 dp); `DeviceGestureSettings.panSlop` doubles it. `computeScaleSlop` ignores the setting.
-const ANDROID_TOUCH_SLOPS: Slops = Slops {
-    hit: px(8.0),
-    pan: px(16.0),
-    scale: kScaleSlop,
-};
-
-/// The physics classes `ScrollBehavior.getScrollPhysics` picks from: `BouncingScrollPhysics` (iOS),
-/// `BouncingScrollPhysics(decelerationRate: fast)` (macOS), `ClampingScrollPhysics` (the rest).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollPreset {
-    Bouncing,
-    BouncingDesktop,
-    Clamping,
-}
-
-/// What a physics class sets, and GPUI's model of its fling. One named const per preset below.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScrollPresetRow {
-    pub preset: ScrollPreset,
-    /// GPUI's model of the ballistic simulation (`BouncingScrollSimulation` / `ClampingScrollSimulation`).
-    pub physics: ScrollPhysics,
-    pub min_fling_velocity: f32,
-    pub max_fling_velocity: f32,
-    /// `dragStartDistanceMotionThreshold`: `None` where the physics leaves it unset.
-    pub drag_start_distance_motion_threshold: Option<Pixels>,
-}
-
-// To add a preset: a `ScrollPreset` variant and a const here, values from its Flutter class.
-
-/// `BouncingScrollPhysics`. Its `FrictionSimulation(0.135)` is GPUI's `ScrollPhysics::ios()`: UIScrollView's
-/// 0.998 per ms.
-pub const BOUNCING: ScrollPresetRow = ScrollPresetRow {
-    preset: ScrollPreset::Bouncing,
-    physics: ScrollPhysics::ios(),
-    min_fling_velocity: kMinFlingVelocity * 2.0,
-    max_fling_velocity: kMaxFlingVelocity,
-    drag_start_distance_motion_threshold: Some(px(3.5)),
-};
-
-/// `BouncingScrollPhysics(decelerationRate: ScrollDecelerationRate.fast)`. Flutter also adds a constant
-/// deceleration of 1400 there, which GPUI's exponential model has no term for.
-pub const BOUNCING_DESKTOP: ScrollPresetRow = ScrollPresetRow {
-    preset: ScrollPreset::BouncingDesktop,
-    max_fling_velocity: kMaxFlingVelocity * 8.0,
-    ..BOUNCING
-};
-
-/// `ClampingScrollPhysics`. `ClampingScrollSimulation` is Android's OverScroller spline: friction 0.015 at 160
-/// logical pixels per inch, GPUI's `ScrollPhysics::android()`.
-pub const CLAMPING: ScrollPresetRow = ScrollPresetRow {
-    preset: ScrollPreset::Clamping,
-    physics: ScrollPhysics::android(),
-    min_fling_velocity: kMinFlingVelocity,
-    max_fling_velocity: kMaxFlingVelocity,
-    drag_start_distance_motion_threshold: None,
-};
 
 /// What a scrollable shows past its edge: bounce (the physics overscrolls), Material 3's stretch
 /// (`StretchingOverscrollIndicator`, `useMaterial3` defaults to true), Material 2's glow, or nothing (clamped).
@@ -147,10 +63,11 @@ pub struct Haptics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Behaviour {
     pub target: Target,
-    /// Slops for touch and pen (`PointerDeviceKind.touch` / `.stylus`); a mouse uses [`PRECISE_POINTER_SLOPS`].
-    pub touch_slops: Slops,
+    /// The embedder's `DeviceGestureSettings.touchSlop`, `None` where it sends none (Flutter's `kTouchSlop`).
+    /// `gpui::slops` turns it into the hit, pan and scale slops per pointer kind.
+    pub touch_slop: Option<Pixels>,
     /// `ScrollBehavior.getScrollPhysics`.
-    pub scroll: ScrollPresetRow,
+    pub scroll_physics: ScrollPhysics,
     /// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from.
     pub velocity_tracker: VelocityTrackerKind,
     pub overscroll: Overscroll,
@@ -158,8 +75,6 @@ pub struct Behaviour {
     /// Smallest tap target a control should have: Material's 48 or Cupertino's 44 (the set `.adaptive` widgets
     /// pick per platform).
     pub min_touch_target: Pixels,
-    /// Taps become mouse presses, pans scroll events (GPUI's recognizer; elements opt out with `on_touch`).
-    pub touch_to_mouse: bool,
 }
 
 const NO_HAPTICS: Haptics = Haptics {
@@ -174,8 +89,10 @@ const NO_HAPTICS: Haptics = Haptics {
 pub const TABLE: [Behaviour; 5] = [
     Behaviour {
         target: Target::Android,
-        touch_slops: ANDROID_TOUCH_SLOPS,
-        scroll: CLAMPING,
+        // Android's embedding sends `ViewConfiguration.getScaledTouchSlop()` (AOSP
+        // `config_viewConfigurationTouchSlop`, 8 dp).
+        touch_slop: Some(px(8.0)),
+        scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::Stretch,
         haptics: Haptics {
@@ -184,12 +101,13 @@ pub const TABLE: [Behaviour; 5] = [
             ..NO_HAPTICS
         },
         min_touch_target: kMinInteractiveDimension,
-        touch_to_mouse: true,
     },
     Behaviour {
         target: Target::Ios,
-        touch_slops: FLUTTER_TOUCH_SLOPS,
-        scroll: BOUNCING,
+        touch_slop: None,
+        scroll_physics: ScrollPhysics::Bouncing {
+            deceleration_rate: ScrollDecelerationRate::Normal,
+        },
         velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: Haptics {
@@ -198,61 +116,50 @@ pub const TABLE: [Behaviour; 5] = [
             ..NO_HAPTICS
         },
         min_touch_target: kMinInteractiveDimensionCupertino,
-        touch_to_mouse: true,
     },
     Behaviour {
         target: Target::MacOs,
-        touch_slops: FLUTTER_TOUCH_SLOPS,
-        scroll: BOUNCING_DESKTOP,
+        touch_slop: None,
+        scroll_physics: ScrollPhysics::Bouncing {
+            deceleration_rate: ScrollDecelerationRate::Fast,
+        },
         velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimensionCupertino,
-        touch_to_mouse: true,
     },
     Behaviour {
         target: Target::Windows,
-        touch_slops: FLUTTER_TOUCH_SLOPS,
-        scroll: CLAMPING,
+        touch_slop: None,
+        scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
-        touch_to_mouse: true,
     },
     Behaviour {
         target: Target::Linux,
-        touch_slops: FLUTTER_TOUCH_SLOPS,
-        scroll: CLAMPING,
+        touch_slop: None,
+        scroll_physics: ScrollPhysics::Clamping,
         velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
-        touch_to_mouse: true,
     },
 ];
 
 impl Behaviour {
-    /// `computeHitSlop` / `computePanSlop` / `computeScaleSlop`: precise for a mouse, the row's for touch and pen.
-    pub fn slops(&self, device: PointerDevice) -> Slops {
-        match device {
-            PointerDevice::Mouse => PRECISE_POINTER_SLOPS,
-            PointerDevice::Touch | PointerDevice::Pen => self.touch_slops,
-        }
-    }
-
-    /// The values GPUI's touch recognizer takes. Pass it, or a changed copy, to `App::set_gesture_tuning`
+    /// The values GPUI's touch recognizer takes: the row's touch slop, physics and tracker; the rest are Flutter's
+    /// constants, which `GestureTuning::default()` holds. Pass it, or a changed copy, to `App::set_gesture_tuning`
     /// (patch 0014) before opening a window.
     pub fn gesture_tuning(&self) -> GestureTuning {
         GestureTuning {
-            touch_slop: self.touch_slops.hit,
-            multi_tap_interval: kDoubleTapTimeout,
-            multi_tap_slop: kDoubleTapSlop,
-            multi_tap_min_interval: kDoubleTapMinTime,
-            long_press_duration: kLongPressTimeout,
-            scroll_physics: self.scroll.physics,
-            min_fling_velocity: self.scroll.min_fling_velocity,
+            touch_slop: slops(PointerDevice::Touch, self.touch_slop).hit,
+            scroll_physics: self.scroll_physics,
+            min_fling_velocity: self.scroll_physics.min_fling_velocity(),
+            max_fling_velocity: self.scroll_physics.max_fling_velocity(),
             velocity_tracker: self.velocity_tracker,
+            ..GestureTuning::default()
         }
     }
 }
@@ -265,27 +172,24 @@ pub fn behaviour(target: Option<Target>) -> Result<&'static Behaviour, Error> {
         .ok_or(Error::UnsupportedTarget)
 }
 
-/// The current target's row. On the web: the browser's host OS's row ([`detect_operating_system`]).
-pub fn current_behaviour() -> Result<&'static Behaviour, Error> {
-    behaviour(cfg_select! {
-        target_family = "wasm" => Some(browser_target()),
-        _ => crate::CURRENT_TARGET,
-    })
-}
-
-/// Reads `navigator`, as Flutter web's `BrowserDetection.operatingSystem` does. No window (a worker): Flutter's
-/// unknown OS.
-#[cfg(target_family = "wasm")]
-fn browser_target() -> Target {
-    let navigator = web_sys::window().map(|window| window.navigator());
-    let platform = navigator.as_ref().and_then(|nav| nav.platform().ok());
-    let user_agent = navigator.as_ref().and_then(|nav| nav.user_agent().ok());
-    let max_touch_points = navigator.as_ref().map_or(0, |nav| nav.max_touch_points());
-    detect_operating_system(
-        platform.as_deref().unwrap_or_default(),
-        user_agent.as_deref().unwrap_or_default(),
-        max_touch_points,
-    )
+/// The current target's row. On the web: the browser's host OS's row, read from `navigator` as Flutter web's
+/// `BrowserDetection.operatingSystem` does (no window, as in a worker: Flutter's unknown OS).
+pub fn current_behaviour() -> Result<Behaviour, Error> {
+    cfg_select! {
+        target_family = "wasm" => {
+            let navigator = web_sys::window().map(|window| window.navigator());
+            let platform = navigator.as_ref().and_then(|nav| nav.platform().ok());
+            let user_agent = navigator.as_ref().and_then(|nav| nav.user_agent().ok());
+            let max_touch_points = navigator.as_ref().map_or(0, |nav| nav.max_touch_points());
+            behaviour(Some(detect_operating_system(
+                platform.as_deref().unwrap_or_default(),
+                user_agent.as_deref().unwrap_or_default(),
+                max_touch_points,
+            )))
+            .copied()
+        }
+        _ => behaviour(crate::CURRENT_TARGET).copied(),
+    }
 }
 
 /// `BrowserDetection.detectOperatingSystem` then `_operatingSystemToTargetPlatform` (foundation/_platform_web.dart),
@@ -323,47 +227,56 @@ mod tests {
 
     use super::*;
 
+    const BOUNCING: ScrollPhysics = ScrollPhysics::Bouncing {
+        deceleration_rate: ScrollDecelerationRate::Normal,
+    };
+    const BOUNCING_FAST: ScrollPhysics = ScrollPhysics::Bouncing {
+        deceleration_rate: ScrollDecelerationRate::Fast,
+    };
+
     #[test]
     fn behaviour_table() {
+        #[derive(Clone, Copy)]
         struct Expected {
             touch_slop: f32,
             pan_slop: f32,
             min_fling: f32,
             max_fling: f32,
-            preset: ScrollPreset,
+            physics: ScrollPhysics,
             overscroll: Overscroll,
             long_press: Option<Haptic>,
             velocity_tracker: VelocityTrackerKind,
             min_touch_target: f32,
         }
-        // (row name with its Flutter sources, target, expected values)
+        let android = Expected {
+            touch_slop: 8.,
+            pan_slop: 16.,
+            min_fling: 50.,
+            max_fling: 8000.,
+            physics: ScrollPhysics::Clamping,
+            overscroll: Overscroll::Stretch,
+            long_press: Some(Haptic::Vibrate),
+            velocity_tracker: VelocityTrackerKind::LeastSquares,
+            min_touch_target: 48.,
+        };
+        // (row name with its Flutter sources, behaviour, expected values)
         let rows = [
             (
                 "android: ViewConfiguration touch slop (FlutterView.java), getScrollPhysics clamping, least squares, \
                  MaterialScrollBehavior stretch, Feedback.forLongPress vibrate, kMinInteractiveDimension",
-                Target::Android,
-                Expected {
-                    touch_slop: 8.,
-                    pan_slop: 16.,
-                    min_fling: 50.,
-                    max_fling: 8000.,
-                    preset: ScrollPreset::Clamping,
-                    overscroll: Overscroll::Stretch,
-                    long_press: Some(Haptic::Vibrate),
-                    velocity_tracker: VelocityTrackerKind::LeastSquares,
-                    min_touch_target: 48.,
-                },
+                behaviour(Some(Target::Android)).copied(),
+                android,
             ),
             (
                 "ios: kTouchSlop, kPanSlop, BouncingScrollPhysics minFlingVelocity kMinFlingVelocity * 2, \
                  Feedback.forLongPress heavyImpact, kMinInteractiveDimensionCupertino",
-                Target::Ios,
+                behaviour(Some(Target::Ios)).copied(),
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
                     min_fling: 100.,
                     max_fling: 8000.,
-                    preset: ScrollPreset::Bouncing,
+                    physics: BOUNCING,
                     overscroll: Overscroll::Bounce,
                     long_press: Some(Haptic::HeavyImpact),
                     velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
@@ -373,13 +286,13 @@ mod tests {
             (
                 "macos: kTouchSlop, BouncingScrollPhysics(fast) maxFlingVelocity kMaxFlingVelocity * 8, \
                  no Feedback, kMinInteractiveDimensionCupertino",
-                Target::MacOs,
+                behaviour(Some(Target::MacOs)).copied(),
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
                     min_fling: 100.,
                     max_fling: 64000.,
-                    preset: ScrollPreset::BouncingDesktop,
+                    physics: BOUNCING_FAST,
                     overscroll: Overscroll::Bounce,
                     long_press: None,
                     velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
@@ -388,13 +301,13 @@ mod tests {
             ),
             (
                 "windows: kTouchSlop, ClampingScrollPhysics, no overscroll indicator, kMinInteractiveDimension",
-                Target::Windows,
+                behaviour(Some(Target::Windows)).copied(),
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
                     min_fling: 50.,
                     max_fling: 8000.,
-                    preset: ScrollPreset::Clamping,
+                    physics: ScrollPhysics::Clamping,
                     overscroll: Overscroll::None,
                     long_press: None,
                     velocity_tracker: VelocityTrackerKind::LeastSquares,
@@ -403,13 +316,13 @@ mod tests {
             ),
             (
                 "linux: kTouchSlop, ClampingScrollPhysics, no overscroll indicator, kMinInteractiveDimension",
-                Target::Linux,
+                behaviour(Some(Target::Linux)).copied(),
                 Expected {
                     touch_slop: 18.,
                     pan_slop: 36.,
                     min_fling: 50.,
                     max_fling: 8000.,
-                    preset: ScrollPreset::Clamping,
+                    physics: ScrollPhysics::Clamping,
                     overscroll: Overscroll::None,
                     long_press: None,
                     velocity_tracker: VelocityTrackerKind::LeastSquares,
@@ -417,24 +330,17 @@ mod tests {
                 },
             ),
         ];
-        for (name, target, expected) in rows {
-            let found = behaviour(Some(target));
-            assert!(found.is_ok(), "{name}: has a row");
-            let Ok(row) = found else { continue };
+        for (name, found, expected) in rows {
+            let row = found.expect("every row's target has a behaviour");
             let tuning = row.gesture_tuning();
             assert_eq!(tuning.touch_slop, px(expected.touch_slop), "{name}");
             assert_eq!(
-                row.slops(PointerDevice::Pen).pan,
+                slops(PointerDevice::Pen, row.touch_slop).pan,
                 px(expected.pan_slop),
                 "{name}"
             );
-            assert_eq!(
-                row.slops(PointerDevice::Mouse),
-                PRECISE_POINTER_SLOPS,
-                "{name}"
-            );
             assert_eq!(tuning.min_fling_velocity, expected.min_fling, "{name}");
-            assert_eq!(row.scroll.max_fling_velocity, expected.max_fling, "{name}");
+            assert_eq!(tuning.max_fling_velocity, expected.max_fling, "{name}");
             assert_eq!(
                 tuning.multi_tap_interval,
                 Duration::from_millis(300),
@@ -450,7 +356,7 @@ mod tests {
                 Duration::from_millis(500),
                 "{name}"
             );
-            assert_eq!(row.scroll.preset, expected.preset, "{name}");
+            assert_eq!(tuning.scroll_physics, expected.physics, "{name}");
             assert_eq!(row.overscroll, expected.overscroll, "{name}");
             assert_eq!(row.haptics.long_press, expected.long_press, "{name}");
             assert_eq!(tuning.velocity_tracker, expected.velocity_tracker, "{name}");
@@ -459,7 +365,6 @@ mod tests {
                 px(expected.min_touch_target),
                 "{name}"
             );
-            assert!(row.touch_to_mouse, "{name}");
         }
         // Errors are not `PartialEq` on Android (they carry OS errors).
         assert!(

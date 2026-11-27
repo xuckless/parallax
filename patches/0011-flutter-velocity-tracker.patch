@@ -4,11 +4,12 @@ What: replaces `gestures.rs`'s private `VelocityTracker` (and its `quadratic_vel
 near-verbatim Rust port of Flutter 3.50.1's `velocity_tracker.dart` (`gestures/velocity_tracker.rs`: `VelocityTracker`,
 `IOSScrollViewFlingVelocityTracker`, `MacOSScrollViewFlingVelocityTracker` as one tracker with a kind) and
 `lsq_solver.dart` (`gestures/lsq_solver.rs`: `LeastSquaresSolver`, `PolynomialFit`). Adds the public
-`VelocityTrackerKind` and `GestureTuning::velocity_tracker`, which picks the kind: `IOSScrollViewFling` in
-`GestureTuning::default()` (GPUI's iOS-flavoured defaults, as `ScrollPhysics::ios()`), and in gpui_web
-`LeastSquares` under an Android user agent (with `ScrollPhysics::android()`), the rows of Flutter's
-`ScrollBehavior.velocityTrackerBuilder`. The recognizer calls `add_position` where it pushed samples and
-`get_velocity(now)` on release; the tracker's own 40 ms "pointer stopped" check replaces the recognizer's. Ports
+`VelocityTrackerKind` and `GestureTuning::velocity_tracker`, which picks the kind (`IOSScrollViewFling` in
+`GestureTuning::default()`, GPUI's iOS-flavoured defaults, as `ScrollPhysics::ios()`; Parallax's platform table
+holds the other rows of Flutter's `ScrollBehavior.velocityTrackerBuilder`). `get_velocity_estimate` keeps Flutter's
+`VelocityEstimate.offset` (the distance the estimate spans) for the recognizer's fling-distance check. The recognizer
+calls `add_position` where it pushed samples and `get_velocity(now)` on release; the tracker's own 40 ms "pointer
+stopped" check replaces the recognizer's. Ports
 Flutter's `velocity_tracker_test.dart` (with the `velocity_tracker_data.dart` traces) and `lsq_solver_test.dart` as
 table-driven in-crate tests, one row per Flutter test, named after it. The two upstream velocity tests stay, on the
 `LeastSquares` kind.
@@ -26,47 +27,6 @@ third_party/flutter/PORTED.md).
 
 Upstream PR: not filed yet.
 
-diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
-index b496aa4..24379ba 100644
---- a/gpui-pre-web/src/platform.rs
-+++ b/gpui-pre-web/src/platform.rs
-@@ -13,8 +13,8 @@ use gpui::{
-     ClipboardReadError, ClipboardString, CursorStyle, DummyKeyboardMapper, ForegroundExecutor,
-     GestureTuning, Image, ImageFormat, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
-     PlatformDisplay, PlatformGestures, PlatformKeyboardLayout, PlatformKeyboardMapper,
--    PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState, WindowAppearance,
--    WindowKind, WindowParams, popup::PopupNotSupportedError,
-+    PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState, VelocityTrackerKind,
-+    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
- };
- use gpui_wgpu::{PreparedWebGraphics, WebBackendPreference, WgpuContext, wgpu};
- use std::{
-@@ -56,18 +56,22 @@ struct WebGestures {
- 
- impl WebGestures {
-     fn from_user_agent(user_agent: &str) -> Self {
--        let scroll_physics = if user_agent.contains("Android") {
--            ScrollPhysics::android()
-+        let (scroll_physics, velocity_tracker) = if user_agent.contains("Android") {
-+            (ScrollPhysics::android(), VelocityTrackerKind::LeastSquares)
-         } else {
-             // iOS, and also desktops: the default exponential decay. Desktop
-             // browsers rarely reach the portable fling at all (trackpads
-             // deliver their own momentum events), so the distinction only
-             // matters for touch screens.
--            ScrollPhysics::ios()
-+            (
-+                ScrollPhysics::ios(),
-+                VelocityTrackerKind::IOSScrollViewFling,
-+            )
-         };
-         Self {
-             tuning: GestureTuning {
-                 scroll_physics,
-+                velocity_tracker,
-                 ..GestureTuning::default()
-             },
-         }
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
 index 21db052..1062e60 100644
 --- a/gpui-pre/src/gestures.rs
@@ -334,11 +294,12 @@ index 21db052..1062e60 100644
              "pre-pause motion leaked into the estimate: {} px/s",
 diff --git a/gpui-pre/src/gestures/lsq_solver.rs b/gpui-pre/src/gestures/lsq_solver.rs
 new file mode 100644
-index 0000000..2611686
+index 0000000..22fe747
 --- /dev/null
 +++ b/gpui-pre/src/gestures/lsq_solver.rs
-@@ -0,0 +1,212 @@
-+// Ported from flutter/flutter packages/flutter/lib/src/gestures/lsq_solver.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,213 @@
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/lsq_solver.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +
 +// Flutter's `precisionErrorTolerance` (foundation/constants.dart).
 +const PRECISION_ERROR_TOLERANCE: f64 = 1e-10;
@@ -552,11 +513,12 @@ index 0000000..2611686
 +}
 diff --git a/gpui-pre/src/gestures/lsq_solver_test.rs b/gpui-pre/src/gestures/lsq_solver_test.rs
 new file mode 100644
-index 0000000..6fe8cd7
+index 0000000..5631668
 --- /dev/null
 +++ b/gpui-pre/src/gestures/lsq_solver_test.rs
-@@ -0,0 +1,64 @@
-+// Ported from flutter/flutter packages/flutter/test/gestures/lsq_solver_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,65 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/lsq_solver_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +
 +use super::lsq_solver::LeastSquaresSolver;
 +
@@ -622,15 +584,16 @@ index 0000000..6fe8cd7
 +}
 diff --git a/gpui-pre/src/gestures/velocity_tracker.rs b/gpui-pre/src/gestures/velocity_tracker.rs
 new file mode 100644
-index 0000000..14e6521
+index 0000000..b78468a
 --- /dev/null
 +++ b/gpui-pre/src/gestures/velocity_tracker.rs
-@@ -0,0 +1,242 @@
-+// Ported from flutter/flutter packages/flutter/lib/src/gestures/velocity_tracker.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,278 @@
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/velocity_tracker.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +//
 +// Flutter's three trackers are one `VelocityTracker` here, its `VelocityTrackerKind` picking the estimate (Flutter's
-+// subclasses). `Velocity` is GPUI's `Point<f32>` and `Offset` a `Point<f64>`; `VelocityEstimate`'s `confidence`,
-+// `duration` and `offset` are dropped (no GPUI caller), so `getVelocityEstimate` folds into `get_velocity`.
++// subclasses). `Velocity` is GPUI's `Point<f32>` and `Offset` a `Point<f64>`; `VelocityEstimate`'s `confidence` and
++// `duration` are dropped (no GPUI caller); its `offset` stays for the recognizer's `isFlingGesture` check.
 +// Flutter's `_sinceLastSample` stopwatch is `now` minus the newest sample's time: GPUI timestamps samples with the
 +// clock it passes as `now`.
 +
@@ -669,6 +632,16 @@ index 0000000..14e6521
 +/// [`VelocityTracker::get_velocity`].
 +const IOS_SCROLL_VIEW_FLING_WEIGHTS: [(isize, f64); 3] = [(-2, 0.6), (-1, 0.35), (0, 0.05)];
 +const MAC_OS_SCROLL_VIEW_FLING_WEIGHTS: [(isize, f64); 3] = [(-2, 0.15), (-1, 0.65), (0, 0.2)];
++
++/// A velocity in two dimensions and the distance it was estimated over.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) struct VelocityEstimate {
++    /// The number of pixels per second of velocity in the x and y directions.
++    pub(crate) pixels_per_second: Point<f32>,
++    /// The difference between the first and last position sample used
++    /// to compute [`Self::pixels_per_second`].
++    pub(crate) offset: Point<f32>,
++}
 +
 +#[derive(Clone, Copy, Debug)]
 +struct PointAtTime {
@@ -727,28 +700,28 @@ index 0000000..14e6521
 +        });
 +    }
 +
-+    /// Computes the velocity of the pointer at the time of the last provided
-+    /// data point, in pixels per second. `now` is the clock the samples were
-+    /// added with.
++    /// Returns an estimate of the velocity of the object being tracked by the
++    /// tracker given the current information available to the tracker, in
++    /// pixels per second. `now` is the clock the samples were added with.
 +    ///
 +    /// Returns zero if there is no data from which to compute an estimate, or
 +    /// if the pointer has not moved for 40 ms.
-+    pub(crate) fn get_velocity(&self, now: Instant) -> Point<f32> {
++    pub(crate) fn get_velocity_estimate(&self, now: Instant) -> VelocityEstimate {
 +        let Some(newest_sample) = self.samples[self.index] else {
 +            debug_assert!(
 +                self.kind == VelocityTrackerKind::LeastSquares,
 +                "There must be at least 1 point in _touchSamples: {:?}",
 +                self.samples
 +            );
-+            return Point::default();
++            return VelocityEstimate::default();
 +        };
 +        // Has user recently moved since last sample?
 +        if now.duration_since(newest_sample.time).as_millis()
 +            > ASSUME_POINTER_MOVE_STOPPED_MILLISECONDS
 +        {
-+            return Point::default();
++            return VelocityEstimate::default();
 +        }
-+        let pixels_per_second = match self.kind {
++        let (pixels_per_second, oldest_sample) = match self.kind {
 +            VelocityTrackerKind::LeastSquares => self.least_squares_velocity(newest_sample),
 +            // The velocity estimated using this expression is an approximation of the
 +            // scroll velocity of an iOS scroll view at the moment the user touch was
@@ -756,20 +729,32 @@ index 0000000..14e6521
 +            // installed on the scroll view would report. Typically in an iOS scroll
 +            // view the velocity values are different between the two, because the
 +            // scroll view usually slows down when the touch is released.
-+            VelocityTrackerKind::IOSScrollViewFling => {
-+                self.weighted_velocity(IOS_SCROLL_VIEW_FLING_WEIGHTS)
-+            }
++            VelocityTrackerKind::IOSScrollViewFling => (
++                self.weighted_velocity(IOS_SCROLL_VIEW_FLING_WEIGHTS),
++                self.oldest_non_null_sample(newest_sample),
++            ),
 +            // The velocity estimated using this expression is an approximation of the
 +            // scroll velocity of a macOS scroll view at the moment the user touch was
 +            // released.
-+            VelocityTrackerKind::MacOSScrollViewFling => {
-+                self.weighted_velocity(MAC_OS_SCROLL_VIEW_FLING_WEIGHTS)
-+            }
++            VelocityTrackerKind::MacOSScrollViewFling => (
++                self.weighted_velocity(MAC_OS_SCROLL_VIEW_FLING_WEIGHTS),
++                self.oldest_non_null_sample(newest_sample),
++            ),
 +        };
-+        pixels_per_second.map(|value| value as f32)
++        VelocityEstimate {
++            pixels_per_second: pixels_per_second.map(|value| value as f32),
++            offset: (newest_sample.point - oldest_sample.point).map(|value| value as f32),
++        }
 +    }
 +
-+    fn least_squares_velocity(&self, newest_sample: PointAtTime) -> Point<f64> {
++    /// Computes the velocity of the pointer at the time of the last provided
++    /// data point, in pixels per second (the estimate's `pixels_per_second`).
++    pub(crate) fn get_velocity(&self, now: Instant) -> Point<f32> {
++        self.get_velocity_estimate(now).pixels_per_second
++    }
++
++    /// The velocity and the oldest sample the fit used.
++    fn least_squares_velocity(&self, newest_sample: PointAtTime) -> (Point<f64>, PointAtTime) {
 +        let mut x = Vec::with_capacity(HISTORY_SIZE);
 +        let mut y = Vec::with_capacity(HISTORY_SIZE);
 +        let mut w = Vec::with_capacity(HISTORY_SIZE);
@@ -778,6 +763,7 @@ index 0000000..14e6521
 +        let mut index = self.index;
 +
 +        let mut previous_sample = newest_sample;
++        let mut oldest_sample = newest_sample;
 +
 +        // Starting with the most recent PointAtTime sample, iterate backwards while
 +        // the samples represent continuous motion.
@@ -800,6 +786,7 @@ index 0000000..14e6521
 +                break;
 +            }
 +
++            oldest_sample = sample;
 +            x.push(sample.point.x);
 +            y.push(sample.point.y);
 +            w.push(1.0);
@@ -828,13 +815,24 @@ index 0000000..14e6521
 +
 +            if let (Some(x_fit), Some(y_fit)) = (x_fit, y_fit) {
 +                // convert from pixels/ms to pixels/s
-+                return point(x_fit.coefficients[1] * 1000., y_fit.coefficients[1] * 1000.);
++                return (
++                    point(x_fit.coefficients[1] * 1000., y_fit.coefficients[1] * 1000.),
++                    oldest_sample,
++                );
 +            }
 +        }
 +
 +        // We're unable to make a velocity estimate but we did have at least one
 +        // valid pointer position.
-+        Point::default()
++        (Point::default(), oldest_sample)
++    }
++
++    /// The iOS and macOS trackers' `oldestNonNullSample`: the oldest of the
++    /// 20 samples kept.
++    fn oldest_non_null_sample(&self, newest_sample: PointAtTime) -> PointAtTime {
++        (1..=HISTORY_SIZE)
++            .find_map(|i| self.samples[(self.index + i) % HISTORY_SIZE])
++            .unwrap_or(newest_sample)
 +    }
 +
 +    fn weighted_velocity(&self, weights: [(isize, f64); 3]) -> Point<f64> {
@@ -870,11 +868,12 @@ index 0000000..14e6521
 +}
 diff --git a/gpui-pre/src/gestures/velocity_tracker_data.rs b/gpui-pre/src/gestures/velocity_tracker_data.rs
 new file mode 100644
-index 0000000..5e2b1ab
+index 0000000..6aa1a13
 --- /dev/null
 +++ b/gpui-pre/src/gestures/velocity_tracker_data.rs
-@@ -0,0 +1,340 @@
-+// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_data.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,341 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_data.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +//
 +// Flutter's recorded pointer traces, one `PointerEvent` per row: (kind, timeStamp in milliseconds, position.dx,
 +// position.dy). Pointers (1 to 13) go down one at a time, so the pointer id is dropped.
@@ -1216,11 +1215,12 @@ index 0000000..5e2b1ab
 +];
 diff --git a/gpui-pre/src/gestures/velocity_tracker_test.rs b/gpui-pre/src/gestures/velocity_tracker_test.rs
 new file mode 100644
-index 0000000..8bafde9
+index 0000000..8e6a47d
 --- /dev/null
 +++ b/gpui-pre/src/gestures/velocity_tracker_test.rs
-@@ -0,0 +1,239 @@
-+// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+@@ -0,0 +1,240 @@
++// Ported from flutter/flutter packages/flutter/test/gestures/velocity_tracker_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +//
 +// Each row names the Flutter test it ports. Flutter's timestamps are `Duration`s; here they are offsets from one
 +// `Instant`. Flutter's tracker reads "time since the last sample" from a stopwatch the test never advances (except by
