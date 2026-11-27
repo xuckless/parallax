@@ -112,7 +112,6 @@ assert_moved() {
 
 windows_setup
 launch_main
-sleep 1
 button=$(locate "$record_button")
 box=$(locate 3b82f6)
 

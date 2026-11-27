@@ -242,11 +242,21 @@ locate() {
   python3 -I "$repo/scripts/locate-colour.py" "$1" <"$work/screen.png" |
     awk -v s="$("${platform}_scale")" '{ printf "%d %d", $1 / s, $2 / s }'
 }
-# A fresh hello on its main screen.
+# A fresh hello on its main screen, drawn: "window open" comes before the first frame, which a slow CI runner can take
+# seconds to draw, and a tap before it hits nothing.
 launch_main() {
+  local attempt
   "${platform}_launch"
   wait_for "window open"
-  sleep 1
+  for attempt in {1..30}; do
+    if locate "$record_button" >/dev/null 2>&1; then
+      sleep 0.5
+      return 0
+    fi
+    sleep 1
+  done
+  echo "record-traces: $platform never drew the record button" >&2
+  return 1
 }
 # A fresh hello on its trace pad; `button` is where the "Record touches" button is.
 launch_pad() {
@@ -260,7 +270,6 @@ launch_pad() {
 
 "${platform}_setup"
 launch_main
-sleep 1
 button=$(locate "$record_button")
 
 wanted=" $* "
