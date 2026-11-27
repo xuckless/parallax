@@ -6,6 +6,8 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
+
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`
 0.3.14-parallax.10), pen on Windows, the iOS touch id fix, the Windows and Linux injection harnesses and Gate 3's
 desktop trace replay. Gate 3 is synthetic-verified (injected touches; no touchscreen yet); macOS waits on a live
