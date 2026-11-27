@@ -1,5 +1,6 @@
 # Six builds, one per target, no feature variants (ROADMAP Phase 0), plus the Java tests, the patch tests (GPUI's own
-# tests on the patched fork crate) and an Android emulator smoke test of examples/hello. See docs/ci.md.
+# tests on the patched fork crate), Windows touch injection (Gate 3) and an Android emulator smoke test of
+# examples/hello. See docs/ci.md.
 name: CI
 
 on:
@@ -143,9 +144,10 @@ jobs:
       - run: scripts/apply-patches.sh
       - run: scripts/patch-test.sh
 
-  # Gate 3 on Windows (docs/desktop-touch-windows.md): examples/hello's desktop bin gets synthetic touch and pen
+  # Gate 3 on Windows (docs/windows-touch-harness.md): examples/hello's desktop bin gets synthetic touch and pen
   # (crates/touch-inject), records the gesture traces, runs the runtime checks of patch 0021, then replays the fresh
-  # traces beside the committed phone and browser ones. The runner's desktop session takes injected input.
+  # traces beside the committed phone and browser ones. The runner's desktop session takes injected input. The checks
+  # and the replay run even after a failed recording, so one run reports every failure.
   windows-touch:
     name: windows-touch
     runs-on: windows-latest
@@ -157,7 +159,6 @@ jobs:
         with:
           key: windows-touch
       - run: scripts/apply-patches.sh
-      - run: command -v python3 python; python3 --version || true
       - run: scripts/record-traces.sh windows
       - if: ${{ !cancelled() }}
         run: scripts/windows-touch-checks.sh

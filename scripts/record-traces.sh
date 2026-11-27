@@ -203,8 +203,8 @@ ios_pinch() { idb ui pinch "$1" "$2" "$4" --radius "$3" --duration "$(ms_to_s "$
 ms_to_s() { awk -v ms="$1" 'BEGIN { print ms / 1000 }'; }
 
 # --- Windows: hello's desktop bin, touched through a synthetic pointer device by crates/touch-inject
-# (InjectSyntheticPointerInput), so it gets real WM_POINTER messages and Windows' own mouse copies of them. Git Bash:
-# /proc/<pid>/winpid names a background program's Windows pid; MSYS2_ARG_CONV_EXCL keeps frames from path conversion.
+# (InjectSyntheticPointerInput), so it gets real WM_POINTER messages and Windows' own mouse copies of them. Git Bash;
+# MSYS2_ARG_CONV_EXCL keeps frames from path conversion.
 windows_bin=$repo/target/debug
 windows_setup() {
   cargo build -p hello -p touch-inject
@@ -216,8 +216,7 @@ windows_launch() {
   windows_stop
   # The cursor off the window, so no stray mouse move reaches the pad.
   "$windows_bin/touch-inject.exe" park
-  "$windows_bin/hello.exe" 2>"$work/hello.log" &
-  hello_pid=$(cat "/proc/$!/winpid")
+  hello_pid=$("$windows_bin/touch-inject.exe" launch "$(cygpath -w "$windows_bin/hello.exe")" "$(cygpath -w "$work/hello.log")")
   # Above the runner's console window, which comes back on top now and then.
   windows_inject raise
 }

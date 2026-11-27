@@ -1,7 +1,7 @@
 # CI
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
-one job per target, no feature variants, plus one job each for the Java tests, the patch tests and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+one job per target, plus one job each for the Java tests, the patch tests, the Android smoke test and Windows touch. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -9,7 +9,7 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-Eight jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
+Nine jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
 builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs only where a merge is decided: pull
 requests, pushes to `main` and manual runs; start it on a branch with `gh workflow run ci.yml --ref <branch>`
 (emulator setup, GPU mode, caching: [android-smoke.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels
@@ -25,6 +25,7 @@ the older run.
 | wasm | ubuntu-latest | `cargo check --workspace --target wasm32-unknown-unknown`, package of the published libraries |
 | java-tests | ubuntu-latest | [`scripts/java-test.sh`](android-tests.md) on JDK 21 and the runner's Android SDK; Gradle and Robolectric jars cached. Its own job (`java-tests`, not a matrix row): no Rust, no `build/` |
 | patch-tests | ubuntu-latest | [`scripts/patch-test.sh`](../scripts/patch-test.sh): GPUI's own lib tests on the patched fork crate, every patch's tests among them, then the Linux backend's ([patch-tests.md](patch-tests.md)). Its own job, not a matrix row |
+| windows-touch | windows-latest | `scripts/record-traces.sh windows`, `scripts/windows-touch-checks.sh`, then `trace_replay` on the fresh traces; the traces and logs are the `windows-touch` artifact ([windows-touch-harness.md](windows-touch-harness.md)). Its own job |
 | android-smoke | ubuntu-latest + KVM | [`scripts/android-smoke.sh`](android-smoke.md) on an API 35 `google_apis` x86_64 emulator (Pixel 7 profile). Its own job, not a matrix row |
 
 The Linux system libraries gpui_linux links are listed once, in `LINUX_PACKAGES` at the top of `ci.yml` (a subset of Zed's `script/linux`).
@@ -69,12 +70,12 @@ CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android28-clang \
   cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
 ```
 
-iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-apple-ios`.
+iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-apple-ios`. Windows touch needs a Windows
+desktop session: `scripts/record-traces.sh windows && scripts/windows-touch-checks.sh`.
 
 ## Add a target
 
 1. Add its rustup target to [rust-toolchain.toml](../rust-toolchain.toml).
-2. Add one row to the `matrix.include` table in [ci.yml](../.github/workflows/ci.yml): `target`, `os`, `checks`.
-   Anything a target cannot build yet is an explicit `--exclude` with a comment saying why, never
-   `continue-on-error`.
+2. Add one row to the `matrix.include` table in [ci.yml](../.github/workflows/ci.yml): `target`, `os`, `checks`. Anything
+   a target cannot build yet is an explicit `--exclude` with a comment saying why, never `continue-on-error`.
 3. Add a row to the table above in the same change.

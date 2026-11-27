@@ -24,8 +24,9 @@ Taps become clicks through GPUI's recognizer (`ClickEvent::Touch`, [core-patches
 `Window::pointer_source()` names the device ([pointer-source.md](pointer-source.md)).
 
 - **Ids:** each contact gets a new `TouchId`; Windows reuses pointer ids, GPUI never does.
-- **Frames:** each message reads its whole frame and the coalesced history (`GetPointerFrameInfoHistory`), oldest
-  first, then skips the frame's other messages, as winit does. A slow frame still delivers every sample.
+- **Samples:** each message reads its own pointer's coalesced history (`GetPointerInfoHistory`), oldest first, as
+  Flutter's embedder reads only the message's pointer, so a slow frame still delivers every sample. Not winit's whole
+  frame plus `SkipPointerFrameMessages`: on CI's runner that stopped a pinch's frames after the first.
 - **Positions:** sub-pixel, the HIMETRIC location mapped through `GetPointerDeviceRects`; `ptPixelLocation` when the
   digitizer has no rect.
 - **Time stamps:** `PerformanceCount` (else `dwTime`) moved onto GPUI's clock by its age against
@@ -61,8 +62,9 @@ the host crate `windows-pure` ([patch-tests.md](patch-tests.md)). Its tables:
 | `pointer_time_stamps` | performance count over `dwTime`, stamps after the clock read, the tick wrap |
 | `himetric_locations` | display origin, sub-pixel, the empty-rect fallback |
 
-The glue is compile-checked by CI's `windows` row ([ci.md](ci.md)). Real input comes with Phase 3's injection
-harness (`InjectSyntheticPointerInput` on CI's Windows runner, [ROADMAP.md](../ROADMAP.md)).
+The glue is compile-checked by CI's `windows` row ([ci.md](ci.md)) and driven with real `WM_POINTER` input by the
+`windows-touch` job: injected touch, pen and mouse, the Gate 3 traces and the runtime checks
+([windows-touch-harness.md](windows-touch-harness.md)).
 
 ## Extending
 

@@ -4,7 +4,9 @@
 //! `CreateSyntheticPointerDevice` / `InjectSyntheticPointerInput` (Windows 10 1809+), so the window gets real
 //! `WM_POINTER*` messages and Windows' own promoted mouse copies; the mouse goes through `SendInput`.
 //!
-//! Usage: touch-inject park                move the mouse cursor to the screen's top-left corner, off the window
+//! Usage: touch-inject launch <program> <log>
+//!                                        start a program, its stderr to the log; prints its pid
+//!        touch-inject park                move the mouse cursor to the screen's top-left corner, off the window
 //!        touch-inject display <width> <height> <percent>
 //!                                        set the display's resolution and scale; prints the old "width height percent"
 //!        touch-inject <pid> <command>, every point in the process's window's logical px:
@@ -136,6 +138,15 @@ mod windows_tool {
             [command] if command == "park" => {
                 // SAFETY: plain call, no pointers.
                 unsafe { SetCursorPos(0, 0) }?;
+                return Ok(());
+            }
+            [command, program, log] if command == "launch" => {
+                // Spawned here, not by the shell: Git Bash's `$!` names its own process, whose Windows pid can be
+                // read before the program replaces it. Dropping the child leaves it running.
+                let child = std::process::Command::new(program)
+                    .stderr(std::fs::File::create(log)?)
+                    .spawn()?;
+                println!("{}", child.id());
                 return Ok(());
             }
             [command, width, height, percent] if command == "display" => {
