@@ -21,7 +21,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   winit v0.30.13. Cancelled pointers and lost captures cancel the touch, and a hovering pen moves the mouse. The
   mouse messages Windows makes from touch and pen are dropped (Flutter's `MI_WP_SIGNATURE` check), so a tap clicks
   once, through GPUI's recognizer. Mouse and touchpad input are unchanged
-  ([docs/desktop-touch-windows.md](docs/desktop-touch-windows.md)).
+  ([docs/desktop-touch-windows.md](docs/desktop-touch-windows.md)). Each `WM_POINTER` message reads its own pointer's
+  samples, as Flutter's embedder does, not winit's whole frame: skipping a frame's other messages stopped Windows
+  sending a pinch's later frames.
+- Windows touch checked with real input (Gate 3): CI's `windows-touch` job injects touch, pen and mouse into hello
+  through a synthetic pointer device (dev-only `touch-inject`), records the Windows gesture traces the replay
+  compares with Android, web and iOS, and runs runtime checks of patch 0021 (taps, drags, pinch, cancel, pen, pen
+  hover, title bar, mouse, 150 % scale); hello's trace pad also logs pen force and mouse input
+  ([docs/windows-touch-harness.md](docs/windows-touch-harness.md)).
 - Wayland touch (patch 0022, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreens on Wayland reach GPUI as
   `TouchEvent`s (taps, pans, flings and pinches through GPUI's recognizer, as on mobile), with the compositor's event
   time as `time_stamp`. Ported from winit's Wayland touch handling ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md)).

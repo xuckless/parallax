@@ -142,8 +142,11 @@ mod windows_tool {
             }
             [command, program, log] if command == "launch" => {
                 // Spawned here, not by the shell: Git Bash's `$!` names its own process, whose Windows pid can be
-                // read before the program replaces it. Dropping the child leaves it running.
+                // read before the program replaces it. Dropping the child leaves it running. Its stdin and stdout
+                // are null: an inherited stdout would hold the caller's `$(…)` open until the program exits.
                 let child = std::process::Command::new(program)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
                     .stderr(std::fs::File::create(log)?)
                     .spawn()?;
                 println!("{}", child.id());
