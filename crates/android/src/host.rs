@@ -146,9 +146,9 @@ enum AppState {
 }
 
 impl MainThreadHost {
-    /// Java's density and touch slop, which it sends with every surface and insets report. Returns whether the
-    /// density changed. A changed logical slop reaches the app's [`TouchSlopChanged`] hook once GPUI runs; before
-    /// that, the launch reads it ([`crate::touch_slop`]).
+    /// Java's density and touch slop, which it sends with every surface and insets report; logged when either moves.
+    /// Returns whether the density changed. A changed logical slop reaches the app's [`TouchSlopChanged`] hook once
+    /// GPUI runs; before that, the launch reads it ([`crate::touch_slop`]).
     fn set_scale(&self, density: f32, touch_slop: jint) -> bool {
         let before = self.shell.metrics.get();
         let after = Metrics {
@@ -158,8 +158,11 @@ impl MainThreadHost {
         };
         self.shell.metrics.set(after);
         let (old, new) = (before.touch_slop(), after.touch_slop());
-        if old != new {
+        let density_changed = before.density != density;
+        if old != new || density_changed {
             log::info!("parallax: touch slop {touch_slop} px at density {density}: {new:?}");
+        }
+        if old != new {
             // Cloned so the borrow ends before GPUI runs.
             let app = match &*self.app.borrow() {
                 AppState::Loaded { .. } => None,
@@ -169,7 +172,7 @@ impl MainThreadHost {
                 app.update(|cx| (self.touch_slop_changed)(cx, old, new));
             }
         }
-        before.density != density
+        density_changed
     }
 
     /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
