@@ -11,12 +11,23 @@ mod dispatcher;
 mod emoji;
 #[cfg(any(target_os = "android", test))]
 mod fonts;
+#[cfg(any(target_os = "android", test))]
+mod haptics;
 #[cfg(target_os = "android")]
 mod host;
 #[cfg(any(target_os = "android", test))]
 mod keys;
 #[cfg(any(target_os = "android", test))]
 mod lifecycle;
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(
+    not(target_os = "android"),
+    allow(
+        dead_code,
+        reason = "the shell and window, which read most of it, are Android only"
+    )
+)]
+mod metrics;
 #[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]
@@ -33,7 +44,7 @@ mod text_system;
 mod window;
 
 #[cfg(target_os = "android")]
-pub use host::on_load;
+pub use host::{TouchSlopChanged, on_load};
 #[doc(hidden)]
 #[cfg(target_os = "android")]
 pub use jni;
@@ -52,9 +63,15 @@ pub use jni;
 /// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`. This crate's own
 /// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
 /// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
+///
+/// The optional second argument is a `TouchSlopChanged` hook, run on its own looper turn when the device's touch slop
+/// changes while the app runs (a density change). The facade passes one that re-applies the table's row.
 #[macro_export]
 macro_rules! android_main {
     ($launch:expr) => {
+        $crate::android_main!($launch, |_, _| {});
+    };
+    ($launch:expr, $touch_slop_changed:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
         /// # Safety
@@ -65,7 +82,7 @@ macro_rules! android_main {
             _reserved: *mut ::core::ffi::c_void,
         ) -> $crate::jni::sys::jint {
             // SAFETY: the JVM calls JNI_OnLoad with its own JavaVM pointer, on the thread loading the library.
-            unsafe { $crate::on_load(vm, $launch) }
+            unsafe { $crate::on_load(vm, $launch, $touch_slop_changed) }
         }
     };
 }
@@ -135,6 +152,14 @@ pub enum Error {
     KeyEventType(i64),
     #[error("key data packet's character is not UTF-8")]
     KeyCharacter,
+}
+
+/// The device's touch slop in logical pixels: `ViewConfiguration.getScaledTouchSlop()` over the density, which
+/// Flutter's embedding sends as `physicalTouchSlop`. `None` before the first surface, or off the main thread. The
+/// behaviour table's Android row resolves with it (docs/behaviour.md).
+#[cfg(target_os = "android")]
+pub fn touch_slop() -> Option<gpui::Pixels> {
+    host::shell().ok()?.metrics.get().touch_slop()
 }
 
 /// The Android platform for GPUI, bound to the Activity that loaded the app. Call it on the main thread, once,

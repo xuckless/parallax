@@ -18,9 +18,13 @@ scripts/patch-paths.sh to-vendored /tmp/0004-zed.patch # back again, e.g. for a 
 It fails loudly (exit 1, nothing usable on stdout) on any path outside the crate table and on files with no faithful
 counterpart in Zed's tree:
 
-- **`Cargo.toml`: refused.** crates.io rewrites manifests on publish (workspace inheritance resolved, `gpui-pre-*`
-  package names, paths dropped). A vendored manifest hunk has no mechanical Zed equivalent, and a silently wrong
-  translation is worse than none. Hand-write the Zed manifest change when filing.
+- **`Cargo.toml`: refused, or dropped.** crates.io rewrites manifests on publish (workspace inheritance resolved,
+  `gpui-pre-*` package names, paths dropped). A vendored manifest hunk has no mechanical Zed equivalent, and a
+  silently wrong translation is worse than none. `to-zed --drop-manifests` leaves every `*/Cargo.toml` section out
+  instead; the Zed manifest change is hand-written once, as `patches/zed/<name>.manifest.patch` (only the Zed
+  manifest's diff, e.g. 0018's UIKit features in Zed's workspace `Cargo.toml`).
+  [`sync-fork.sh`](../scripts/sync-fork.sh) translates every patch with `--drop-manifests` and appends that file; it
+  stops when a patch changes a `Cargo.toml` and has none. Change it only when the patch's manifest hunk changes.
 - **Packaging artifacts: refused.** `Cargo.toml.orig`, `Cargo.lock`, `.cargo-checksum.json` exist only in the vendored copy.
 - **gpui-pre's own files: refused.** `gpui-pre-apple/vendor/` (a copy of `crates/gpui` sources for its `build.rs`;
   patch `gpui-pre/` instead) and `gpui-pre-macros/src/gpui_pre_facade_paths.rs`.

@@ -1,0 +1,8 @@
+# web fling: swipe 200 650 200 250 150
+touch(0, 1, Started, 200.00, 650.00)
+touch(19, 1, Moved, 200.00, 606.00)
+touch(54, 1, Moved, 200.00, 512.00)
+touch(88, 1, Moved, 200.00, 423.00)
+touch(121, 1, Moved, 200.00, 333.00)
+touch(153, 1, Moved, 200.00, 250.00)
+touch(172, 1, Ended, 200.00, 250.00)

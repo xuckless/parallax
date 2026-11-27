@@ -59,13 +59,9 @@ When it unmarked something it calls `PlatformWindow::end_composition` (no-op by 
 composition too and doesn't type it again: macOS `discardMarkedText`; web blurs and refocuses the hidden IME mirror if
 the browser is composing. iOS and Android keep the no-op: a field change or blur already restarts their IME session.
 
-## 0014: the app's gesture tuning
+## 0014 and 0019: gesture tuning
 
-[0014-app-gesture-tuning-override.patch](../patches/0014-app-gesture-tuning-override.patch). `App::set_gesture_tuning`
-overrides the platform's `GestureTuning` for windows opened afterwards; `App::gesture_tuning()` is the override,
-else the platform's, else GPUI's default. Each window reads it once and passes it to its backend in
-`WindowParams::gesture_tuning`, so gpui_web's tap shadow (which decides whether a release may open the keyboard)
-uses the same slop as the recognizer. Parallax feeds it from the [behaviour table](behaviour.md).
+The app's tuning for new windows and retuning an open one: [gesture-tuning.md](gesture-tuning.md).
 
 ## Tests
 
@@ -73,7 +69,6 @@ Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_devic
 (window.rs), 0004 `touch_listeners_opt_an_element_out_of_touch_to_mouse` (div.rs, one row per element tree and
 gesture), 0005 the existing `text_input_configuration_and_focus_state_are_forwarded_on_change` (input.rs), 0010
 `focus_moves_end_the_left_fields_composition` (input.rs, one row per focus move, a tap among them; it counts the
-test platform's `end_composition` calls), 0014 `app_gesture_tuning_overrides_the_platform_for_new_windows`
-(window.rs, one row per override: a touch of a given travel taps or pans).
+test platform's `end_composition` calls) (0014's and 0019's: [gesture-tuning.md](gesture-tuning.md)).
 
 Run them with [`scripts/patch-test.sh`](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)); CI does too.

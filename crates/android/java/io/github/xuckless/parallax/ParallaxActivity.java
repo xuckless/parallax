@@ -43,7 +43,7 @@ public class ParallaxActivity extends Activity {
     activity = ParallaxSurfaceView.nativeActivityCreated();
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
-    view = new ParallaxSurfaceView(this, activity);
+    view = new ParallaxSurfaceView(this, activity, new PlatformPlugin(this));
     setContentView(view);
   }
 

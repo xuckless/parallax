@@ -44,7 +44,7 @@ surface and GPU device loss: [android-surface.md](android-surface.md). The backe
   root, "Don't keep activities"), and GPUI's quit path (`App::shutdown`) closes every window for good; so GPUI keeps
   running, the surface was already released in `surfaceDestroyed`, and the next `onStart` reattaches. `on_quit` never
   fires: Android kills processes without notice, so save state on `Background`.
-- Back is the keys port's (`on_should_close`); `quit` (`Activity.finish()`) is still a stub ([android.md](android.md#stubs-not-yet-on-android)).
+- Back is the keys port's (`on_should_close`); `quit` (`Activity.finish()`) is still a stub ([android.md](android-stubs.md)).
 
 ## Several Activities
 

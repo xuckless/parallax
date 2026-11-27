@@ -1,0 +1,1565 @@
+Wire Flutter's scale recognizer (0015) into touch dispatch: two or more fingers on an `on_pinch` element pinch it.
+
+What:
+- `PinchEvent` gains `touch: Option<TouchPinch>`: `None` for a trackpad pinch, for a touch pinch
+  `TouchPinch::Start` / `Update` / `End` carrying Flutter's `ScaleStartDetails` / `ScaleUpdateDetails` /
+  `ScaleEndDetails` (0015's `gpui::scale`), and a crate-private owner read with `PinchEvent::touch_owner()`, so
+  backends build trackpad pinches with `PinchEvent::new(position, delta, modifiers, phase)`. A touch pinch also
+  fills the trackpad fields: `position` is the focal point, `delta` the scale's change since the last event,
+  `phase` is `TouchPinch::phase()`, so code written for trackpad zoom zooms with fingers too.
+- `gestures/pinch.rs`: `PinchArena`, Flutter's gesture arena between one element's `ScaleGestureRecognizer` and
+  the window's touch recognizer, as an explicit state (`Idle`, `Single`, `Contested`, `Won`), fed the touch
+  recognizer's claim (`TouchClaim`: none, possible, pan, press). One finger stays the touch recognizer's (its hit
+  slop is below the scale's pan slop); a second finger on the same element hands both to the scale recognizer;
+  when the scale passes its slop (`gpui::slops` from the window's `GestureTuning::touch_slop`) the touch
+  recognizer gets `Cancelled` for them and they reach only the pinch until they lift. When the touch recognizer
+  wins first, as Flutter's drag and long press accept in every arena they share with the scale, the scale loses
+  the touches it held: the one touch's pan before a second lands (a running pan never becomes a pinch, and a
+  finger joining it is the pan's), the touches' focal point travelling past the hit slop in a contest (Flutter's
+  drag adds up every pointer's movement: fingers dragged together pan, fingers spread apart pinch), a claimed long
+  press or touch drag (two fingers held past the long-press deadline never pinch). A finger landing during a long
+  press is the scale's alone (Flutter's one-pointer scale). A finger joining or
+  leaving ends and restarts the gesture, as in Flutter; the last finger keeps it.
+- Claims decide which element pinches: `TouchRoute::Gestures` carries every pinch element a touch joined, deepest
+  first. `Window::join_pinch(touch, owner)` (public, for custom elements) joins it unless a deeper element claimed
+  the touch (`on_touch`); a deeper element that only left it to gestures (a button) keeps its taps. The deepest
+  pinches, unless an earlier finger is pinching an ancestor already (a finger on each of two nested pinch
+  elements pinches the outer one, as every scale recognizer on a hit path holds the pointer in Flutter). The
+  window dispatches the events with a synthesized touch `pointer_source`; the mouse stays where it was.
+- div: `on_pinch` on an element with an id joins the touches that start over it (and leaves them to gestures, so an
+  ancestor's `on_touch` cannot take them); its listeners get the touch pinch wherever the fingers move, only on that
+  element, with `local_focal_point` relative to its bounds (`TouchPinch::localize`). Trackpad pinches keep
+  upstream's hover rule.
+- `scale.rs`: Flutter's `localFocalPoint` restored as `local_focal_point` on the start and update details (the
+  recognizer sets the focal point; the receiving element makes it local, standing in for Flutter's transform).
+
+Why: GPUI recognizes no pinch from touches (gestures.rs: "Pinch recognition is not implemented yet") and ignores
+every finger after the first; touch platforms need pinch-to-zoom. The recognizer is Flutter's (0015); this is only
+the glue, so it lives where the touch recognizer and element dispatch are. Reusing upstream's `PinchEvent` and
+`on_pinch` keeps one listener for trackpad and touch pinches instead of a parallel API.
+
+Depends on: 0004 (touch routes and claims), 0013 (`gpui::slops`, `play_trace`), 0014 (the tuning), 0015 (the
+scale recognizer).
+
+Test: `gestures::pinch::tests::touch_pinches_follow_flutters_arena` (pinch_tests.rs), traces through the test
+platform (`play_trace`) into nested `on_pinch` divs: pinch out, pinch in on the nested element (deepest wins, local
+focal point), rotate, a third finger joining, a finger lifted mid-pinch, a running pan that never becomes a pinch,
+two fingers dragged together (pan), fingers spread apart after the first passed the hit slop (pinch), two fingers held past the long-press deadline (long press, no pinch), a finger
+landing during a long press (one-finger pinch), a finger on each of two nested pinch elements (outer pinches), a
+two-finger tap, one finger left before the slop, two fingers on an element without `on_pinch` (unchanged).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
+index a483f4a..c70243b 100644
+--- a/gpui-pre-linux/src/linux/wayland/client.rs
++++ b/gpui-pre-linux/src/linux/wayland/client.rs
+@@ -2750,12 +2750,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+                 fingers: _,
+             } => {
+                 state.pinch_scale = 1.0;
+-                let input = PlatformInput::Pinch(PinchEvent {
+-                    position: state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
+-                    delta: 0.0,
+-                    modifiers: state.modifiers,
+-                    phase: TouchPhase::Started,
+-                });
++                let input = PlatformInput::Pinch(PinchEvent::new(
++                    state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
++                    0.0,
++                    state.modifiers,
++                    TouchPhase::Started,
++                ));
+                 drop(state);
+                 window.handle_input(input);
+             }
+@@ -2765,12 +2765,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+                 let zoom_delta = new_absolute_scale - previous_scale;
+                 state.pinch_scale = new_absolute_scale;
+ 
+-                let input = PlatformInput::Pinch(PinchEvent {
+-                    position: state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
+-                    delta: zoom_delta,
+-                    modifiers: state.modifiers,
+-                    phase: TouchPhase::Moved,
+-                });
++                let input = PlatformInput::Pinch(PinchEvent::new(
++                    state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
++                    zoom_delta,
++                    state.modifiers,
++                    TouchPhase::Moved,
++                ));
+                 drop(state);
+                 window.handle_input(input);
+             }
+@@ -2780,12 +2780,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+                 cancelled: _,
+             } => {
+                 state.pinch_scale = 1.0;
+-                let input = PlatformInput::Pinch(PinchEvent {
+-                    position: state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
+-                    delta: 0.0,
+-                    modifiers: state.modifiers,
+-                    phase: TouchPhase::Ended,
+-                });
++                let input = PlatformInput::Pinch(PinchEvent::new(
++                    state.mouse_location.unwrap_or(point(px(0.0), px(0.0))),
++                    0.0,
++                    state.modifiers,
++                    TouchPhase::Ended,
++                ));
+                 drop(state);
+                 window.handle_input(input);
+             }
+diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
+index e21f019..6667170 100644
+--- a/gpui-pre-linux/src/linux/x11/client.rs
++++ b/gpui-pre-linux/src/linux/x11/client.rs
+@@ -1456,12 +1456,12 @@ impl X11Client {
+                     px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
+                 );
+                 drop(state);
+-                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent {
++                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent::new(
+                     position,
+-                    delta: 0.0,
++                    0.0,
+                     modifiers,
+-                    phase: gpui::TouchPhase::Started,
+-                }));
++                    gpui::TouchPhase::Started,
++                )));
+             }
+             Event::XinputGesturePinchUpdate(event) => {
+                 let window = self.get_window(event.event)?;
+@@ -1478,12 +1478,12 @@ impl X11Client {
+                 let zoom_delta = new_absolute_scale - previous_scale;
+                 state.pinch_scale = new_absolute_scale;
+                 drop(state);
+-                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent {
++                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent::new(
+                     position,
+-                    delta: zoom_delta,
++                    zoom_delta,
+                     modifiers,
+-                    phase: gpui::TouchPhase::Moved,
+-                }));
++                    gpui::TouchPhase::Moved,
++                )));
+             }
+             Event::XinputGesturePinchEnd(event) => {
+                 let window = self.get_window(event.event)?;
+@@ -1496,12 +1496,12 @@ impl X11Client {
+                     px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
+                 );
+                 drop(state);
+-                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent {
++                window.handle_input(PlatformInput::Pinch(gpui::PinchEvent::new(
+                     position,
+-                    delta: 0.0,
++                    0.0,
+                     modifiers,
+-                    phase: gpui::TouchPhase::Ended,
+-                }));
++                    gpui::TouchPhase::Ended,
++                )));
+             }
+             _ => {}
+         };
+diff --git a/gpui-pre-macos/src/events.rs b/gpui-pre-macos/src/events.rs
+index 89ae111..51131a6 100644
+--- a/gpui-pre-macos/src/events.rs
++++ b/gpui-pre-macos/src/events.rs
+@@ -256,15 +256,15 @@ pub(crate) unsafe fn platform_input_from_native(
+ 
+                 let magnification = native_event.magnification() as f32;
+ 
+-                PlatformInput::Pinch(PinchEvent {
+-                    position: point(
++                PlatformInput::Pinch(PinchEvent::new(
++                    point(
+                         px(native_event.locationInWindow().x as f32),
+                         window_height - px(native_event.locationInWindow().y as f32),
+                     ),
+-                    delta: magnification,
+-                    modifiers: read_modifiers(native_event),
++                    magnification,
++                    read_modifiers(native_event),
+                     phase,
+-                })
++                ))
+             }),
+             NSEventType::ScrollWheel => window_height.map(|window_height| {
+                 let phase = match native_event.phase() {
+diff --git a/gpui-pre-windows/src/direct_manipulation.rs b/gpui-pre-windows/src/direct_manipulation.rs
+index 4ad4cc7..7d4b961 100644
+--- a/gpui-pre-windows/src/direct_manipulation.rs
++++ b/gpui-pre-windows/src/direct_manipulation.rs
+@@ -181,12 +181,12 @@ impl DirectManipulationEventHandler {
+             GestureKind::Pinch => {
+                 self.pending_events
+                     .borrow_mut()
+-                    .push(PlatformInput::Pinch(PinchEvent {
++                    .push(PlatformInput::Pinch(PinchEvent::new(
+                         position,
+-                        delta: 0.0,
++                        0.0,
+                         modifiers,
+-                        phase: TouchPhase::Ended,
+-                    }));
++                        TouchPhase::Ended,
++                    )));
+             }
+             GestureKind::None => {}
+         }
+@@ -305,12 +305,12 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
+                 self.gesture_kind.set(GestureKind::Pinch);
+                 self.pending_events
+                     .borrow_mut()
+-                    .push(PlatformInput::Pinch(PinchEvent {
++                    .push(PlatformInput::Pinch(PinchEvent::new(
+                         position,
+-                        delta: 0.0,
++                        0.0,
+                         modifiers,
+-                        phase: TouchPhase::Started,
+-                    }));
++                        TouchPhase::Started,
++                    )));
+             }
+         } else if self.gesture_kind.get() == GestureKind::None {
+             self.gesture_kind.set(GestureKind::Scroll);
+@@ -337,12 +337,12 @@ impl IDirectManipulationViewportEventHandler_Impl for DirectManipulationEventHan
+                 let scale_delta = scale / last_scale;
+                 self.pending_events
+                     .borrow_mut()
+-                    .push(PlatformInput::Pinch(PinchEvent {
++                    .push(PlatformInput::Pinch(PinchEvent::new(
+                         position,
+-                        delta: scale_delta - 1.0,
++                        scale_delta - 1.0,
+                         modifiers,
+-                        phase: TouchPhase::Moved,
+-                    }));
++                        TouchPhase::Moved,
++                    )));
+             }
+             GestureKind::None => {}
+         }
+diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
+index 6e4ff9f..7dbac06 100644
+--- a/gpui-pre/src/elements/div.rs
++++ b/gpui-pre/src/elements/div.rs
+@@ -406,13 +406,20 @@ impl Interactivity {
+         self.on_scroll(listener);
+     }
+ 
+-    /// Bind the given callback to pinch gesture events during the bubble phase.
++    /// Bind the given callback to pinch gesture events during the bubble phase: trackpad pinches over
++    /// this element and, with an element id, touch pinches of two or more fingers that started on it
++    /// (the deepest `on_pinch` element under the fingers gets it, or the outer one when they started on
++    /// two nested ones, wherever the fingers move; [`PinchEvent::touch`] carries their details, the local
++    /// focal point relative to this element).
+     ///
+     /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+     pub fn on_pinch(&mut self, listener: impl Fn(&PinchEvent, &mut Window, &mut App) + 'static) {
+         self.pinch_listeners
+             .push(Box::new(move |event, phase, hitbox, window, cx| {
+-                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
++                // A touch pinch reaches only its element (the paint filter), wherever its fingers are.
++                if phase == DispatchPhase::Bubble
++                    && (event.touch.is_some() || hitbox.is_hovered(window))
++                {
+                     (listener)(event, window, cx);
+                 }
+             }));
+@@ -1115,7 +1122,8 @@ pub trait InteractiveElement: Sized {
+         self.on_scroll(listener)
+     }
+ 
+-    /// Bind the given callback to pinch gesture events during the bubble phase.
++    /// Bind the given callback to pinch gesture events during the bubble phase: trackpad pinches over
++    /// this element and, with an element id, touch pinches that started on it.
+     /// The fluent API equivalent to [`Interactivity::on_pinch`].
+     ///
+     /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+@@ -2907,6 +2915,8 @@ impl Interactivity {
+             || self.scroll_offset.is_some()
+             || self.drag_listener.is_some();
+         let touch_listeners = mem::take(&mut self.touch_listeners);
++        // Touch pinches need an id: later fingers and phases find the element by it.
++        let pinch_owner = global_id.filter(|_| self.has_pinch_listeners()).cloned();
+         if let Some(owner) = global_id.filter(|_| !touch_listeners.is_empty()) {
+             let (hitbox, owner) = (hitbox.clone(), owner.clone());
+             window.on_mouse_event(move |event: &TouchEvent, phase, window, cx| {
+@@ -2923,14 +2933,17 @@ impl Interactivity {
+                     }
+                 }
+             })
+-        } else if handles_gestures {
+-            let hitbox = hitbox.clone();
++        } else if handles_gestures || pinch_owner.is_some() {
++            let (hitbox, pinch_owner) = (hitbox.clone(), pinch_owner.clone());
+             window.on_mouse_event(move |event: &TouchEvent, phase, window, _| {
+                 if phase == DispatchPhase::Bubble
+                     && event.phase == TouchPhase::Started
+                     && hitbox.is_hovered(window)
+                 {
+-                    window.leave_touch_to_gestures(event.id);
++                    match &pinch_owner {
++                        Some(owner) => window.join_pinch(event.id, owner),
++                        None => window.leave_touch_to_gestures(event.id),
++                    }
+                 }
+             })
+         }
+@@ -3009,9 +3022,21 @@ impl Interactivity {
+         }
+ 
+         for listener in self.pinch_listeners.drain(..) {
+-            let hitbox = hitbox.clone();
++            let (hitbox, pinch_owner) = (hitbox.clone(), pinch_owner.clone());
+             window.on_mouse_event(move |event: &PinchEvent, phase, window, cx| {
+-                listener(event, phase, &hitbox, window, cx);
++                let Some(touch) = &event.touch else {
++                    return listener(event, phase, &hitbox, window, cx);
++                };
++                if pinch_owner.is_none() || event.touch_owner() != pinch_owner.as_ref() {
++                    return;
++                }
++                let mut touch = touch.clone();
++                touch.localize(hitbox.bounds.origin);
++                let event = PinchEvent {
++                    touch: Some(touch),
++                    ..event.clone()
++                };
++                listener(&event, phase, &hitbox, window, cx);
+             })
+         }
+ 
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index aa3dab0..17c4193 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -36,7 +36,10 @@ use crate::{
+     ScrollEvent, ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
+ };
+ 
++mod pinch;
+ pub mod scale;
++pub(crate) use pinch::{PinchArena, PinchChange};
++pub use pinch::TouchPinch;
+ 
+ const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
+ 
+@@ -416,8 +419,8 @@ impl PlatformGestures for NullPlatformGestures {}
+ /// [`ClickEvent::Touch`](crate::ClickEvent), which keeps every existing
+ /// mouse-driven behavior (click listeners, caret placement, double-tap
+ /// selection) working before elements grow a direct tap-delivery path.
+-/// Pinch recognition is not implemented yet, and additional touches are ignored
+-/// while one is being recognized.
++/// Additional touches are ignored while one is being recognized; two or more
++/// on an element with `on_pinch` may become a pinch ([`TouchPinch`]).
+ pub(crate) struct TouchGestureRecognizer {
+     tuning: GestureTuning,
+     state: TouchGestureState,
+@@ -441,6 +444,21 @@ pub(crate) enum RecognizedTouchGesture {
+     LongPress(LongPressEvent),
+ }
+ 
++/// The touch recognizer's hold on its touch, in Flutter's arena terms: what
++/// the pinch arena competes with.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) enum TouchClaim {
++    /// It has no touch.
++    None,
++    /// It has this touch, still a tap or a pan to be.
++    Possible(TouchId),
++    /// Its pan won this touch, and takes any touch that joins it (Flutter's
++    /// drag accepts a joining pointer).
++    Pan(TouchId),
++    /// An element claimed this touch's long press or touch drag.
++    Press(TouchId),
++}
++
+ enum TouchGestureState {
+     Idle,
+     /// The touch is still within `touch_slop` of where it started: it can
+@@ -521,6 +539,24 @@ struct Momentum {
+ }
+ 
+ impl TouchGestureRecognizer {
++    pub(crate) fn tuning(&self) -> GestureTuning {
++        self.tuning
++    }
++
++    /// The touch this recognizer has, and whether it won it.
++    pub(crate) fn claim(&self) -> TouchClaim {
++        match &self.state {
++            TouchGestureState::Idle => TouchClaim::None,
++            TouchGestureState::Pending { touch, .. } | TouchGestureState::Caught(touch) => {
++                TouchClaim::Possible(touch.id)
++            }
++            TouchGestureState::Panning { touch, .. } => TouchClaim::Pan(touch.id),
++            TouchGestureState::LongPressing(touch) | TouchGestureState::TouchDragging(touch) => {
++                TouchClaim::Press(touch.id)
++            }
++        }
++    }
++
+     pub(crate) fn new(tuning: GestureTuning) -> Self {
+         Self {
+             tuning,
+diff --git a/gpui-pre/src/gestures/pinch.rs b/gpui-pre/src/gestures/pinch.rs
+new file mode 100644
+index 0000000..b7bec92
+--- /dev/null
++++ b/gpui-pre/src/gestures/pinch.rs
+@@ -0,0 +1,417 @@
++//! Touch pinches: which touches the scale recognizer ([`super::scale`], Flutter's `ScaleGestureRecognizer`) gets,
++//! and the [`PinchEvent`]s it reports. This is Flutter's gesture arena between an element's scale recognizer and
++//! the window's touch recognizer (taps, pans, long presses), as claims:
++//!
++//! - a touch joins the pinch of every element with `on_pinch` under it ([`Window::join_pinch`]), unless a deeper
++//!   `on_touch` claimed it; the deepest pinches, or the one an earlier touch is already pinching (a pinch element
++//!   inside another: the outer one pinches a finger on each). One element pinches at a time per window;
++//! - one touch on that element stays the touch recognizer's: its pan (hit slop) always beats the scale's (pan slop),
++//!   and once it pans, a touch that joins is the pan's (Flutter's drag accepts a joining pointer): a running pan
++//!   never becomes a pinch;
++//! - a second touch on it, before that, hands both to the scale recognizer, the first where it is now (Flutter's
++//!   recognizer restarts its focal point and span at every new pointer anyway). Both still reach the touch
++//!   recognizer, so a two-finger tap taps, until one side wins. The scale wins past its slops (span or focal point
++//!   travel): the touch recognizer then cancels them and they reach only the pinch until they lift. The drag wins
++//!   when the touches' focal point travels past the hit slop first (Flutter's drag recognizer adds up every
++//!   tracked pointer's movement, so fingers dragged together pan, fingers spread apart do not), and a long press
++//!   or touch drag an element claims wins too (`LongPressGestureRecognizer` accepts in every pointer's arena): the
++//!   scale loses the touches, which never pinch until they lift;
++//! - a touch that lands while the touch recognizer is busy with a touch the scale does not have (a claimed long
++//!   press, a touch drag, a tap to be elsewhere) is the scale's alone: Flutter's one-pointer scale, which wins past
++//!   the pan slop;
++//! - back to one touch before the scale wins, it gives up and waits for a second again, if the touch recognizer has
++//!   that touch; after it wins, the last finger keeps the gesture (`pointer_count` 1, scale 1).
++//!
++//! [`Window::join_pinch`]: crate::Window::join_pinch
++
++use std::mem;
++
++use scheduler::Instant;
++use smallvec::{SmallVec, smallvec};
++
++use super::scale::{
++    GestureDisposition, ScaleEndDetails, ScaleGestureRecognizer, ScaleOutput, ScaleStartDetails,
++    ScaleUpdateDetails,
++};
++use super::{TouchClaim, slops};
++use crate::{GlobalElementId, Pixels, Point, TouchEvent, TouchId, TouchPhase};
++
++/// What a touch pinch reports in a [`PinchEvent`](crate::PinchEvent): Flutter's `onStart`, `onUpdate` and `onEnd`
++/// details. A finger joining or leaving ends the gesture and the next move starts it again, as in Flutter.
++#[derive(Clone, Debug, PartialEq)]
++pub enum TouchPinch {
++    /// The touches established a focal point and an initial scale of 1 (`phase` is `Started`).
++    Start(ScaleStartDetails),
++    /// The focal point, scale or rotation changed (`phase` is `Moved`). Scale and rotation are since the start.
++    Update(ScaleUpdateDetails),
++    /// The gesture ended, with the velocity of the last finger lifted (`phase` is `Ended`).
++    End(ScaleEndDetails),
++}
++
++impl TouchPinch {
++    /// The [`PinchEvent::phase`](crate::PinchEvent::phase) of this callback.
++    pub fn phase(&self) -> TouchPhase {
++        match self {
++            Self::Start(_) => TouchPhase::Started,
++            Self::Update(_) => TouchPhase::Moved,
++            Self::End(_) => TouchPhase::Ended,
++        }
++    }
++
++    /// Flutter's `localFocalPoint`: the focal point relative to `origin`, the receiving element's.
++    pub(crate) fn localize(&mut self, origin: Point<Pixels>) {
++        match self {
++            Self::Start(details) => details.local_focal_point = details.focal_point - origin,
++            Self::Update(details) => details.local_focal_point = details.focal_point - origin,
++            Self::End(_) => {}
++        }
++    }
++}
++
++/// The window's touch pinch: one element's, through the stages of Flutter's arena (module docs).
++#[derive(Default)]
++pub(crate) enum PinchArena {
++    /// No touch is on a pinch element, or the touch recognizer won the ones that were.
++    #[default]
++    Idle,
++    /// One touch on `owner`, which the touch recognizer has. Its latest event is replayed when a second lands.
++    Single {
++        owner: GlobalElementId,
++        touch: TouchEvent,
++    },
++    /// Touches on `owner` the scale recognizer has: two or more, which the touch recognizer has a claim on too
++    /// until either wins, or one it does not have (it was busy with another).
++    Contested(Contest),
++    /// The scale won `touches`: they reach only it.
++    Won {
++        owner: GlobalElementId,
++        touches: SmallVec<[TouchId; 2]>,
++        scale: Box<ScaleGestureRecognizer>,
++        last: Reported,
++    },
++}
++
++/// The contested stage's touches, each with its latest event.
++pub(crate) struct Contest {
++    owner: GlobalElementId,
++    touches: SmallVec<[TouchEvent; 2]>,
++    scale: Box<ScaleGestureRecognizer>,
++    /// The touches' focal point when the contest last gained a touch: the drag wins when it travels past the hit
++    /// slop.
++    focal_start: Point<Pixels>,
++}
++
++/// What the gesture reported last: `delta` is relative to it.
++#[derive(Clone, Copy)]
++pub(crate) struct Reported {
++    focal_point: Point<Pixels>,
++    scale: f32,
++}
++
++/// One touch pinch event to dispatch: the callback, and the trackpad fields it fills.
++pub(crate) struct PinchChange {
++    pub touch: TouchPinch,
++    /// The focal point (window pixels).
++    pub position: Point<Pixels>,
++    /// The scale's change since the last event (a trackpad pinch's meaning: zoom by `1 + delta`).
++    pub delta: f32,
++}
++
++/// What the window does with one touch event, as the arena decided.
++pub(crate) struct PinchStep {
++    /// Whether the touch recognizer gets the event too.
++    pub to_recognizer: bool,
++    /// Touches the pinch just won, as `Cancelled` events: the touch recognizer drops them first.
++    pub won: SmallVec<[TouchEvent; 2]>,
++    /// The pinch events to dispatch, to the element that owns them.
++    pub pinch: Option<(GlobalElementId, Vec<PinchChange>)>,
++}
++
++fn lifted(phase: TouchPhase) -> bool {
++    matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled)
++}
++
++/// The touches' focal point: their mean position.
++fn focal_point(touches: &[TouchEvent]) -> Point<Pixels> {
++    let sum = touches
++        .iter()
++        .fold(Point::<Pixels>::default(), |sum, touch| {
++            sum + touch.position
++        });
++    sum.map(|value| value / touches.len().max(1) as f32)
++}
++
++impl PinchArena {
++    /// Routes one touch event. `joins` are the pinch elements its `Started` joined, deepest first
++    /// ([`Window::join_pinch`]); later phases ignore them. `recognizer` is the touch recognizer's claim before this
++    /// event. `touch_slop` is the tuning's (`GestureTuning::touch_slop`): the scale's slops and the drag's follow it.
++    ///
++    /// [`Window::join_pinch`]: crate::Window::join_pinch
++    pub(crate) fn handle_event(
++        &mut self,
++        event: &TouchEvent,
++        joins: &[GlobalElementId],
++        recognizer: TouchClaim,
++        now: Instant,
++        touch_slop: Pixels,
++    ) -> PinchStep {
++        let mut step = PinchStep {
++            to_recognizer: true,
++            won: SmallVec::new(),
++            pinch: None,
++        };
++        let joins = if event.phase == TouchPhase::Started {
++            joins
++        } else {
++            &[]
++        };
++        let hit_slop = slops(event.device, Some(touch_slop)).hit;
++        let new_scale = || {
++            let mut scale = Box::<ScaleGestureRecognizer>::default();
++            scale.touch_slop = Some(touch_slop);
++            scale
++        };
++        *self = match mem::take(self) {
++            Self::Idle => match (joins.first(), recognizer) {
++                // A running pan takes a joining touch.
++                (None, _) | (Some(_), TouchClaim::Pan(_)) => Self::Idle,
++                // The touch recognizer takes this touch.
++                (Some(owner), TouchClaim::None) => Self::Single {
++                    owner: owner.clone(),
++                    touch: event.clone(),
++                },
++                // It is busy with another: the scale has this one alone.
++                (Some(owner), TouchClaim::Possible(_) | TouchClaim::Press(_)) => {
++                    let mut scale = new_scale();
++                    scale.add_pointer(event, now);
++                    let outputs = scale.handle_event(event, now);
++                    let contest = Contest {
++                        owner: owner.clone(),
++                        touches: smallvec![event.clone()],
++                        scale,
++                        focal_start: event.position,
++                    };
++                    contest.decide(outputs, recognizer, hit_slop, &mut step)
++                }
++            },
++            Self::Single { owner, touch } if joins.contains(&owner) => {
++                let mut scale = new_scale();
++                let first = TouchEvent {
++                    phase: TouchPhase::Started,
++                    ..touch.clone()
++                };
++                let mut outputs = Vec::new();
++                for started in [&first, event] {
++                    scale.add_pointer(started, now);
++                    outputs.extend(scale.handle_event(started, now));
++                }
++                let touches: SmallVec<[TouchEvent; 2]> = smallvec![touch, event.clone()];
++                let focal_start = focal_point(&touches);
++                let contest = Contest {
++                    owner,
++                    touches,
++                    scale,
++                    focal_start,
++                };
++                contest.decide(outputs, recognizer, hit_slop, &mut step)
++            }
++            Self::Single { owner, touch } if touch.id == event.id => {
++                if lifted(event.phase) {
++                    Self::Idle
++                } else {
++                    Self::Single {
++                        owner,
++                        touch: event.clone(),
++                    }
++                }
++            }
++            Self::Contested(mut contest)
++                if joins.contains(&contest.owner)
++                    || contest.touches.iter().any(|touch| touch.id == event.id) =>
++            {
++                if joins.contains(&contest.owner) {
++                    contest.scale.add_pointer(event, now);
++                    contest.touches.push(event.clone());
++                    contest.focal_start = focal_point(&contest.touches);
++                } else {
++                    for touch in contest
++                        .touches
++                        .iter_mut()
++                        .filter(|touch| touch.id == event.id)
++                    {
++                        *touch = event.clone();
++                    }
++                }
++                let outputs = contest.scale.handle_event(event, now);
++                contest.decide(outputs, recognizer, hit_slop, &mut step)
++            }
++            Self::Won {
++                owner,
++                mut touches,
++                mut scale,
++                mut last,
++            } if joins.contains(&owner) || touches.contains(&event.id) => {
++                step.to_recognizer = false;
++                if joins.contains(&owner) {
++                    scale.add_pointer(event, now);
++                    touches.push(event.id);
++                }
++                let changes = pinch_changes(scale.handle_event(event, now), &mut last);
++                if lifted(event.phase) {
++                    touches.retain(|touch| *touch != event.id);
++                }
++                step.pinch = (!changes.is_empty()).then(|| (owner.clone(), changes));
++                if touches.is_empty() {
++                    Self::Idle
++                } else {
++                    Self::Won {
++                        owner,
++                        touches,
++                        scale,
++                        last,
++                    }
++                }
++            }
++            // A touch that is not this pinch's.
++            other @ (Self::Single { .. } | Self::Contested(_) | Self::Won { .. }) => other,
++        };
++        step
++    }
++
++    /// The touch recognizer's claim after it handled a touch or a timer. A pan of the one touch the scale holds
++    /// wins it (the scale never had a second); a long press or touch drag an element claimed wins every touch the
++    /// scale holds before winning. A pan in a contest is judged by the touches' focal point instead
++    /// ([`Contest::decide`]).
++    pub(crate) fn touch_recognizer_claimed(&mut self, claim: TouchClaim) {
++        let loses = match (&*self, claim) {
++            (Self::Single { touch, .. }, TouchClaim::Pan(won) | TouchClaim::Press(won)) => {
++                touch.id == won
++            }
++            (Self::Contested(contest), TouchClaim::Press(won)) => {
++                contest.touches.iter().any(|touch| touch.id == won)
++            }
++            (Self::Contested(_), TouchClaim::Pan(_))
++            | (_, TouchClaim::None | TouchClaim::Possible(_))
++            | (Self::Idle | Self::Won { .. }, _) => false,
++        };
++        if loses {
++            *self = Self::Idle;
++        }
++    }
++}
++
++impl Contest {
++    /// The contest after the scale saw an event: won if the scale accepted; lost if the touches' focal point
++    /// travelled past the hit slop and the touch recognizer has one of them (its drag got there first); else back
++    /// to one touch the touch recognizer has, or none, if fingers lifted (the scale gives up); else still contested.
++    fn decide(
++        mut self,
++        outputs: Vec<ScaleOutput>,
++        recognizer: TouchClaim,
++        hit_slop: Pixels,
++        step: &mut PinchStep,
++    ) -> PinchArena {
++        let accepted = outputs.iter().any(|output| {
++            matches!(
++                output,
++                ScaleOutput::Resolve {
++                    disposition: GestureDisposition::Accepted,
++                    ..
++                }
++            )
++        });
++        if accepted {
++            step.to_recognizer = false;
++            step.won = self
++                .touches
++                .iter()
++                .map(|touch| TouchEvent {
++                    phase: TouchPhase::Cancelled,
++                    ..touch.clone()
++                })
++                .collect();
++            let mut last = Reported {
++                focal_point: Point::default(),
++                scale: 1.0,
++            };
++            let changes = pinch_changes(outputs, &mut last);
++            step.pinch = (!changes.is_empty()).then(|| (self.owner.clone(), changes));
++            let touches: SmallVec<[TouchId; 2]> = self
++                .touches
++                .iter()
++                .filter(|touch| !lifted(touch.phase))
++                .map(|touch| touch.id)
++                .collect();
++            return if touches.is_empty() {
++                PinchArena::Idle
++            } else {
++                PinchArena::Won {
++                    owner: self.owner,
++                    touches,
++                    scale: self.scale,
++                    last,
++                }
++            };
++        }
++        let recognizers = match recognizer {
++            TouchClaim::None => None,
++            TouchClaim::Possible(id) | TouchClaim::Pan(id) | TouchClaim::Press(id) => Some(id),
++        };
++        let dragged = recognizers.is_some_and(|id| self.touches.iter().any(|touch| touch.id == id))
++            && (focal_point(&self.touches) - self.focal_start).magnitude() > f64::from(hit_slop);
++        if dragged {
++            return PinchArena::Idle;
++        }
++        self.touches.retain(|touch| !lifted(touch.phase));
++        match self.touches.len() {
++            0 => PinchArena::Idle,
++            1 if recognizers == Some(self.touches[0].id) => PinchArena::Single {
++                owner: self.owner,
++                touch: self.touches.remove(0),
++            },
++            _ => PinchArena::Contested(self),
++        }
++    }
++}
++
++/// The scale's callbacks as pinch changes, from `last`, what the gesture reported last.
++fn pinch_changes(outputs: Vec<ScaleOutput>, last: &mut Reported) -> Vec<PinchChange> {
++    outputs
++        .into_iter()
++        .filter_map(|output| {
++            let (delta, touch) = match output {
++                ScaleOutput::Resolve { .. } => return None,
++                ScaleOutput::Start(details) => {
++                    *last = Reported {
++                        focal_point: details.focal_point,
++                        scale: 1.0,
++                    };
++                    (0.0, TouchPinch::Start(details))
++                }
++                ScaleOutput::Update(details) => {
++                    // Fingers that met make a zero scale: no relative change from it.
++                    let delta = if last.scale > 0.0 {
++                        details.scale / last.scale - 1.0
++                    } else {
++                        0.0
++                    };
++                    *last = Reported {
++                        focal_point: details.focal_point,
++                        scale: details.scale,
++                    };
++                    (delta, TouchPinch::Update(details))
++                }
++                ScaleOutput::End(details) => (0.0, TouchPinch::End(details)),
++            };
++            Some(PinchChange {
++                touch,
++                position: last.focal_point,
++                delta,
++            })
++        })
++        .collect()
++}
++
++#[cfg(test)]
++#[path = "pinch_tests.rs"]
++mod tests;
+diff --git a/gpui-pre/src/gestures/pinch_tests.rs b/gpui-pre/src/gestures/pinch_tests.rs
+new file mode 100644
+index 0000000..16e48db
+--- /dev/null
++++ b/gpui-pre/src/gestures/pinch_tests.rs
+@@ -0,0 +1,393 @@
++//! Touch pinches through the test platform: recorded touch traces into a window of real `on_pinch` divs, the
++//! pinch, scroll, tap and long-press events each element saw out. One row per case of the arena (module docs of
++//! `pinch.rs`); a row whose outcome Flutter's arena decides names the Flutter code that decides it.
++
++use std::{cell::RefCell, rc::Rc};
++
++use super::super::recognizer_tests::{TraceEvent, touch};
++use crate::{
++    Context, DispatchPhase, InteractiveElement as _, IntoElement, LongPressEvent, MouseButton,
++    ParentElement as _, Pixels, Point, Render, Styled as _, TestAppContext, TouchPhase, TouchPinch,
++    Window, canvas, div, px,
++};
++
++use TouchPhase::{Cancelled, Ended, Moved, Started};
++
++/// What an element saw, values rounded to hundredths.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum Seen {
++    /// A tap's synthesized press.
++    Tap,
++    /// A pan step's phase.
++    Scroll(TouchPhase),
++    /// A long press's phase; the root claims every long press.
++    LongPress(TouchPhase),
++    /// `on_pinch` of the named element: `Start` with its pointer count and focal point.
++    Start(&'static str, usize, (f32, f32)),
++    /// `Update`: scale, rotation, pointer count, local focal point.
++    Update(&'static str, f32, f32, usize, (f32, f32)),
++    /// `End`: pointer count.
++    End(&'static str, usize),
++}
++
++use Seen::{End, LongPress, Scroll, Start, Tap, Update};
++
++struct Row<'a> {
++    name: &'static str,
++    trace: &'a [TraceEvent],
++    expected: &'a [Seen],
++}
++
++/// `outer` (0, 0, 400 × 400) pinches and holds `inner` (200, 0, 200 × 200), which pinches too; `plain`
++/// (400, 0, 200 × 400) does not. The root records taps and pans, and claims long presses.
++struct Pinchable {
++    seen: Rc<RefCell<Vec<Seen>>>,
++}
++
++fn round(value: f32) -> f32 {
++    (value * 100.).round() / 100.
++}
++
++fn rounded(point: Point<Pixels>) -> (f32, f32) {
++    (round(point.x.into()), round(point.y.into()))
++}
++
++impl Render for Pinchable {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        let pinchable = |name: &'static str, left: f32| {
++            let seen = self.seen.clone();
++            div()
++                .id(name)
++                .absolute()
++                .left(px(left))
++                .top(px(0.))
++                .w(px(200.))
++                .h(px(200.))
++                .on_pinch(move |event, _, _| {
++                    let seen_now = match &event.touch {
++                        Some(TouchPinch::Start(start)) => {
++                            Start(name, start.pointer_count, rounded(start.focal_point))
++                        }
++                        Some(TouchPinch::Update(update)) => Update(
++                            name,
++                            round(update.scale),
++                            round(update.rotation),
++                            update.pointer_count,
++                            rounded(update.local_focal_point),
++                        ),
++                        Some(TouchPinch::End(end)) => End(name, end.pointer_count),
++                        None => return,
++                    };
++                    seen.borrow_mut().push(seen_now);
++                })
++        };
++        let (on_tap, on_scroll) = (self.seen.clone(), self.seen.clone());
++        let on_long_press = self.seen.clone();
++        div()
++            .id("root")
++            .size_full()
++            .on_mouse_down(MouseButton::Left, move |_, _, _| {
++                on_tap.borrow_mut().push(Tap)
++            })
++            .on_scroll(move |event, _, _| on_scroll.borrow_mut().push(Scroll(event.touch_phase)))
++            .child(canvas(
++                |_, _, _| {},
++                move |_, _, window, _| {
++                    window.on_mouse_event(move |event: &LongPressEvent, phase, window, _| {
++                        if phase == DispatchPhase::Bubble {
++                            on_long_press.borrow_mut().push(LongPress(event.phase));
++                            window.prevent_default();
++                        }
++                    })
++                },
++            ))
++            .child(
++                pinchable("outer", 0.)
++                    .w(px(400.))
++                    .h(px(400.))
++                    .child(pinchable("inner", 200.)),
++            )
++            .child(
++                div()
++                    .id("plain")
++                    .absolute()
++                    .left(px(400.))
++                    .top(px(0.))
++                    .w(px(200.))
++                    .h(px(400.)),
++            )
++    }
++}
++
++#[crate::test]
++fn touch_pinches_follow_flutters_arena(cx: &mut TestAppContext) {
++    // Two fingers 40 apart on `outer` (focal point (60, 100), span 20) that pinch out to 80 apart.
++    const PINCH_OUT: [TraceEvent; 3] = [
++        touch(0, 1, Started, 40., 100.),
++        touch(0, 2, Started, 80., 100.),
++        touch(10, 2, Moved, 120., 100.),
++    ];
++    let rows = [
++        Row {
++            // The span grows by 20, past the scale slop (18): the scale wins and starts at once.
++            name: "two fingers pinch out",
++            trace: &[
++                PINCH_OUT[0],
++                PINCH_OUT[1],
++                PINCH_OUT[2],
++                touch(20, 2, Moved, 160., 100.),
++                touch(30, 1, Ended, 40., 100.),
++                touch(30, 2, Ended, 160., 100.),
++            ],
++            expected: &[
++                Start("outer", 2, (80., 100.)),
++                Update("outer", 2., 0., 2, (80., 100.)),
++                Update("outer", 3., 0., 2, (100., 100.)),
++                End("outer", 1),
++            ],
++        },
++        Row {
++            // On `inner`, which `outer` holds: the deepest wins, and the focal point is local to it.
++            name: "two fingers pinch in on the nested element",
++            trace: &[
++                touch(0, 1, Started, 220., 100.),
++                touch(0, 2, Started, 300., 100.),
++                touch(10, 2, Moved, 260., 100.),
++                touch(20, 1, Ended, 220., 100.),
++                touch(20, 2, Ended, 260., 100.),
++            ],
++            expected: &[
++                Start("inner", 2, (240., 100.)),
++                Update("inner", 0.5, 0., 2, (40., 100.)),
++                End("inner", 1),
++            ],
++        },
++        Row {
++            // The second finger swings from left of the first to above it: a quarter turn, and its focal point
++            // moves 36.06, past the pan slop (36).
++            name: "two fingers rotate",
++            trace: &[
++                touch(0, 1, Started, 140., 100.),
++                touch(0, 2, Started, 100., 100.),
++                touch(10, 2, Moved, 140., 40.),
++                touch(20, 1, Ended, 140., 100.),
++                touch(20, 2, Ended, 140., 40.),
++            ],
++            expected: &[
++                Start("outer", 2, (140., 70.)),
++                Update("outer", 1.5, 1.57, 2, (140., 70.)),
++                End("outer", 1),
++            ],
++        },
++        Row {
++            // A third finger ends the gesture and its first move starts it again, as in Flutter.
++            name: "a third finger joins the pinch",
++            trace: &[
++                PINCH_OUT[0],
++                PINCH_OUT[1],
++                PINCH_OUT[2],
++                touch(20, 3, Started, 80., 100.),
++                touch(30, 3, Moved, 80., 130.),
++                touch(40, 1, Ended, 40., 100.),
++                touch(40, 2, Ended, 120., 100.),
++                touch(40, 3, Ended, 80., 130.),
++            ],
++            expected: &[
++                Start("outer", 2, (80., 100.)),
++                Update("outer", 2., 0., 2, (80., 100.)),
++                End("outer", 3),
++                Start("outer", 3, (80., 110.)),
++                Update("outer", 1.28, 0., 3, (80., 110.)),
++                End("outer", 2),
++            ],
++        },
++        Row {
++            // The last finger keeps the gesture: Flutter's one-pointer scale, panning at scale 1.
++            name: "a finger lifted mid-pinch",
++            trace: &[
++                PINCH_OUT[0],
++                PINCH_OUT[1],
++                PINCH_OUT[2],
++                touch(20, 2, Ended, 120., 100.),
++                touch(30, 1, Moved, 30., 100.),
++                touch(40, 1, Ended, 30., 100.),
++            ],
++            expected: &[
++                Start("outer", 2, (80., 100.)),
++                Update("outer", 2., 0., 2, (80., 100.)),
++                End("outer", 1),
++                Start("outer", 1, (30., 100.)),
++                Update("outer", 1., 0., 1, (30., 100.)),
++                End("outer", 0),
++            ],
++        },
++        Row {
++            // The pan won its arena before the second finger landed; Flutter's drag accepts a pointer that joins
++            // it (monodrag.dart `_addPointer`, case accepted), so the scale never gets one: no pinch.
++            name: "a running pan never becomes a pinch",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(10, 1, Moved, 40., 140.),
++                touch(20, 2, Started, 80., 140.),
++                touch(30, 2, Moved, 160., 140.),
++                touch(1000, 1, Ended, 40., 140.),
++                touch(1000, 2, Ended, 160., 140.),
++            ],
++            expected: &[Scroll(Started), Scroll(Ended)],
++        },
++        Row {
++            // Both fingers move 20 down together: the focal point travels 20, past the pan's hit slop (18) but
++            // under the scale's pan slop (36), and the span does not change. The pan wins both arenas.
++            name: "two fingers dragged together pan",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(0, 2, Started, 80., 100.),
++                touch(10, 1, Moved, 40., 120.),
++                touch(10, 2, Moved, 80., 120.),
++                touch(20, 1, Moved, 40., 160.),
++                touch(20, 2, Moved, 80., 160.),
++                touch(1000, 1, Ended, 40., 160.),
++                touch(1000, 2, Ended, 80., 160.),
++            ],
++            expected: &[Scroll(Started), Scroll(Moved), Scroll(Ended)],
++        },
++        Row {
++            // Each finger moves 20 outward in turn: the first passes the pan's hit slop (18) and pans, but the
++            // focal point travels only 10, so the drag has not won (Flutter's drag adds up every pointer's
++            // movement, and these cancel); the span grows past the scale slop and the pinch takes both.
++            name: "fingers spread apart pinch though the first passed the hit slop",
++            trace: &[
++                touch(0, 1, Started, 60., 100.),
++                touch(0, 2, Started, 100., 100.),
++                touch(10, 1, Moved, 40., 100.),
++                touch(10, 2, Moved, 120., 100.),
++                touch(20, 1, Moved, 20., 100.),
++                touch(20, 2, Moved, 140., 100.),
++                touch(30, 1, Ended, 20., 100.),
++                touch(30, 2, Ended, 140., 100.),
++            ],
++            expected: &[
++                Scroll(Started),
++                Scroll(Cancelled),
++                Start("outer", 2, (80., 100.)),
++                Update("outer", 2., 0., 2, (80., 100.)),
++                Update("outer", 2.5, 0., 2, (70., 100.)),
++                Update("outer", 3., 0., 2, (80., 100.)),
++                End("outer", 1),
++            ],
++        },
++        Row {
++            // LongPressGestureRecognizer.didExceedDeadline accepts in both pointers' arenas (long_press.dart,
++            // recognizer.dart `resolve`), so the scale is rejected: spreading the fingers afterwards never pinches.
++            name: "two fingers held past the long-press deadline long-press",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(0, 2, Started, 80., 100.),
++                touch(600, 2, Moved, 160., 100.),
++                touch(700, 1, Ended, 40., 100.),
++                touch(700, 2, Ended, 160., 100.),
++            ],
++            expected: &[LongPress(Started), LongPress(Ended)],
++        },
++        Row {
++            // The long press won the first finger's arena before the second landed: the second is the scale's
++            // alone (a one-pointer scale, which wins past the pan slop of 36), and the long press goes on.
++            name: "a finger landing during a long press pans a one-finger pinch",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(600, 2, Started, 80., 100.),
++                touch(610, 2, Moved, 80., 140.),
++                touch(620, 2, Moved, 80., 160.),
++                touch(700, 2, Ended, 80., 160.),
++                touch(800, 1, Ended, 40., 100.),
++            ],
++            expected: &[
++                LongPress(Started),
++                Start("outer", 1, (80., 140.)),
++                Update("outer", 1., 0., 1, (80., 140.)),
++                Update("outer", 1., 0., 1, (80., 160.)),
++                End("outer", 0),
++                LongPress(Ended),
++            ],
++        },
++        Row {
++            // The first finger is on `outer` only, the second on `inner` inside it: both are in `outer`'s
++            // scale's arena (every scale recognizer on a hit path holds the pointer), so `outer` pinches.
++            name: "a finger on each of two nested pinch elements pinches the outer one",
++            trace: &[
++                touch(0, 1, Started, 100., 300.),
++                touch(0, 2, Started, 300., 100.),
++                touch(10, 2, Moved, 340., 60.),
++                touch(20, 1, Ended, 100., 300.),
++                touch(20, 2, Ended, 340., 60.),
++            ],
++            expected: &[
++                Start("outer", 2, (220., 180.)),
++                Update("outer", 1.2, 0., 2, (220., 180.)),
++                End("outer", 1),
++            ],
++        },
++        Row {
++            // Neither finger moves: the first finger's tap wins, as Flutter's tap does at its up.
++            name: "a two-finger tap taps once",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(0, 2, Started, 80., 100.),
++                touch(50, 1, Ended, 40., 100.),
++                touch(50, 2, Ended, 80., 100.),
++            ],
++            expected: &[Tap],
++        },
++        Row {
++            // Lifting back to one finger before the slop: the scale gives up and that finger pans as today.
++            name: "one finger left before the slop pans",
++            trace: &[
++                touch(0, 1, Started, 40., 100.),
++                touch(0, 2, Started, 80., 100.),
++                touch(10, 2, Ended, 80., 100.),
++                touch(20, 1, Moved, 40., 160.),
++                touch(1000, 1, Ended, 40., 160.),
++            ],
++            expected: &[Scroll(Started), Scroll(Ended)],
++        },
++        Row {
++            // `plain` has no `on_pinch`: today's behaviour, the first finger pans and the second is ignored.
++            name: "two fingers pan without on_pinch",
++            trace: &[
++                touch(0, 1, Started, 450., 100.),
++                touch(0, 2, Started, 500., 100.),
++                touch(10, 2, Moved, 540., 100.),
++                touch(20, 1, Moved, 450., 160.),
++                touch(1000, 1, Ended, 450., 160.),
++                touch(1000, 2, Ended, 540., 100.),
++            ],
++            expected: &[Scroll(Started), Scroll(Ended)],
++        },
++    ];
++    let failures: Vec<String> = rows
++        .iter()
++        .filter_map(|row| {
++            let seen = Rc::new(RefCell::new(Vec::new()));
++            let window = cx.add_window({
++                let seen = seen.clone();
++                move |_, _| Pinchable { seen }
++            });
++            let trace = row.trace.iter().map(|event| event.to_timed_input());
++            crate::play_trace(cx, window.into(), trace, None, 0, |_, _, _| {});
++            let seen = seen.take();
++            (seen != row.expected).then(|| {
++                format!(
++                    "{}\n  expected {:?}\n  seen     {:?}",
++                    row.name, row.expected, seen
++                )
++            })
++        })
++        .collect();
++    assert!(
++        failures.is_empty(),
++        "{} of {} rows failed:\n{}",
++        failures.len(),
++        rows.len(),
++        failures.join("\n")
++    );
++}
+diff --git a/gpui-pre/src/gestures/scale.rs b/gpui-pre/src/gestures/scale.rs
+index d527093..f2744bb 100644
+--- a/gpui-pre/src/gestures/scale.rs
++++ b/gpui-pre/src/gestures/scale.rs
+@@ -12,7 +12,8 @@
+ //!
+ //! Dropped from Flutter: pointer pan/zoom events (trackpad gestures; GPUI reports them as `PinchEvent` and
+ //! `ScrollEvent`) and with them `trackpadScrollCausesScale`, `trackpadScrollToScaleFactor` and the pan/zoom
+-//! factors; event transforms and `localFocalPoint` (GPUI positions are window coordinates); `allowedButtonsFilter`
++//! factors; event transforms (GPUI positions are window coordinates, so `local_focal_point` starts as the focal
++//! point and the element that receives the pinch makes it local); `allowedButtonsFilter`
+ //! (touches carry no buttons); synthesized moves (GPUI never synthesizes touches).
+ 
+ use std::mem;
+@@ -65,6 +66,8 @@ enum ScaleState {
+ pub struct ScaleStartDetails {
+     /// The initial focal point of the pointers in contact with the screen.
+     pub focal_point: Point<Pixels>,
++    /// The initial focal point of the pointers in contact with the screen, in the receiving element's coordinates.
++    pub local_focal_point: Point<Pixels>,
+     /// The number of pointers being tracked by the gesture recognizer.
+     pub pointer_count: usize,
+     /// Recorded timestamp of the source pointer event that triggered the scale event.
+@@ -81,6 +84,8 @@ pub struct ScaleUpdateDetails {
+     pub focal_point_delta: Point<Pixels>,
+     /// The focal point of the pointers in contact with the screen.
+     pub focal_point: Point<Pixels>,
++    /// The focal point of the pointers in contact with the screen, in the receiving element's coordinates.
++    pub local_focal_point: Point<Pixels>,
+     /// The scale implied by the average distance between the pointers in contact with the screen.
+     pub scale: f32,
+     /// The scale implied by the average distance along the horizontal axis between the pointers.
+@@ -526,14 +531,16 @@ impl ScaleGestureRecognizer {
+             if let Some(tracker) = self.scale_velocity_tracker.as_mut() {
+                 tracker.add_position(time_stamp, point(px(scale_factor), px(0.0)));
+             }
++            let focal_point = self
++                .current_focal_point
++                .expect("update sets the focal point before the state machine runs")
++                .map(px);
+             out.push(ScaleOutput::Update(ScaleUpdateDetails {
+                 scale: scale_factor,
+                 horizontal_scale: self.pointer_horizontal_scale_factor(),
+                 vertical_scale: self.pointer_vertical_scale_factor(),
+-                focal_point: self
+-                    .current_focal_point
+-                    .expect("update sets the focal point before the state machine runs")
+-                    .map(px),
++                focal_point,
++                local_focal_point: focal_point,
+                 rotation: self.compute_rotation_factor(),
+                 pointer_count: self.pointer_count(),
+                 focal_point_delta: self.delta.map(px),
+@@ -543,11 +550,13 @@ impl ScaleGestureRecognizer {
+     }
+ 
+     fn dispatch_on_start_callback_if_needed(&mut self, out: &mut Vec<ScaleOutput>) {
++        let focal_point = self
++            .current_focal_point
++            .expect("a pointer event set the focal point before the gesture starts")
++            .map(px);
+         out.push(ScaleOutput::Start(ScaleStartDetails {
+-            focal_point: self
+-                .current_focal_point
+-                .expect("a pointer event set the focal point before the gesture starts")
+-                .map(px),
++            focal_point,
++            local_focal_point: focal_point,
+             pointer_count: self.pointer_count(),
+             source_time_stamp: self.initial_event_timestamp,
+             kind: self
+diff --git a/gpui-pre/src/interactive.rs b/gpui-pre/src/interactive.rs
+index ff33d63..f8323cb 100644
+--- a/gpui-pre/src/interactive.rs
++++ b/gpui-pre/src/interactive.rs
+@@ -614,8 +614,9 @@ impl Default for ScrollDelta {
+     }
+ }
+ 
+-/// A pinch gesture event from the platform, generated when the user performs
+-/// a pinch-to-zoom gesture (typically on a trackpad).
++/// A pinch gesture event, generated when the user performs a pinch-to-zoom
++/// gesture: on a trackpad (from the platform) or with two or more fingers on a
++/// touch screen (recognized by GPUI, see [`TouchPinch`](crate::TouchPinch)).
+ ///
+ #[derive(Clone, Debug, Default)]
+ pub struct PinchEvent {
+@@ -632,6 +633,39 @@ pub struct PinchEvent {
+ 
+     /// The phase of the pinch gesture.
+     pub phase: TouchPhase,
++
++    /// A touch pinch's details (Flutter's scale callbacks), `None` for a
++    /// trackpad pinch. Its variant matches `phase`.
++    pub touch: Option<crate::TouchPinch>,
++
++    /// The element a touch pinch is for (`Some` exactly when `touch` is).
++    pub(crate) touch_owner: Option<crate::GlobalElementId>,
++}
++
++impl PinchEvent {
++    /// A pinch the platform recognized, such as a trackpad's.
++    pub fn new(
++        position: Point<Pixels>,
++        delta: f32,
++        modifiers: Modifiers,
++        phase: TouchPhase,
++    ) -> Self {
++        Self {
++            position,
++            delta,
++            modifiers,
++            phase,
++            touch: None,
++            touch_owner: None,
++        }
++    }
++
++    /// The element a touch pinch is for: the one that joined its touches
++    /// ([`Window::join_pinch`](crate::Window::join_pinch)). `None` for a
++    /// trackpad pinch.
++    pub fn touch_owner(&self) -> Option<&crate::GlobalElementId> {
++        self.touch_owner.as_ref()
++    }
+ }
+ 
+ impl Sealed for PinchEvent {}
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 735b861..1f457f4 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -27,8 +27,12 @@ use crate::{
+     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+ };
+ 
+-use crate::gestures::{BackGestureSource, RecognizedTouchGesture, TouchGestureRecognizer};
+-use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
++use crate::gestures::{
++    BackGestureSource, PinchArena, PinchChange, RecognizedTouchGesture, TouchGestureRecognizer,
++};
++use crate::interactive::{
++    PinchEvent, PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase,
++};
+ use anyhow::{Context as _, Result, anyhow};
+ use collections::{FxHashMap, FxHashSet};
+ use derive_more::{Deref, DerefMut};
+@@ -1307,6 +1311,8 @@ pub struct Window {
+     pointer_source: Option<PointerSource>,
+     /// Where each touch in progress goes, decided when it started.
+     touch_routes: FxHashMap<TouchId, TouchRoute>,
++    /// Which touches the element pinching now has (Flutter's arena for its scale recognizer).
++    pinch: PinchArena,
+     long_press_timer: Option<Task<()>>,
+     long_press_capture: Option<EntityId>,
+     pub(crate) refreshing: bool,
+@@ -1652,8 +1658,12 @@ fn default_bounds(
+ enum TouchRoute {
+     /// Its started event is being dispatched and nobody has decided yet.
+     Deciding,
+-    /// The gesture recognizer, which turns it into mouse and scroll events.
+-    Gestures,
++    /// The gesture recognizer, which turns it into mouse and scroll events,
++    /// and the pinches of the elements that joined it, deepest first
++    /// ([`Window::join_pinch`]).
++    Gestures {
++        pinch: SmallVec<[GlobalElementId; 1]>,
++    },
+     /// The element that claimed it: every later phase goes to its touch
+     /// listeners wherever it is drawn now, and no events are synthesized.
+     Claimed(GlobalElementId),
+@@ -2544,6 +2554,7 @@ impl Window {
+             touch_prediction_enabled: true,
+             pointer_source: None,
+             touch_routes: FxHashMap::default(),
++            pinch: PinchArena::Idle,
+             long_press_timer: None,
+             long_press_capture: None,
+             refreshing: false,
+@@ -3861,7 +3872,7 @@ impl Window {
+     pub fn touch_owner(&self, touch: TouchId) -> Option<&GlobalElementId> {
+         match self.touch_routes.get(&touch) {
+             Some(TouchRoute::Claimed(owner)) => Some(owner),
+-            Some(TouchRoute::Deciding | TouchRoute::Gestures) | None => None,
++            Some(TouchRoute::Deciding | TouchRoute::Gestures { .. }) | None => None,
+         }
+     }
+ 
+@@ -3872,13 +3883,46 @@ impl Window {
+     /// it: an ancestor's `on_touch` then cannot take the touch, as for a div
+     /// with `on_click` or `on_scroll` (which calls this for you).
+     pub fn leave_touch_to_gestures(&mut self, touch: TouchId) {
+-        self.decide_touch(touch, TouchRoute::Gestures);
++        self.decide_touch(
++            touch,
++            TouchRoute::Gestures {
++                pinch: SmallVec::new(),
++            },
++        );
++    }
++
++    /// Adds a touch to `owner`'s pinch while the touch's
++    /// [`TouchPhase::Started`] is dispatched, and leaves its taps and pans to
++    /// the gesture recognizer as [`Window::leave_touch_to_gestures`] does,
++    /// unless a deeper element claimed it. A deeper element that left it to
++    /// gestures (a button) keeps its taps, and a deeper pinch element keeps
++    /// it too: in Flutter's arena every scale recognizer under the touch
++    /// holds it. The deepest pinches, unless an earlier touch is pinching
++    /// `owner` already. The pinch's [`PinchEvent`]s go to the mouse listeners
++    /// with [`PinchEvent::touch_owner`] naming `owner`. `on_pinch` does this
++    /// for you.
++    pub fn join_pinch(&mut self, touch: TouchId, owner: &GlobalElementId) {
++        self.decide_touch(
++            touch,
++            TouchRoute::Gestures {
++                pinch: smallvec::smallvec![owner.clone()],
++            },
++        );
+     }
+ 
+-    /// The one transition out of [`TouchRoute::Deciding`]; decided routes stay.
++    /// The deepest decision wins: transitions leave only
++    /// [`TouchRoute::Deciding`], except that pinches join a touch left to
++    /// gestures (Flutter's arena holds its tap and every scale).
+     fn decide_touch(&mut self, touch: TouchId, decided: TouchRoute) {
+-        if let Some(route @ TouchRoute::Deciding) = self.touch_routes.get_mut(&touch) {
+-            *route = decided;
++        let Some(route) = self.touch_routes.get_mut(&touch) else {
++            return;
++        };
++        match (route, decided) {
++            (route @ TouchRoute::Deciding, decided) => *route = decided,
++            (TouchRoute::Gestures { pinch }, TouchRoute::Gestures { pinch: joins }) => {
++                pinch.extend(joins)
++            }
++            (TouchRoute::Gestures { .. } | TouchRoute::Claimed(_), _) => {}
+         }
+     }
+ 
+@@ -6453,11 +6497,12 @@ impl Window {
+             let mouse_position = mem::replace(&mut self.mouse_position, event.position);
+             self.dispatch_mouse_event(event, cx);
+             self.mouse_position = mouse_position;
+-            self.decide_touch(event.id, TouchRoute::Gestures);
++            self.leave_touch_to_gestures(event.id);
+         }
+-        let claimed = match self.touch_routes.get(&event.id) {
+-            Some(TouchRoute::Claimed(_)) => true,
+-            Some(TouchRoute::Deciding | TouchRoute::Gestures) | None => false,
++        let (claimed, pinch) = match self.touch_routes.get(&event.id) {
++            Some(TouchRoute::Claimed(_)) => (true, SmallVec::new()),
++            Some(TouchRoute::Gestures { pinch }) => (false, pinch.clone()),
++            Some(TouchRoute::Deciding) | None => (false, SmallVec::new()),
+         };
+         if claimed && event.phase != TouchPhase::Started {
+             self.dispatch_mouse_event(event, cx);
+@@ -6471,6 +6516,25 @@ impl Window {
+             }
+             return;
+         }
++        let now = cx.background_executor().now();
++        let step = self.pinch.handle_event(
++            event,
++            &pinch,
++            self.touch_gestures.claim(),
++            now,
++            self.touch_gestures.tuning().touch_slop,
++        );
++        for cancelled in &step.won {
++            for (device, gesture) in self.touch_gestures.handle_event(cancelled, now, None) {
++                self.dispatch_recognized_touch_gesture(gesture, device, cx);
++            }
++        }
++        if let Some((owner, changes)) = step.pinch {
++            self.dispatch_touch_pinch(owner, changes, event.device, cx);
++        }
++        if !step.to_recognizer {
++            return;
++        }
+         let mut event = event.clone();
+         if !self.touch_prediction_enabled {
+             event.predicted_position = None;
+@@ -6536,6 +6600,38 @@ impl Window {
+         }
+     }
+ 
++    /// Dispatches a touch pinch's events for `owner` to the mouse listeners,
++    /// synthesized from `device`, each hit-tested at its focal point; the
++    /// mouse stays where it was.
++    fn dispatch_touch_pinch(
++        &mut self,
++        owner: GlobalElementId,
++        changes: Vec<PinchChange>,
++        device: PointerDevice,
++        cx: &mut App,
++    ) {
++        let outer_pointer_source = self.pointer_source.replace(PointerSource {
++            device,
++            synthesized: true,
++        });
++        let mouse_position = self.mouse_position;
++        for change in changes {
++            let event = PinchEvent {
++                position: change.position,
++                delta: change.delta,
++                modifiers: self.modifiers,
++                phase: change.touch.phase(),
++                touch: Some(change.touch),
++                touch_owner: Some(owner.clone()),
++            };
++            self.mouse_position = event.position;
++            cx.propagate_event = true;
++            self.dispatch_mouse_event(&event, cx);
++        }
++        self.mouse_position = mouse_position;
++        self.pointer_source = outer_pointer_source;
++    }
++
+     /// `device` is that of the touch the gesture was recognized from, so a pen
+     /// and a finger down together each label their own gestures.
+     fn dispatch_recognized_touch_gesture(
+@@ -6599,6 +6695,10 @@ impl Window {
+                 }
+             }
+         }
++        // A pan, or a long press or touch drag an element claimed, wins the
++        // touch from the scale recognizer too.
++        self.pinch
++            .touch_recognizer_claimed(self.touch_gestures.claim());
+         self.pointer_source = outer_pointer_source;
+     }
+ 

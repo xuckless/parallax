@@ -1,11 +1,15 @@
-// Parallax's own view (not ported). Surface and inset handling read from Flutter's FlutterSurfaceView and
-// FlutterView as reference. How it fits together: docs/android.md.
+// Parallax's own view. Surface and inset handling read from Flutter's FlutterSurfaceView and
+// FlutterView as reference. One line is ported: touchSlop() from
+// engine/src/flutter/shell/platform/android/io/flutter/embedding/android/FlutterView.java @ 3.50.1
+// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause,
+// see third_party/flutter/LICENSE. How it fits together: docs/android.md.
 package io.github.xuckless.parallax;
 
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.os.Build;
+import android.util.Log;
 import android.util.SparseArray;
 import android.view.Choreographer;
 import android.view.DisplayCutout;
@@ -15,12 +19,16 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewStructure;
 import android.view.WindowInsets;
 import android.view.autofill.AutofillValue;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import java.nio.ByteBuffer;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * The surface GPUI draws into. Forwards the surface lifecycle, vsync frames and system-bar insets
@@ -34,7 +42,11 @@ import java.nio.ByteBuffer;
  */
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
+  private static final String TAG = "ParallaxSurfaceView";
+
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
+  // Every call that sends the density also sends `touchSlop`, the device's touch slop in pixels, as
+  // FlutterView.sendViewportMetricsToFlutter sends devicePixelRatio and physicalTouchSlop together.
   // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops
   // events from a view whose Activity does not own the window (it is covered, or destroyed and its
   // callbacks arrive late). surfaceDestroyed is the exception: it always reaches the surface its
@@ -42,26 +54,37 @@ final class ParallaxSurfaceView extends SurfaceView
   // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
-      int activity, Surface surface, float density, float refreshRate, String languageTags);
+      int activity,
+      Surface surface,
+      float density,
+      int touchSlop,
+      float refreshRate,
+      String languageTags);
 
   // The app's locales after a configuration change (system or per-app language), as above; the
   // per-language font order follows them. Named after Flutter's LocalizationPlugin.sendLocalesToFlutter.
   private static native void nativeLocalesChanged(int activity, String languageTags);
 
   private static native void nativeSurfaceChanged(
-      int activity, int width, int height, float density);
+      int activity, int width, int height, float density, int touchSlop);
 
   private static native void nativeSurfaceDestroyed(int activity);
 
   // Every vsync: GPUI draws if anything changed.
   private static native void nativeFrame(int activity);
 
-  // GPUI's pending text-input calls (Flutter's `flutter/textinput` calls as a JSON array, for
-  // TextInputChannel.handleFrameworkCalls), or null when there are none.
-  private static native String nativeTextInputCalls(int activity);
+  // GPUI's pending calls to the platform, or null when there are none: a JSON object of Flutter
+  // channel name → that channel's calls, each {"method", "args"} in Flutter's encoding, in order.
+  // "flutter/textinput" goes to TextInputChannel.handleFrameworkCalls; "flutter/platform" holds
+  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()). One pull for both.
+  private static native String nativeFrameworkCalls(int activity);
 
+  // Also after a density change: ParallaxActivity.onConfigurationChanged re-applies the insets, and
+  // the surface keeps its pixel size, so no surfaceChanged follows.
   private static native void nativeInsets(
       int activity,
+      float density,
+      int touchSlop,
       int safeLeft,
       int safeTop,
       int safeRight,
@@ -115,15 +138,21 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private final TextInputPlugin textInputPlugin;
 
+  // Plays GPUI's haptics on the Activity's decor view, as Flutter's embedding does.
+  private final PlatformPlugin platformPlugin;
+
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
 
   /** The id nativeActivityCreated gave the Activity showing this view; tags every event it sends. */
   private final int activity;
 
-  ParallaxSurfaceView(Context context, int activity) {
+  // `platformPlugin`: the Activity's, as Flutter's Activity delegate builds the PlatformPlugin (on
+  // the Activity, whose decor view plays the haptics); a test without an Activity passes a mock.
+  ParallaxSurfaceView(Context context, int activity, PlatformPlugin platformPlugin) {
     super(context);
     this.activity = activity;
+    this.platformPlugin = platformPlugin;
     // As FlutterView: no platform views, so motion events are not tracked.
     touchProcessor = new AndroidTouchProcessor(activity, /* trackMotionEvents= */ false);
     // A key GPUI handles may edit the field: the IME's mirror takes GPUI's state before the IME's
@@ -134,7 +163,7 @@ final class ParallaxSurfaceView extends SurfaceView
           @Override
           public boolean handleEvent(KeyEvent keyEvent) {
             boolean handled = super.handleEvent(keyEvent);
-            runTextInputCalls();
+            runFrameworkCalls();
             return handled;
           }
         };
@@ -168,7 +197,7 @@ final class ParallaxSurfaceView extends SurfaceView
   @Override
   public void doFrame(long frameTimeNanos) {
     nativeFrame(activity);
-    runTextInputCalls();
+    runFrameworkCalls();
     if (framesRunning) {
       Choreographer.getInstance().postFrameCallback(this);
     }
@@ -181,6 +210,7 @@ final class ParallaxSurfaceView extends SurfaceView
         activity,
         holder.getSurface(),
         density(),
+        touchSlop(),
         getDisplay().getRefreshRate(),
         getResources().getConfiguration().getLocales().toLanguageTags());
   }
@@ -196,7 +226,7 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-    nativeSurfaceChanged(activity, width, height, density());
+    nativeSurfaceChanged(activity, width, height, density(), touchSlop());
   }
 
   @Override
@@ -271,12 +301,46 @@ final class ParallaxSurfaceView extends SurfaceView
     textInputPlugin.autofill(values);
   }
 
-  // GPUI's pending text-input calls, run outside GPUI's draw and key dispatch, so the IME's
-  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free.
-  private void runTextInputCalls() {
-    String calls = nativeTextInputCalls(activity);
-    if (calls != null) {
-      textInputChannel.handleFrameworkCalls(calls);
+  // GPUI's pending framework calls, run outside GPUI's draw and key dispatch, so the IME's
+  // synchronous callbacks (restartInput → onCreateInputConnection) reach Rust with GPUI free. Every
+  // vsync: a long press GPUI recognizes on a timer plays its haptic within a frame.
+  private void runFrameworkCalls() {
+    String calls = nativeFrameworkCalls(activity);
+    if (calls == null) {
+      return;
+    }
+    try {
+      JSONObject channels = new JSONObject(calls);
+      JSONArray textInput = channels.optJSONArray("flutter/textinput");
+      if (textInput != null) {
+        textInputChannel.handleFrameworkCalls(textInput);
+      }
+      JSONArray platform = channels.optJSONArray("flutter/platform");
+      if (platform != null) {
+        runPlatformCalls(platform);
+      }
+    } catch (JSONException exception) {
+      Log.e(TAG, "unreadable framework calls: " + exception.getMessage());
+    }
+  }
+
+  // The `flutter/platform` calls GPUI makes, played as PlatformChannel's handler plays
+  // `HapticFeedback.vibrate` (an unknown type is logged, as its result.error).
+  private void runPlatformCalls(JSONArray calls) throws JSONException {
+    for (int i = 0; i < calls.length(); i++) {
+      JSONObject call = calls.getJSONObject(i);
+      String method = call.getString("method");
+      if (!method.equals("HapticFeedback.vibrate")) {
+        Log.e(TAG, "unknown flutter/platform call " + method);
+        continue;
+      }
+      String feedbackType = call.isNull("args") ? null : call.getString("args");
+      try {
+        platformPlugin.vibrateHapticFeedback(
+            PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
+      } catch (NoSuchFieldException exception) {
+        Log.e(TAG, exception.getMessage());
+      }
     }
   }
 
@@ -298,6 +362,8 @@ final class ParallaxSurfaceView extends SurfaceView
       Insets ime = insets.getInsets(WindowInsets.Type.ime());
       nativeInsets(
           activity,
+          density(),
+          touchSlop(),
           safe.left, safe.top, safe.right, safe.bottom, ime.left, ime.top, ime.right, ime.bottom);
     } else {
       // API 28-29: system window insets cover the bars (and the keyboard, which is not split out
@@ -305,6 +371,8 @@ final class ParallaxSurfaceView extends SurfaceView
       DisplayCutout cutout = insets.getDisplayCutout();
       nativeInsets(
           activity,
+          density(),
+          touchSlop(),
           Math.max(insets.getSystemWindowInsetLeft(), cutout == null ? 0 : cutout.getSafeInsetLeft()),
           Math.max(insets.getSystemWindowInsetTop(), cutout == null ? 0 : cutout.getSafeInsetTop()),
           Math.max(
@@ -321,5 +389,11 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private float density() {
     return getResources().getDisplayMetrics().density;
+  }
+
+  // As FlutterView.sendViewportMetricsToFlutter's physicalTouchSlop. ViewConfiguration.get caches one
+  // configuration per density, so this follows a density change.
+  private int touchSlop() {
+    return ViewConfiguration.get(getContext()).getScaledTouchSlop();
   }
 }

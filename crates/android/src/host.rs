@@ -6,12 +6,12 @@ use std::{
     ffi::c_void,
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use gpui::{
-    App, AppLifecyclePhase, Application, ApplicationHandle, Bounds, DevicePixels,
-    DispatchEventResult, Edges, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
+    App, AppLifecyclePhase, Application, ApplicationHandle, AsyncApp, DevicePixels,
+    DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
     RequestFrameOptions, Size, WindowInsets, WindowVisibility, point, px, size,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
@@ -20,12 +20,14 @@ use jni::{
     objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
     sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
+use serde_json::Value;
 
 use crate::{
     Error,
     backend::Device,
-    keys,
+    haptics, keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
+    metrics::Metrics,
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
@@ -47,12 +49,12 @@ fn natives() -> [NativeMethod; 14] {
     [
         row(
             "nativeSurfaceCreated",
-            "(ILandroid/view/Surface;FFLjava/lang/String;)V",
+            "(ILandroid/view/Surface;FIFLjava/lang/String;)V",
             surface_created as *mut c_void,
         ),
         row(
             "nativeSurfaceChanged",
-            "(IIIF)V",
+            "(IIIFI)V",
             surface_changed as *mut c_void,
         ),
         row(
@@ -67,11 +69,11 @@ fn natives() -> [NativeMethod; 14] {
             locales_changed as *mut c_void,
         ),
         row(
-            "nativeTextInputCalls",
+            "nativeFrameworkCalls",
             "(I)Ljava/lang/String;",
-            text_input_calls as *mut c_void,
+            framework_calls as *mut c_void,
         ),
-        row("nativeInsets", "(IIIIIIIII)V", insets as *mut c_void),
+        row("nativeInsets", "(IFIIIIIIIII)V", insets as *mut c_void),
         row(
             "nativeDispatchPointerDataPacket",
             "(ILjava/nio/ByteBuffer;I)V",
@@ -118,20 +120,53 @@ fn natives() -> [NativeMethod; 14] {
 struct MainThreadHost {
     shell: Rc<Shell>,
     app: RefCell<AppState>,
+    /// The app's hook for a changed device touch slop ([`crate::android_main!`]'s second argument).
+    touch_slop_changed: TouchSlopChanged,
 }
+
+/// Called on the main thread, in its own looper turn, when the device's touch slop moves to a new value (logical
+/// pixels): the facade re-applies the behaviour table's row with it.
+pub type TouchSlopChanged = fn(&mut App, Pixels);
 
 enum AppState {
     /// `JNI_OnLoad` ran; the app launches on the first surface (GPUI needs one to open its window).
     Loaded { launch: fn(&mut App) },
     /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
-    /// change; `fonts` is `None` when the system fonts did not load (logged), then there is no order to change.
+    /// change; `cx` schedules work on GPUI's next looper turn without entering it; `fonts` is `None` when the
+    /// system fonts did not load (logged), then there is no order to change.
     Running {
         app: Rc<ApplicationHandle>,
+        cx: AsyncApp,
         fonts: Option<Arc<AndroidTextSystem>>,
     },
 }
 
 impl MainThreadHost {
+    /// Takes Java's density and touch slop (sent with every surface and insets report, [`Metrics::rescaled`]) and logs
+    /// when either moved. A moved logical slop goes to the app's [`TouchSlopChanged`] hook on the next looper turn,
+    /// not inside this JNI call, which may be mid-report (the insets are not stored yet) or reached while GPUI runs;
+    /// before launch, the launch reads it ([`crate::touch_slop`]). Returns whether the density moved.
+    fn rescale_and_notify(&self, density: f32, touch_slop: jint) -> bool {
+        let rescaled = self
+            .shell
+            .metrics
+            .get()
+            .rescaled(density, DevicePixels(touch_slop));
+        self.shell.metrics.set(rescaled.metrics);
+        if rescaled.density_moved || rescaled.touch_slop_moved.is_some() {
+            let logical = rescaled.metrics.touch_slop();
+            log::info!("parallax: touch slop {touch_slop} px at density {density}: {logical:?}");
+        }
+        if let (Some(new), AppState::Running { cx, .. }) =
+            (rescaled.touch_slop_moved, &*self.app.borrow())
+        {
+            let hook = self.touch_slop_changed;
+            cx.spawn(async move |cx| cx.update(|cx| hook(cx, new)))
+                .detach();
+        }
+        rescaled.density_moved
+    }
+
     /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
     /// order follows them. If it moved, GPUI drops the font ids and line layouts it cached with the old order and
     /// redraws. Before launch there is nothing to do: the first surface brings the locales.
@@ -142,6 +177,7 @@ impl MainThreadHost {
             AppState::Running {
                 app,
                 fonts: Some(fonts),
+                ..
             } => (app.clone(), fonts.clone()),
         };
         if fonts.set_locales(locales) {
@@ -186,7 +222,11 @@ pub(crate) fn shell() -> Result<Rc<Shell>, Error> {
 ///
 /// # Safety
 /// `vm` must be the `JavaVM` pointer the JVM passed to `JNI_OnLoad`, on the thread that loaded the library.
-pub unsafe fn on_load(vm: *mut jni::sys::JavaVM, launch: fn(&mut App)) -> jint {
+pub unsafe fn on_load(
+    vm: *mut jni::sys::JavaVM,
+    launch: fn(&mut App),
+    touch_slop_changed: TouchSlopChanged,
+) -> jint {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
@@ -208,6 +248,7 @@ pub unsafe fn on_load(vm: *mut jni::sys::JavaVM, launch: fn(&mut App)) -> jint {
                 host.get_or_init(|| MainThreadHost {
                     shell: Rc::new(Shell::new(vm)),
                     app: RefCell::new(AppState::Loaded { launch }),
+                    touch_slop_changed,
                 });
             });
             JNI_VERSION_1_6
@@ -248,6 +289,7 @@ extern "system" fn surface_created(
     activity: jint,
     surface: JObject,
     density: jfloat,
+    touch_slop: jint,
     refresh_rate: jfloat,
     tags: JString,
 ) {
@@ -263,7 +305,8 @@ extern "system" fn surface_created(
     // A stale view's window is released on return, unused.
     with_owner(activity, |host| {
         let size = window.size();
-        host.shell.set_display(size, density, refresh_rate);
+        host.rescale_and_notify(density, touch_slop);
+        host.shell.set_display(size, refresh_rate);
         host.shell.handle(SurfaceEvent::Created {
             window,
             activity: ActivityId(activity),
@@ -283,6 +326,7 @@ extern "system" fn surface_created(
                 let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
                 let app = Application::with_platform(platform).run_embedded(launch);
                 *host.app.borrow_mut() = AppState::Running {
+                    cx: app.to_async(),
                     app: Rc::new(app),
                     fonts,
                 };
@@ -307,11 +351,13 @@ extern "system" fn surface_changed(
     width: jint,
     height: jint,
     density: jfloat,
+    touch_slop: jint,
 ) {
     with_owner(activity, |host| {
         let refresh_rate = host.shell.metrics.get().refresh_rate;
         let size = size(DevicePixels(width), DevicePixels(height));
-        host.shell.set_display(size, density, refresh_rate);
+        host.rescale_and_notify(density, touch_slop);
+        host.shell.set_display(size, refresh_rate);
         host.shell.handle(SurfaceEvent::Resized { size });
     });
 }
@@ -377,22 +423,24 @@ extern "system" fn locales_changed(
     with_host(|host| host.follow_locales(&locales));
 }
 
-/// Every vsync: GPUI draws if anything changed. Java then asks for the text-input calls ([`text_input_calls`]) and
+/// Every vsync: GPUI draws if anything changed. Java then asks for GPUI's framework calls ([`framework_calls`]) and
 /// runs them after this returns, outside GPUI's draw.
 extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
     with_owner(activity, |host| host.shell.frame());
 }
 
-/// GPUI's pending text-input calls for `TextInputChannel.handleFrameworkCalls` (Flutter's JSON), or null. Java asks
-/// after each frame and right after `KeyboardManager` handled a key event: a key GPUI edits the field with reaches
-/// Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit text before the next vsync).
-extern "system" fn text_input_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
+/// GPUI's pending calls to Java in Flutter's channel encoding, by channel ([`Shell::framework_calls`]), or null
+/// when there are none. Java asks after each frame and right after `KeyboardManager` handled a key event: a key GPUI
+/// edits the field with reaches Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit
+/// text before the next vsync). A pull, not a call into Java: a haptic fires from a GPUI timer, where Rust holds no
+/// Java frame to call through.
+extern "system" fn framework_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
     let mut calls = None;
-    with_owner(activity, |host| calls = host.shell.text_input_calls());
-    match calls.map(|calls| env.new_string(calls)) {
+    with_owner(activity, |host| calls = host.shell.framework_calls());
+    match calls.map(|calls| env.new_string(calls.to_string())) {
         Some(Ok(calls)) => calls.into_raw(),
         Some(Err(error)) => {
-            log::error!("parallax: text input calls dropped: {error}");
+            log::error!("parallax: framework calls dropped: {error}");
             std::ptr::null_mut()
         }
         None => std::ptr::null_mut(),
@@ -522,12 +570,14 @@ extern "system" fn dispatch_key_data(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the JNI signature: the Activity and two edge sets"
+    reason = "the JNI signature: the Activity, its scale and two edge sets"
 )]
 extern "system" fn insets(
     _env: JNIEnv,
     _class: JClass,
     activity: jint,
+    density: jfloat,
+    touch_slop: jint,
     safe_left: jint,
     safe_top: jint,
     safe_right: jint,
@@ -544,73 +594,16 @@ extern "system" fn insets(
         left: DevicePixels(left),
     };
     with_owner(activity, |host| {
+        // A density change keeps the surface's pixel size, so no surfaceChanged brings it: GPUI's scale changes here.
+        let density_changed = host.rescale_and_notify(density, touch_slop);
         host.shell.set_insets(
             edges(safe_left, safe_top, safe_right, safe_bottom),
             edges(ime_left, ime_top, ime_right, ime_bottom),
-        )
-    });
-}
-
-/// What Java last reported about the display and system bars, in physical pixels.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Metrics {
-    pub(crate) size: Size<DevicePixels>,
-    pub(crate) density: f32,
-    pub(crate) refresh_rate: f32,
-    safe_area: Edges<DevicePixels>,
-    ime: Edges<DevicePixels>,
-}
-
-impl Metrics {
-    /// Before the first surface: nothing drawn yet, so any density works; 1.0 keeps conversions finite.
-    const BEFORE_FIRST_SURFACE: Metrics = Metrics {
-        size: Size {
-            width: DevicePixels(0),
-            height: DevicePixels(0),
-        },
-        density: 1.0,
-        refresh_rate: 0.0,
-        safe_area: Edges {
-            top: DevicePixels(0),
-            right: DevicePixels(0),
-            bottom: DevicePixels(0),
-            left: DevicePixels(0),
-        },
-        ime: Edges {
-            top: DevicePixels(0),
-            right: DevicePixels(0),
-            bottom: DevicePixels(0),
-            left: DevicePixels(0),
-        },
-    };
-
-    fn logical(&self, edges: Edges<DevicePixels>) -> Edges<Pixels> {
-        edges.map(|edge| px(edge.0 as f32 / self.density))
-    }
-
-    /// The window (and display) bounds in logical pixels.
-    pub(crate) fn bounds(&self) -> Bounds<Pixels> {
-        Bounds::new(
-            point(px(0.), px(0.)),
-            size(
-                px(self.size.width.0 as f32 / self.density),
-                px(self.size.height.0 as f32 / self.density),
-            ),
-        )
-    }
-
-    pub(crate) fn refresh_interval(&self) -> Option<Duration> {
-        (self.refresh_rate > 0.0).then(|| Duration::from_secs_f32(1.0 / self.refresh_rate))
-    }
-
-    pub(crate) fn insets(&self) -> WindowInsets {
-        WindowInsets {
-            safe_area: self.logical(self.safe_area),
-            ime: self.logical(self.ime),
-            // Not yet on Android: rounded display corners (`RoundedCorner`, API 31).
-            corner_radii: Default::default(),
+        );
+        if density_changed {
+            host.shell.resized();
         }
-    }
+    });
 }
 
 /// A GPUI callback the window registered, taken out while it runs so it can re-enter the shell.
@@ -678,6 +671,8 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
+    /// Haptics GPUI played since Java last asked ([`Shell::framework_calls`]), oldest first; none while frames stop.
+    pub(crate) haptics: RefCell<Vec<Haptic>>,
     /// A plain `Cell`: only the main thread draws and attaches surfaces.
     pub(crate) first_frame: Cell<FirstFrame>,
 }
@@ -697,14 +692,14 @@ impl Shell {
             keyboard: RefCell::new(keys::Keyboard::default()),
             input_handler: RefCell::new(None),
             text_input: RefCell::new(text_input::Session::default()),
+            haptics: RefCell::new(Vec::new()),
             first_frame: Cell::new(FirstFrame::Pending),
         }
     }
 
-    fn set_display(&self, size: Size<DevicePixels>, density: f32, refresh_rate: f32) {
+    fn set_display(&self, size: Size<DevicePixels>, refresh_rate: f32) {
         self.metrics.set(Metrics {
             size,
-            density,
             refresh_rate,
             ..self.metrics.get()
         });
@@ -838,6 +833,10 @@ impl Shell {
         let (next, effect) = before.next(event);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
         let (active, visibility, owner) = (next.is_active(), next.visibility(), next.owner());
+        if !next.runs_frames() {
+            // Paused: nobody pulls them now, and a haptic must not play late, on resume.
+            self.haptics.borrow_mut().clear();
+        }
         *self.lifecycle.borrow_mut() = next;
         if owner.is_some() && owner != was_owner {
             self.text_input.borrow_mut().owner_changed();
@@ -892,12 +891,28 @@ impl Shell {
     /// tap into a click; a mouse clicks itself. The keyboard is read before GPUI runs (it reads modifiers too).
     fn pointer(&self, packet: &[u8]) {
         let modifiers = self.keyboard.borrow().modifiers();
+        let mut uptime = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `uptime` is a valid, writable timespec and CLOCK_MONOTONIC always exists on Android; on the
+        // impossible failure it stays zero, which only makes touches read as dispatched now.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut uptime) };
+        #[allow(
+            clippy::useless_conversion,
+            reason = "`time_t` and `c_long` are 32 bits on armv7 and x86: widen before multiplying"
+        )]
+        let clock = pointer::Clock {
+            now: Instant::now(),
+            uptime_micros: i64::from(uptime.tv_sec) * 1_000_000 + i64::from(uptime.tv_nsec) / 1_000,
+        };
         let events = match pointer::decode(packet) {
-            Ok(data) => {
-                self.pointers
-                    .borrow_mut()
-                    .events(&data, self.metrics.get().density, modifiers)
-            }
+            Ok(data) => self.pointers.borrow_mut().events(
+                &data,
+                self.metrics.get().density,
+                modifiers,
+                clock,
+            ),
             Err(error) => {
                 log::error!("parallax: pointer packet dropped: {error}");
                 return;
@@ -963,7 +978,7 @@ impl Shell {
 
     /// The pending text-input calls for Java, as Flutter's JSON; empties them. Never logs the text (password
     /// fields included): the calls carry it.
-    fn text_input_calls(&self) -> Option<String> {
+    fn text_input_calls(&self) -> Option<Value> {
         let pending = self.text_input.borrow_mut().take()?;
         let state = if pending.sends_state() {
             self.with_input_handler(|handler| {
@@ -1005,7 +1020,25 @@ impl Shell {
         let described = state.as_ref().map_or("none".to_string(), describe);
         let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
         log::debug!("parallax: text input {pending:?}, state: {described}");
-        Some(calls.to_string())
+        Some(calls)
+    }
+
+    /// GPUI's pending calls for Java, emptied: a JSON object of Flutter channel → its calls, with only the channels
+    /// that have some (`flutter/textinput`: [`Self::text_input_calls`]; `flutter/platform`: the haptics,
+    /// [`haptics::platform_calls`]); `None` when none has.
+    fn framework_calls(&self) -> Option<Value> {
+        let channels = [
+            ("flutter/textinput", self.text_input_calls()),
+            (
+                "flutter/platform",
+                haptics::platform_calls(&self.haptics.take()),
+            ),
+        ];
+        let calls: serde_json::Map<String, Value> = channels
+            .into_iter()
+            .filter_map(|(channel, calls)| Some((channel.to_string(), calls?)))
+            .collect();
+        (!calls.is_empty()).then_some(Value::Object(calls))
     }
 
     /// Java's editing state after an IME edit → GPUI, synchronously: merged onto GPUI's state when GPUI changed

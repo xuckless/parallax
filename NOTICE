@@ -12,7 +12,9 @@ snapshot crates with Parallax's patches applied, under GPUI's Apache License 2.0
 (LICENSE-APACHE in each). Copyright 2022 - 2025 Zed Industries, Inc. parallax-gpui also includes
 code ported from Flutter, under Flutter's BSD 3-Clause License: patches 0011 (velocity trackers,
 least-squares solver), 0012 (scroll simulations), 0013 (gesture constants, double-tap rule,
-recognizer test cases) and 0015 (scale recognizer, overscroll physics and indicators).
+recognizer test cases), 0015 (scale recognizer, overscroll physics and indicators) and 0018
+(haptic kinds); parallax-gpui-ios and parallax-gpui-web include Flutter's iOS and web haptic
+playback (patch 0018).
 
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER

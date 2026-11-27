@@ -34,7 +34,7 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    What GPUI does not report (a reversed selection kept forward, no selection, no composing range) is not news.
 2. **GPUI → Java, at the frame's end and after each key.** `text_input_state_changed`, `set_text_input_configuration`,
    a new focused field (`FocusId`) and `show`/`hide_soft_keyboard` fold into one `Pending` (`Pending::next`, a row per
-   notice). `nativeTextInputCalls` returns it as Flutter's `flutter/textinput` calls in JSON (`clearClient`,
+   notice). `nativeFrameworkCalls` returns it as Flutter's `flutter/textinput` calls in JSON (`clearClient`,
    `setClient` with `Configuration.fromJson`'s keys, `setEditingState`, `show`/`hide`). Java asks after
    `nativeFrame` and right after `KeyboardManager` handled a key event (hardware or the IME's `sendKeyEvent`): Gboard
    sends DEL as a key, then may `commitText` before vsync, and the mirror must already hold GPUI's deletion. Java

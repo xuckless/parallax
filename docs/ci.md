@@ -12,7 +12,7 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 Eight jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
 builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs only where a merge is decided: pull
 requests, pushes to `main` and manual runs; start it on a branch with `gh workflow run ci.yml --ref <branch>`
-(emulator setup, GPU mode, caching: [android-smoke.md](android-smoke.md#in-ci)). A newer push to the same ref cancels
+(emulator setup, GPU mode, caching: [android-smoke.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels
 the older run.
 
 | Target | Runner | Runs |

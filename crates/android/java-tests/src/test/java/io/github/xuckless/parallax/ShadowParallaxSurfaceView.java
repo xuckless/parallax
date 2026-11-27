@@ -27,9 +27,12 @@ public class ShadowParallaxSurfaceView extends ShadowSurfaceView {
 
   /**
    * The insets nativeInsets carries, under FlutterRenderer.ViewportMetrics' names: the safe area
-   * (system bars and cutout) is the view padding, the keyboard the view inset.
+   * (system bars and cutout) is the view padding, the keyboard the view inset; the density and
+   * touch slop sent with them are devicePixelRatio and physicalTouchSlop (-1 until set, as Flutter's).
    */
   public static class ViewportMetrics {
+    public float devicePixelRatio = 1.0f;
+    public int physicalTouchSlop = -1;
     public int viewPaddingLeft;
     public int viewPaddingTop;
     public int viewPaddingRight;
@@ -53,6 +56,8 @@ public class ShadowParallaxSurfaceView extends ShadowSurfaceView {
   @Implementation
   protected static void nativeInsets(
       int activity,
+      float density,
+      int touchSlop,
       int safeLeft,
       int safeTop,
       int safeRight,
@@ -62,6 +67,8 @@ public class ShadowParallaxSurfaceView extends ShadowSurfaceView {
       int imeRight,
       int imeBottom) {
     final ViewportMetrics metrics = new ViewportMetrics();
+    metrics.devicePixelRatio = density;
+    metrics.physicalTouchSlop = touchSlop;
     metrics.viewPaddingLeft = safeLeft;
     metrics.viewPaddingTop = safeTop;
     metrics.viewPaddingRight = safeRight;

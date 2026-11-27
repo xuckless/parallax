@@ -1,7 +1,8 @@
 # Scale and overscroll ports
 
 [Patch 0015](../patches/0015-scale-and-overscroll-ports.patch) adds Flutter's pinch/rotate recognizer and its
-overscroll indicators to GPUI as new files: pure state machines and functions of time, called by nothing yet. The
+overscroll indicators to GPUI as new files: pure state machines and functions of time (the indicators are driven by
+`div`'s scroll containers since [0017](overscroll.md)). The
 overscroll physics (bounce, springs, clamping boundaries) is GPUI's `ScrollPhysics` ([scroll-physics.md](scroll-physics.md)). Why
 port rather than write: [AGENTS.md](../AGENTS.md#flutter-is-the-second-source-of-truth). What each file leaves out:
 the rows for 0015 in [PORTED.md](../third_party/flutter/PORTED.md). Their tests are Flutter's, run by
@@ -53,6 +54,6 @@ One copy of each Flutter piece: the scale recognizer tracks velocity with [0011]
 [0012](scroll-physics.md)'s `SpringSimulation` (GPUI's `SpringConfig`), the metrics its `ScrollMetrics`.
 
 Wave 12 wires them: the scale recognizer into touch dispatch next to the upstream `TouchGestureRecognizer`
-(claims as the arena; scale results to `on_pinch` or a new listener), bouncing physics and the indicators into
-GPUI's scroll containers, chosen per target from the platform behaviour table
-([AGENTS.md](../AGENTS.md#decisions-settled-do-not-reopen-without-the-owner), "Platform feel").
+(patch 0016: claims as the arena, results to `on_pinch`; [pinch.md](pinch.md)); patch 0017 drives the bouncing
+physics and the indicators from `div`'s scroll containers, chosen per target from the platform behaviour table
+([overscroll.md](overscroll.md)).

@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 
 use futures::channel::oneshot;
 use gpui::{
-    Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
+    Bounds, Capslock, DispatchEventResult, GpuSpecs, Haptic, Modifiers, Pixels, PlatformAtlas,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
     PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration, TextInputStateChange,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets,
@@ -115,6 +115,15 @@ impl PlatformWindow for AndroidWindow {
 
     fn text_input_state_changed(&self, change: TextInputStateChange) {
         self.shell.text_input.borrow_mut().state_changed(change);
+    }
+
+    // Queued for Java, which plays it after the next vsync's frame: GPUI may be mid-dispatch here, and a long press
+    // fires from a timer, where no JNI call from Java is on the stack to call back through. Dropped while frames stop
+    // (`Lifecycle::runs_frames`).
+    fn perform_haptic(&self, haptic: Haptic) {
+        if self.shell.lifecycle.borrow().runs_frames() {
+            self.shell.haptics.borrow_mut().push(haptic);
+        }
     }
 
     fn prompt(

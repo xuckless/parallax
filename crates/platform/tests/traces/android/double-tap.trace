@@ -1,0 +1,5 @@
+# android double-tap: taps 200 400 2 100 50
+touch(0, 1, Started, 199.99, 399.97)
+touch(52, 1, Ended, 199.99, 399.97)
+touch(153, 2, Started, 199.99, 399.97)
+touch(202, 2, Ended, 199.99, 399.97)

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Translate a git-format patch between the vendored layout (paths relative to upstream/, a/gpui-pre-ios/src/x.rs)
 # and Zed's layout (a/crates/gpui_ios/src/x.rs), so one patch applies to both. Writes the result to stdout.
-# Usage: scripts/patch-paths.sh to-zed|to-vendored <in.patch>
+# Usage: scripts/patch-paths.sh to-zed [--drop-manifests] <in.patch> | to-vendored <in.patch>
 # Only header lines (diff --git, ---, +++, rename/copy from/to) are rewritten; hunk bodies pass through untouched.
+# --drop-manifests leaves out every */Cargo.toml file section instead of refusing it: sync-fork.sh appends the
+# hand-written Zed manifest change from patches/zed/ (docs/patch-translation.md).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,9 +49,12 @@ gpui-pre-macros/src/gpui_pre_facade_paths.rs  gpui-pre-only file
 
 die() { echo "patch-paths: $*" >&2; exit 1; }
 
-[[ $# -eq 2 && ( $1 == to-zed || $1 == to-vendored ) ]] || die "usage: $0 to-zed|to-vendored <in.patch>"
-direction="$1"
-patch="$2"
+# Arguments → (direction, what to do with a manifest section, patch). To extend: one row per accepted form.
+case "$#:${1:-}:${2:-}" in
+    "3:to-zed:--drop-manifests") direction=to-zed manifests=drop patch="$3" ;;
+    2:to-zed:* | 2:to-vendored:*) direction="$1" manifests=refuse patch="$2" ;;
+    *) die "usage: $0 to-zed [--drop-manifests] <in.patch> | to-vendored <in.patch>" ;;
+esac
 [[ -f $patch ]] || die "no such patch: $patch"
 
 declare -a vendored=() zed=()
@@ -80,7 +85,8 @@ translate() {
     echo "$out"
 }
 
-# Patch sections: preamble (commit message) → header (per file) → hunk; a new "diff --git" starts a header.
+# Patch sections: preamble (commit message) → header (per file) → hunk; a new "diff --git" starts a header, or a
+# dropped section (a manifest under --drop-manifests), whose lines are left out until the next "diff --git".
 section=preamble
 result=""
 while IFS= read -r line || [[ -n $line ]]; do
@@ -89,6 +95,10 @@ while IFS= read -r line || [[ -n $line ]]; do
             section=header
             read -r _ _ a b <<< "$line"
             [[ $a == a/* && $b == b/* ]] || die "unsupported diff line (quoted or spaced path?): $line"
+            if [[ $manifests == drop && ${b#b/} == */Cargo.toml ]]; then
+                section=dropped
+                continue
+            fi
             # Separate assignments: a failing $(translate) exits only when it is the whole assignment.
             from="${b#b/}"
             a="$(translate "${a#a/}")"
@@ -106,6 +116,7 @@ while IFS= read -r line || [[ -n $line ]]; do
         header:"--- /dev/null" | header:"+++ /dev/null") ;;
         header:"rename from "* | header:"copy from "*) path="$(translate "${line#* from }")"; line="${line%% from *} from $path" ;;
         header:"rename to "* | header:"copy to "*) path="$(translate "${line#* to }")"; line="${line%% to *} to $path" ;;
+        dropped:*) continue ;;
         *) ;;
     esac
     result+="$line"$'\n'

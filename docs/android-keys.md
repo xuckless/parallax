@@ -53,7 +53,7 @@ preceding input (key press, touch).
 
 ## Not yet
 
-- **Keyboard layout.** `keyboard_layout` and `keyboard_mapper` are still stubs ([android.md](android.md#stubs-not-yet-on-android)).
+- **Keyboard layout.** `keyboard_layout` and `keyboard_mapper` are still stubs ([android.md](android-stubs.md)).
 - **Predictive back** (API 33+ `OnBackInvokedCallback`, progress while swiping) and the device type field.
 
 ## Changing it

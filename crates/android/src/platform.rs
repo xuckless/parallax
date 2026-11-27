@@ -22,7 +22,7 @@ use gpui::{
 use gpui_wgpu::CosmicTextSystem;
 
 use crate::{
-    Error, dispatcher::AndroidDispatcher, host::Metrics, host::Shell,
+    Error, dispatcher::AndroidDispatcher, host::Shell, metrics::Metrics,
     text_system::AndroidTextSystem, window::AndroidWindow,
 };
 

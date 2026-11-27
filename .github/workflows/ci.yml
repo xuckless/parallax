@@ -154,7 +154,7 @@ jobs:
     env:
       # One emulator for both runner steps below: the first creates and caches it, the second runs the smoke test.
       # `-gpu auto` picks lavapipe (Vulkan) on the GPU-less runner; on SwiftShader's Vulkan (`swiftshader_indirect`,
-      # `swangle_indirect`) the renderer never finishes creating (docs/android-smoke.md#in-ci).
+      # `swangle_indirect`) the renderer never finishes creating (docs/android-smoke-ci.md#in-ci).
       EMULATOR_OPTIONS: -no-window -gpu auto -noaudio -no-boot-anim -camera-back none
       # The emulator image, for both runner steps and the AVD cache key.
       AVD_API_LEVEL: 35

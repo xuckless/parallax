@@ -53,6 +53,12 @@ Times are absolute from the trace start, so events at the same time are the same
 logical pixels. A recorder emits one `touch(…)` line per `TouchEvent` it sees, rebased to its first event's time; the
 replay engine needs nothing else. Pen and mouse devices, pressure and predicted positions are not in the format yet.
 
+The one player is `gpui::play_trace(cx, window, trace, frame_ms, until_ms, on_step)` (patch 0013, `test-support`):
+`(at_ms, PlatformInput)` pairs (`TraceEvent::to_timed_input`, or any scroll event) dispatched on the test clock, with
+a frame every `frame_ms` when it is `Some` (fling momentum, overscroll), and `on_step` called with
+`TraceStep::Input(&input)` after each dispatch and `TraceStep::Frame(ms)` after each frame. The recognizer, pinch
+and overscroll tests and [trace_replay.rs](../crates/platform/tests/trace_replay.rs) all use it.
+
 ## Ported and dropped
 
 43 Flutter tests, 44 rows (12 tap, 10 double tap, 11 long press, 11 drag), plus two per-target rows (`targets`:
@@ -62,6 +68,7 @@ the hitboxes the element inserts). Before 0013's fixes, 5 failed. The fling rule
 
 - **Arena:** yield to / held arena, arena reject, passive gestures, two recognizers on one pointer, microtask order.
 - **Buttons and devices:** secondary/tertiary buttons, button changes, device-kind filters, mouse drags.
-- **Multi-pointer:** GPUI ignores extra touches while one is active (until pinch lands).
+- **Multi-pointer:** the touch recognizer ignores extra touches while one is active; on an `on_pinch` element they
+  pinch ([pinch.md](pinch.md)).
 - **Velocity and fling:** max-velocity clamps, synthesized events, quick flicks: the velocity and physics tables.
 - **No GPUI twin:** tap-down and tap-move callbacks, details `toString`, exception logging, pointer pan/zoom.

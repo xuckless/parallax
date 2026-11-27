@@ -20,6 +20,8 @@ log = "0.4"
 parallax = { path = "../../crates/parallax" }
 # Grapheme boundaries for the text field's cursor moves and deletes (src/text_field.rs).
 unicode-segmentation = "1"
+# Names GPUI's clock type (the executor's `now()`), which works in the browser too: the trace pad times touches by it.
+web-time = "1.1"
 
 # The #[wasm_bindgen(start)] attribute that starts the app in the browser.
 [target.'cfg(target_family = "wasm")'.dependencies]

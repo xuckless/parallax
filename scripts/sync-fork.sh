@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Rebuild the `parallax` branch of our Zed fork: the Zed commit in upstream/UPSTREAM plus one commit per
-# patches/*.patch (translated with patch-paths.sh to-zed), then force-push that one branch. Run after each sync.
+# patches/*.patch (translated with patch-paths.sh to-zed --drop-manifests, plus its hand-written Zed manifest change
+# from patches/zed/<name>.manifest.patch when it has a */Cargo.toml section), then force-push that one branch.
+# Run after each sync.
 # Usage: scripts/sync-fork.sh [DIR]    (DIR: scratch Zed checkout, default build/zed-fork; reused across runs)
 # Idempotent: commit dates are pinned to the base commit's, so an unchanged input rebuilds the same SHAs.
 set -euo pipefail
@@ -29,8 +31,15 @@ rm -rf "$translated"
 mkdir -p "$translated"
 paths=('/crates/gpui*/')
 for patch in "${patches[@]}"; do
-    out="$translated/$(basename "$patch")"
-    "$root/scripts/patch-paths.sh" to-zed "$patch" > "$out" || die "cannot translate $patch"
+    name="$(basename "$patch" .patch)"
+    out="$translated/$name.patch"
+    "$root/scripts/patch-paths.sh" to-zed --drop-manifests "$patch" > "$out" || die "cannot translate $patch"
+    # A manifest section has no mechanical Zed equivalent: its Zed change is hand-written (docs/patch-translation.md).
+    manifest="$root/patches/zed/$name.manifest.patch"
+    if grep -q '^diff --git a/[^ ]*/Cargo\.toml ' "$patch"; then
+        [[ -f $manifest ]] || die "$name.patch changes a Cargo.toml: write its Zed change in patches/zed/$name.manifest.patch"
+        sed -n '/^diff --git /,$p' "$manifest" >> "$out"
+    fi
     mapfile -t -O "${#paths[@]}" paths < <(sed -n 's|^+++ b/|/|p' "$out")
 done
 

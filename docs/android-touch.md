@@ -30,12 +30,15 @@ truth](../AGENTS.md#flutter-is-the-second-source-of-truth); the ledger rows are 
    since GPUI ids must never be reused and Android's are. The touch column of `CHANGES` says what each change becomes:
    down → `Started`, move → `Moved`, up → `Ended`, cancel → `Cancelled`; add, remove and a pen's hover send nothing.
    Positions are divided by the display density (logical pixels); pressure becomes `force` when the device reports a
-   range. A move or up for a pointer that never went down is dropped.
+   range; the record's `time_stamp` (`getEventTime`) becomes `TouchEvent::time_stamp` by its age against
+   `CLOCK_MONOTONIC` ([touch-time-stamps.md](touch-time-stamps.md)). A move or up for a pointer that never went down
+   is dropped.
 5. **GPUI.** Each event goes to the window as `PlatformInput::Touch` through `Callbacks::input`, in packet order.
    Upstream's [gestures.rs](../upstream/gpui-pre/src/gestures.rs) recognizes taps (synthesized mouse down/up, so
    `on_click` fires), pans (scroll events with touch phases) and long presses, unless an `on_touch` element claims
-   the touch (deepest handler wins, [core-patches.md](core-patches.md#0004-touch-opt-out)). The platform's
-   `mouse_position` reports the last touch.
+   the touch (deepest handler wins, [core-patches.md](core-patches.md#0004-touch-opt-out)). Every finger of a
+   multi-touch arrives as its own touch, so two or more on an `on_pinch` element pinch it ([pinch.md](pinch.md)).
+   The platform's `mouse_position` reports the last touch.
 
 ## Not yet
 
