@@ -4,10 +4,10 @@ What: `TouchEvent::time_stamp: Option<Instant>` (Flutter's `PointerEvent.timeSta
 touch happened, on the executor's clock (`BackgroundExecutor::now`; `scheduler::Instant`, which is
 `performance.now()` on the web and the OS monotonic clock elsewhere). Each backend moves its OS event time onto that
 clock by the event's age (now minus how long ago the OS says the touch was): gpui_ios from `UITouch.timestamp`
-against `NSProcessInfo.systemUptime`, gpui_web from `Event.timeStamp` against `performance.now()` (web-sys gains
-`Performance`). The touch recognizer's velocity tracker and the pinch arena's scale recognizer sample at the event's
-time stamp, as Flutter's trackers take `timeStamp`; timers, deadlines and momentum ticks stay on the dispatch clock,
-as Flutter's run on its own timers. A `None` time stamp (a platform without event times, synthesized touches, tests)
+against `NSProcessInfo.systemUptime`, gpui_web from `Event.timeStamp` against `performance.now()` (a
+`wasm_bindgen` extern, as `http_client.rs` binds `fetch`: no manifest change). The touch recognizer's velocity
+tracker and the pinch arena's scale recognizer sample at the event's time stamp, as Flutter's trackers take
+`timeStamp`; timers, deadlines and momentum ticks stay on the dispatch clock, as Flutter's run on its own timers. A `None` time stamp (a platform without event times, synthesized touches, tests)
 is timed at dispatch, explicitly (`event.time_stamp.unwrap_or(now)`, once per recognizer). Adds a recognizer test:
 the same 16 ms samples dispatched on time, at 33 ms frames and 50 ms late fling at the same velocity. Every
 `TouchEvent` literal gains the field.
@@ -77,20 +77,8 @@ index cda2bdb..d00bb74 100644
          };
          self.handle_keyboard_dismiss_touch(&event);
          self.input_callback
-diff --git a/gpui-pre-web/Cargo.toml b/gpui-pre-web/Cargo.toml
-index 32ff639..2f99af8 100644
---- a/gpui-pre-web/Cargo.toml
-+++ b/gpui-pre-web/Cargo.toml
-@@ -156,6 +156,7 @@ features = [
-     "Navigator",
-     "OffscreenCanvas",
-     "OffscreenCanvasRenderingContext2d",
-+    "Performance",
-     "PointerEvent",
-     "ReadableStream",
-     "ReadableStreamDefaultReader",
 diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
-index b1a18a6..e9f3151 100644
+index b1a18a6..7fd0432 100644
 --- a/gpui-pre-web/src/events.rs
 +++ b/gpui-pre-web/src/events.rs
 @@ -1,4 +1,4 @@
@@ -139,16 +127,23 @@ index b1a18a6..e9f3151 100644
                  }));
                  return;
              }
-@@ -1407,6 +1412,15 @@ fn compute_key_char(
+@@ -1407,6 +1412,22 @@ fn compute_key_char(
      None
  }
  
++#[wasm_bindgen]
++extern "C" {
++    /// `performance.now()`: the timeline `Event.timeStamp` is on, and the one
++    /// `web_time::Instant` reads.
++    #[wasm_bindgen(js_namespace = performance, js_name = "now")]
++    fn performance_now() -> f64;
++}
++
 +/// When the browser says `event` happened (`Event.timeStamp`, Flutter's
 +/// `PointerEvent.timeStamp` on the web), on GPUI's clock: `Instant` here is
-+/// `performance.now()`, the timeline `timeStamp` is on, so the event's age is
-+/// taken off the current instant. `None` without `performance`.
++/// `performance.now()`, so the event's age is taken off the current instant.
 +fn event_time_stamp(event: &web_sys::Event) -> Option<Instant> {
-+    let age_ms = web_sys::window()?.performance()?.now() - event.time_stamp();
++    let age_ms = performance_now() - event.time_stamp();
 +    Instant::now().checked_sub(Duration::from_secs_f64(age_ms.max(0.) / 1000.))
 +}
 +
