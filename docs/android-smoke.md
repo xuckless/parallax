@@ -12,9 +12,8 @@ scripts/android-smoke.sh [serial]   # default: the only device in `adb devices`
 Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
 new system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
 off in portrait (the `settings` table; an `EXIT` trap puts the old values back, pass or fail), then runs the `steps`
-table in order. It prints each step's name and exits 0 after
-`all N steps passed` and the renderer line (which GPU drew); any failure prints `FAIL: <step>: <why>` and the last
-app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`failure.png`), stay in
+table in order. It prints each step's name and exits 0 after `all N steps passed` and the renderer line (which GPU
+drew); any failure prints `FAIL: <step>: <why>` and the last app lines of logcat, and exits 1. The run's logcat, and on failure the screen (`failure.png`), stay in
 `target/android-smoke/`; CI uploads that folder as the `android-smoke` artifact when the job fails.
 
 ## Steps
@@ -38,9 +37,8 @@ at once.
 
 The rotate and resume steps wait for a frame drawn on the new surface, at the new orientation, not for the surface
 event: that line is logged before the surface is made, and a late `surfaceChanged` from the previous rotation could
-pass the next step. After the table it checks the whole log once more for crashes and that the app process is still alive.
-
-To add a step, add a `step` row. Commands may call `on_device` (`adb shell`), `tap_colour`, `rotate` and `launch`.
+pass the next step. After the table it checks the whole log once more for crashes and that the app process is still
+alive. To add a step, add a `step` row; commands may call `on_device` (`adb shell`), `tap_colour`, `rotate`, `launch`.
 
 **Dialogs:** `hide_error_dialogs` stops new error dialogs but leaves one already up (a cached booted snapshot, or a
 launcher that stalled during boot, brings it), and it took the taps in CI. Before each step `dismiss_dialogs` reads

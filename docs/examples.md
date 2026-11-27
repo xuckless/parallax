@@ -6,28 +6,28 @@ example is a workspace member, so [CI](ci.md) checks it on all six targets.
 ## hello
 
 [examples/hello](../examples/hello/): one window with two text fields (prose, and an email field with an autofill
-hint), a line in several scripts (`SCRIPTS`: Latin,
-CJK, Arabic, emoji) and a box. Each click or tap moves the box to the next colour of `COLOURS` in
-[lib.rs](../examples/hello/src/lib.rs), and the log line says whether the click came from a mouse, a tap or a key; a
-tap outside a field blurs it. A two-finger or trackpad pinch resizes the box within `ZOOM` and its label shows the
-zoom and the pinch's rotation; `hello: pinch end: …` logs each end ([pinch.md](pinch.md)). Hovering or
-long-pressing the box shows its colour as a tooltip; the long press plays the platform's long-press haptic
-([haptics.md](haptics.md)) with no app code. It is the app of Milestone 0.1.1 in
+hint), a line in several scripts (`SCRIPTS`: Latin, CJK, Arabic, emoji) and a box. Each click or tap moves the box to
+the next colour of `COLOURS` in [lib.rs](../examples/hello/src/lib.rs), and the log line says whether the click came
+from a mouse, a tap or a key; a tap outside a field blurs it. A two-finger or trackpad pinch resizes the box within
+`ZOOM` and its label shows the zoom and the pinch's rotation; `hello: pinch end: …` logs each end
+([pinch.md](pinch.md)). Hovering or long-pressing the box shows its colour as a tooltip; the long press plays the
+platform's long-press haptic ([haptics.md](haptics.md)) with no app code. It is the app of Milestone 0.1.1 in
 [ROADMAP.md](../ROADMAP.md): it opens, draws and reacts to a tap on desktop, web and Android.
 
 Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the app's language
 ([android-fonts.md](android-fonts.md#locale-changes)), and "Show emoji" swaps the box for 100 distinct emoji
-(`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them
-([android-emoji.md](android-emoji.md#cost)). The grid scrolls in a box shorter than its rows, so a swipe past an
-edge shows the platform's overscroll: stretch on Android, bounce on iOS and macOS ([overscroll.md](overscroll.md)).
-"Record touches" swaps the window for a trace pad that logs every touch in the trace format ([traces.md](traces.md)).
+(`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them ([android-emoji.md](android-emoji.md#cost)).
+The grid scrolls in a box shorter than its rows, so a swipe past an edge shows the platform's overscroll (stretch on
+Android, bounce on iOS and macOS: [overscroll.md](overscroll.md)). "Record touches" swaps the window for a trace pad
+that logs every touch in the trace format ([traces.md](traces.md)).
 
-The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local: upstream GPUI has no text field
-outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one
-`EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes. On Android it drives the IME
-([android-text-input.md](android-text-input.md)).
+The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local:
+upstream GPUI has no text field outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs`
+(Apache-2.0) cut down to one `EntityInputHandler` with UTF-16 ranges, composition and grapheme deletes; on Android
+it drives the IME ([android-text-input.md](android-text-input.md)).
 
-What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade.
+What it shows: one shared `launch(cx)` and a thin entry point per target, all through the `parallax` facade. Run
+every command below from the repo root after `scripts/apply-patches.sh`.
 
 | Target | Entry point | How it starts |
 |---|---|---|
@@ -36,8 +36,6 @@ What it shows: one shared `launch(cx)` and a thin entry point per target, all th
 | Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs: `parallax::run` | [index.html](../examples/hello/index.html) imports the wasm-pack module; `favicon.svg` links to the brand icon in [assets/brand/](../assets/brand/) |
 | iOS | none yet | |
 
-Run every command from the repo root after `scripts/apply-patches.sh`.
-
 ### Desktop (Linux, macOS, Windows)
 
 ```sh
@@ -45,9 +43,8 @@ cargo run -p hello
 ```
 
 Linux needs the `LINUX_PACKAGES` of [ci.yml](../.github/workflows/ci.yml) (on Fedora: `libxkbcommon-x11-devel`,
-`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop logs to stderr through
-[env_logger](https://docs.rs/env_logger): warnings, plus `info` from hello; `RUST_LOG` overrides it
-(e.g. `RUST_LOG=debug`).
+`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop logs to stderr through [env_logger](https://docs.rs/env_logger):
+warnings, plus `info` from hello; `RUST_LOG` overrides it (e.g. `RUST_LOG=debug`).
 
 ### Web
 
@@ -75,8 +72,7 @@ cd examples/hello && cargo parallax run android --device <serial>
 adb -s <serial> logcat -s parallax
 ```
 
-Logcat shows the renderer, the surface and `hello: window open`. Taps reach GPUI once the touch port lands
-([android.md](android.md), touch seam); until then the box draws but does not change colour.
+Logcat shows the renderer, the surface and `hello: window open`; [android-smoke.md](android-smoke.md) checks it.
 
 ### iOS
 
