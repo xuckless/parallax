@@ -6,7 +6,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased] (0.1.9)
 
-Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0038).
+Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0042).
 
 Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
 window; `android_main!` takes a required `open_window` next to `launch`.
