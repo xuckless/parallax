@@ -17,7 +17,9 @@ dir=$repo/target/weston
 src=$dir/src-$tag
 out=$dir/build-$tag
 
-if [[ ! -d $src ]]; then
+# A cache (CI's rust-cache keeps target/) may restore the files without .git: start again from a fresh clone.
+if [[ ! -d $src/.git ]]; then
+  rm -rf "$src" "$out"
   git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" https://gitlab.freedesktop.org/wayland/weston.git "$src"
   # The plugin assumes Weston's test runner; standalone it needs two NULL guards (see the patch's header).
   git -C "$src" apply "$repo/scripts/weston-test-standalone.patch"
