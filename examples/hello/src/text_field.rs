@@ -13,8 +13,9 @@ use parallax::gpui::{
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
     KeyBinding, LayoutId, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PaintQuad, Pixels, Point, PointerDevice, ShapedLine, SharedString, Size, Style,
-    TextInputConfiguration, TextRun, TouchDragEvent, TouchPhase, UTF16Selection, UnderlineStyle,
-    Window, actions, canvas, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    TextInputConfiguration, TextRun, TouchDragEvent, TouchDragStart, TouchPhase, UTF16Selection,
+    UnderlineStyle, Window, actions, canvas, div, fill, hsla, point, prelude::*, px, relative, rgb,
+    rgba, size,
 };
 use parallax::parallax_platform::behaviour::current_behaviour;
 use parallax_ext::text_selection::{
@@ -219,6 +220,12 @@ impl TextField {
         if let Some(selection) = effects.selection {
             self.selection = selection;
             window.notify_text_selection_changed(&self.focus_handle);
+            // Offsets only, never the text: what weston-selection-checks.sh asserts on.
+            log::info!(
+                "text field selection: {}..{}",
+                selection.base,
+                selection.extent
+            );
         }
         if effects.request_keyboard {
             window.focus(&self.focus_handle, cx);
@@ -891,29 +898,76 @@ fn listen_for_selection_gestures(
         if phase != DispatchPhase::Bubble {
             return;
         }
-        let input = match event.phase {
-            TouchPhase::Started => {
+        // A drag claimed at touch down is a handle's; one won past the slop moves the caret (or selects).
+        let input = match (event.start, event.phase) {
+            (TouchDragStart::Down, TouchPhase::Started) => {
                 let toolbar = on_toolbar
                     .iter()
                     .any(|button| button.contains(&event.start_position));
                 let handle = hits
                     .iter()
                     .find(|(_, hit)| hit.contains(&event.start_position));
-                let (false, Some(&(handle, _))) = (toolbar, handle) else {
-                    return;
-                };
-                // Claims the touch: a drag on a handle never becomes a tap or a scroll.
-                window.prevent_default();
-                cx.stop_propagation();
-                Input::HandleDragStart {
-                    handle,
-                    position: event.start_position,
+                match (toolbar, handle) {
+                    // Claims the touch: a drag on a handle never becomes a tap or a scroll.
+                    (false, Some(&(handle, _))) => {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        Input::HandleDragStart {
+                            handle,
+                            position: event.start_position,
+                        }
+                    }
+                    // Competes, as Flutter's tap-and-drag recognizer does: taps and long presses stay the
+                    // field's until the touch passes the drag's slop.
+                    (false, None) if pressable.contains(&event.start_position) => {
+                        let kind = entity
+                            .read(cx)
+                            .selection_ui
+                            .as_ref()
+                            .map(TextSelection::touch_drag_kind);
+                        if let Some(kind) = kind {
+                            window.compete_for_touch_drag(kind);
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
+                    (true, _) | (false, None) => return,
                 }
             }
-            TouchPhase::Moved => Input::HandleDragUpdate {
+            (TouchDragStart::Down, TouchPhase::Moved) => Input::HandleDragUpdate {
                 position: event.position,
             },
-            TouchPhase::Ended | TouchPhase::Cancelled => Input::HandleDragEnd,
+            (TouchDragStart::Down, TouchPhase::Ended | TouchPhase::Cancelled) => {
+                Input::HandleDragEnd
+            }
+            // Every field listens: a won drag is this field's only if it started on it.
+            (TouchDragStart::PastSlop(_), _) if !pressable.contains(&event.start_position) => {
+                return;
+            }
+            // Won: the press the drag grew from, where the touch started, then the move that won it.
+            (TouchDragStart::PastSlop(_), TouchPhase::Started) => {
+                cx.stop_propagation();
+                send(
+                    &entity,
+                    Input::Down {
+                        position: event.start_position,
+                        device: window
+                            .pointer_source()
+                            .map_or(PointerDevice::Touch, |source| source.device),
+                        tap_count: 1,
+                        shift: false,
+                    },
+                    window,
+                    cx,
+                );
+                Input::Move {
+                    position: event.position,
+                }
+            }
+            (TouchDragStart::PastSlop(_), TouchPhase::Moved) => Input::Move {
+                position: event.position,
+            },
+            (TouchDragStart::PastSlop(_), TouchPhase::Ended | TouchPhase::Cancelled) => Input::Up,
         };
         send(&entity, input, window, cx);
     });
@@ -947,7 +1001,15 @@ mod tests {
         TextInputConfiguration, VisualTestContext, point,
     };
 
-    use super::{Selection, TextField};
+    use std::time::Duration;
+
+    use parallax::gpui::{
+        Context, Entity, IntoElement, Pixels, Point, PointerDevice, Render, TouchEvent, TouchId,
+        TouchPhase, Window, div, prelude::*, px,
+    };
+    use parallax::parallax_platform::{Target, behaviour::behaviour};
+
+    use super::{Selection, TextField, TextSelection};
 
     /// One mouse event at a text offset: down with a click count (and shift), a pressed move, or up.
     #[derive(Clone, Copy)]
@@ -1046,6 +1108,119 @@ mod tests {
             }
             let found = field.read_with(cx, |field, _| field.selection);
             assert_eq!(found, Selection { base, extent }, "{name}");
+        }
+    }
+
+    /// One touch over the field, at text offsets: a tap, a press held past the long-press deadline, a horizontal
+    /// drag from one offset to another, or a vertical drag of some pixels from an offset.
+    #[derive(Clone, Copy)]
+    enum Touch {
+        Tap(usize),
+        Hold(usize),
+        Drag(usize, usize),
+        Vertical(usize, f32),
+    }
+
+    /// Two fields one above the other, as in hello's window: each listens to every touch drag.
+    struct TwoFields([Entity<TextField>; 2]);
+
+    impl Render for TwoFields {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().flex().flex_col().gap_4().children(self.0.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn touch_selects_by_the_android_row(cx: &mut TestAppContext) {
+        use Touch::{Drag, Hold, Tap, Vertical};
+        let android = behaviour(Some(Target::Android)).expect("Android has a row");
+        // (Flutter behaviour, touches, expected selection)
+        let rows: [(&str, Vec<Touch>, (usize, usize)); 5] = [
+            ("a tap places the caret", vec![Tap(5)], (5, 5)),
+            ("a long press selects the word", vec![Hold(5)], (4, 7)),
+            (
+                "a horizontal finger drag moves the caret in a focused field",
+                vec![Tap(1), Drag(2, 9)],
+                (9, 9),
+            ),
+            (
+                "a finger drag does not start in an unfocused field",
+                vec![Drag(2, 9)],
+                (0, 0),
+            ),
+            (
+                "a vertical drag is the pan's: the caret stays",
+                vec![Tap(1), Vertical(2, 60.)],
+                (1, 1),
+            ),
+        ];
+        for (name, touches, (base, extent)) in rows {
+            let (fields, cx) = cx.add_window_view(|_, cx| {
+                TwoFields([(); 2].map(|()| {
+                    cx.new(|cx| TextField {
+                        content: "abc def ghi".into(),
+                        selection_ui: TextSelection::for_behaviour(android),
+                        ..TextField::new("", TextInputConfiguration::default(), cx)
+                    })
+                }))
+            });
+            cx.run_until_parked();
+            let [field, other] = fields.read_with(cx, |fields, _| fields.0.clone());
+            let at = |cx: &mut VisualTestContext, offset| {
+                field.read_with(cx, |field, _| {
+                    let bounds = field.last_bounds.expect("the field was drawn");
+                    let line = field.last_layout.as_ref().expect("the field has text");
+                    point(bounds.left() + line.x_for_index(offset), bounds.center().y)
+                })
+            };
+            for (id, touch) in touches.into_iter().enumerate() {
+                // A frame apart, and each touch later than a double tap's interval after the last.
+                let send = |cx: &mut VisualTestContext, phase, position| {
+                    cx.simulate_event(TouchEvent {
+                        id: TouchId(id as u64),
+                        phase,
+                        position,
+                        predicted_position: None,
+                        force: None,
+                        device: PointerDevice::Touch,
+                        time_stamp: None,
+                    });
+                    cx.executor().advance_clock(Duration::from_millis(16));
+                    cx.run_until_parked();
+                };
+                let (start, path): (_, Vec<Point<Pixels>>) = match touch {
+                    Tap(offset) | Hold(offset) => (at(cx, offset), Vec::new()),
+                    Drag(from, to) => {
+                        let (from, to) = (at(cx, from), at(cx, to));
+                        let steps = (1..=8).map(|step| from + (to - from) * (step as f32 / 8.));
+                        (from, steps.collect())
+                    }
+                    Vertical(from, dy) => {
+                        let from = at(cx, from);
+                        (
+                            from,
+                            (1..=8)
+                                .map(|step| from + point(px(0.), px(dy * step as f32 / 8.)))
+                                .collect(),
+                        )
+                    }
+                };
+                send(cx, TouchPhase::Started, start);
+                if let Hold(_) = touch {
+                    cx.executor().advance_clock(Duration::from_millis(600));
+                    cx.run_until_parked();
+                }
+                for position in &path {
+                    send(cx, TouchPhase::Moved, *position);
+                }
+                send(cx, TouchPhase::Ended, path.last().copied().unwrap_or(start));
+                cx.executor().advance_clock(Duration::from_millis(500));
+                cx.run_until_parked();
+            }
+            let found = field.read_with(cx, |field, _| field.selection);
+            assert_eq!(found, Selection { base, extent }, "{name}");
+            let untouched = other.read_with(cx, |field, _| field.selection);
+            assert_eq!(untouched, Selection::default(), "{name}: the other field");
         }
     }
 }

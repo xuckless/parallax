@@ -21,6 +21,8 @@ The grid scrolls in a box shorter than its rows, so a swipe past an edge shows t
 Android, bounce on iOS and macOS: [overscroll.md](overscroll.md)). "Record touches" swaps the window for a trace pad
 that logs every touch in the trace format ([traces.md](traces.md)). `hello: lifecycle …` logs each app lifecycle
 phase and `hello: keyboard inset …` each change of the keyboard's inset ([web-lifecycle.md](web-lifecycle.md)).
+`hello::text_field: text field selection: base..extent` logs each selection the selection engine sets, offsets only
+([text-selection.md](text-selection.md#live-checks)).
 
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local:
 upstream GPUI has no text field outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs`

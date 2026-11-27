@@ -587,7 +587,7 @@ new file mode 100644
 index 0000000..b78468a
 --- /dev/null
 +++ b/gpui-pre/src/gestures/velocity_tracker.rs
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,274 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/gestures/velocity_tracker.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
 +// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +//
@@ -767,11 +767,7 @@ index 0000000..b78468a
 +
 +        // Starting with the most recent PointAtTime sample, iterate backwards while
 +        // the samples represent continuous motion.
-+        loop {
-+            let Some(sample) = self.samples[index] else {
-+                break;
-+            };
-+
++        while let Some(sample) = self.samples[index] {
 +            let age = newest_sample.time.duration_since(sample.time).as_micros() as f64 / 1000.;
 +            // Dart's `.abs()` of `sample.time - previousSample.time`.
 +            let delta = sample

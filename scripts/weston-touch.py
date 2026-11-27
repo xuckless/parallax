@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Touches a Weston compositor through its test plugin's `weston_test.send_touch`, as Weston's own test suite does
-(tests/weston-test-client-helper.c), for record-traces.sh's wayland and x11 harnesses (docs/traces-desktop.md).
+(tests/weston-test-client-helper.c), for record-traces.sh's wayland and x11 harnesses (docs/traces-desktop.md), and
+moves, clicks and types with `move_pointer`, `send_button` and `send_key` for weston-selection-checks.sh.
 
 Usage: weston-touch.py FRAME...   with WAYLAND_DISPLAY (and XDG_RUNTIME_DIR) naming a Weston that loaded test-plugin.so
-A frame is "ms finger..." as record-traces.sh's touch_frames takes it: each finger "slot:x:y" (compositor logical px;
-down when new, else a move) or "slot:up", then a wait of `ms`. Every request carries the CLOCK_MONOTONIC time it is
-sent at, as libinput stamps real touches. Speaks the Wayland wire protocol itself: python3 only, no libraries.
+A frame is "ms input..." as record-traces.sh's touch_frames takes it, then a wait of `ms`. An input is a finger
+"slot:x:y" (compositor logical px; down when new, else a move) or "slot:up", or the seat's mouse and keyboard:
+"pointer:x:y" (move), "button:down" / "button:up" (the left button), "key:CODE:down" / "key:CODE:up" (a Linux evdev
+key code, e.g. 42 left shift, 30 a). Every request carries the CLOCK_MONOTONIC time it is sent at, as libinput stamps
+real input. Speaks the Wayland wire protocol itself: python3 only, no libraries.
 """
 
 import os
@@ -15,8 +18,20 @@ import sys
 import time
 
 # weston_test's request opcodes and wl_touch's event codes, from Weston 14's protocol/weston-test.xml and wayland.xml.
+MOVE_POINTER = 1
+SEND_BUTTON = 2
+SEND_KEY = 5
 SEND_TOUCH = 8
 TOUCH_TYPE = {"down": 0, "up": 1, "motion": 2}
+# wl_pointer.button_state and wl_keyboard.key_state; BTN_LEFT from linux/input-event-codes.h.
+PRESS_STATE = {"up": 0, "down": 1}
+BTN_LEFT = 0x110
+# The mouse and keyboard inputs: an input's first word → its request and how its arguments pack. To add one, add a row.
+SEAT_INPUTS = {
+    "pointer": (MOVE_POINTER, lambda x, y: struct.pack("<ii", round(float(x)), round(float(y)))),
+    "button": (SEND_BUTTON, lambda state: struct.pack("<iI", BTN_LEFT, PRESS_STATE[state])),
+    "key": (SEND_KEY, lambda code, state: struct.pack("<II", int(code), PRESS_STATE[state])),
+}
 
 
 class Wire:
@@ -92,6 +107,10 @@ def main(frames):
         stamp = struct.pack("<III", now // 10**9 >> 32, now // 10**9 & 0xFFFFFFFF, now % 10**9)
         for finger in fingers:
             slot, *at = finger.split(":")
+            if slot in SEAT_INPUTS:
+                opcode, pack = SEAT_INPUTS[slot]
+                wire.send(test, opcode, stamp + pack(*at))
+                continue
             if at == ["up"]:
                 down.discard(slot)
                 # An up must carry no coordinates (WESTON_TEST_ERROR_TOUCH_UP_WITH_COORDINATE).

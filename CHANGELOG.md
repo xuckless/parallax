@@ -49,6 +49,10 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
 - Web secure fields (patch 0034): while a `secure` field is focused the hidden IME element is an
   `<input type=password>`, so browsers and keyboards neither show nor learn what is typed; Enter in it submits on
   touch keyboards too. hello gains a password field.
+- A finger drag moves the caret on Android (patch 0042): `Window::compete_for_touch_drag(kind)` lets an element win
+  a touch drag once the touch passes the drag's slop, as Flutter's tap-and-drag recognizers do, so a text field keeps
+  its taps and long presses. `TouchDragEvent` gains `start` (`TouchDragStart::Down` or `PastSlop(kind)`);
+  `TextSelection::touch_drag_kind` gives the field's kind; hello's text field uses it ([docs/touch-drag.md](docs/touch-drag.md)).
 
 ### Changed
 
