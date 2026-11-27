@@ -3,58 +3,52 @@
 Platform-dependent defaults live in one visible table ([AGENTS.md](../AGENTS.md): "Platform feel", "No hidden
 behaviour"): `TABLE` in [behaviour.rs](../crates/platform/src/behaviour.rs), in `parallax-platform`. Every value is
 Flutter 3.50.1's `TargetPlatform` default, ported (ledger: [PORTED.md](../third_party/flutter/PORTED.md)); the code
-comment next to each names its Flutter source. Flutter's tuning wins over GPUI's until upstream matures.
+comment next to each names its Flutter source. Flutter's rules themselves (constants, slops, scroll physics) are
+GPUI's, ported once by patches 0012-0013; a row holds only what Flutter picks per platform.
 
 ## The table
 
-| Target | Touch slop (hit / pan / scale) | Scroll physics | Overscroll | `velocity_tracker` | Haptics | Touch target |
+| Target | `touch_slop` (hit / pan / scale) | `scroll_physics` | Overscroll | `velocity_tracker` | Haptics | Touch target |
 |---|---|---|---|---|---|---|
-| Android | 8 / 16 / 18 | `CLAMPING` | `Stretch` | `LeastSquares` | long press `Vibrate`, selection handle `SelectionClick` | 48 |
-| iOS | 18 / 36 / 18 | `BOUNCING` | `Bounce` | `IOSScrollViewFling` | long press `HeavyImpact`, picker item `SelectionClick` | 44 |
-| macOS | 18 / 36 / 18 | `BOUNCING_DESKTOP` | `Bounce` | `MacOSScrollViewFling` | none | 44 |
-| Windows | 18 / 36 / 18 | `CLAMPING` | `None` | `LeastSquares` | none | 48 |
-| Linux | 18 / 36 / 18 | `CLAMPING` | `None` | `LeastSquares` | none | 48 |
+| Android | `Some(8)`: 8 / 16 / 18 | `Clamping` | `Stretch` | `LeastSquares` | long press `Vibrate`, selection handle `SelectionClick` | 48 |
+| iOS | `None`: 18 / 36 / 18 | `Bouncing { Normal }` | `Bounce` | `IOSScrollViewFling` | long press `HeavyImpact`, picker item `SelectionClick` | 44 |
+| macOS | `None`: 18 / 36 / 18 | `Bouncing { Fast }` | `Bounce` | `MacOSScrollViewFling` | none | 44 |
+| Windows | `None`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
+| Linux | `None`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 
-| Scroll physics | GPUI fling model | Min / max fling (px/s) | Drag start threshold |
-|---|---|---|---|
-| `BOUNCING` (`BouncingScrollPhysics`) | `ScrollPhysics::ios()` | 100 / 8000 | 3.5 |
-| `BOUNCING_DESKTOP` (`decelerationRate: fast`) | `ScrollPhysics::ios()`, no 1400 deceleration yet | 100 / 64000 | 3.5 |
-| `CLAMPING` (`ClampingScrollPhysics`) | `ScrollPhysics::android()` | 50 / 8000 | none |
+`scroll_physics` is GPUI's `ScrollPhysics` ([scroll-physics.md](scroll-physics.md)), which also gives the fling
+limits: min / max fling 100 / 8000 px/s for `Bouncing { Normal }`, 100 / 64000 for `Fast` (with its 1400 constant
+deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, none for clamping.
 
-The same on every row (Flutter's `gestures/constants.dart`, ported once into GPUI as `gpui::constants` by
-[patch 0013](gesture-recognizers.md), under Flutter's names): long press 500 ms, double tap
-within 300 ms (`kDoubleTapTimeout`), at least 40 ms apart, 100 px apart at most; a mouse's slops are 1 / 2 / 1
-(`PRECISE_POINTER_SLOPS`); `touch_to_mouse` is `true` (GPUI's tap → click; opt out per element with `on_touch`,
-[core-patches.md](core-patches.md)).
-
-- **Pointer kind:** `Behaviour::slops(device)` is Flutter's `computeHitSlop`/`computePanSlop`/`computeScaleSlop`:
-  touch and pen get the row's slops, a mouse the precise ones.
+- **Slops:** `touch_slop` is the embedder's `DeviceGestureSettings.touchSlop`; `gpui::slops(kind, touch_slop)`
+  (Flutter's `computeHitSlop` / `PanSlop` / `ScaleSlop`) gives touch and pen these, a mouse 1 / 2 / 1.
 - **Android's slop** is what Flutter's embedding sends: `ViewConfiguration.getScaledTouchSlop()` (8 dp on AOSP). The
   row holds that default; reading the device's own value is a ROADMAP item.
-- **Stretch:** Flutter's `MaterialScrollBehavior` picks it on Android whenever `useMaterial3` (the default) is on,
-  whatever the Android version; `Glow` is the Material 2 option.
-- **Touch target:** Flutter picks 48 or 44 by widget set; the table follows its `.adaptive` widgets (Cupertino on iOS
-  and macOS).
-- **The web** has no row. As in Flutter web, it takes its host OS's row: `detect_operating_system` ports
-  `BrowserDetection.detectOperatingSystem` (`navigator.platform`, `userAgent`, `maxTouchPoints`; unknown → Android).
+- **Stretch:** Flutter's `MaterialScrollBehavior` picks it on Android whenever `useMaterial3` (the default) is on;
+  `Glow` is the Material 2 option. **Touch target:** the set Flutter's `.adaptive` widgets pick per platform.
+- **The web** has no row. As in Flutter web, it takes its host OS's row (`detect_operating_system` ports
+  `BrowserDetection.detectOperatingSystem`; unknown → Android), but with Flutter's slops (`web_behaviour`): Flutter
+  web never sets `physicalTouchSlop`, so an Android browser keeps 18 / 36.
+- The same everywhere (Flutter's `constants.dart`, `gpui::constants`): long press 500 ms, double tap within 300 ms,
+  at least 40 ms apart, 100 px apart at most; taps count per target ([gesture-recognizers.md](gesture-recognizers.md)).
 
-## How GPUI gets it
+## How GPUI gets it: automatically
 
-GPUI's touch recognizer reads a `GestureTuning` when a window opens. Upstream takes it only from the platform
-(`Platform::gestures()`); [patch 0014](../patches/0014-app-gesture-tuning-override.patch) adds the app's override:
-`App::set_gesture_tuning`. `Behaviour::gesture_tuning()` fills every GPUI field from a row (`touch_slop` ← hit
-slop, `multi_tap_interval` / `multi_tap_slop` / `multi_tap_min_interval` / `long_press_duration` ← the constants,
-`scroll_physics` and `min_fling_velocity` ← the scroll physics row, `velocity_tracker` ← the row's).
+Every Parallax entry point applies the current target's row before app code runs:
+[`parallax::run(launch)`](../crates/parallax/src/lib.rs) on desktop, iOS and the web (hello's
+[main.rs](../examples/hello/src/main.rs) and web `start`), the facade's `android_main!` on Android. Both call
+`parallax::set_platform_gesture_tuning` (`Result<(), parallax_platform::Error>`; they log an error and keep the
+platform's tuning). `Behaviour::gesture_tuning()` fills GPUI's `GestureTuning` from the row (`touch_slop` ← the hit
+slop, `scroll_physics`, `min_fling_velocity` / `max_fling_velocity` ← its fling limits, `velocity_tracker`), the
+rest from `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
+`parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
 
-[`parallax::set_platform_gesture_tuning`](../crates/parallax/src/lib.rs) sets the current target's row. The
-facade's `android_main!` calls it before the app's `launch`, so Android apps get their row with no code. Desktop
-and web entry points call it themselves first, as [hello](../examples/hello/src/main.rs)'s `main` and `start` do.
-Windows opened later use it; open windows keep theirs. Without it GPUI keeps the platform's own tuning.
+**Override:** call `cx.set_gesture_tuning` in `launch`, after the entry point's call, with a changed copy, e.g.
+`GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`. Windows opened later use it.
 
-**Override:** call `cx.set_gesture_tuning` in `launch` (after the facade's call) with a changed copy, e.g.
-`GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`.
-Row values GPUI doesn't take yet (pan and scale slops, max fling, haptics, overscroll, touch target) are data for
-the widgets and patches that will read them: see ROADMAP Phase 2.
+**Read from Wave 12:** `overscroll`, `haptics`, `min_touch_target`, the pan and scale slops and
+`drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the scroll containers, widgets and scale
+recognizer that Wave 12 wires read them (ROADMAP Phase 2).
 
 ## Extending
 

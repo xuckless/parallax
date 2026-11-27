@@ -33,18 +33,15 @@ table in `velocity_tracker.rs`; a new kind of that shape is a row there plus an 
 
 `GestureTuning::velocity_tracker` holds the kind, next to `scroll_physics`. Flutter's
 [`ScrollBehavior.velocityTrackerBuilder`](https://github.com/flutter/flutter/blob/3.50.1/packages/flutter/lib/src/widgets/scroll_configuration.dart)
-gives iOS the iOS tracker, macOS the macOS one, and Android, Linux and Windows `LeastSquares`. Wired so far:
-
-| Where | Kind |
-|---|---|
-| `GestureTuning::default()` (GPUI's iOS-flavoured defaults: iOS, and every platform without its own tuning) | `IOSScrollViewFling` |
-| gpui_web, Android user agent | `LeastSquares` |
-| gpui_web, other user agents | `IOSScrollViewFling` |
-
-Every target's row (Android native and desktop included) is the [platform behaviour table](behaviour.md)'s
-`velocity_tracker`, which apps get through `parallax::set_platform_gesture_tuning`. An app overrides the kind like any
-other `GestureTuning` field. The scale recognizer ([scale-and-overscroll.md](scale-and-overscroll.md)) uses
+gives iOS the iOS tracker, macOS the macOS one, and Android, Linux and Windows `LeastSquares`: each target's row of
+the [platform behaviour table](behaviour.md), which every Parallax entry point applies (the web takes its host's).
+`GestureTuning::default()` (Flutter's iOS values) has `IOSScrollViewFling`. An app overrides the kind like any other
+`GestureTuning` field. The scale recognizer ([scale-and-overscroll.md](scale-and-overscroll.md)) uses
 `LeastSquares`, as Flutter's does.
+
+`get_velocity_estimate` also returns Flutter's `VelocityEstimate.offset`, the distance between the oldest and newest
+samples the estimate used: the recognizer flings only when it exceeds the physics' minimum fling distance
+([gesture-recognizers.md](gesture-recognizers.md)).
 
 ## Tests
 

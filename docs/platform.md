@@ -24,9 +24,11 @@ a typed `Error`, so the table is tested on any host.
 ## How an app gets its platform
 
 ```rust
-let platform = parallax::parallax_platform::current_platform(false)?;
-gpui::Application::with_platform(platform).run(|cx| { /* ... */ });
+parallax::run(|cx| { /* open windows */ })?; // the platform plus its behaviour row (behaviour.md)
 ```
+
+`parallax::run` is `current_platform(false)` and `gpui::Application::with_platform(platform).run(..)`, with the
+[behaviour table](behaviour.md)'s row applied before the closure.
 
 On the web, call `parallax_platform::web_init()` first (upstream's panic hook and console logger, re-exported on
 wasm only), as upstream's web examples do; [hello](../examples/hello/src/lib.rs) shows it.
