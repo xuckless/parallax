@@ -39,16 +39,17 @@ Every Parallax entry point applies the current target's row before app code runs
 [main.rs](../examples/hello/src/main.rs) and web `start`), the facade's `android_main!` on Android. Both call
 `parallax::set_platform_gesture_tuning` (`Result<(), parallax_platform::Error>`; they log an error and keep the
 platform's tuning). `Behaviour::gesture_tuning()` fills GPUI's `GestureTuning` from the row (`touch_slop` ← the hit
-slop, `scroll_physics`, `min_fling_velocity` / `max_fling_velocity` ← its fling limits, `velocity_tracker`), the
-rest from `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
+slop, `scroll_physics`, `min_fling_velocity` / `max_fling_velocity` ← its fling limits, `velocity_tracker`,
+`overscroll`), the rest from `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
 `parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
 
 **Override:** call `cx.set_gesture_tuning` in `launch`, after the entry point's call, with a changed copy, e.g.
 `GestureTuning { touch_slop: px(12.), ..current_behaviour()?.gesture_tuning() }`. Windows opened later use it.
 
-**Read from Wave 12:** `overscroll`, `haptics`, `min_touch_target`, the pan and scale slops and
-`drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the scroll containers, widgets and scale
-recognizer that Wave 12 wires read them (ROADMAP Phase 2).
+**Read by GPUI:** `overscroll` is `GestureTuning::overscroll`, the default every scroll container follows (a
+container may set its own): [overscroll.md](overscroll.md). `haptics`, `min_touch_target`, the pan and scale slops
+and `drag_start_distance_motion_threshold` are data GPUI doesn't take yet; the widgets and scale recognizer that
+Wave 12 wires read them (ROADMAP Phase 2).
 
 ## Extending
 

@@ -15,7 +15,8 @@ tap outside a field blurs it. It is the app of Milestone 0.1.1 in
 Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the app's language
 ([android-fonts.md](android-fonts.md#locale-changes)), and "Show emoji" swaps the box for 100 distinct emoji
 (`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them
-([android-emoji.md](android-emoji.md#cost)).
+([android-emoji.md](android-emoji.md#cost)). The grid scrolls in a box shorter than its rows, so a swipe past an
+edge shows the platform's overscroll: stretch on Android, bounce on iOS and macOS ([overscroll.md](overscroll.md)).
 
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local: upstream GPUI has no text field
 outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one

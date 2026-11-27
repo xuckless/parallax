@@ -6,6 +6,21 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Overscroll in scroll containers (patch 0017, fork `parallax-gpui*` 0.3.14-parallax.9): a touch dragged or flung past
+  a `div` scroll container's edge bounces (iOS, macOS: Flutter's friction and spring), stretches (Android: Material 3's
+  stretch, recedes on release) or stops hard (Windows, Linux), per the behaviour table; `Glow` (Material 2) on request.
+  Mouse wheels and trackpads stay clamped, as in Flutter. `gpui::overscroll::Overscroll`, `GestureTuning::overscroll`
+  (default `None`: GPUI unchanged) and a per-container `.overscroll(..)`; `Overscroll::None` opts a container out
+  ([docs/overscroll.md](docs/overscroll.md)). `uniform_list` and `list` don't overscroll yet.
+- `examples/hello`: the emoji grid scrolls and shows the platform's overscroll.
+
+### Changed
+
+- `parallax-platform`: `behaviour::Overscroll` is GPUI's `gpui::overscroll::Overscroll` (same variants), and
+  `Behaviour::gesture_tuning()` now fills `GestureTuning::overscroll` from the row.
+
 ## [0.1.6] - 2026-11-26 — Phase 2 gestures and physics
 
 Wave 11: Phase 2's gestures and physics, ported from Flutter 3.50.1 into our GPUI fork (patches 0011–0015, fork
