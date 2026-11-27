@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run GPUI's own lib tests, every patch's tests among them, on the patched fork crate parallax-gpui.
+# On Linux it also runs parallax-gpui-linux's lib tests (host_backends below).
 # The crate can't run them as shipped, so this tests a scratch copy of build/parallax-gpui/ in build/patch-tests/
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
@@ -59,3 +60,12 @@ for test in "${skips[@]}"; do
 done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
+
+# Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
+# builds. Add a row when a backend patch ships tests the host can run.
+host_backends=()
+[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland touch tables
+for crate in "${host_backends[@]}"; do
+    cargo test --manifest-path "$out/crates/Cargo.toml" -p "$crate" --features test-support --lib \
+        --target-dir target/patch-tests -- "$@"
+done

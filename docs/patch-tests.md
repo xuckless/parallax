@@ -17,7 +17,8 @@ It needs GNU sed (`sed -i`; on macOS, `gsed` as `sed`).
 
 [`patch-test.sh`](../scripts/patch-test.sh) copies [`build/parallax-gpui/`](gpui-fork-crates.md#generate) to
 `build/patch-tests/` (generated, git-ignored, rebuilt every run) and runs
-`cargo test -p parallax-gpui --features test-support --lib` there, compiled into `target/patch-tests/`. It never
+`cargo test -p parallax-gpui --features test-support --lib` there, compiled into `target/patch-tests/`, then the
+lib tests of each backend crate in its `host_backends` list (on Linux, `parallax-gpui-linux`: patch 0022's tables). It never
 changes `build/parallax-gpui/`, so what it tests is what [`publish-fork.sh`](../scripts/publish-fork.sh) packages,
 plus two test-only changes the crate needs because it can't run its own tests as shipped:
 
