@@ -3,4 +3,4 @@
 # drifts. Change both only with scripts/fork-version.sh (bump / reset), which also repins Cargo.toml.
 # See docs/gpui-fork-crates.md.
 revision = 11
-content = cc0ac15527e04b98f975b7511b43a8f1b5eff40274561c3dbe9babca92f535d3
+content = d13beae9c39b4334dea9cc8c4707f984992375d0be54a0d76bce506b92bc2974
