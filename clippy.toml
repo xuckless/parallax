@@ -1,0 +1,2 @@
+# AGENTS.md "Errors": tests may unwrap; `expect` names the invariant a test relies on.
+allow-expect-in-tests = true
