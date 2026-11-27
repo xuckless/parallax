@@ -14,7 +14,7 @@ desktop touch is judged like a phone's touch with the desktop row's physics.
 
 GPUI's touch recognizer reads one slop, `GestureTuning::touch_slop`, for every `TouchEvent` (touch or pen): the
 row's touch hit slop. Mouse input never reaches it. So no GPUI patch is needed for desktop touch feel; the
-backend patches (0021 Windows, 0022 Wayland, 0023 X11, 0024 macOS) only have to send `TouchEvent`s with the right
+backend patches (0021 Windows, 0022 Wayland, 0023 X11, 0025–0026 macOS) only have to send `TouchEvent`s with the right
 `device` ([pointer-source.md](pointer-source.md)).
 
 ## Not ported
@@ -25,7 +25,7 @@ backend patches (0021 Windows, 0022 Wayland, 0023 X11, 0024 macOS) only have to 
 
 ## Tests
 
-- `desktop_pointer_slops_table` (behaviour.rs): one row per desktop target and pointer (touch, pen, mouse), the
+- `desktop_pointer_slops_table` (behaviour.rs): one row per pointer (touch, pen, mouse), each on another desktop, the
   slops it gets and the recognizer's slop. `behaviour_table`'s macOS row holds the 36 pt touch target.
 - [trace_replay.rs](../crates/platform/tests/trace_replay.rs) replays every phone and browser trace under the
   desktop rows too: a touch taps, long-presses, pans, flings and pinches there as on a phone

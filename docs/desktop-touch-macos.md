@@ -1,7 +1,9 @@
 # Desktop touch: macOS
 
-[Patch 0024](../patches/0024-touch-macos.patch) feeds direct touches (a touchscreen Mac, or an iPad used as a Sidecar
-display) into GPUI as `TouchEvent`s, from macOS 27. Phase 3 `touch-macos` in [ROADMAP.md](../ROADMAP.md).
+Patches [0025](../patches/0025-touch-macos-translation.patch) (the decisions, on plain values) and
+[0026](../patches/0026-touch-macos-recognizer.patch) (the AppKit glue) feed direct touches (a touchscreen Mac, or an
+iPad used as a Sidecar display) into GPUI as `TouchEvent`s, from macOS 27; [0024](../patches/0024-uptime-instant-apple.patch)
+moves the time stamp maths into gpui_apple for them and iOS. Phase 3 `touch-macos` in [ROADMAP.md](../ROADMAP.md).
 
 ## How AppKit delivers touches (MacOSX27.2.sdk headers)
 
@@ -20,19 +22,25 @@ main bundle's Info.plist).
 
 ## The glue
 
-`GPUITouchRecognizer` (`gpui-pre-macos/src/window/touch.rs`, added by the patch) is an `NSGestureRecognizer`
-subclass on every GPUIView, added only when `isOperatingSystemAtLeastVersion(27.0)`. Per event it reads the changed touches (stationary ones skipped) and sends:
+`GPUITouchRecognizer` (`gpui-pre-macos/src/window/touch_recognizer.rs`) is an `NSGestureRecognizer` subclass on
+every GPUIView, added only when `isOperatingSystemAtLeastVersion(27.0)`. Per event it reads the changed touches
+(stationary ones skipped) and sends, through the tables in `window/touch.rs`:
 
 | `TouchEvent` field | From |
 |---|---|
 | `phase` | `PHASES` table: Began → `Started`, Moved, Ended, Cancelled |
-| `id` | `TouchIds`: a fresh id per live `NSTouch.identity` (`isEqual:`), dropped when it ends; AppKit may reuse identities, GPUI ids never repeat |
+| `id` | `TouchIds`: the next id (from 0, wrapping) per live `NSTouch.identity` (`isEqual:`), given up when it ends; a move or end with no live begin is dropped, a begin of a live identity cancels the stale touch first |
 | `position` | `locationInView:` on GPUIView, y flipped like mouse events |
 | `device` | `Touch` (allowed types are Direct only) |
 | `time_stamp` | `NSEvent.timestamp` by its age against `systemUptime` (gpui_apple `uptime_instant`, shared with iOS; [touch-time-stamps.md](touch-time-stamps.md)) |
 
-The recognizer claims the sequence (`Began` on the first touch, `Changed`, then `Ended` or `Cancelled` once no finger
-is down: `next_state`): GPUI's own recognizers turn the touches into taps, pans, long presses and pinches.
+The recognizer's state follows `next_state(state, left)`, one row per legal transition: `Began` on the first touch,
+`Changed`, then `Ended` or `Cancelled` once no finger is down; a sequence over within one event `Failed`s; nothing
+moves on from a finished state, which AppKit resets. Its `reset` override cancels any touch still live where it last
+was. Touches reach GPUI through `TouchQueue`: while GPUI's callback is busy, an end waits for it and a start or
+move is dropped. While it holds touches, `handle_view_event` drops AppKit's copies of them (`TOUCH_COPIES`: mouse
+events with `subtype` `NSEventSubtypeTouch`; scroll and magnify, which have no subtype, any mid-touch), and
+GPUIView answers `mouseCancelled:` (macOS 26) with a mouse up, so no button stays down.
 
 ## Emulation and `NSIsTouchNative`
 
@@ -46,8 +54,8 @@ pinch / rotate → magnify / rotate, hold and move → drag. An app with its own
 in `Contents/Info.plist` of its `.app` (cargo-parallax does not bundle macOS apps yet; add the key to your bundler's
 plist, e.g. cargo-bundle's `osx_info_plist_exts`). Then touches arrive only as `TouchEvent`s and GPUI's touch →
 mouse ([pointer-source.md](pointer-source.md)) makes the clicks. Without the key, whether AppKit still emulates
-after the recognizer claims the touches is unverified: a tap may arrive twice (touch click and mouse click). The
-owner's Sidecar check settles it.
+after the recognizer claims the touches is unverified; the copies AppKit marks are dropped (above), so a tap should
+click once either way. The owner's Sidecar check settles it.
 
 ## Limits
 
@@ -57,10 +65,11 @@ owner's Sidecar check settles it.
   can't tell which screen takes touch; GPUI reads the device per event instead.
 - No force (direct `NSTouch` has none) or predicted position; coalesced touches (`coalescedTouchesForTouch:`) are
   not replayed, one sample per callback as on iOS.
-- Apple's macOS touch target is 36 pt (Apple's macOS 27 guidance, not in the SDK headers): the behaviour table's
-  macOS row ([behaviour.md](behaviour.md)).
+- Apple's macOS touch target is 36 pt (`APPLE_MACOS_MIN_TOUCH_TARGET`, from Apple's "Bring Touch to your Mac app"
+  talk, not the SDK headers): the behaviour table's macOS row ([behaviour.md](behaviour.md)).
+- A real trackpad scroll or magnify while a finger is on the screen is dropped as a touch copy.
 
 ## Tests
 
-`touch_phases`, `recognizer_states` and `touch_ids` in `touch.rs`: `cargo test -p parallax-gpui-macos --features
-test-support --lib touch` inside `build/parallax-gpui/` on a Mac.
+`touch_phases`, `recognizer_states`, `touch_ids`, `touch_queue` and `touch_copies` in `touch.rs`: `cargo test -p
+parallax-gpui-macos --features test-support --lib touch` inside `build/parallax-gpui/` on a Mac.

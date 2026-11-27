@@ -27,16 +27,11 @@ scripts/apply-patches.sh                    # must apply cleanly on top of the e
 
 Add the header to the top of the file before committing it.
 
-## Translating for filing upstream
-
-Patches are written against the vendored layout and translated to Zed's `crates/` layout with
-[`patch-paths.sh`](../scripts/patch-paths.sh): [patch-translation.md](patch-translation.md).
-
 ## Our Zed fork
 
 [`scripts/sync-fork.sh`](../scripts/sync-fork.sh) rebuilds the `parallax` branch of
 [`xuckless/zed`](https://github.com/xuckless/zed/tree/parallax): the UPSTREAM commit plus every patch, translated as
-in [patch-translation.md](patch-translation.md), one commit each. Run it whenever a patch is added or changed.
+in [patch-translation.md](patch-translation.md) (Zed's `crates/` layout, [`patch-paths.sh`](../scripts/patch-paths.sh)), one commit each. Run it whenever a patch is added or changed.
 Apps don't use that branch; they get every patch through the published `parallax-gpui*` crates. Both are in [zed-fork.md](zed-fork.md).
 
 ## Published crates
@@ -76,4 +71,7 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0021](../patches/0021-touch-windows.patch) | Windows touch and pen from `WM_POINTER` (winit's handling) as `TouchEvent`s, the mouse messages Windows makes from them dropped ([desktop-touch-windows.md](desktop-touch-windows.md)) |
 | [0022](../patches/0022-touch-wayland.patch) | Wayland `wl_touch` → `TouchEvent` in `gpui_linux`, ported from winit ([desktop-touch-linux.md](desktop-touch-linux.md#wayland)) |
 | [0023](../patches/0023-touch-x11.patch) | X11 XInput 2 touch → `TouchEvent` in gpui_linux, emulated pointer events dropped, from winit ([desktop-touch-linux.md](desktop-touch-linux.md#x11)) |
-| [0024](../patches/0024-touch-macos.patch) | direct touch on macOS 27 as `TouchEvent`s through a gesture recognizer on GPUIView ([desktop-touch-macos.md](desktop-touch-macos.md)) |
+| [0024](../patches/0024-uptime-instant-apple.patch) | gpui_apple `uptime_instant`: an uptime-clock event time on GPUI's clock, for iOS and macOS touches ([touch-time-stamps.md](touch-time-stamps.md)) |
+| [0025](../patches/0025-touch-macos-translation.patch) | macOS direct touch decisions on plain values: phase table, `TouchIds`, recognizer state transitions, touch queue, AppKit's touch copies ([desktop-touch-macos.md](desktop-touch-macos.md)) |
+| [0026](../patches/0026-touch-macos-recognizer.patch) | `GPUITouchRecognizer` on GPUIView feeds macOS 27 direct touches to GPUI; touch copies dropped, `mouseCancelled:` ([desktop-touch-macos.md](desktop-touch-macos.md)) |
+| [0027](../patches/0027-touch-ids-ios.patch) | iOS `TouchId` per `UITouch` lifetime, not its reused address, from Flutter's pointer identifiers ([traces-desktop.md](traces-desktop.md#touch-identity)) |

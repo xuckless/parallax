@@ -1,0 +1,106 @@
+Move the uptime-clock time stamp into gpui_apple, for iOS and macOS touches.
+
+What: `gpui_apple::process_info::uptime_instant(timestamp: f64) -> Option<Instant>`: an event time on the uptime
+clock (`UITouch.timestamp`, `NSEvent.timestamp`, both seconds since boot as `NSProcessInfo.systemUptime` counts)
+moved onto GPUI's clock by its age; a stamp later than now counts as now. It is the maths patch 0020 put in
+gpui_ios's `touch_time_stamp`, which goes: gpui_ios's touch now calls `uptime_instant(touch.timestamp())`, and
+macOS's direct touches (patch 0026) call it with `NSEvent.timestamp`. Behaviour on iOS is unchanged.
+
+Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterViewController.mm
+(`dispatchTouches:`, `pointer_data.time_stamp = touch.timestamp * kMicrosecondsPerSecond`) and
+engine/src/flutter/shell/platform/darwin/macos/framework/Source/FlutterViewController.mm (its pointer events'
+`.timestamp = static_cast<size_t>(event.timestamp * USEC_PER_SEC)`) @ 3.50.1
+(ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
+third_party/flutter/LICENSE. The port header sits on the function.
+
+Why: gpui_ios and gpui_macos both depend on gpui_apple, the crate that already wraps `NSProcessInfo`; one copy of
+the clock maths serves both, instead of macOS copying iOS's. No cfg beyond the crate's own (Apple targets).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-apple/src/process_info.rs b/gpui-pre-apple/src/process_info.rs
+index a988581..db85889 100644
+--- a/gpui-pre-apple/src/process_info.rs
++++ b/gpui-pre-apple/src/process_info.rs
+@@ -7,6 +7,22 @@ use objc2_foundation::{
+     NSProcessInfoPowerStateDidChangeNotification, NSProcessInfoThermalState,
+     NSProcessInfoThermalStateDidChangeNotification,
+ };
++use std::time::{Duration, Instant};
++
++// Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterViewController.mm
++// (`dispatchTouches:`, its `pointer_data.time_stamp = touch.timestamp * kMicrosecondsPerSecond`) and
++// engine/src/flutter/shell/platform/darwin/macos/framework/Source/FlutterViewController.mm (its pointer events'
++// `.timestamp = static_cast<size_t>(event.timestamp * USEC_PER_SEC)`) @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE.
++/// An event time on the uptime clock moved onto GPUI's clock, as Flutter's Apple embedders send `UITouch.timestamp`
++/// and `NSEvent.timestamp` as `PointerEvent.timeStamp`. Both count seconds since boot, as
++/// `NSProcessInfo.systemUptime` does, so the event's age is taken off the current instant; a stamp later than now
++/// counts as now.
++pub fn uptime_instant(timestamp: f64) -> Option<Instant> {
++    let age = NSProcessInfo::processInfo().systemUptime() - timestamp;
++    Instant::now().checked_sub(Duration::try_from_secs_f64(age.max(0.)).ok()?)
++}
+ 
+ pub fn thermal_state() -> ThermalState {
+     match NSProcessInfo::processInfo().thermalState() {
+diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
+index df20a16..7205282 100644
+--- a/gpui-pre-ios/src/ios/events.rs
++++ b/gpui-pre-ios/src/ios/events.rs
+@@ -5,12 +5,10 @@ use gpui::{
+     ScrollDelta, ScrollEvent, ScrollSource, TouchId, TouchPhase, px,
+ };
+ use objc2_core_foundation::CGPoint;
+-use objc2_foundation::NSProcessInfo;
+ use objc2_ui_kit::{
+     UIGestureRecognizerState, UIKeyModifierFlags, UIPanGestureRecognizer, UIRectEdge,
+     UIScreenEdgePanGestureRecognizer, UITouch, UITouchPhase, UITouchType, UIView,
+ };
+-use std::time::{Duration, Instant};
+ 
+ /// A release faster than this, in points per second toward going back, commits
+ /// a back gesture regardless of how far it travelled.
+@@ -130,20 +128,6 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+     Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
+ }
+ 
+-// Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/
+-// framework/Source/FlutterViewController.mm (`dispatchTouches:`, its
+-// `pointer_data.time_stamp = touch.timestamp * kMicrosecondsPerSecond`) @ 3.50.1
+-// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter
+-// Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+-/// When UIKit says the touch happened (`UITouch.timestamp`, which Flutter's
+-/// iOS embedder sends as `PointerEvent.timeStamp`), on GPUI's clock: both
+-/// `timestamp` and `NSProcessInfo.systemUptime` count seconds since boot, so
+-/// the touch's age is taken off the current instant.
+-pub fn touch_time_stamp(touch: &UITouch) -> Option<Instant> {
+-    let age = NSProcessInfo::processInfo().systemUptime() - touch.timestamp();
+-    Instant::now().checked_sub(Duration::try_from_secs_f64(age.max(0.)).ok()?)
+-}
+-
+ /// The device behind a touch: Apple Pencil is a pen, and an iPad pointer's
+ /// click arrives as an indirect-pointer touch.
+ pub fn touch_device(touch: &UITouch) -> PointerDevice {
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index ce42ad2..821462c 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -24,6 +24,7 @@ use gpui::{
+ use gpui_apple::{
+     main_thread_marker,
+     metal_renderer::{Context as MetalContext, MetalRenderer},
++    process_info,
+ };
+ use objc2::rc::Retained;
+ use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+@@ -552,7 +553,7 @@ impl IosWindowState {
+             predicted_position: None,
+             force: touch_force(touch),
+             device: touch_device(touch),
+-            time_stamp: touch_time_stamp(touch),
++            time_stamp: process_info::uptime_instant(touch.timestamp()),
+         };
+         self.handle_keyboard_dismiss_touch(&event);
+         self.input_callback
