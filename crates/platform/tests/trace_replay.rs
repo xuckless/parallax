@@ -1,4 +1,4 @@
-//! Gate 2's trace replay (docs/traces.md): touch traces recorded on each platform by `scripts/record-traces.sh` go
+//! Gates 2 and 3's trace replay (docs/traces.md): touch traces recorded on each platform by `scripts/record-traces.sh` go
 //! through GPUI's recognizer and scroll physics, under every target's row of the behaviour table, and must come out
 //! as the same gestures and the same scroll everywhere. Runs on GPUI's test platform (host only).
 
@@ -22,8 +22,11 @@ use parallax_platform::{
     behaviour::{TABLE, web_behaviour},
 };
 
-/// Platforms with a trace folder under tests/traces/. Each gesture must have a trace from at least two of them.
-const PLATFORMS: [&str; 3] = ["android", "web", "ios"];
+/// Platforms with a trace folder under tests/traces/, the desktops' (Gate 3) read when their harnesses have
+/// recorded them. Each gesture must have a trace from at least two of them.
+const PLATFORMS: [&str; 7] = [
+    "android", "web", "ios", "windows", "wayland", "x11", "macos",
+];
 
 /// The gestures of record-traces.sh's table, with what every platform's trace must replay to under every row.
 const GESTURES: [(&str, Gesture); 6] = [
@@ -158,7 +161,8 @@ impl Render for Recorder {
     }
 }
 
-/// One `touch(at_ms, id, phase, x, y)` line of a trace file; `#` lines are comments.
+/// One `touch(at_ms, id, phase, x, y)` or `touch(at_ms, id, phase, x, y, device)` line of a trace file (no device:
+/// `Touch`, as every trace before Gate 3); `#` lines are comments.
 fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
     let phase = |name: &str| match name {
         "Started" => TouchPhase::Started,
@@ -166,6 +170,12 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
         "Ended" => TouchPhase::Ended,
         "Cancelled" => TouchPhase::Cancelled,
         other => panic!("unknown touch phase {other}"),
+    };
+    // `PointerDevice`'s debug names, as hello logs them. A mouse never sends touches.
+    let device = |name: Option<&&str>| match name.copied() {
+        None | Some("Touch") => PointerDevice::Touch,
+        Some("Pen") => PointerDevice::Pen,
+        Some(other) => panic!("unknown touch device {other}"),
     };
     trace
         .lines()
@@ -179,7 +189,7 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
                 position: point(px(number(3)), px(number(4))),
                 predicted_position: None,
                 force: None,
-                device: PointerDevice::Touch,
+                device: device(fields.get(5)),
                 // Each touch is dispatched at its `at_ms` (the platform's event time, docs/traces.md), so GPUI's
                 // dispatch time is its time stamp.
                 time_stamp: None,
@@ -292,6 +302,44 @@ fn same(a: &Outcome, b: &Outcome) -> bool {
     within(a.pan, b.pan, SCROLL_TOLERANCE)
         && within(a.momentum, b.momentum, SCROLL_TOLERANCE)
         && pinch
+}
+
+#[test]
+fn trace_line_table() {
+    // (row name, fixture line, the device it replays as)
+    let rows = [
+        (
+            "five fields, as Gate 2's traces: a finger",
+            "touch(0, 1, Started, 1.00, 2.00)",
+            PointerDevice::Touch,
+        ),
+        (
+            "a sixth field names the device",
+            "touch(0, 1, Started, 1.00, 2.00, Touch)",
+            PointerDevice::Touch,
+        ),
+        (
+            "a pen",
+            "touch(0, 1, Started, 1.00, 2.00, Pen)",
+            PointerDevice::Pen,
+        ),
+    ];
+    for (name, line, device) in rows {
+        let events = parse(line);
+        assert_eq!(events.len(), 1, "{name}");
+        let (at_ms, event) = &events[0];
+        assert_eq!(
+            (*at_ms, event.id, event.phase, event.position, event.device),
+            (
+                0,
+                TouchId(1),
+                TouchPhase::Started,
+                point(px(1.), px(2.)),
+                device
+            ),
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -10,7 +10,7 @@ each platform, [trace_replay.rs](../crates/platform/tests/trace_replay.rs) repla
 hello's purple "Record touches" button swaps the window for a trace pad ([lib.rs](../examples/hello/src/lib.rs),
 `trace_pad`). It takes every touch raw with `on_touch` (so nothing is turned into taps or scrolls) and logs one line
 per `TouchEvent` GPUI receives, in the [trace format](gesture-recognizers.md#trace-format):
-`trace: touch(at_ms, id, phase, x, y)`, ms since the pad's first touch by the platform's event time
+`trace: touch(at_ms, id, phase, x, y, device)` (device `Touch` or `Pen`), ms since the pad's first touch by the platform's event time
 (`TouchEvent::time_stamp`, [touch-time-stamps.md](touch-time-stamps.md)), window logical px. Only a relaunch leaves
 the pad. It logs no text.
 
@@ -58,6 +58,11 @@ element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
 - **No known differences:** every platform's outcome is compared; flings agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
   web driver stamped each move when its fingers were there, its last move, clamped to the end point a frame late,
   read as the finger slowing (~35 % short).
+
+## Desktop fixtures (Gate 3)
+
+The replay also reads `windows`, `wayland`, `x11` and `macos` folders when present; what their harnesses must write:
+[traces-desktop.md](traces-desktop.md).
 
 ## Extending
 

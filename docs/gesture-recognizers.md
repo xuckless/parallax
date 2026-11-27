@@ -49,9 +49,12 @@ A trace is a slice of `TraceEvent`, one per platform touch event, in order:
 touch(at_ms, id, phase, x, y) // ms since the trace started, touch id, Started/Moved/Ended/Cancelled, logical px
 ```
 
+Fixture files may add a sixth field, the device (`Touch` or `Pen`; `Touch` when absent), which
+[trace_replay.rs](../crates/platform/tests/trace_replay.rs) reads ([traces-desktop.md](traces-desktop.md)).
+
 Times are absolute from the trace start, so events at the same time are the same frame. Positions are window
 logical pixels. A recorder emits one `touch(…)` line per `TouchEvent` it sees, rebased to its first event's time; the
-replay engine needs nothing else. Pen and mouse devices, pressure and predicted positions are not in the format yet.
+replay engine needs nothing else. Pressure and predicted positions are not in the format yet.
 
 The one player is `gpui::play_trace(cx, window, trace, frame_ms, until_ms, on_step)` (patch 0013, `test-support`):
 `(at_ms, PlatformInput)` pairs (`TraceEvent::to_timed_input`, or any scroll event) dispatched on the test clock, with
