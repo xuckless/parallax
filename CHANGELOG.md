@@ -6,6 +6,15 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Direct touch on macOS 27 (patch 0024): touchscreen Macs and iPads used as Sidecar displays send GPUI
+  `TouchEvent`s (ids, phases including `Cancelled`, device `Touch`, the event's own time stamp) through a gesture
+  recognizer on GPUI's view, so taps, pans, flings, long presses and pinches go through GPUI's touch recognizers. No
+  change before macOS 27. Add `NSIsTouchNative` (true) to your app bundle's Info.plist to turn off AppKit's
+  mouse/scroll emulation of touches ([docs/desktop-touch-macos.md](docs/desktop-touch-macos.md)). Not yet checked on
+  touch hardware.
+
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
 Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's

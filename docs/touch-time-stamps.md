@@ -15,9 +15,10 @@ OS clock and GPUI's together and takes the event's age off the current instant:
 | Platform | Event time | Its clock, read at dispatch | Where |
 |---|---|---|---|
 | Android | `MotionEvent.getEventTime()`, the packet's `time_stamp` (µs) | `CLOCK_MONOTONIC` (`uptimeMillis`) | [pointer.rs](../crates/android/src/pointer.rs) `Clock`, read in [host.rs](../crates/android/src/host.rs) |
-| iOS | `UITouch.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_ios `touch_time_stamp` (0020) |
+| iOS | `UITouch.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_ios `touch_time_stamp` (0020), via gpui_apple `uptime_instant` (0024) |
+| macOS 27 | `NSEvent.timestamp` (s since boot) | `NSProcessInfo.systemUptime` | gpui_macos `window/touch.rs` (0024, [desktop-touch-macos.md](desktop-touch-macos.md)) |
 | Web | `PointerEvent.timeStamp` (ms) | `performance.now()` | gpui_web `event_time_stamp` (0020) |
-| Desktops, tests | none | | `None` |
+| Other desktops, tests | none | | `None` |
 
 A stamp later than the clock read counts as now. `None` (no event time, synthesized touches, tests) is timed when
 GPUI dispatches the touch: each recognizer writes that fallback once, `event.time_stamp.unwrap_or(now)`.
