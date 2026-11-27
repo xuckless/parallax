@@ -152,13 +152,13 @@ index 2463a70..3465b21 100644
          self.inner.viewport.borrow().visible_bounds
      }
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index aa3dab0..c6fe16c 100644
+index ed36be4..c580c4f 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -154,6 +154,33 @@ pub struct GestureTuning {
-     /// How a touch's release velocity is estimated: one of Flutter's
-     /// per-platform velocity trackers.
-     pub velocity_tracker: VelocityTrackerKind,
+@@ -162,6 +162,33 @@ pub struct GestureTuning {
+     /// edge, unless a container sets its own
+     /// ([`StatefulInteractiveElement::overscroll`](crate::StatefulInteractiveElement::overscroll)).
+     pub overscroll: Overscroll,
 +    /// The haptic the window plays when an element claims a long press
 +    /// (Flutter's `Feedback.forLongPress`, which its widgets call when they
 +    /// handle one), or `None` for none.
@@ -189,26 +189,15 @@ index aa3dab0..c6fe16c 100644
  }
  
  // Flutter's gesture constants (constants.rs), whose recognizer tests these
-@@ -175,6 +202,8 @@ impl Default for GestureTuning {
-             min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
-             max_fling_velocity: ScrollPhysics::ios().max_fling_velocity(),
+@@ -185,6 +212,8 @@ impl Default for GestureTuning {
              velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
+             // GPUI's hard stop at the edge; platforms that overscroll set it.
+             overscroll: Overscroll::None,
 +            // Platform feel, not a constant: a platform or app that wants one sets it.
 +            long_press_haptic: None,
          }
      }
  }
-@@ -530,6 +559,10 @@ impl TouchGestureRecognizer {
-         }
-     }
- 
-+    pub(crate) fn tuning(&self) -> &GestureTuning {
-+        &self.tuning
-+    }
-+
-     /// Each gesture is paired with the device it reports: the touch's own,
-     /// except the closing step of a fling this touch catches, which keeps the
-     /// device of the touch that flung, like the momentum steps before it.
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
 index 9f9d978..bfb1590 100644
 --- a/gpui-pre/src/platform.rs
@@ -268,11 +257,11 @@ index 503d754..90f7467 100644
          self.0.lock().bounds
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 735b861..06653a5 100644
+index cb9820a..650b0c6 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3896,6 +3896,14 @@ impl Window {
-         self.long_press_capture == Some(entity.entity_id())
+@@ -3954,6 +3954,14 @@ impl Window {
+             .fling_velocity(cx.background_executor().now())
      }
  
 +    /// Plays a haptic on the platform (Flutter's `HapticFeedback` calls); a
@@ -286,7 +275,7 @@ index 735b861..06653a5 100644
      /// Restarts touch recognition with the tuning a test passes, in place of
      /// the platform's.
      #[cfg(test)]
-@@ -6593,6 +6601,12 @@ impl Window {
+@@ -6694,6 +6702,12 @@ impl Window {
                      if !claimed {
                          self.long_press_capture = None;
                      }
@@ -299,7 +288,7 @@ index 735b861..06653a5 100644
                  }
                  if ended {
                      self.long_press_capture = None;
-@@ -10629,6 +10643,57 @@ mod tests {
+@@ -10730,6 +10744,57 @@ mod tests {
          }
      }
  

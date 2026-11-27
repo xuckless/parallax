@@ -39,7 +39,7 @@ Flutter 3.50.1.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
-index 6e4ff9f..72bc9f6 100644
+index b4c32c8..d93b33d 100644
 --- a/gpui-pre/src/elements/div.rs
 +++ b/gpui-pre/src/elements/div.rs
 @@ -15,6 +15,9 @@
@@ -57,17 +57,17 @@ index 6e4ff9f..72bc9f6 100644
      MouseButton, MouseClickEvent, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
      MousePressureEvent, MouseUpEvent, OngoingScroll, Overflow, ParentElement, PinchEvent, Pixels,
 -    Point, PointerSource, Render, ScrollEvent, SharedString, Size, Style, StyleRefinement, Styled,
--    Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, Visibility, Window,
+-    Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, TouchPinch, Visibility, Window,
 -    WindowControlArea, point, px, size,
 +    Point, PointerSource, Render, ScrollEvent, ScrollSource, SharedString, Size, Style,
-+    StyleRefinement, Styled, Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, Visibility,
-+    Window, WindowControlArea, point, px, size,
++    StyleRefinement, Styled, Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, TouchPinch,
++    Visibility, Window, WindowControlArea, point, px, size,
  };
 +use crate::{ContentMask, Hsla, PathBuilder, rgb};
  use collections::HashMap;
  use gpui_util::ResultExt;
  use refineable::Refineable;
-@@ -1601,6 +1605,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
+@@ -1608,6 +1612,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
          self
      }
  
@@ -82,7 +82,7 @@ index 6e4ff9f..72bc9f6 100644
      /// Restrict scrolling of this element to the axis of the input gesture.
      ///
      /// See [`Style::restrict_scroll_to_axis`](crate::Style::restrict_scroll_to_axis) for details.
-@@ -2142,6 +2154,8 @@ impl Element for Div {
+@@ -2149,6 +2161,8 @@ impl Element for Div {
              (child_max - child_min).into()
          };
  
@@ -91,7 +91,7 @@ index 6e4ff9f..72bc9f6 100644
          self.interactivity.prepaint(
              global_id,
              inspector_id,
-@@ -2155,18 +2169,48 @@ impl Element for Div {
+@@ -2162,18 +2176,48 @@ impl Element for Div {
                      return hitbox;
                  }
  
@@ -147,7 +147,7 @@ index 6e4ff9f..72bc9f6 100644
                              }
                          }
                      });
-@@ -2197,6 +2241,7 @@ impl Element for Div {
+@@ -2204,6 +2248,7 @@ impl Element for Div {
              .as_mut()
              .map(|provider| provider.provide(window, cx));
  
@@ -155,7 +155,7 @@ index 6e4ff9f..72bc9f6 100644
          window.with_image_cache(image_cache, |window| {
              self.interactivity.paint(
                  global_id,
-@@ -2214,6 +2259,23 @@ impl Element for Div {
+@@ -2221,6 +2266,23 @@ impl Element for Div {
                      for child in &mut self.children {
                          child.paint(window, cx);
                      }
@@ -179,7 +179,7 @@ index 6e4ff9f..72bc9f6 100644
                  },
              )
          });
-@@ -2265,6 +2327,9 @@ pub struct Interactivity {
+@@ -2272,6 +2334,9 @@ pub struct Interactivity {
      pub(crate) scroll_anchor: Option<ScrollAnchor>,
      pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
      pub(crate) ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
@@ -189,7 +189,7 @@ index 6e4ff9f..72bc9f6 100644
      pub(crate) group: Option<SharedString>,
      /// The base style of the element, before any modifications are applied
      /// by focus, active, etc.
-@@ -2393,6 +2458,8 @@ impl Interactivity {
+@@ -2400,6 +2465,8 @@ impl Interactivity {
                      let scroll_handle_state = scroll_handle.0.borrow();
                      self.scroll_offset = Some(scroll_handle_state.offset.clone());
                      self.ongoing_scroll = Some(scroll_handle_state.ongoing_scroll.clone());
@@ -198,7 +198,7 @@ index 6e4ff9f..72bc9f6 100644
                  } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
                      || self.base_style.overflow.y == Some(Overflow::Scroll))
                      && let Some(element_state) = element_state.as_mut()
-@@ -2409,6 +2476,12 @@ impl Interactivity {
+@@ -2416,6 +2483,12 @@ impl Interactivity {
                              .get_or_insert_with(|| Rc::new(RefCell::new(OngoingScroll::default())))
                              .clone(),
                      );
@@ -211,7 +211,7 @@ index 6e4ff9f..72bc9f6 100644
                  }
  
                  let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
-@@ -2560,7 +2633,7 @@ impl Interactivity {
+@@ -2567,7 +2640,7 @@ impl Interactivity {
          bounds: Bounds<Pixels>,
          style: &Style,
          window: &mut Window,
@@ -220,7 +220,7 @@ index 6e4ff9f..72bc9f6 100644
      ) -> Point<Pixels> {
          fn round_to_two_decimals(pixels: Pixels) -> Pixels {
              const ROUNDING_FACTOR: f32 = 100.0;
-@@ -2609,11 +2682,54 @@ impl Interactivity {
+@@ -2616,11 +2689,54 @@ impl Interactivity {
              // Clamp scroll offset in case scroll max is smaller now (e.g., if children
              // were removed or the bounds became larger).
              let mut scroll_offset = scroll_offset.borrow_mut();
@@ -278,7 +278,7 @@ index 6e4ff9f..72bc9f6 100644
                  scroll_offset.y = scroll_offset.y.clamp(-scroll_max.y, px(0.));
              }
  
-@@ -3523,6 +3639,8 @@ impl Interactivity {
+@@ -3556,6 +3672,8 @@ impl Interactivity {
      ) {
          if let Some(scroll_offset) = self.scroll_offset.clone() {
              let ongoing_scroll = self.ongoing_scroll.clone();
@@ -287,7 +287,7 @@ index 6e4ff9f..72bc9f6 100644
              let overflow = style.overflow;
              let allow_concurrent_scroll = style.allow_concurrent_scroll;
              let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
-@@ -3532,6 +3650,7 @@ impl Interactivity {
+@@ -3565,6 +3683,7 @@ impl Interactivity {
              window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                  if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                      let mut scroll_offset = scroll_offset.borrow_mut();
@@ -295,7 +295,7 @@ index 6e4ff9f..72bc9f6 100644
                      let old_scroll_offset = *scroll_offset;
                      let mut delta = event.delta.pixel_delta(line_height);
  
-@@ -3569,8 +3688,71 @@ impl Interactivity {
+@@ -3602,8 +3721,71 @@ impl Interactivity {
                              delta_x = Pixels::ZERO;
                          }
                      }
@@ -369,7 +369,7 @@ index 6e4ff9f..72bc9f6 100644
                      if *scroll_offset != old_scroll_offset {
                          cx.notify(current_view);
                      }
-@@ -3815,6 +3997,7 @@ pub struct InteractiveElementState {
+@@ -3848,6 +4030,7 @@ pub struct InteractiveElementState {
      pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
      pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
      ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
@@ -377,7 +377,7 @@ index 6e4ff9f..72bc9f6 100644
      pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
      long_press_tooltip_active: Option<Rc<Cell<bool>>>,
  }
-@@ -4403,6 +4586,7 @@ impl ScrollAnchor {
+@@ -4436,6 +4619,7 @@ impl ScrollAnchor {
  struct ScrollHandleState {
      offset: Rc<RefCell<Point<Pixels>>>,
      ongoing_scroll: Rc<RefCell<OngoingScroll>>,
@@ -400,7 +400,7 @@ index ad31cda..fec1b35 100644
          let item_size = self.measure_item(None, window, cx);
          let layout_id = self.interactivity.request_layout(
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index aa3dab0..74dc57b 100644
+index 1881ccd..ed36be4 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -33,7 +33,8 @@ use smallvec::SmallVec;
@@ -412,8 +412,8 @@ index aa3dab0..74dc57b 100644
 +    seal::Sealed,
  };
  
- pub mod scale;
-@@ -154,6 +155,10 @@ pub struct GestureTuning {
+ mod pinch;
+@@ -157,6 +158,10 @@ pub struct GestureTuning {
      /// How a touch's release velocity is estimated: one of Flutter's
      /// per-platform velocity trackers.
      pub velocity_tracker: VelocityTrackerKind,
@@ -424,7 +424,7 @@ index aa3dab0..74dc57b 100644
  }
  
  // Flutter's gesture constants (constants.rs), whose recognizer tests these
-@@ -175,6 +180,8 @@ impl Default for GestureTuning {
+@@ -178,6 +183,8 @@ impl Default for GestureTuning {
              min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
              max_fling_velocity: ScrollPhysics::ios().max_fling_velocity(),
              velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
@@ -433,14 +433,10 @@ index aa3dab0..74dc57b 100644
          }
      }
  }
-@@ -977,6 +984,23 @@ impl TouchGestureRecognizer {
+@@ -984,6 +991,19 @@ impl TouchGestureRecognizer {
          self.momentum.is_some()
      }
  
-+    pub(crate) fn tuning(&self) -> GestureTuning {
-+        self.tuning
-+    }
-+
 +    /// The finger velocity of the fling in progress at `now`, in pixels per
 +    /// second (zero when none): during the release's scroll step, the
 +    /// release velocity Flutter's `DragEndDetails` carries.
@@ -457,7 +453,7 @@ index aa3dab0..74dc57b 100644
      /// Advances post-fling momentum by one frame, returning the scroll step
      /// to dispatch, or `None` when no momentum is in progress. The final step
      /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
-@@ -1034,7 +1058,7 @@ fn scroll_event(
+@@ -1041,7 +1061,7 @@ fn scroll_event(
  }
  
  #[cfg(test)]
@@ -467,14 +463,14 @@ index aa3dab0..74dc57b 100644
  #[cfg(test)]
  mod tests {
 diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
-index fb3aa12..89ba7f3 100644
+index e4473d1..4c7a1da 100644
 --- a/gpui-pre/src/gestures/recognizer_tests.rs
 +++ b/gpui-pre/src/gestures/recognizer_tests.rs
 @@ -24,15 +24,15 @@ use TouchPhase::{Cancelled, Ended, Moved, Started};
  /// One touch event of a recorded trace: what the platform reported, and when,
  /// in milliseconds from the trace's start. Wave 12's recorder emits these.
  #[derive(Clone, Copy)]
--struct TraceEvent {
+-pub(super) struct TraceEvent {
 -    at_ms: u64,
 +pub(crate) struct TraceEvent {
 +    pub(crate) at_ms: u64,
@@ -484,12 +480,12 @@ index fb3aa12..89ba7f3 100644
      y: f32,
  }
  
--const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
+-pub(super) const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
 +pub(crate) const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
      TraceEvent {
          at_ms,
          id,
-@@ -178,15 +178,7 @@ fn replay(row: &Row, cx: &mut TestAppContext) -> Vec<(u64, Seen)> {
+@@ -190,21 +190,27 @@ pub(super) fn play(
          run_until(cx, event.at_ms);
          window
              .update(cx, |_, window, cx| {
@@ -506,8 +502,7 @@ index fb3aa12..89ba7f3 100644
              })
              .unwrap();
      }
-@@ -194,6 +186,20 @@ fn replay(row: &Row, cx: &mut TestAppContext) -> Vec<(u64, Seen)> {
-     seen.take()
+     run_until(cx, until_ms);
  }
  
 +impl TraceEvent {
@@ -1396,10 +1391,10 @@ index 0000000..d055733
 +    assert!(failures.is_empty(), "{}", failures.join("\n"));
 +}
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 735b861..a84231a 100644
+index c22f78e..cb9820a 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3896,6 +3896,18 @@ impl Window {
+@@ -3942,6 +3942,18 @@ impl Window {
          self.long_press_capture == Some(entity.entity_id())
      }
  

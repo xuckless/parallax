@@ -16,10 +16,10 @@ Android has none. No cfg: the setter is core and the same on every platform.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index aa3dab0..b3b8bfd 100644
+index c580c4f..300eafc 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -530,6 +530,12 @@ impl TouchGestureRecognizer {
+@@ -573,6 +573,12 @@ impl TouchGestureRecognizer {
          }
      }
  
@@ -33,11 +33,11 @@ index aa3dab0..b3b8bfd 100644
      /// except the closing step of a fling this touch catches, which keeps the
      /// device of the touch that flung, like the momentum steps before it.
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 735b861..e3149a5 100644
+index 650b0c6..ff5002f 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3896,11 +3896,15 @@ impl Window {
-         self.long_press_capture == Some(entity.entity_id())
+@@ -3962,11 +3962,15 @@ impl Window {
+         self.platform_window.perform_haptic(haptic);
      }
  
 -    /// Restarts touch recognition with the tuning a test passes, in place of
@@ -57,7 +57,7 @@ index 735b861..e3149a5 100644
      }
  
      /// The current state of the keyboard's modifiers
-@@ -10586,6 +10590,52 @@ mod tests {
+@@ -10701,6 +10705,52 @@ mod tests {
          }
      }
  
