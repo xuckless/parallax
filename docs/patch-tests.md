@@ -9,7 +9,7 @@ and web parts of a patch are only compile-checked, by those targets' builds in [
 
 ```sh
 scripts/apply-patches.sh
-scripts/patch-test.sh                  # all of parallax-gpui's lib tests
+scripts/patch-test.sh                  # all of parallax-gpui's lib tests, then parallax-gpui-linux's
 scripts/patch-test.sh pointer_source   # libtest filters and flags pass through
 ```
 
@@ -17,7 +17,9 @@ It needs GNU sed (`sed -i`; on macOS, `gsed` as `sed`).
 
 [`patch-test.sh`](../scripts/patch-test.sh) copies [`build/parallax-gpui/`](gpui-fork-crates.md#generate) to
 `build/patch-tests/` (generated, git-ignored, rebuilt every run) and runs
-`cargo test -p parallax-gpui --features test-support --lib` there, compiled into `target/patch-tests/`. It never
+`cargo test -p parallax-gpui --features test-support --lib` there, then the same for `parallax-gpui-linux`, whose
+lib tests hold backend patches' tables (X11 touch, [desktop-touch-linux.md](desktop-touch-linux.md#x11)); both compile
+into `target/patch-tests/`. It never
 changes `build/parallax-gpui/`, so what it tests is what [`publish-fork.sh`](../scripts/publish-fork.sh) packages,
 plus two test-only changes the crate needs because it can't run its own tests as shipped:
 

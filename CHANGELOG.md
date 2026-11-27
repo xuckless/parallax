@@ -6,6 +6,13 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- X11 touchscreens (patch 0023, ported from winit 0.30.13): gpui_linux's X11 windows select XInput 2 touch
+  events (XInput 2.2 and later) and send them as `TouchEvent`s (`device: Touch`, the server's event time as
+  `time_stamp`), so taps, pans, pinches and overscroll work on X11 as on phones. The pointer events the X server
+  emulates from a touch are dropped, so a tap clicks once ([docs/desktop-touch-linux.md](docs/desktop-touch-linux.md#x11)).
+
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
 Wave 12: Phase 2's gestures wired into GPUI (patches 0016–0020, fork `parallax-gpui*` 0.3.14-parallax.9), Android's

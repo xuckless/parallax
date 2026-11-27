@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Run GPUI's own lib tests, every patch's tests among them, on the patched fork crate parallax-gpui.
+# Then the Linux backend's lib tests on parallax-gpui-linux (backend patches test there).
 # The crate can't run them as shipped, so this tests a scratch copy of build/parallax-gpui/ in build/patch-tests/
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
 #   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
@@ -59,3 +60,8 @@ for test in "${skips[@]}"; do
 done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
+
+# The Linux backend's lib tests, its X11 touch translation tables among them (docs/desktop-touch-linux.md). Its
+# sources are all cfg(linux/freebsd), so on another host this builds an empty crate. Filters pass through as above.
+cargo test --manifest-path "$out/crates/Cargo.toml" -p parallax-gpui-linux --features test-support --lib \
+    --target-dir target/patch-tests -- "$@"

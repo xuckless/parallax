@@ -24,6 +24,8 @@ into scroll events, and the only clue it leaves is the window-wide `last_input_w
 - **How backends set it:** they set `TouchEvent::device` and `BackGestureEvent::source`. Mouse input needs nothing.
   - iOS maps `UITouch.type` (`touch_device`, added to `gpui_ios`'s `events.rs`): Pencil is `Pen`, an iPad pointer
     is `Mouse`. Its edge swipe is `EdgeSwipe`; Android's Back key is `Key` ([android-keys.md](android-keys.md#back)).
+  - X11 touches are `Touch`; X11 pens send pointer events, so they read as `Mouse`, like web pens
+    ([desktop-touch-linux.md](desktop-touch-linux.md#x11)).
   - Web touches are `Touch`. Android maps Flutter's device kind through the `DEVICE_KINDS` table in
     [pointer.rs](../crates/android/src/pointer.rs) ([android-touch.md](android-touch.md)): stylus and inverted stylus
     are `Pen`; a mouse and trackpad send real mouse events instead ([android-mouse.md](android-mouse.md)).
