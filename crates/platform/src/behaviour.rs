@@ -1,6 +1,5 @@
-// Ported from flutter/flutter @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): the constants of
-// packages/flutter/lib/src/gestures/constants.dart and the per-TargetPlatform defaults of (under
-// packages/flutter/lib/src/) gestures/events.dart (computeHitSlop and friends), gestures/gesture_settings.dart,
+// Ported from flutter/flutter @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): the per-TargetPlatform
+// defaults of (under packages/flutter/lib/src/) gestures/events.dart (computeHitSlop and friends), gestures/gesture_settings.dart,
 // widgets/scroll_configuration.dart, widgets/scroll_physics.dart, widgets/scroll_simulation.dart,
 // widgets/feedback.dart, widgets/text_selection.dart, cupertino/picker.dart, material/app.dart, material/constants.dart,
 // cupertino/constants.dart; Android's touch slop from engine/src/flutter/shell/platform/android/io/flutter/embedding/
@@ -16,27 +15,18 @@
     reason = "Flutter's constant names, kept so Flutter changes diff in"
 )]
 
-use std::time::Duration;
-
-use gpui::{GestureTuning, Pixels, PointerDevice, ScrollPhysics, px};
+use gpui::constants::{
+    kDoubleTapMinTime, kDoubleTapSlop, kDoubleTapTimeout, kLongPressTimeout, kMaxFlingVelocity,
+    kMinFlingVelocity, kPanSlop, kPrecisePointerHitSlop, kPrecisePointerPanSlop,
+    kPrecisePointerScaleSlop, kScaleSlop, kTouchSlop,
+};
+use gpui::{GestureTuning, Pixels, PointerDevice, ScrollPhysics, VelocityTrackerKind, px};
 
 use crate::{Error, Target};
 
-// gestures/constants.dart. Flutter uses these on every platform; only the touch slop is a device setting (below).
-pub const kLongPressTimeout: Duration = Duration::from_millis(500);
-pub const kDoubleTapTimeout: Duration = Duration::from_millis(300);
-pub const kDoubleTapMinTime: Duration = Duration::from_millis(40);
-pub const kDoubleTapSlop: Pixels = px(100.0);
-pub const kTouchSlop: Pixels = px(18.0);
-pub const kPagingTouchSlop: Pixels = px(36.0); // kTouchSlop * 2.0
-pub const kPanSlop: Pixels = px(36.0); // kTouchSlop * 2.0
-pub const kScaleSlop: Pixels = kTouchSlop;
-pub const kDoubleTapTouchSlop: Pixels = kTouchSlop;
-pub const kMinFlingVelocity: f32 = 50.0;
-pub const kMaxFlingVelocity: f32 = 8000.0;
-pub const kPrecisePointerHitSlop: Pixels = px(1.0);
-pub const kPrecisePointerPanSlop: Pixels = px(2.0); // kPrecisePointerHitSlop * 2.0
-pub const kPrecisePointerScaleSlop: Pixels = kPrecisePointerHitSlop;
+// Flutter's gesture constants (gestures/constants.dart) are GPUI's `gpui::constants`, the one copy; Flutter uses
+// them on every platform, only the touch slop is a device setting (below).
+
 // material/constants.dart and cupertino/constants.dart.
 pub const kMinInteractiveDimension: Pixels = px(48.0);
 pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
@@ -94,12 +84,11 @@ pub struct ScrollPresetRow {
 
 // To add a preset: a `ScrollPreset` variant and a const here, values from its Flutter class.
 
-/// `BouncingScrollPhysics`. Its `FrictionSimulation(0.135)` is 0.135^(1/1000) per ms: UIScrollView's 0.998.
+/// `BouncingScrollPhysics`. Its `FrictionSimulation(0.135)` is GPUI's `ScrollPhysics::ios()`: UIScrollView's
+/// 0.998 per ms.
 pub const BOUNCING: ScrollPresetRow = ScrollPresetRow {
     preset: ScrollPreset::Bouncing,
-    physics: ScrollPhysics::Exponential {
-        decay_per_ms: 0.998,
-    },
+    physics: ScrollPhysics::ios(),
     min_fling_velocity: kMinFlingVelocity * 2.0,
     max_fling_velocity: kMaxFlingVelocity,
     drag_start_distance_motion_threshold: Some(px(3.5)),
@@ -117,10 +106,7 @@ pub const BOUNCING_DESKTOP: ScrollPresetRow = ScrollPresetRow {
 /// logical pixels per inch, GPUI's `ScrollPhysics::android()`.
 pub const CLAMPING: ScrollPresetRow = ScrollPresetRow {
     preset: ScrollPreset::Clamping,
-    physics: ScrollPhysics::FrictionSpline {
-        friction: 0.015,
-        pixels_per_inch: 160.0,
-    },
+    physics: ScrollPhysics::android(),
     min_fling_velocity: kMinFlingVelocity,
     max_fling_velocity: kMaxFlingVelocity,
     drag_start_distance_motion_threshold: None,
@@ -134,18 +120,6 @@ pub enum Overscroll {
     Stretch,
     Glow,
     None,
-}
-
-/// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from. Named as patch 0011's
-/// `gpui::VelocityTrackerKind`, which replaces it once that patch lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VelocityTrackerKind {
-    /// `IOSScrollViewFlingVelocityTracker`.
-    IOSScrollViewFling,
-    /// `MacOSScrollViewFlingVelocityTracker`.
-    MacOSScrollViewFling,
-    /// `VelocityTracker.withKind`: least squares.
-    LeastSquares,
 }
 
 /// A `HapticFeedback` call (services/haptic_feedback.dart).
@@ -177,6 +151,7 @@ pub struct Behaviour {
     pub touch_slops: Slops,
     /// `ScrollBehavior.getScrollPhysics`.
     pub scroll: ScrollPresetRow,
+    /// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from.
     pub velocity_tracker: VelocityTrackerKind,
     pub overscroll: Overscroll,
     pub haptics: Haptics,
@@ -273,9 +248,11 @@ impl Behaviour {
             touch_slop: self.touch_slops.hit,
             multi_tap_interval: kDoubleTapTimeout,
             multi_tap_slop: kDoubleTapSlop,
+            multi_tap_min_interval: kDoubleTapMinTime,
             long_press_duration: kLongPressTimeout,
             scroll_physics: self.scroll.physics,
             min_fling_velocity: self.scroll.min_fling_velocity,
+            velocity_tracker: self.velocity_tracker,
         }
     }
 }
@@ -342,6 +319,8 @@ pub fn detect_operating_system(platform: &str, user_agent: &str, max_touch_point
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -462,6 +441,11 @@ mod tests {
                 "{name}"
             );
             assert_eq!(
+                tuning.multi_tap_min_interval,
+                Duration::from_millis(40),
+                "{name}"
+            );
+            assert_eq!(
                 tuning.long_press_duration,
                 Duration::from_millis(500),
                 "{name}"
@@ -469,7 +453,7 @@ mod tests {
             assert_eq!(row.scroll.preset, expected.preset, "{name}");
             assert_eq!(row.overscroll, expected.overscroll, "{name}");
             assert_eq!(row.haptics.long_press, expected.long_press, "{name}");
-            assert_eq!(row.velocity_tracker, expected.velocity_tracker, "{name}");
+            assert_eq!(tuning.velocity_tracker, expected.velocity_tracker, "{name}");
             assert_eq!(
                 row.min_touch_target,
                 px(expected.min_touch_target),
