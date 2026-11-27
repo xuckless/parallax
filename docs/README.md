@@ -29,7 +29,8 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
 | [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
-| [ci.md](ci.md) | The ten CI jobs (six targets, Java tests, patch tests, Windows touch, Android smoke), what each checks, when each runs, running the checks locally, adding a target |
+| [ci.md](ci.md) | The eleven CI jobs (six targets, Java tests, patch tests, Linux touch, Windows touch, Android smoke), what each checks, when each runs, adding a target |
+| [ci-local.md](ci-local.md) | Running CI's checks locally: the commands, the Android NDK setup, desktop touch runs |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
 | [audits/oracle-inventory.md](audits/oracle-inventory.md) | Flutter 3.50.1 test files per area (gestures, text input, accessibility), the upstream GPUI code each checks, portability verdicts, Android/iOS test-infra risks, Phase 2/4 order |
 | [audits/oracle-inventory-gestures.md](audits/oracle-inventory-gestures.md) | Oracle inventory part: Flutter's gesture, velocity and scroll-physics tests, case counts and salvage per file |

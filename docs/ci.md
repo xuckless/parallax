@@ -1,7 +1,8 @@
 # CI
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
-one job per target, no feature variants, plus one job each for the Java tests, the patch tests, Linux touch, Windows touch and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+one job per target, no feature variants, plus one job each for the Java tests, the patch tests, Linux touch, Windows
+touch and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -9,11 +10,11 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-Nine jobs run on every push, pull request and manual `workflow_dispatch`. `android-smoke` boots an emulator and
-builds a two-ABI APK (about 5 minutes with warm caches, 7 cold), so it runs only where a merge is decided: pull
-requests, pushes to `main` and manual runs; start it on a branch with `gh workflow run ci.yml --ref <branch>`
-(emulator setup, GPU mode, caching: [android-smoke.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels
-the older run.
+Eight jobs run on every push, pull request and manual `workflow_dispatch`. Three drive a device or a desktop:
+`android-smoke` boots an emulator and builds a two-ABI APK (about 5 minutes warm, 7 cold), `linux-touch` builds
+Weston, `windows-touch` injects into a desktop session. They run only where a merge is decided: pull requests, pushes
+to `main` and manual runs; start them on a branch with `gh workflow run ci.yml --ref <branch>` (emulator setup:
+[android-smoke-ci.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels the older run.
 
 | Target | Runner | Runs |
 |---|---|---|
@@ -46,32 +47,7 @@ each check proves and the publish-first order: [gpui-fork-crates.md](gpui-fork-c
 
 ## Run the same checks locally
 
-```sh
-scripts/apply-patches.sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-scripts/java-test.sh
-scripts/patch-test.sh
-scripts/android-smoke.sh            # with one emulator or device running
-cargo package -p cargo-parallax
-scripts/publish-fork.sh --dry-run
-scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax
-cargo check --workspace --target wasm32-unknown-unknown
-```
-
-Android needs the NDK's clang as C compiler and linker (CI reads `$ANDROID_NDK_LATEST_HOME`; locally use your
-`~/Android/Sdk/ndk/<version>`):
-
-```sh
-bin=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
-CC_aarch64_linux_android=$bin/aarch64-linux-android28-clang AR_aarch64_linux_android=$bin/llvm-ar \
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android28-clang \
-  cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
-```
-
-iOS checks need macOS with Xcode: `cargo check --workspace --target aarch64-apple-ios`. Windows touch needs a Windows
-desktop session: `scripts/record-traces.sh windows && scripts/windows-touch-checks.sh`.
+The commands, the Android NDK setup and the desktop touch runs: [ci-local.md](ci-local.md).
 
 ## Add a target
 

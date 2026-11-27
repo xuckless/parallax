@@ -149,6 +149,8 @@ jobs:
   # each recording must replay as the phone and browser traces do. Weston is built from source (scripts/build-weston.sh).
   linux-touch:
     name: linux-touch
+    # Builds and drives a compositor, so like android-smoke it runs on main, pull requests and manual runs (docs/ci.md).
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -186,6 +188,8 @@ jobs:
   # and the replay run even after a failed recording, so one run reports every failure.
   windows-touch:
     name: windows-touch
+    # Drives a desktop session, so like android-smoke it runs on main, pull requests and manual runs (docs/ci.md).
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
