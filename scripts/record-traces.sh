@@ -32,26 +32,84 @@ gestures=(
 # hello's "Record touches" button (RECORD_BUTTON in examples/hello/src/lib.rs).
 record_button=a855f7
 
-# --- Android: adb `input` on hello installed by cargo-parallax. `input` takes device pixels and has no multi-touch.
+# --- Android: hello installed by cargo-parallax, touched by writing multi-touch events straight to the emulator's
+# touchscreen. Not `adb shell input`: its swipe moves in a tight loop (~7 moves a millisecond, many stamped the same
+# millisecond, which no velocity tracker can read) and it has no multi-touch.
 app=io.github.xuckless.parallax.hello
-adb_shell() { "${ANDROID_HOME:?set ANDROID_HOME}/platform-tools/adb" shell "$@"; }
+adb() { "${ANDROID_HOME:?set ANDROID_HOME}/platform-tools/adb" "$@"; }
+adb_shell() { adb shell "$@"; }
 android_setup() {
   cargo build --quiet -p cargo-parallax --manifest-path "$repo/Cargo.toml"
   (cd "$repo/examples/hello" && "$repo/target/debug/cargo-parallax" run android ${ANDROID_SERIAL:+--device "$ANDROID_SERIAL"})
   density=$(adb_shell wm density | awk '{ d = $NF } END { print d / 160 }')
+  read -r width height < <(adb_shell wm size | awk '{ s = $NF } END { sub("x", " ", s); print s }')
+  # Only root may write to /dev/input.
+  adb root >/dev/null && adb wait-for-device
+  touchscreen=$(adb_shell getevent -p | awk '/^add device/ { d = $NF } /"virtio_input_multi_touch_1"/ { print d }')
+  [[ -n $touchscreen ]] || { echo "record-traces: no virtio multi-touch screen: needs an emulator" >&2; return 1; }
 }
 android_launch() {
   adb_shell logcat -c
   adb_shell am start -S -W -n "$app/io.github.xuckless.parallax.ParallaxActivity" >/dev/null
 }
 android_log() { adb_shell logcat -d | tr -d '\r'; }
-android_screenshot() { "$ANDROID_HOME/platform-tools/adb" exec-out screencap >"$1"; }
+android_screenshot() { adb exec-out screencap >"$1"; }
 android_scale() { echo "$density"; }
-px() { awk -v d="$density" '{ for (i = 1; i <= NF; i++) printf "%d ", $i * d }' <<<"$*"; }
-android_tap() { adb_shell input swipe $(px "$1 $2 $1 $2") "$3"; }
-android_taps() { for ((i = 0; i < $3; i++)); do adb_shell input tap $(px "$1 $2"); done; }
-android_swipe() { adb_shell input swipe $(px "$1 $2 $3 $4") "$5"; }
-android_pinch() { echo "skip: adb input has no multi-touch"; return 1; }
+# The touch engine. A gesture is frames, each "ms finger…" with a finger "slot:x:y" (logical px) or "slot:up";
+# fingers not listed stay put. touch_frames writes one device script: per frame, type-B multi-touch input_events
+# (24 bytes on the 64-bit emulator: a zero time the kernel fills in, type, code, value) through mksh's builtin
+# `print`, then a sleep of `ms` less the ~3 ms toybox `sleep` takes to start. Axes run 0-32767 over the display;
+# pressure must be above 0, or Android reads the slot as hovering.
+touch_le() { local i; for ((i = 0; i < $2; i++)); do printf '\\x%02x' $((($1 >> (8 * i)) & 255)); done; }
+touch_event() { printf '\\x00%.0s' {1..16}; touch_le "$1" 2; touch_le "$2" 2; touch_le "$3" 4; }
+touch_axis() { awk -v v="$1" -v d="$density" -v n="$2" 'BEGIN { printf "%d", v * d * 32767 / n }'; }
+touch_frames() {
+  local frame ms finger slot x y bytes script=$work/touch.sh
+  local -A down=()
+  echo "exec 3>$touchscreen" >"$script"
+  for frame in "$@"; do
+    read -r ms frame <<<"$frame"
+    bytes=""
+    for finger in $frame; do
+      IFS=: read -r slot x y <<<"$finger"
+      bytes+=$(touch_event 3 47 "$slot")
+      if [[ $x == up ]]; then
+        bytes+=$(touch_event 3 57 -1)
+        unset "down[$slot]"
+        continue
+      fi
+      [[ -n ${down[$slot]:-} ]] || bytes+=$(touch_event 3 57 $((slot + 1)))$(touch_event 3 58 512)
+      down[$slot]=1
+      bytes+=$(touch_event 3 53 "$(touch_axis "$x" "$width")")$(touch_event 3 54 "$(touch_axis "$y" "$height")")
+    done
+    bytes+=$(touch_event 0 0 0)
+    echo "print -n '$bytes' >&3; sleep $(awk -v ms="$ms" 'BEGIN { print (ms > 3 ? ms - 3 : 0) / 1000 }')" >>"$script"
+  done
+  adb push -q "$script" /data/local/tmp/touch.sh && adb_shell sh /data/local/tmp/touch.sh
+}
+# Moves come every `frame_ms`, as from a 60 Hz touchscreen.
+frame_ms=16
+lerp() { awk -v a="$1" -v b="$2" -v i="$3" -v n="$4" 'BEGIN { printf "%.2f", a + (b - a) * i / n }'; }
+android_tap() { touch_frames "$3 0:$1:$2" "0 0:up"; }
+android_taps() {
+  local i frames=()
+  for ((i = 0; i < $3; i++)); do frames+=("$5 0:$1:$2" "$4 0:up"); done
+  touch_frames "${frames[@]}"
+}
+android_swipe() {
+  local i n=$(($5 / frame_ms)) frames=()
+  for ((i = 0; i <= n; i++)); do frames+=("$frame_ms 0:$(lerp "$1" "$3" $i $n):$(lerp "$2" "$4" $i $n)"); done
+  touch_frames "${frames[@]}" "0 0:up"
+}
+# Two fingers `radius` either side of x, spread to radius·scale.
+android_pinch() {
+  local i r n=$(($5 / frame_ms)) frames=()
+  for ((i = 0; i <= n; i++)); do
+    r=$(lerp "$3" "$(awk -v r="$3" -v s="$4" 'BEGIN { print r * s }')" $i $n)
+    frames+=("$frame_ms $(awk -v x="$1" -v y="$2" -v r="$r" 'BEGIN { printf "0:%.2f:%s 1:%.2f:%s", x - r, y, x + r, y }')")
+  done
+  touch_frames "${frames[@]}" "0 0:up 1:up"
+}
 
 # --- Web: hello's wasm build in headless Chromium, driven over CDP by cdp-touch.mjs. CSS px are logical px.
 cdp_port=9333
@@ -129,7 +187,8 @@ ms_to_s() { awk -v ms="$1" 'BEGIN { print ms / 1000 }'; }
 wait_for() {
   local attempt
   for attempt in {1..30}; do
-    "${platform}_log" | grep -q "$1" && return 0
+    # Not `grep -q`: it stops reading at the match, and pipefail then fails on the log command's SIGPIPE.
+    "${platform}_log" | grep "$1" >/dev/null && return 0
     sleep 1
   done
   echo "record-traces: $platform never logged \"$1\"" >&2

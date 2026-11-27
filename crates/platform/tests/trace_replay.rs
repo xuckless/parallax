@@ -12,9 +12,10 @@
 use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
 
 use gpui::{
-    App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement, LongPressEvent,
-    MouseDownEvent, PointerDevice, Render, ScrollDelta, ScrollEvent, TestAppContext, TouchEvent,
-    TouchId, TouchPhase, VelocityTrackerKind, Window, canvas, point, px,
+    AnyWindowHandle, App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement,
+    LongPressEvent, MouseDownEvent, PinchEvent, Pixels, Point, PointerDevice, Render, ScrollDelta,
+    ScrollEvent, TestAppContext, TouchEvent, TouchId, TouchPhase, TouchPinch, VelocityTrackerKind,
+    Window, canvas, div, point, prelude::*, px,
 };
 use parallax_platform::{
     Target,
@@ -25,14 +26,13 @@ use parallax_platform::{
 const PLATFORMS: [&str; 3] = ["android", "web", "ios"];
 
 /// The gestures of record-traces.sh's table, with what every platform's trace must replay to under every row.
-/// `pinch` is recorded but not replayed: GPUI ignores a second finger until the scale recognizer is wired into touch
-/// dispatch (ROADMAP Phase 2), and until then each platform's first finger, a different one, pans.
-const GESTURES: [(&str, Gesture); 5] = [
+const GESTURES: [(&str, Gesture); 6] = [
     ("tap", Gesture::Taps(&[1])),
     ("double-tap", Gesture::Taps(&[1, 2])),
     ("long-press", Gesture::LongPress),
     ("slow-drag", Gesture::Drag),
-    ("fling", Gesture::Fling),
+    ("fling", Gesture::Fling { ms: 150 }),
+    ("pinch", Gesture::Pinch),
 ];
 
 /// What a trace must be recognized as.
@@ -44,16 +44,25 @@ enum Gesture {
     LongPress,
     /// A pan that stops with the finger: no scroll after the release.
     Drag,
-    /// A pan that flings on: momentum scrolls on after the release.
-    Fling,
+    /// A pan that flings on: momentum scrolls on after the release. `ms` is the script's swipe time: every trace
+    /// is compared as if its finger took that long ([`at_scripted_speed`]).
+    Fling { ms: u64 },
+    /// A touch pinch out (scale above 1) that ends, with no tap, long press or scroll.
+    Pinch,
 }
 
 /// Scroll totals of the same gesture on two platforms may differ by this fraction of the larger one. The drivers move
 /// between the same points, so pans differ only by the last move a platform reports; a fling's momentum is its
-/// release velocity's integral, timed by each touch's platform time stamp, and the drivers sample the finger at their
-/// own rate (iOS ~20 ms, headless Chromium ~33 ms, Android per input batch) and swipe at their own speed (idb's 150 ms
-/// swipe takes ~200 ms), so the velocity, and the distance, differ.
-const SCROLL_TOLERANCE: f32 = 0.35;
+/// release velocity's integral, and each driver samples the finger at its own rate (iOS ~20 ms, headless Chromium
+/// ~33 ms, Android 16 ms), each sample timed by its platform time stamp. Flings agree within 5 % under every row.
+const SCROLL_TOLERANCE: f32 = 0.10;
+
+/// A pinch's final scale (Flutter's: the span now over the span at the start) on two platforms may differ by this
+/// fraction of the larger one, and its last focal point by `PINCH_FOCAL_TOLERANCE` logical px. Every driver spreads
+/// the same two fingers to the same points; the Android emulator's touchscreen axes (0-32767 over the display) round
+/// them by under 0.1 px.
+const PINCH_SCALE_TOLERANCE: f32 = 0.01;
+const PINCH_FOCAL_TOLERANCE: f32 = 1.;
 
 /// Differences the replay found and their open fix: (gesture, the rows' velocity tracker, why). Their scroll is
 /// printed, not compared; recognition is still checked. Remove a row once its fix lands.
@@ -68,6 +77,16 @@ struct Outcome {
     /// Vertical scroll while a finger was down (a pan), and after the last finger lifted (fling momentum).
     pan: f32,
     momentum: f32,
+    /// The touch pinch, from its start to its last event.
+    pinch: Option<Pinch>,
+}
+
+/// A touch pinch's last report: Flutter's scale since it started, its focal point (window px), and whether it ended.
+#[derive(Debug, PartialEq)]
+struct Pinch {
+    scale: f32,
+    focal: Point<Pixels>,
+    ended: bool,
 }
 
 /// Records what the window dispatches, as an element that takes long presses would see it.
@@ -84,36 +103,62 @@ struct Seen {
 impl Render for Recorder {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let seen = self.seen.clone();
-        canvas(
-            |_, _, _| {},
-            move |_, _, window, _| {
-                let on_tap = seen.clone();
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, _, _| {
-                    if phase == DispatchPhase::Bubble {
-                        on_tap.borrow_mut().outcome.taps.push(event.click_count);
+        let on_pinch = self.seen.clone();
+        // Touch pinches need an element id (docs/pinch.md); the canvas inside sees the rest window-wide.
+        div()
+            .id("trace-replay")
+            .size_full()
+            .on_pinch(move |event: &PinchEvent, _, _| {
+                let pinch = &mut on_pinch.borrow_mut().outcome.pinch;
+                match (&event.touch, pinch.as_mut()) {
+                    (Some(TouchPinch::Start(start)), _) => {
+                        *pinch = Some(Pinch {
+                            scale: 1.,
+                            focal: start.focal_point,
+                            ended: false,
+                        });
                     }
-                });
-                let on_scroll = seen.clone();
-                window.on_mouse_event(move |event: &ScrollEvent, phase, _, _| {
-                    if let (DispatchPhase::Bubble, ScrollDelta::Pixels(delta)) =
-                        (phase, event.delta)
-                    {
-                        let mut seen = on_scroll.borrow_mut();
-                        let dy = f32::from(delta.y);
-                        match seen.released {
-                            false => seen.outcome.pan += dy,
-                            true => seen.outcome.momentum += dy,
-                        }
+                    (Some(TouchPinch::Update(update)), Some(pinch)) => {
+                        pinch.scale = update.scale;
+                        pinch.focal = update.focal_point;
                     }
-                });
-                window.on_mouse_event(move |_: &LongPressEvent, phase, window, _| {
-                    if phase == DispatchPhase::Bubble {
-                        seen.borrow_mut().outcome.long_press = true;
-                        window.prevent_default();
-                    }
-                });
-            },
-        )
+                    (Some(TouchPinch::End(_)), Some(pinch)) => pinch.ended = true,
+                    (Some(TouchPinch::Update(_) | TouchPinch::End(_)), None) | (None, _) => {}
+                }
+            })
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let on_tap = seen.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, _| {
+                            if phase == DispatchPhase::Bubble {
+                                on_tap.borrow_mut().outcome.taps.push(event.click_count);
+                            }
+                        });
+                        let on_scroll = seen.clone();
+                        window.on_mouse_event(move |event: &ScrollEvent, phase, _, _| {
+                            if let (DispatchPhase::Bubble, ScrollDelta::Pixels(delta)) =
+                                (phase, event.delta)
+                            {
+                                let mut seen = on_scroll.borrow_mut();
+                                let dy = f32::from(delta.y);
+                                match seen.released {
+                                    false => seen.outcome.pan += dy,
+                                    true => seen.outcome.momentum += dy,
+                                }
+                            }
+                        });
+                        window.on_mouse_event(move |_: &LongPressEvent, phase, window, _| {
+                            if phase == DispatchPhase::Bubble {
+                                seen.borrow_mut().outcome.long_press = true;
+                                window.prevent_default();
+                            }
+                        });
+                    },
+                )
+                .size_full(),
+            )
     }
 }
 
@@ -148,6 +193,27 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
         .collect()
 }
 
+/// `trace` with its time line stretched so its last move comes `ms` after its first touch, as the script asked. The
+/// drivers swipe at their own speed (idb's 150 ms swipe takes ~200 ms) and a fling's momentum grows with the finger's
+/// speed, so only the same speed can fling as far. The spacing of the platform's own samples, which its time stamps
+/// carry, stays.
+fn at_scripted_speed(trace: &[(u64, TouchEvent)], ms: u64) -> Vec<(u64, TouchEvent)> {
+    let first = trace.first().map_or(0, |(at_ms, _)| *at_ms);
+    let last_move = trace
+        .iter()
+        .rev()
+        .find(|(_, event)| event.phase == TouchPhase::Moved)
+        .map_or(first + ms, |(at_ms, _)| *at_ms);
+    let stretch = ms as f64 / (last_move - first).max(1) as f64;
+    trace
+        .iter()
+        .map(|(at_ms, event)| {
+            let at = first + ((at_ms - first) as f64 * stretch).round() as u64;
+            (at, event.clone())
+        })
+        .collect()
+}
+
 /// Frames come every 16 ms, as at 60 Hz: they drive fling momentum.
 const FRAME_MS: u64 = 16;
 /// The clock runs on this long after the last event, for a long press's timer and a fling's momentum to finish.
@@ -158,10 +224,12 @@ fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
     let cx = &mut TestAppContext::single();
     cx.update(|cx: &mut App| cx.set_gesture_tuning(tuning));
     let seen = Rc::new(RefCell::new(Seen::default()));
-    let window = cx.add_window({
-        let seen = seen.clone();
-        move |_, _| Recorder { seen }
-    });
+    let window: AnyWindowHandle = cx
+        .add_window({
+            let seen = seen.clone();
+            move |_, _| Recorder { seen }
+        })
+        .into();
     let mut now = 0;
     let mut run_until = |cx: &mut TestAppContext, until: u64| {
         while now < until {
@@ -170,8 +238,7 @@ fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
             cx.run_until_parked();
             now += step;
             if now % FRAME_MS == 0 {
-                window
-                    .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+                cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
                     .unwrap();
             }
         }
@@ -184,12 +251,12 @@ fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
             TouchPhase::Moved => down,
             TouchPhase::Ended | TouchPhase::Cancelled => down - 1,
         };
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_event(event.clone().to_platform_input(), cx);
+        })
+        .unwrap();
+        // After the dispatch: a release's own move is the finger's, not momentum.
         seen.borrow_mut().released = down == 0;
-        window
-            .update(cx, |_, window, cx| {
-                window.dispatch_event(event.clone().to_platform_input(), cx);
-            })
-            .unwrap();
     }
     let end = trace.last().map_or(0, |(at_ms, _)| *at_ms);
     run_until(cx, end + SETTLE_MS);
@@ -199,17 +266,42 @@ fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
 /// Checks `outcome` is `gesture`, or says how it is not.
 fn recognized(gesture: Gesture, outcome: &Outcome) -> Result<(), String> {
     let still = outcome.pan == 0. && outcome.momentum == 0.;
+    let no_pinch = outcome.pinch.is_none();
+    let pinched_out = outcome
+        .pinch
+        .as_ref()
+        .is_some_and(|pinch| pinch.ended && pinch.scale > 1.);
     let ok = match gesture {
-        Gesture::Taps(counts) => outcome.taps == counts && !outcome.long_press && still,
-        Gesture::LongPress => outcome.taps.is_empty() && outcome.long_press && still,
-        Gesture::Drag => outcome.taps.is_empty() && outcome.pan != 0. && outcome.momentum == 0.,
-        Gesture::Fling => outcome.taps.is_empty() && outcome.pan != 0. && outcome.momentum != 0.,
+        Gesture::Taps(counts) => outcome.taps == counts && !outcome.long_press && still && no_pinch,
+        Gesture::LongPress => outcome.taps.is_empty() && outcome.long_press && still && no_pinch,
+        Gesture::Drag => {
+            outcome.taps.is_empty() && outcome.pan != 0. && outcome.momentum == 0. && no_pinch
+        }
+        Gesture::Fling { .. } => {
+            outcome.taps.is_empty() && outcome.pan != 0. && outcome.momentum != 0. && no_pinch
+        }
+        Gesture::Pinch => outcome.taps.is_empty() && !outcome.long_press && still && pinched_out,
     };
     ok.then_some(()).ok_or(format!("expected {gesture:?}"))
 }
 
-fn within(a: f32, b: f32) -> bool {
-    (a - b).abs() <= SCROLL_TOLERANCE * a.abs().max(b.abs())
+fn within(a: f32, b: f32, tolerance: f32) -> bool {
+    (a - b).abs() <= tolerance * a.abs().max(b.abs())
+}
+
+/// Whether two platforms' outcomes of one gesture agree within the tolerances above.
+fn same(a: &Outcome, b: &Outcome) -> bool {
+    let pinch = match (&a.pinch, &b.pinch) {
+        (Some(a), Some(b)) => {
+            within(a.scale, b.scale, PINCH_SCALE_TOLERANCE)
+                && (a.focal - b.focal).magnitude() <= f64::from(PINCH_FOCAL_TOLERANCE)
+        }
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+    };
+    within(a.pan, b.pan, SCROLL_TOLERANCE)
+        && within(a.momentum, b.momentum, SCROLL_TOLERANCE)
+        && pinch
 }
 
 #[test]
@@ -229,8 +321,12 @@ fn recorded_traces_replay_the_same_everywhere() {
             .iter()
             .filter_map(|platform| {
                 let file = traces.join(platform).join(format!("{gesture}.trace"));
-                let text = std::fs::read_to_string(file).ok()?;
-                Some((*platform, parse(&text)))
+                let trace = parse(&std::fs::read_to_string(file).ok()?);
+                let trace = match expected {
+                    Gesture::Fling { ms } => at_scripted_speed(&trace, ms),
+                    Gesture::Taps(_) | Gesture::LongPress | Gesture::Drag | Gesture::Pinch => trace,
+                };
+                Some((*platform, trace))
             })
             .collect();
         assert!(
@@ -253,8 +349,7 @@ fn recorded_traces_replay_the_same_everywhere() {
                         "{gesture} from {platform} under {row}: {why}, got {outcome:?}"
                     ));
                 }
-                let same = within(outcome.pan, reference.pan)
-                    && within(outcome.momentum, reference.momentum);
+                let same = same(outcome, reference);
                 if let (false, Some((_, _, why))) = (same, known) {
                     println!(
                         "known difference, {gesture} under {row}: {platform} {outcome:?}, {first} {reference:?}: {why}"

@@ -1,0 +1,12 @@
+# android fling: swipe 200 650 200 250 150
+touch(0, 1, Started, 199.99, 649.97)
+touch(16, 1, Moved, 199.99, 605.52)
+touch(33, 1, Moved, 199.99, 561.08)
+touch(50, 1, Moved, 199.99, 516.63)
+touch(66, 1, Moved, 199.99, 472.18)
+touch(83, 1, Moved, 199.99, 427.76)
+touch(99, 1, Moved, 199.99, 383.31)
+touch(115, 1, Moved, 199.99, 338.87)
+touch(132, 1, Moved, 199.99, 294.42)
+touch(149, 1, Moved, 199.99, 249.97)
+touch(164, 1, Ended, 199.99, 249.97)

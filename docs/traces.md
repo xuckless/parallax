@@ -27,9 +27,9 @@ its `gestures` table relaunches hello, taps the button, performs the gesture and
 
 | Platform | App | Driver | Limits |
 |---|---|---|---|
-| web | `wasm-pack` build served on 127.0.0.1:8765, headless Chromium | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent` (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
-| ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | none found |
-| android | `cargo parallax run android` | `adb shell input` (taps as zero-length swipes) | no multi-touch: pinch skipped; each `input` call starts a JVM, so a double tap's gap may exceed 300 ms |
+| web | `wasm-pack` build served on 127.0.0.1:8765, headless Chromium | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
+| ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | idb's 150 ms swipe takes ~200 ms |
+| android | `cargo parallax run android` on an emulator | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
 
 **iOS on the Mac** (`ssh pixl-mac`, everything under `/Users/Shared/parallax/`): the checkout is rsynced to
 `traces/parallax`, built with `traces/cargo` and `traces/target` and the gap audit's 1.98.1 toolchain (read-only),
@@ -42,21 +42,21 @@ the script starts the companion on port 10882 when nothing listens there. Nothin
 `cargo test -p parallax-platform --test trace_replay` (part of `cargo test --workspace`, so CI runs it) replays
 every recorded trace through GPUI's test platform under each behaviour row ([behaviour.md](behaviour.md)) plus the
 web's, with a frame every 16 ms so flings run their momentum. Per trace it sums taps (click counts), long press,
-the vertical scroll while a finger is down (pan) and after release (momentum), then checks:
+the vertical scroll while a finger is down (pan) and after release (momentum), and the touch pinch an `on_pinch`
+element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
 
 - **Recognized:** each trace is its gesture under every row (`GESTURES`: tap, double tap, long press, drag that
-  stops, fling).
-- **Same everywhere:** pan and momentum agree across platforms within `SCROLL_TOLERANCE` (35 % of the larger). Pans
-  differ only by a last move; a fling's momentum comes from a velocity estimate each platform samples at its own
-  rate, timed by its event time stamps. `slow-drag` moves at
+  stops, fling, pinch out).
+- **Same everywhere:** pan and momentum agree across platforms within `SCROLL_TOLERANCE` (10 % of the larger), a
+  pinch's scale within 1 % and its focal point within 1 px. Pans differ only by a last move; a fling's momentum comes
+  from a velocity estimate each platform samples at its own rate, timed by its event time stamps. Flings are
+  compared at the script's speed (`at_scripted_speed` stretches a trace so its last move comes 150 ms after its
+  first touch): momentum grows with the finger's speed, and idb swipes slower than asked. `slow-drag` moves at
   40 px/s, under every row's minimum fling velocity, so how long a driver waits before lifting cannot make it fling.
-- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. None today. Until
-  touches carried the platform's event time (patch 0020), least-squares flings from the web, timed when GPUI
-  received the browser's ~33 ms frames, came out ~40 % short of iOS's; with time stamps the fling traces agree within
-  35 % under every row. What is left is the drivers' own speed: idb's 150 ms swipe takes ~200 ms on iOS.
-
-`pinch` traces are recorded but not replayed until the scale recognizer is wired into touch dispatch: GPUI ignores the
-second finger, and the platforms disagree on which finger is first.
+- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. None today: flings
+  agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
+  web driver stamped each move when its fingers were there, its last move, clamped to the end point a frame late,
+  read as the finger slowing (~35 % short).
 
 ## Extending
 

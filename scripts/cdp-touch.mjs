@@ -37,10 +37,12 @@ const send = (method, params = {}) =>
     socket.send(JSON.stringify({ id, method, params }));
   });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// Each finger is { x, y, id }; an event lists the fingers still down (touchEnd: none).
-const touch = (type, fingers) =>
+// Each finger is { x, y, id }; an event lists the fingers still down (touchEnd: none). `at` (performance.now() ms) is
+// when the fingers were there: the event's time stamp, as a touchscreen stamps its samples, not when the page got it.
+const touch = (type, fingers, at = performance.now()) =>
   send("Input.dispatchTouchEvent", {
     type,
+    timestamp: (performance.timeOrigin + at) / 1000,
     touchPoints: fingers.map(({ x, y, id }) => ({ x, y, id, radiusX: 1, radiusY: 1, force: 1 })),
   });
 // Moves every finger from `from` to `to` over `ms`, a touchMove at most every frame. Each move goes where the clock
@@ -54,6 +56,7 @@ const glide = async (from, to, ms) => {
     await touch(
       "touchMove",
       from.map((finger, i) => ({ ...finger, x: finger.x + (to[i].x - finger.x) * t, y: finger.y + (to[i].y - finger.y) * t })),
+      start + t * ms,
     );
   }
 };
