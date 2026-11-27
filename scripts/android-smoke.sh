@@ -78,14 +78,59 @@ tap_colour() {
   on_device input tap $point
 }
 
+# A system dialog over the app (another app's "isn't responding" or crash dialog) takes the taps meant for hello.
+# hide_error_dialogs (the settings table) stops new ones but does not close one already up: a booted snapshot or a
+# launcher that stalled while the emulator booted brings one along. Before each step: while a dialog has focus, stop
+# the app it is for (its dialog closes with its process) and close system dialogs. A dialog for hello itself is left
+# alone: "ANR in $app" in $crashed fails the step.
+dismiss_dialogs() {
+  local focus process attempt
+  for attempt in {1..5}; do
+    focus=$(on_device dumpsys window | grep -m 1 'mCurrentFocus=' || true)
+    [[ $focus =~ (Application Not Responding|Application Error):\ ([A-Za-z0-9_.:]+) ]] || return 0
+    process=${BASH_REMATCH[2]}
+    [[ ${process%%:*} == "$app" ]] && return 0
+    echo "android-smoke: closing a system dialog (try $attempt): ${BASH_REMATCH[1]}: $process"
+    on_device am force-stop "${process%%:*}" || true
+    on_device am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >/dev/null || true
+    sleep 1
+  done
+  echo "android-smoke: a system dialog still has focus after 5 tries: $focus" >&2
+}
+
+# The display's rotation (0-3) as the window manager reports it; dumpsys prints ROTATION_90 or 1 by Android version.
+display_rotation() {
+  local rotation
+  rotation=$(on_device dumpsys window displays | grep -m 1 -oE 'mCurrentRotation=(ROTATION_)?[0-9]+' | grep -oE '[0-9]+$' || true)
+  case $rotation in 90) echo 1 ;; 180) echo 2 ;; 270) echo 3 ;; *) echo "$rotation" ;; esac
+}
+
+# Turns the display to rotation $1 (auto-rotate is off: the settings table) and waits up to 10 s for the window
+# manager to report it. One CI emulator ignored the settings write and never changed configuration, so a second try
+# writes it again and also asks the window manager directly (`wm user-rotation lock`, API 30+).
+rotate() {
+  local attempt
+  for attempt in 1 2; do
+    on_device settings put system user_rotation "$1"
+    ((attempt == 1)) || on_device wm user-rotation lock "$1" || true
+    for _ in {1..10}; do
+      [[ $(display_rotation) == "$1" ]] && return 0
+      sleep 1
+    done
+    echo "android-smoke: the display is at rotation $(display_rotation), not $1, after 10 s (try $attempt of 2)" >&2
+  done
+  echo "android-smoke: the emulator did not rotate to $1 (user_rotation, then wm user-rotation lock)" >&2
+  return 1
+}
+
 launch() {
   cargo build --quiet -p cargo-parallax --manifest-path "$repo/Cargo.toml"
   (cd "$repo/examples/hello" && "$repo/target/debug/cargo-parallax" run android --device "$serial")
 }
 
 # The smoke run, in order: one `step` per row, with the step name, the command, the extended regex a new logcat line
-# must match, and the seconds to wait. To add a step, add a row; the command may use on_device (adb shell), tap_colour
-# and launch. Rows are trusted code: the command runs through `eval`. Double quotes expand $typed, ${#typed},
+# must match, and the seconds to wait. To add a step, add a row; the command may use on_device (adb shell), tap_colour,
+# rotate and launch. Rows are trusted code: the command runs through `eval`. Double quotes expand $typed, ${#typed},
 # $component and $drawn here, when the row is defined; anything the command should expand when it runs goes in single
 # quotes. The fields are joined with the unit separator \x1f, which no command or regex uses (`|` is regex alternation).
 # The rotate and resume steps wait for the first frame drawn on a surface of the new orientation (window.rs logs it once
@@ -99,8 +144,8 @@ step "launch" "launch" "$drawn portrait surface" 60
 step "tap the box" "tap_colour 3b82f6" "box colour ef4444 \(touch click" 20
 step "focus the field" "tap_colour ffffff" "insets in pixels: .*ime Edges .*bottom: [1-9]" 20
 step "type and submit" "on_device input text $typed && on_device input keyevent KEYCODE_ENTER" "text field submitted: ${#typed} bytes" 20
-step "rotate to landscape" "on_device settings put system user_rotation 1" "$drawn landscape surface" 30
-step "rotate to portrait" "on_device settings put system user_rotation 0" "$drawn portrait surface" 30
+step "rotate to landscape" "rotate 1" "$drawn landscape surface" 30
+step "rotate to portrait" "rotate 0" "$drawn portrait surface" 30
 step "background" "on_device input keyevent KEYCODE_HOME" "parallax: lifecycle From\(.*, Stop\)" 20
 step "resume" "on_device am start -n $component" "$drawn portrait surface" 20
 step "tap the box again" "tap_colour ef4444" "box colour 22c55e \(touch click" 20
@@ -121,7 +166,7 @@ fail() {
 
 # Device settings the run changes: "namespace key value". To change another, add a row; it is restored on exit.
 # hide_error_dialogs: a slow emulator can show "Pixel Launcher isn't responding" over the app; Android then shows no
-# crash or ANR dialogs at all (the logcat lines that catch our own crashes stay).
+# new crash or ANR dialogs (the logcat lines that catch our own crashes stay). One already up: dismiss_dialogs.
 # accelerometer_rotation, user_rotation: portrait with auto-rotate off: tap_colour expects portrait, and the rotate
 # steps are the only rotations (they change user_rotation again).
 settings=(
@@ -156,6 +201,7 @@ start=$(log_mark)
 for row in "${steps[@]}"; do
   IFS=$sep read -r name command pattern timeout <<<"$row"
   echo "android-smoke: $name"
+  dismiss_dialogs
   since=$(log_mark)
   eval "$command" || fail "$name: command failed: $command"
   deadline=$((SECONDS + timeout))

@@ -6,6 +6,30 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added
+
+- Android reads its device touch slop at runtime: `ParallaxSurfaceView` sends `ViewConfiguration.getScaledTouchSlop()`
+  with every density (as Flutter's FlutterView sends `physicalTouchSlop`), and `parallax_android::touch_slop()` gives
+  it in logical pixels. The behaviour table's Android row uses it, with 8 dp as the fallback, and the facade's
+  `android_main!` applies it again to the open window when a density change moves it (an app's own slop wins).
+- `Window::set_gesture_tuning` (patch 0016, fork `parallax-gpui*` 0.3.14-parallax.9): retunes an open window in place.
+
+### Changed
+
+- **Breaking:** `Behaviour::touch_slop` is a `TouchSlop` (`Unset`, or `Device { fallback }`) in place of
+  `Option<Pixels>`, and `Behaviour::gesture_tuning` takes the reported slop (`gesture_tuning(None)` keeps the old
+  values). New `Behaviour::retune`. `parallax_android::on_load` takes a `TouchSlopChanged` hook, and
+  `parallax_android::android_main!` takes one as an optional second argument.
+
+### Fixed
+
+- Android: a density change (`wm density`, display size setting) now reaches GPUI's scale. The surface keeps its pixel
+  size, so no `surfaceChanged` came; the density now also comes with the insets report the configuration change
+  triggers.
+- `scripts/android-smoke.sh`: closes another app's ANR or crash dialog that is already up before each step
+  (`hide_error_dialogs` only stops new ones), and retries a rotation the emulator ignored, failing with a clear
+  message after the retry.
+
 ## [0.1.6] - 2026-11-26 — Phase 2 gestures and physics
 
 Wave 11: Phase 2's gestures and physics, ported from Flutter 3.50.1 into our GPUI fork (patches 0011–0015, fork

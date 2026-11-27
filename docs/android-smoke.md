@@ -10,7 +10,7 @@ scripts/android-smoke.sh [serial]   # default: the only device in `adb devices`
 ```
 
 Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
-system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
+new system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
 off in portrait (the `settings` table; an `EXIT` trap puts the old values back, pass or fail), then runs the `steps`
 table in order. It prints each step's name and exits 0 after
 `all N steps passed` and the renderer line (which GPU drew); any failure prints `FAIL: <step>: <why>` and the last
@@ -40,7 +40,17 @@ The rotate and resume steps wait for a frame drawn on the new surface, at the ne
 event: that line is logged before the surface is made, and a late `surfaceChanged` from the previous rotation could
 pass the next step. After the table it checks the whole log once more for crashes and that the app process is still alive.
 
-To add a step, add a `step` row. Commands may call `on_device` (`adb shell`), `tap_colour` and `launch`.
+To add a step, add a `step` row. Commands may call `on_device` (`adb shell`), `tap_colour`, `rotate` and `launch`.
+
+**Dialogs:** `hide_error_dialogs` stops new error dialogs but leaves one already up (a cached booted snapshot, or a
+launcher that stalled during boot, brings it), and it took the taps in CI. Before each step `dismiss_dialogs` reads
+the focused window (`dumpsys window`, `mCurrentFocus`); while it is an `Application Not Responding:` or
+`Application Error:` dialog for another app, it force-stops that app (its dialog closes with the process) and
+broadcasts `CLOSE_SYSTEM_DIALOGS`, up to 5 times. A dialog for hello is left to fail the step (`ANR in` the app).
+
+**Rotation:** `rotate N` writes `user_rotation` and waits up to 10 s for `dumpsys window displays` to report
+`mCurrentRotation` N. One CI emulator never changed configuration, so a second try writes the setting again plus
+`wm user-rotation lock N`; after that it fails with `the emulator did not rotate to N`, before the frame wait.
 
 ## Finding what to tap
 
