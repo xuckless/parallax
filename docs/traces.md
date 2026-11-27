@@ -41,8 +41,9 @@ the script starts the companion on port 10882 when nothing listens there. Nothin
 ## Replay
 
 `cargo test -p parallax-platform --test trace_replay` (part of `cargo test --workspace`, so CI runs it) replays
-every recorded trace through GPUI's test platform under each behaviour row ([behaviour.md](behaviour.md)) plus the
-web's, with a frame every 16 ms so flings run their momentum. Per trace it sums taps (click counts), long press,
+every recorded trace through GPUI's test platform with `gpui::play_trace` (patch 0013's shared player, also used by
+the fork's own gesture, pinch and overscroll tables) under each behaviour row ([behaviour.md](behaviour.md)) plus the
+web's, with a frame every 16 ms so flings run their momentum, until 5 s after the last touch (`SETTLE_MS`). Per trace it sums taps (click counts), long press,
 the vertical scroll while a finger is down (pan) and after release (momentum), and the touch pinch an `on_pinch`
 element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
 

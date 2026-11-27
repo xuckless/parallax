@@ -9,13 +9,13 @@
     reason = "a test: a bad fixture or a failed replay should stop it (AGENTS.md, Errors)"
 )]
 
-use std::{cell::RefCell, path::Path, rc::Rc, time::Duration};
+use std::{cell::RefCell, path::Path, rc::Rc};
 
 use gpui::{
     AnyWindowHandle, App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement,
-    LongPressEvent, MouseDownEvent, PinchEvent, Pixels, Point, PointerDevice, Render, ScrollDelta,
-    ScrollEvent, TestAppContext, TouchEvent, TouchId, TouchPhase, TouchPinch, Window, canvas, div,
-    point, prelude::*, px,
+    LongPressEvent, MouseDownEvent, PinchEvent, Pixels, PlatformInput, Point, PointerDevice, Render, ScrollDelta,
+    ScrollEvent, TestAppContext, TouchEvent, TraceStep, TouchId, TouchPhase, TouchPinch, Window, canvas, div,
+    play_trace, point, prelude::*, px,
 };
 use parallax_platform::{
     Target,
@@ -215,7 +215,7 @@ const FRAME_MS: u64 = 16;
 /// The clock runs on this long after the last event, for a long press's timer and a fling's momentum to finish.
 const SETTLE_MS: u64 = 5_000;
 
-/// Replays `trace` into a fresh window under `tuning`, a frame every `FRAME_MS`.
+/// Replays `trace` into a fresh window under `tuning` with `gpui::play_trace`, a frame every `FRAME_MS`.
 fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
     let cx = &mut TestAppContext::single();
     cx.update(|cx: &mut App| cx.set_gesture_tuning(tuning));
@@ -226,36 +226,30 @@ fn replay(trace: &[(u64, TouchEvent)], tuning: GestureTuning) -> Outcome {
             move |_, _| Recorder { seen }
         })
         .into();
-    let mut now = 0;
-    let mut run_until = |cx: &mut TestAppContext, until: u64| {
-        while now < until {
-            let step = (FRAME_MS - now % FRAME_MS).min(until - now);
-            cx.executor().advance_clock(Duration::from_millis(step));
-            cx.run_until_parked();
-            now += step;
-            if now % FRAME_MS == 0 {
-                cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
-                    .unwrap();
-            }
-        }
-    };
-    let mut down = 0;
-    for (at_ms, event) in trace {
-        run_until(cx, *at_ms);
-        down = match event.phase {
-            TouchPhase::Started => down + 1,
-            TouchPhase::Moved => down,
-            TouchPhase::Ended | TouchPhase::Cancelled => down - 1,
-        };
-        cx.update_window(window, |_, window, cx| {
-            window.dispatch_event(event.clone().to_platform_input(), cx);
-        })
-        .unwrap();
-        // After the dispatch: a release's own move is the finger's, not momentum.
-        seen.borrow_mut().released = down == 0;
-    }
     let end = trace.last().map_or(0, |(at_ms, _)| *at_ms);
-    run_until(cx, end + SETTLE_MS);
+    let inputs = trace
+        .iter()
+        .map(|(at_ms, event)| (*at_ms, event.clone().to_platform_input()));
+    let mut down = 0;
+    play_trace(
+        cx,
+        window,
+        inputs,
+        Some(FRAME_MS),
+        end + SETTLE_MS,
+        |step, _, _| match step {
+            // After the dispatch: a release's own move is the finger's, not momentum.
+            TraceStep::Input(PlatformInput::Touch(event)) => {
+                down = match event.phase {
+                    TouchPhase::Started => down + 1,
+                    TouchPhase::Moved => down,
+                    TouchPhase::Ended | TouchPhase::Cancelled => down - 1,
+                };
+                seen.borrow_mut().released = down == 0;
+            }
+            TraceStep::Input(_) | TraceStep::Frame(_) => {}
+        },
+    );
     seen.take().outcome
 }
 
