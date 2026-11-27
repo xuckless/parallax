@@ -41,8 +41,9 @@ names exactly one test; your own filters still pass straight to libtest.
 gpui_windows compiles only on Windows, and CI's Windows row never builds a dependency's tests. Its pure decision
 modules (plain values, no `windows` crate) therefore run here: after GPUI's tests, the script adds the scratch crate
 `windows-pure` to the scratch workspace, with each module in its `windows_pure` row included by `#[path]` on
-`parallax-gpui`, and runs its lib tests. Today that is `pointer.rs` ([desktop-touch-windows.md](desktop-touch-windows.md)).
-A module listed there must use only `gpui` and `std`.
+`parallax-gpui`, and runs its lib tests, in gpui_windows's own edition (read from its fork manifest). Today that is
+`pointer.rs` ([desktop-touch-windows.md](desktop-touch-windows.md)). A module listed there must use only `gpui` and
+`std`.
 
 ## CI
 

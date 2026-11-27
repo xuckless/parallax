@@ -68,11 +68,14 @@ done
 windows_pure=(pointer)
 pure="$out/crates/windows-pure"
 mkdir -p "$pure/src"
-cat > "$pure/Cargo.toml" <<'EOF'
+# The modules' edition is gpui_windows's own.
+edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/parallax-gpui-windows/Cargo.toml")"
+[[ -n $edition ]] || die "no edition in parallax-gpui-windows's Cargo.toml"
+cat > "$pure/Cargo.toml" <<EOF
 [package]
 name = "windows-pure"
 version = "0.0.0"
-edition = "2024"
+edition = "$edition"
 publish = false
 
 [dependencies]
