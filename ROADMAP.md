@@ -193,6 +193,11 @@ Full Android:
 - [ ] macOS: verify patch 0010's discardMarkedText with a real Japanese IME (needs the owner's console session on pixl-mac).
 - [ ] Web smoke test in CI (headless browser) — hello panicked on web unnoticed (no fonts on the web until Wave 10
       embedded `WEB_FONTS`, [examples.md](docs/examples.md#web)).
+- [x] macOS draws text again: `gpui_platform`'s `font-kit` feature is on (0.1.1–0.1.4 built without it, so
+      `gpui_macos` used GPUI's `NoopTextSystem` and drew no text); hello's desktop binary logs through `env_logger`.
+- [ ] Desktop smoke test in CI that proves text draws: on the macOS runner (it has a window server) open hello,
+      capture its window (or render to an offscreen texture) and fail when a text-bearing area has no ink. Same idea
+      for Linux (Xvfb) and Windows. Nothing caught 0.1.1–0.1.4 shipping with no text on macOS.
 - [ ] Web CJK in hello: no CJK font is embedded (several MB); gpui_web's `CanvasFontFallback::EmojiAndCjk` could draw
       it from the browser's fonts, but `gpui_platform` builds `WebPlatform` with the default (emoji only).
 - [ ] Emulator GL uses RGB565 (wgpu-hal `choose_config` without sRGB): dark colours are quantized on emulators only.
@@ -336,3 +341,4 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-25 | accesskit | `accesskit_android` exists (permissive: Apache, MIT, Chromium-derived BSD). Use it, don't port Flutter's `AccessibilityBridge`. 0.9.1 needs AccessKit 0.25; upstream pins 0.24, so use the 0.7.x line until upstream bumps. |
 | 2026-11-26 | zed `f126950f` | A tap's focus change is drawn inside the touch dispatch (`draw_before_touch_release`), so a platform learns of it after the left field's input handler is dropped; core ends a composition on focus moves only toward a native view (`end_composition_before_focusing_native_view`). Patch 0010 ends it in the draw. |
 | 2026-11-26 | zed `f126950f` | `notify` inside a focus listener (`on_blur`, …) is ignored: listeners run in the draw's Focus phase, where `invalidate_view` marks nothing dirty. Defer it (`defer_in`). |
+| 2026-11-26 | gpui-pre 0.3.14 | `gpui_platform`'s `font-kit` feature is off by default and is the only thing that gives `gpui_macos` a real text system; without it macOS silently uses `NoopTextSystem` (one `log::warn!`). `gpui_linux` and `gpui_ios` turn their font-kit on themselves. |
