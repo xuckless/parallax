@@ -39,38 +39,12 @@ log_since() {
   on_device logcat -d -b main,system,crash -v time -T "\"$1\"" | awk -v mark="$1" 'substr($0, 1, 18) >= mark'
 }
 
-# Taps the centre of the topmost horizontal band of the screen painted in colour $1 (RGB hex): the band is the rows
-# where at least a quarter of the sampled pixels match, so status bar icons and glyphs never count. A pixel matches
-# within 8 per channel: on an emulator's GL, wgpu draws to a 16-bit RGB565 surface, which rounds red and blue to
-# steps of 8 (Vulkan is exact).
-# Looks again each second for up to 10 s, while a splash screen, keyboard or rotation settles.
-locate='
-import struct, sys
-data = sys.stdin.buffer.read()
-width, height = struct.unpack_from("<II", data)
-pixels = data[len(data) - width * height * 4:]  # RGBA_8888 after a 12- or 16-byte header
-want = bytes.fromhex(sys.argv[1])
-step = 8  # sample every 8th row and column
-tolerance = 8  # per channel: RGB565 rounds red and blue to steps of 8
-
-def matches(pixel):
-    return all(abs(p - w) <= tolerance for p, w in zip(pixel, want))
-
-band = []  # (y, mean x) of matching rows in the first band
-for y in range(0, height, step):
-    row = [x for x in range(0, width, step) if matches(pixels[(y * width + x) * 4:(y * width + x) * 4 + 3])]
-    if len(row) * step * 4 >= width:
-        band.append((y, sum(row) // len(row)))
-    elif band:
-        break
-if not band:
-    sys.exit("no band of colour " + sys.argv[1] + " on screen")
-print(band[len(band) // 2][1], band[len(band) // 2][0])
-'
+# Taps the centre of the topmost band of the screen painted in colour $1 (RGB hex), found by locate-colour.py on a raw
+# screencap. Looks again each second for up to 10 s, while a splash screen, keyboard or rotation settles.
 tap_colour() {
   local point attempt
   for attempt in {1..10}; do
-    point=$("$adb" -s "$serial" exec-out screencap | python3 -I -c "$locate" "$1" 2>/dev/null) && break
+    point=$("$adb" -s "$serial" exec-out screencap | python3 -I "$repo/scripts/locate-colour.py" "$1" 2>/dev/null) && break
     ((attempt < 10)) || { echo "android-smoke: no band of colour $1 on screen" >&2; return 1; }
     sleep 1
   done

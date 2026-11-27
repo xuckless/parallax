@@ -44,8 +44,9 @@ To add a step, add a `step` row. Commands may call `on_device` (`adb shell`), `t
 
 ## Finding what to tap
 
-GPUI draws everything itself, so there is no view tree to query. `tap_colour <rrggbb>` reads a raw `screencap` and
-taps the middle of the topmost band of rows where at least a quarter of the pixels have that colour. It accepts each
+GPUI draws everything itself, so there is no view tree to query. `tap_colour <rrggbb>` taps the middle of
+the topmost band of rows where at least a quarter of the pixels have that colour, found on a raw `screencap` by
+[locate-colour.py](../scripts/locate-colour.py) (also [record-traces.sh](traces.md)'s finder). It accepts each
 channel within 8, because an emulator's GL draws to a 16-bit RGB565 surface (Vulkan is exact), and retries for 10 s
 while a splash screen, the keyboard or a rotation settles. Status bar icons and glyphs never fill a quarter of a row.
 
