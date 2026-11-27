@@ -12,6 +12,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008, 0010 and 0014: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss, the app's gesture tuning |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
 | [velocity-tracking.md](velocity-tracking.md) | Patch 0011: Flutter's velocity trackers and least-squares solver ported into GPUI, the kinds, which platform gets which, the ported tests |
+| [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer, bouncing physics and springs, glow and stretch overscroll state; how to drive them, and the traits the merge and Wave 12 plug into |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [gesture-recognizers.md](gesture-recognizers.md) | Patch 0013: Flutter's recognizer tests as table rows through the test platform, the tuning and tap-count fixes, the touch trace format for trace replay |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |

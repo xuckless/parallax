@@ -10,14 +10,13 @@ Parallax is built on GPUI. It is not affiliated with or endorsed by Zed Industri
 The parallax-gpui* crates on crates.io are GPUI itself: Zed Industries' code from the gpui-pre
 snapshot crates with Parallax's patches applied, under GPUI's Apache License 2.0
 (LICENSE-APACHE in each). Copyright 2022 - 2025 Zed Industries, Inc. parallax-gpui also includes
-code ported from Flutter (patch 0011: src/gestures/velocity_tracker.rs, lsq_solver.rs and their tests),
-under Flutter's BSD 3-Clause License.
+code ported from Flutter, under Flutter's BSD 3-Clause License: patches 0011 (velocity trackers,
+least-squares solver), 0012 (scroll simulations), 0013 (gesture constants, double-tap rule,
+recognizer test cases) and 0015 (scale recognizer, overscroll physics and indicators).
 
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER
-in the parallax-android package). The parallax-gpui crate carries some too: patch 0013 ports
-Flutter's gesture constants, double-tap rule and recognizer test cases.
-in the parallax-android and parallax-platform packages).
+in the parallax-android, parallax-platform and parallax-gpui packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.
 
