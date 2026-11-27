@@ -8,8 +8,9 @@ contract those harnesses write to; the replay side is already in place. Windows 
 
 ## Replay
 
-`PLATFORMS` also lists `windows`, `wayland`, `x11` and `macos`; the replay reads their folders when present and
-compares them with the phone and browser traces under every row, with the same tolerances. A desktop harness
+`PLATFORMS` also lists `windows`, `wayland` and `x11`; every listed folder must hold every gesture, and the replay
+compares them with the phone and browser traces under every row, with the same tolerances. macOS has no harness
+(Sidecar touch is a hand check), so no folder. A desktop harness
 ([desktop-touch-behaviour.md](desktop-touch-behaviour.md) for what a desktop touch gets) must:
 
 - run hello's desktop bin (`cargo run -p hello`), whose window is 400 × 700 logical px, big enough for the
@@ -33,18 +34,25 @@ real `wl_touch` events stamped with `CLOCK_MONOTONIC`; it plays the same frames 
 
 - **Output:** 400 × 700 logical px, `WESTON_SCALE` 1 (default) or 2; the kiosk shell fills it with hello's window.
 - **x11:** hello runs on the Xwayland Weston starts, which turns the touches into XInput 2 touch events: scale 1 only.
-- **Checks:** before the gestures, one tap on hello's box must log exactly one touch click (no extra mouse events);
-  `recorded_touches_keep_their_identity` (in `trace_replay`) checks every platform's touches: a new id per touch,
-  `Started`, `Moved`…, then `Ended`, going down at the script's points (scale 1 and 2 give the same logical px).
+- **Checks:** before the gestures, one tap on hello's box must log exactly one touch click (no extra mouse events,
+  on every platform the script drives); then the touch identity check below.
 - **Elsewhere:** needs Weston's build dependencies (CI's `linux-touch` job lists them). On a host without them,
   build and run Weston in a container that shares the checkout's path and `/tmp`, e.g.
   `WESTON_RUN="podman exec <container>" scripts/record-traces.sh wayland`.
 
+## Touch identity
+
+`recorded_touches_keep_their_identity` (in `trace_replay`) checks every platform's touches: a new id per touch,
+`Started`, `Moved`…, then `Ended`, going down at the script's points (scale 1 and 2 give the same logical px). It
+found iOS reusing ids (gpui_ios took them from the `UITouch` address, which UIKit hands on): patch 0027 numbers them
+per touch, and the iOS fixtures, recorded before it, carry ids renumbered by that rule from their recorded addresses
+(each file says so; times and positions untouched). A fresh iOS recording should replace them.
+
 ## Checking a harness
 
 `cargo test -p parallax-platform --test trace_replay -- --nocapture` prints every outcome per gesture and row, the
-new folder's beside android's, web's and ios's; `trace_line_table` in the same file pins the line format. A gesture
-with no trace in a folder is skipped there, so a harness can land one gesture at a time.
+new folder's beside android's, web's and ios's; `trace_pen_line` in the same file pins the pen line. A new
+platform's folder needs every gesture before it joins `PLATFORMS`.
 
 A pen gesture needs a row in the script's `gestures` table and in `GESTURES` only once a second platform records
 pens (Windows injects `PT_PEN`, checked by windows-touch-checks.sh, not yet traced); its trace names `Pen` on every

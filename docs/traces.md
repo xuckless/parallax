@@ -64,11 +64,12 @@ element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
 
 ## Desktop fixtures (Gate 3)
 
-The replay also reads `windows`, `wayland`, `x11` and `macos` folders when present; what their harnesses must write:
+The replay also reads the `windows`, `wayland` and `x11` folders; what their harnesses must write:
 [traces-desktop.md](traces-desktop.md).
 
 ## Extending
 
 A gesture: a row in the script's `gestures` table and in `GESTURES`, then record it on every platform. A platform:
-its `<platform>_setup / _launch / _log / _screenshot / _scale` and one function per verb in the script, and its
-folder name in `PLATFORMS`.
+its `<platform>_setup` and `_launch` in the script, and either its own `_log / _screenshot / _scale` and one function
+per verb, or a `<driver>_frames` sink for the shared frame builders (a `drivers` row when it shares another's, as
+wayland and x11 share weston's); then its folder name in `PLATFORMS`.

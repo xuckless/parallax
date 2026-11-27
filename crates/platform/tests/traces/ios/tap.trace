@@ -1,3 +1,4 @@
 # ios tap: tap 200 400 50
-touch(0, 4364360704, Started, 200.00, 400.00)
-touch(54, 4364360704, Ended, 200.00, 400.00)
+# ids: patch 0027's TouchIds applied to the recorded UITouch addresses (recorded before the fix)
+touch(0, 0, Started, 200.00, 400.00)
+touch(54, 0, Ended, 200.00, 400.00)

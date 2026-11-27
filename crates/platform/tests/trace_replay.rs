@@ -22,11 +22,9 @@ use parallax_platform::{
     behaviour::{TABLE, web_behaviour},
 };
 
-/// Platforms with a trace folder under tests/traces/, the desktops' (Gate 3) read when their harnesses have
-/// recorded them. Each gesture must have a trace from at least two of them.
-const PLATFORMS: [&str; 7] = [
-    "android", "web", "ios", "windows", "wayland", "x11", "macos",
-];
+/// Platforms with a trace folder under tests/traces/, one per record-traces.sh driver; each folder must exist and
+/// hold every gesture. macOS has no recording harness (its touches come by Sidecar, by hand), so no folder.
+const PLATFORMS: [&str; 6] = ["android", "web", "ios", "windows", "wayland", "x11"];
 
 /// The gestures of record-traces.sh's table, with what every platform's trace must replay to under every row, and
 /// where each of its touches goes down, in order (window logical px, as the script places them).
@@ -183,7 +181,7 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
         other => panic!("unknown touch phase {other}"),
     };
     // `PointerDevice`'s debug names, as hello logs them. A mouse never sends touches.
-    let device = |name: Option<&&str>| match name.copied() {
+    let device = |name: Option<&str>| match name {
         None | Some("Touch") => PointerDevice::Touch,
         Some("Pen") => PointerDevice::Pen,
         Some(other) => panic!("unknown touch device {other}"),
@@ -200,7 +198,7 @@ fn parse(trace: &str) -> Vec<(u64, TouchEvent)> {
                 position: point(px(number(3)), px(number(4))),
                 predicted_position: None,
                 force: None,
-                device: device(fields.get(5)),
+                device: device(fields.get(5).copied()),
                 // Each touch is dispatched at its `at_ms` (the platform's event time, docs/traces.md), so GPUI's
                 // dispatch time is its time stamp.
                 time_stamp: None,
@@ -315,42 +313,23 @@ fn same(a: &Outcome, b: &Outcome) -> bool {
         && pinch
 }
 
+/// A pen line. The fixtures carry both finger forms (five fields, and six naming `Touch`) but no pen yet.
 #[test]
-fn trace_line_table() {
-    // (row name, fixture line, the device it replays as)
-    let rows = [
+fn trace_pen_line() {
+    let events = parse("touch(0, 1, Started, 1.00, 2.00, Pen)");
+    let [(at_ms, event)] = &events[..] else {
+        panic!("one line, one touch");
+    };
+    assert_eq!(
+        (*at_ms, event.id, event.phase, event.position, event.device),
         (
-            "five fields, as Gate 2's traces: a finger",
-            "touch(0, 1, Started, 1.00, 2.00)",
-            PointerDevice::Touch,
-        ),
-        (
-            "a sixth field names the device",
-            "touch(0, 1, Started, 1.00, 2.00, Touch)",
-            PointerDevice::Touch,
-        ),
-        (
-            "a pen",
-            "touch(0, 1, Started, 1.00, 2.00, Pen)",
-            PointerDevice::Pen,
-        ),
-    ];
-    for (name, line, device) in rows {
-        let events = parse(line);
-        assert_eq!(events.len(), 1, "{name}");
-        let (at_ms, event) = &events[0];
-        assert_eq!(
-            (*at_ms, event.id, event.phase, event.position, event.device),
-            (
-                0,
-                TouchId(1),
-                TouchPhase::Started,
-                point(px(1.), px(2.)),
-                device
-            ),
-            "{name}"
-        );
-    }
+            0,
+            TouchId(1),
+            TouchPhase::Started,
+            point(px(1.), px(2.)),
+            PointerDevice::Pen
+        )
+    );
 }
 
 #[test]
@@ -368,20 +347,19 @@ fn recorded_traces_replay_the_same_everywhere() {
     for (gesture, expected, _) in GESTURES {
         let recorded: Vec<(&str, Vec<(u64, TouchEvent)>)> = PLATFORMS
             .iter()
-            .filter_map(|platform| {
+            .map(|platform| {
                 let file = traces.join(platform).join(format!("{gesture}.trace"));
-                let trace = parse(&std::fs::read_to_string(file).ok()?);
+                let trace = parse(
+                    &std::fs::read_to_string(&file)
+                        .unwrap_or_else(|error| panic!("{}: {error}", file.display())),
+                );
                 let trace = match expected {
                     Gesture::Fling { ms } => at_scripted_speed(&trace, ms),
                     Gesture::Taps(_) | Gesture::LongPress | Gesture::Drag | Gesture::Pinch => trace,
                 };
-                Some((*platform, trace))
+                (*platform, trace)
             })
             .collect();
-        assert!(
-            recorded.len() >= 2,
-            "{gesture}: traces from fewer than two platforms"
-        );
         for (row, tuning) in &rows {
             let outcomes: Vec<(&str, Outcome)> = recorded
                 .iter()
@@ -409,20 +387,16 @@ fn recorded_traces_replay_the_same_everywhere() {
 /// Every platform's touches keep their identity (docs/traces-desktop.md): each touch has its own id, one no earlier
 /// touch of the trace had (so where a platform reuses ids, as Wayland does, a lifted finger's next touch still gets a
 /// new one), starts once, moves, then ends or is cancelled once; and it goes down at the script's point in window
-/// logical px, whatever the display's scale. Not yet iOS: upstream gpui_ios makes the id from the `UITouch`'s address,
-/// which UIKit hands to the next touch, against `TouchId`'s contract (its double tap is one id twice); remove it from
-/// `KNOWN_ID_REUSE` once that is fixed.
+/// logical px, whatever the display's scale.
 #[test]
 fn recorded_touches_keep_their_identity() {
-    const KNOWN_ID_REUSE: [&str; 1] = ["ios"];
     let traces = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/traces");
     let mut failures = Vec::new();
     for (gesture, _, starts) in GESTURES {
-        for platform in PLATFORMS.iter().filter(|p| !KNOWN_ID_REUSE.contains(p)) {
+        for platform in PLATFORMS {
             let file = traces.join(platform).join(format!("{gesture}.trace"));
-            let Ok(trace) = std::fs::read_to_string(file) else {
-                continue;
-            };
+            let trace = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
             // Each id's phases in order, ids in the order they went down.
             let mut touches: Vec<(TouchId, Point<Pixels>, Vec<TouchPhase>)> = Vec::new();
             for (_, event) in parse(&trace) {
