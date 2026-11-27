@@ -30,25 +30,55 @@ use crate::{
 };
 
 /// A GPUI callback the window registered, taken out while it runs so it can re-enter the shell.
-pub(crate) struct Slot<F: ?Sized>(RefCell<Option<Box<F>>>);
+pub(crate) struct Slot<F: ?Sized>(RefCell<SlotState<F>>);
+
+/// Where a [`Slot`]'s callback is. `Running` while [`Slot::with`] has it out; `Cleared` when the window went while it
+/// ran (the app closed it from that very callback), so it is dropped, not put back.
+enum SlotState<F: ?Sized> {
+    Empty,
+    Ready(Box<F>),
+    Running,
+    Cleared,
+}
 
 impl<F: ?Sized> Slot<F> {
+    /// A callback set while the old one runs replaces it.
     pub(crate) fn set(&self, callback: Box<F>) {
-        *self.0.borrow_mut() = Some(callback);
+        *self.0.borrow_mut() = SlotState::Ready(callback);
     }
 
-    /// Runs `call` on the callback; `None` when GPUI has not registered one.
+    /// The window went: drops the callback, now or when it returns.
+    fn clear(&self) {
+        let mut state = self.0.borrow_mut();
+        *state = match *state {
+            SlotState::Running | SlotState::Cleared => SlotState::Cleared,
+            SlotState::Empty | SlotState::Ready(_) => SlotState::Empty,
+        };
+    }
+
+    /// Runs `call` on the callback; `None` when GPUI has not registered one (or it is running).
     pub(crate) fn with<R>(&self, call: impl FnOnce(&mut F) -> R) -> Option<R> {
-        let mut callback = self.0.borrow_mut().take()?;
+        let mut callback = match self.0.replace(SlotState::Running) {
+            SlotState::Ready(callback) => callback,
+            other @ (SlotState::Empty | SlotState::Running | SlotState::Cleared) => {
+                self.0.replace(other);
+                return None;
+            }
+        };
         let result = call(&mut callback);
-        self.0.borrow_mut().get_or_insert(callback);
+        let mut state = self.0.borrow_mut();
+        *state = match std::mem::replace(&mut *state, SlotState::Empty) {
+            SlotState::Running => SlotState::Ready(callback),
+            newer @ SlotState::Ready(_) => newer,
+            SlotState::Cleared | SlotState::Empty => SlotState::Empty,
+        };
         Some(result)
     }
 }
 
 impl<F: ?Sized> Default for Slot<F> {
     fn default() -> Self {
-        Self(RefCell::new(None))
+        Self(RefCell::new(SlotState::Empty))
     }
 }
 
@@ -212,13 +242,30 @@ impl ActivityWindow {
 
     /// The app closed this Activity's GPUI window (GPUI dropped it, [`crate::window`]): `Open → Closed`, dropping the
     /// renderer; the Activity finishes with the next framework calls. A window the Activity's own destruction closed
-    /// is no longer the shell's, so nobody asks.
+    /// is no longer the shell's, so nobody asks. GPUI's callbacks go with the window.
     pub(crate) fn closed_by_app(&self) {
         let mut gpui = self.gpui.borrow_mut();
         match &*gpui {
             Gpui::Open { .. } => *gpui = Gpui::Closed,
             Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => {}
         }
+        // The callbacks were the dropped window's: input, insets or lifecycle until onDestroy would reach nothing.
+        let Callbacks {
+            request_frame,
+            input,
+            resize,
+            insets_changed,
+            active_status,
+            visibility,
+            close,
+        } = &self.callbacks;
+        request_frame.clear();
+        input.clear();
+        resize.clear();
+        insets_changed.clear();
+        active_status.clear();
+        visibility.clear();
+        close.borrow_mut().take();
     }
 
     /// The Activity was destroyed: GPUI closes its window (on its next turn) and drops the renderer with it.
