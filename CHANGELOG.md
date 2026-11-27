@@ -6,6 +6,19 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.9)
+
+### Added
+
+- Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
+  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
+
+### Fixed
+
+- Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
+  (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
+  and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`

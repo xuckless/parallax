@@ -11,12 +11,12 @@ license = "Apache-2.0"
 repository = "https://github.com/xuckless/parallax"
 
 [workspace.dependencies]
-gpui = { package = "parallax-gpui", version = "=0.3.14-parallax.10" }
+gpui = { package = "parallax-gpui", version = "=0.3.14-parallax.11" }
 # No default features: `multithreaded` (gpui_web threads) needs nightly and affects only wasm32. See AGENTS.md, Web threading.
 # `wayland` and `x11` are off by default upstream; without them Linux starts headless and draws nothing.
 # `font-kit` is off by default upstream too; without it macOS uses GPUI's NoopTextSystem and draws no text.
-gpui_platform = { package = "parallax-gpui-platform", version = "=0.3.14-parallax.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui_wgpu = { package = "parallax-gpui-wgpu", version = "=0.3.14-parallax.10" }
+gpui_platform = { package = "parallax-gpui-platform", version = "=0.3.14-parallax.11", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_wgpu = { package = "parallax-gpui-wgpu", version = "=0.3.14-parallax.11" }
 parallax-android = { path = "crates/android", version = "0.1.8" }
 parallax-platform = { path = "crates/platform", version = "0.1.8" }
 thiserror = "2"

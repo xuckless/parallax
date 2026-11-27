@@ -63,17 +63,25 @@ done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
 
-# gpui_windows builds only on Windows, so its pure decision modules (plain values, no `windows` crate) are tested
-# here as one host crate on parallax-gpui, a member of the scratch workspace. To add one, add its file name here.
-windows_pure=(pointer)
-pure="$out/crates/windows-pure"
-mkdir -p "$pure/src"
-# The modules' edition is gpui_windows's own.
-edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/parallax-gpui-windows/Cargo.toml")"
-[[ -n $edition ]] || die "no edition in parallax-gpui-windows's Cargo.toml"
-cat > "$pure/Cargo.toml" <<EOF
+# gpui_windows builds only on Windows and gpui_web only on wasm32, so their pure decision modules (plain values, no
+# `windows` or `web_sys`) are tested here, each backend's as one host crate on parallax-gpui (`windows-pure`,
+# `web-pure`), a member of the scratch workspace. A row per backend: its fork crate, then its module file names.
+# To add a module, add its file name to its backend's row.
+pure_rows=(
+    "parallax-gpui-windows pointer"
+    "parallax-gpui-web text_editing"
+)
+for row in "${pure_rows[@]}"; do
+    read -r backend modules <<<"$row"
+    name="${backend#parallax-gpui-}-pure"
+    pure="$out/crates/$name"
+    mkdir -p "$pure/src"
+    # The modules' edition is their backend's own.
+    edition="$(sed -n 's/^edition = "\(.*\)"$/\1/p' "$out/crates/$backend/Cargo.toml")"
+    [[ -n $edition ]] || die "no edition in $backend's Cargo.toml"
+    cat > "$pure/Cargo.toml" <<EOF
 [package]
-name = "windows-pure"
+name = "$name"
 version = "0.0.0"
 edition = "$edition"
 publish = false
@@ -81,15 +89,16 @@ publish = false
 [dependencies]
 gpui = { package = "parallax-gpui", path = "../parallax-gpui", features = ["test-support"] }
 EOF
-{
-    echo '#![allow(dead_code)] // their callers are gpui_windows'"'"'s Windows-only glue'
-    for module in "${windows_pure[@]}"; do
-        printf '#[path = "../../parallax-gpui-windows/src/%s.rs"]\nmod %s;\n' "$module" "$module"
-    done
-} > "$pure/src/lib.rs"
-sed -i 's/^members = \[$/members = [\n    "windows-pure",/' "$out/crates/Cargo.toml"
-grep -qx '    "windows-pure",' "$out/crates/Cargo.toml" || die "could not add windows-pure to the scratch workspace"
-cargo test --manifest-path "$out/crates/Cargo.toml" -p windows-pure --lib --target-dir target/patch-tests -- "$@"
+    {
+        echo "#![allow(dead_code)] // their callers are $backend's target-only glue"
+        for module in $modules; do
+            printf '#[path = "../../%s/src/%s.rs"]\nmod %s;\n' "$backend" "$module" "$module"
+        done
+    } > "$pure/src/lib.rs"
+    sed -i "s/^members = \[\$/members = [\n    \"$name\",/" "$out/crates/Cargo.toml"
+    grep -qx "    \"$name\"," "$out/crates/Cargo.toml" || die "could not add $name to the scratch workspace"
+    cargo test --manifest-path "$out/crates/Cargo.toml" -p "$name" --lib --target-dir target/patch-tests -- "$@"
+done
 
 # Backend crates whose lib tests also run here, where their patches put table tests; one row per crate this host
 # builds. Add a row when a backend patch ships tests the host can run.
