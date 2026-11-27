@@ -172,8 +172,17 @@ pub fn behaviour(target: Option<Target>) -> Result<&'static Behaviour, Error> {
         .ok_or(Error::UnsupportedTarget)
 }
 
-/// The current target's row. On the web: the browser's host OS's row, read from `navigator` as Flutter web's
-/// `BrowserDetection.operatingSystem` does (no window, as in a worker: Flutter's unknown OS).
+/// The web's behaviour on a `host` OS: Flutter web takes the host's row, but its embedder never sets
+/// `physicalTouchSlop`, so the slops are Flutter's (`kTouchSlop`, `kPanSlop`) even on Android.
+pub fn web_behaviour(host: Target) -> Result<Behaviour, Error> {
+    Ok(Behaviour {
+        touch_slop: None,
+        ..*behaviour(Some(host))?
+    })
+}
+
+/// The current target's row. On the web: [`web_behaviour`] of the browser's host OS, read from `navigator` as Flutter
+/// web's `BrowserDetection.operatingSystem` does (no window, as in a worker: Flutter's unknown OS).
 pub fn current_behaviour() -> Result<Behaviour, Error> {
     cfg_select! {
         target_family = "wasm" => {
@@ -181,12 +190,11 @@ pub fn current_behaviour() -> Result<Behaviour, Error> {
             let platform = navigator.as_ref().and_then(|nav| nav.platform().ok());
             let user_agent = navigator.as_ref().and_then(|nav| nav.user_agent().ok());
             let max_touch_points = navigator.as_ref().map_or(0, |nav| nav.max_touch_points());
-            behaviour(Some(detect_operating_system(
+            web_behaviour(detect_operating_system(
                 platform.as_deref().unwrap_or_default(),
                 user_agent.as_deref().unwrap_or_default(),
                 max_touch_points,
-            )))
-            .copied()
+            ))
         }
         _ => behaviour(crate::CURRENT_TARGET).copied(),
     }
@@ -266,6 +274,16 @@ mod tests {
                  MaterialScrollBehavior stretch, Feedback.forLongPress vibrate, kMinInteractiveDimension",
                 behaviour(Some(Target::Android)).copied(),
                 android,
+            ),
+            (
+                "web on an android host: the android row with Flutter's kTouchSlop and kPanSlop (Flutter web never \
+                 sets physicalTouchSlop)",
+                web_behaviour(Target::Android),
+                Expected {
+                    touch_slop: 18.,
+                    pan_slop: 36.,
+                    ..android
+                },
             ),
             (
                 "ios: kTouchSlop, kPanSlop, BouncingScrollPhysics minFlingVelocity kMinFlingVelocity * 2, \
