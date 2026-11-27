@@ -194,7 +194,7 @@ Full Android:
       field change, so they keep the no-op ([core-patches.md](docs/core-patches.md)).
 - [ ] macOS: verify patch 0010's discardMarkedText with a real Japanese IME (needs the owner's console session on pixl-mac).
 - [ ] Web smoke test in CI (headless browser) — hello panicked on web unnoticed (no fonts on the web until Wave 10
-      embedded `WEB_FONTS`, [examples.md](docs/examples.md#web)).
+      embedded `WEB_FONTS`, [examples.md](docs/examples-run.md#web)).
 - [x] macOS draws text again: `gpui_platform`'s `font-kit` feature is on (0.1.1–0.1.4 built without it, so
       `gpui_macos` used GPUI's `NoopTextSystem` and drew no text); hello's desktop binary logs through `env_logger`.
 - [ ] Desktop smoke test in CI that proves text draws: on the macOS runner (it has a window server) open hello,
