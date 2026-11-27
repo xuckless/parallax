@@ -934,6 +934,10 @@ fn listen_for_selection_gestures(
             (TouchDragStart::Down, TouchPhase::Ended | TouchPhase::Cancelled) => {
                 Input::HandleDragEnd
             }
+            // Every field listens: a won drag is this field's only if it started on it.
+            (TouchDragStart::PastSlop(_), _) if !pressable.contains(&event.start_position) => {
+                return;
+            }
             // Won: the press the drag grew from, where the touch started, then the move that won it.
             (TouchDragStart::PastSlop(_), TouchPhase::Started) => {
                 cx.stop_propagation();
@@ -993,7 +997,10 @@ mod tests {
 
     use std::time::Duration;
 
-    use parallax::gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase, px};
+    use parallax::gpui::{
+        Context, Entity, IntoElement, Pixels, Point, PointerDevice, Render, TouchEvent, TouchId,
+        TouchPhase, Window, div, prelude::*, px,
+    };
     use parallax::parallax_platform::{Target, behaviour::behaviour};
 
     use super::{Selection, TextField, TextSelection};
@@ -1108,6 +1115,15 @@ mod tests {
         Vertical(usize, f32),
     }
 
+    /// Two fields one above the other, as in hello's window: each listens to every touch drag.
+    struct TwoFields([Entity<TextField>; 2]);
+
+    impl Render for TwoFields {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().flex().flex_col().gap_4().children(self.0.clone())
+        }
+    }
+
     #[gpui::test]
     fn touch_selects_by_the_android_row(cx: &mut TestAppContext) {
         use Touch::{Drag, Hold, Tap, Vertical};
@@ -1133,12 +1149,17 @@ mod tests {
             ),
         ];
         for (name, touches, (base, extent)) in rows {
-            let (field, cx) = cx.add_window_view(|_, cx| TextField {
-                content: "abc def ghi".into(),
-                selection_ui: TextSelection::for_behaviour(android),
-                ..TextField::new("", TextInputConfiguration::default(), cx)
+            let (fields, cx) = cx.add_window_view(|_, cx| {
+                TwoFields([(); 2].map(|()| {
+                    cx.new(|cx| TextField {
+                        content: "abc def ghi".into(),
+                        selection_ui: TextSelection::for_behaviour(android),
+                        ..TextField::new("", TextInputConfiguration::default(), cx)
+                    })
+                }))
             });
             cx.run_until_parked();
+            let [field, other] = fields.read_with(cx, |fields, _| fields.0.clone());
             let at = |cx: &mut VisualTestContext, offset| {
                 field.read_with(cx, |field, _| {
                     let bounds = field.last_bounds.expect("the field was drawn");
@@ -1192,6 +1213,8 @@ mod tests {
             }
             let found = field.read_with(cx, |field, _| field.selection);
             assert_eq!(found, Selection { base, extent }, "{name}");
+            let untouched = other.read_with(cx, |field, _| field.selection);
+            assert_eq!(untouched, Selection::default(), "{name}: the other field");
         }
     }
 }
