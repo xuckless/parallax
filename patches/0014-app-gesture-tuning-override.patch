@@ -178,7 +178,7 @@ index dbd0298..9f9d978 100644
  
  /// Represents the status of how a window should be opened.
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index d93beac..b612f39 100644
+index d93beac..a92f0b7 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -27,9 +27,7 @@ use crate::{
@@ -221,6 +221,15 @@ index d93beac..b612f39 100644
              touch_prediction_enabled: true,
              pointer_source: None,
              touch_routes: FxHashMap::default(),
+@@ -3903,7 +3899,7 @@ impl Window {
+     /// Restarts touch recognition with the tuning a test passes, in place of
+     /// the platform's.
+     #[cfg(test)]
+-    pub(crate) fn set_gesture_tuning(&mut self, tuning: GestureTuning) {
++    pub(crate) fn set_gesture_tuning(&mut self, tuning: crate::GestureTuning) {
+         self.touch_gestures = TouchGestureRecognizer::new(tuning);
+     }
+ 
 @@ -8605,12 +8601,13 @@ mod tests {
          AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
          Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
@@ -256,14 +265,14 @@ index d93beac..b612f39 100644
 +        // (name, override set before the window opens, finger travel, events seen). The row
 +        // without an override runs first: an override stays for the rest of the app.
 +        let rows: [(&str, Option<GestureTuning>, f32, &[(&str, bool)]); 4] = [
-+            ("no override: GPUI's 8 px slop, 12 px pans", None, 12., &pan),
++            ("no override: kTouchSlop's 18 px, 12 px taps", None, 12., &tap),
 +            (
-+                "override 18 px (Flutter kTouchSlop): 12 px taps",
-+                Some(tuning(18.)),
++                "override 8 px (Android's ViewConfiguration): 12 px pans",
++                Some(tuning(8.)),
 +                12.,
-+                &tap,
++                &pan,
 +            ),
-+            ("override 18 px: 20 px pans", Some(tuning(18.)), 20., &pan),
++            ("override 8 px: 6 px taps", Some(tuning(8.)), 6., &tap),
 +            ("override 4 px: 6 px pans", Some(tuning(4.)), 6., &pan),
 +        ];
 +        for (name, tuning, travel, expected) in rows {

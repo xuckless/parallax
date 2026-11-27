@@ -1,19 +1,19 @@
 Run touch flings on Flutter's scroll simulations.
 
-What: adds `gestures/physics.rs`, a Rust translation of Flutter's `Tolerance`, `Simulation`, `FrictionSimulation`
-and `ClampingScrollSimulation` (flutter/flutter 3.50.1, ae9b586f34; names, constants and comments kept), exported
-from the crate root. `ScrollPhysics` keeps its public API (`Exponential { decay_per_ms }`, `FrictionSpline
-{ friction, pixels_per_inch }`, `ios()`, `android()`), but its private `fling_duration`/`fling_distance` give way to
-`ScrollPhysics::simulation(speed)`, which builds what Flutter's `createBallisticSimulation` builds for a position in
-range: iOS a `FrictionSimulation` with drag `decay_per_ms^1000` (0.998^1000, Flutter's "~0.135"), Android a
-`ClampingScrollSimulation` (`pixels_per_inch` stands in for Flutter's 160 logical pixels per inch). `Momentum` holds
-that simulation and ends on the first tick it is done at, as Flutter's ballistic scroll does; the tolerance is
-Flutter's `toleranceFor` at a device pixel ratio of 2 (velocity 10 px/s, GPUI's `MOMENTUM_STOP_VELOCITY`). The
-transcribed AOSP `friction_spline` module and its table test go; the "fling curves are sane" test is rewritten on the
-simulations. Ports Flutter's tests as tables, named after the Flutter test per row: all 3 of
-`friction_simulation_test.dart`, `test_friction` and `scroll_with_inf_edge_ends` of `newton_test.dart`, all 5 of
-`scroll_simulation_test.dart`, and the bounce/clamp rows of `scroll_physics_test.dart`'s "doesn't alter the velocity
-for time 0".
+What: adds `gestures/physics.rs`, a Rust translation of Flutter's `Tolerance`, `Simulation`, `FrictionSimulation` and
+`ClampingScrollSimulation` (flutter/flutter 3.50.1, ae9b586f34; names, constants and comments kept), exported from the
+crate root. `ScrollPhysics` keeps its public API (`Exponential { decay_per_ms }`, `FrictionSpline { friction,
+pixels_per_inch }`, `ios()`, `android()`), but its private `fling_duration`/`fling_distance` give way to
+`ScrollPhysics::simulation(speed)` (and `ios()` / `android()` become `const fn`, so a const table can name them),
+which builds what Flutter's `createBallisticSimulation` builds for a position in range: iOS a `FrictionSimulation`
+with drag `decay_per_ms^1000` (0.998^1000, Flutter's "~0.135"), Android a `ClampingScrollSimulation`
+(`pixels_per_inch` stands in for Flutter's 160 logical pixels per inch). `Momentum` holds that simulation and ends on
+the first tick it is done at, as Flutter's ballistic scroll does; the tolerance is Flutter's `toleranceFor` at a
+device pixel ratio of 2 (velocity 10 px/s, GPUI's `MOMENTUM_STOP_VELOCITY`). The transcribed AOSP `friction_spline`
+module and its table test go; the "fling curves are sane" test is rewritten on the simulations. Ports Flutter's tests
+as tables, named after the Flutter test per row: all 3 of `friction_simulation_test.dart`, `test_friction` and
+`scroll_with_inf_edge_ends` of `newton_test.dart`, all 5 of `scroll_simulation_test.dart`, and the bounce/clamp rows
+of `scroll_physics_test.dart`'s "doesn't alter the velocity for time 0".
 
 Why: Flutter's tests fail on the old maths. Android's fling was AOSP's `SplineOverScroller` curve, which Flutter
 replaced because it is not ballistic (flutter/flutter#113424, #120338): its starting velocity is not the release
@@ -26,8 +26,9 @@ part of this patch. Not platform-specific, so no cfg.
 
 Upstream: not filed (upstreaming paused, AGENTS.md patch rule 14).
 
+
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 1062e60..de7f9cf 100644
+index 1062e60..cad12f6 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
 @@ -153,24 +153,31 @@ impl Default for GestureTuning {
@@ -67,17 +68,19 @@ index 1062e60..de7f9cf 100644
      FrictionSpline {
          /// The scroll friction coefficient;
          /// `ViewConfiguration.getScrollFriction()` is `0.015` on Android.
-@@ -184,7 +191,8 @@ pub enum ScrollPhysics {
+@@ -184,8 +191,9 @@ pub enum ScrollPhysics {
  }
  
  impl ScrollPhysics {
 -    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate.
+-    pub fn ios() -> Self {
 +    /// iOS scroll feel: `UIScrollView`'s normal deceleration rate, as
 +    /// Flutter's `BouncingScrollPhysics` (`0.998¹⁰⁰⁰ ≈ 0.135`).
-     pub fn ios() -> Self {
++    pub const fn ios() -> Self {
          Self::Exponential {
              decay_per_ms: 0.998,
-@@ -193,10 +201,10 @@ impl ScrollPhysics {
+         }
+@@ -193,167 +201,48 @@ impl ScrollPhysics {
  
      /// Android scroll feel: `OverScroller` with stock friction, at Android's
      /// nominal density of 160 density-independent pixels per inch — the
@@ -85,14 +88,15 @@ index 1062e60..de7f9cf 100644
 -    /// that fling in physical pixels, or know the display's true density in
 -    /// their logical space, should construct
 -    /// [`ScrollPhysics::FrictionSpline`] directly.
+-    pub fn android() -> Self {
 +    /// right pairing when fling distances are in logical pixels, and
 +    /// Flutter's `ClampingScrollPhysics`. Platforms that fling in physical
 +    /// pixels, or know the display's true density in their logical space,
 +    /// should construct [`ScrollPhysics::FrictionSpline`] directly.
-     pub fn android() -> Self {
++    pub const fn android() -> Self {
          Self::FrictionSpline {
              friction: 0.015,
-@@ -204,156 +212,37 @@ impl ScrollPhysics {
+             pixels_per_inch: 160.,
          }
      }
  

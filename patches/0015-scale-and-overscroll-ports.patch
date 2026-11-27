@@ -4,12 +4,12 @@ What: new files only, plus one `mod` line each in gestures.rs and gpui.rs; no ex
 - `gestures/scale.rs` (`gpui::scale`): Flutter's `ScaleGestureRecognizer` (scale.dart) as a state machine,
   `TouchEvent`s and arena decisions in, `ScaleOutput`s (Resolve / Start / Update / End) out: focal point, span,
   horizontal and vertical span, scale, rotation through `_LineBetweenPointers`, pointer counting, end velocity
-  clamped to Flutter's fling limits. Velocity comes through the `PointerVelocityTracker` trait, implemented for
-  gestures.rs's `VelocityTracker`. Pan/zoom (trackpad) pointers are not ported: GPUI reports trackpad pinches as
+  clamped to Flutter's fling limits. Velocity comes from 0011's `VelocityTracker` (least squares, as Flutter's
+  `VelocityTracker.withKind`), slops and fling limits from 0013's `gestures/constants.rs`. Pan/zoom (trackpad) pointers are not ported: GPUI reports trackpad pinches as
   `PinchEvent`.
-- `overscroll/` (`gpui::overscroll`): `Simulation` and `Tolerance` (physics/simulation.dart, tolerance.dart),
-  `SpringSimulation` and `ScrollSpringSimulation` (spring_simulation.dart), `BouncingScrollSimulation`
-  (scroll_simulation.dart, generic over a `FrictionSimulation` trait), `BouncingScrollPhysics`'s overscroll friction,
+- `overscroll/` (`gpui::overscroll`): `nearEqual`/`nearZero` (physics/utils.dart), `SpringSimulation` and
+  `ScrollSpringSimulation` (spring_simulation.dart), `BouncingScrollSimulation` (scroll_simulation.dart, its friction
+  phase 0012's `FrictionSimulation`; `Simulation` and `Tolerance` are 0012's too), `BouncingScrollPhysics`'s overscroll friction,
   boundary conditions and ballistic simulation and `ClampingScrollPhysics.applyBoundaryConditions`
   (scroll_physics.dart), and the overscroll indicators' state (overscroll_indicator.dart): `GlowController` and
   `StretchController` driven by `tick(now)`, and the notification handling of both indicators.
@@ -21,16 +21,16 @@ Why: GPUI has no pinch recognition ("Pinch recognition is not implemented yet" i
 bounce or indicators; touch platforms need both. Flutter's versions carry a decade of platform-matching fixes and
 come with tests, so they are ported (names, constants, comments) rather than rewritten. They live inside GPUI
 because the touch recognizer and scroll containers that will use them are GPUI's, and the scale recognizer reuses
-gestures.rs's private `VelocityTracker`. Code ported from Flutter, Copyright 2014 The Flutter Authors, BSD-3-Clause;
+gestures.rs's private `VelocityTracker`, and both reuse the simulations and constants earlier patches ported. Code ported from Flutter, Copyright 2014 The Flutter Authors, BSD-3-Clause;
 each file names its source at Flutter 3.50.1.
 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 4367004..ba6f5ac 100644
+index f6197b3..7434766 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -30,6 +30,8 @@ use crate::{
+@@ -35,6 +35,8 @@ use crate::{
      ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
  };
  
@@ -41,14 +41,13 @@ index 4367004..ba6f5ac 100644
  fn dominant_axis(delta: Point<Pixels>) -> Axis {
 diff --git a/gpui-pre/src/gestures/scale.rs b/gpui-pre/src/gestures/scale.rs
 new file mode 100644
-index 0000000..bee16b8
+index 0000000..335e391
 --- /dev/null
 +++ b/gpui-pre/src/gestures/scale.rs
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,665 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/gestures/scale.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ScaleGestureRecognizer`, with the parts of
-+// `OneSequenceGestureRecognizer` (recognizer.dart), `computePanSlop`/`computeScaleSlop` (events.dart) and the
-+// constants (constants.dart) it uses. Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// `OneSequenceGestureRecognizer` (recognizer.dart) and `computePanSlop`/`computeScaleSlop` (events.dart). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 +// third_party/flutter/LICENSE.
 +
 +//! Pinch, rotate and pan recognition from touches: Flutter's `ScaleGestureRecognizer`.
@@ -68,46 +67,26 @@ index 0000000..bee16b8
 +use collections::{HashMap, HashSet, IndexMap};
 +use scheduler::Instant;
 +
++use super::constants::{
++    kMaxFlingVelocity, kMinFlingVelocity, kPanSlop, kPrecisePointerPanSlop,
++    kPrecisePointerScaleSlop, kScaleSlop,
++};
++use super::{VelocityTracker, VelocityTrackerKind};
 +use crate::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase, point, px};
-+
-+/// Flutter's `kTouchSlop`: the distance a touch is allowed to wander before it is considered a movement, in
-+/// logical pixels.
-+pub const TOUCH_SLOP: f32 = 18.0;
-+/// Flutter's `kPanSlop`: the distance a touch must travel before a pan is recognized.
-+pub const PAN_SLOP: f32 = TOUCH_SLOP * 2.0;
-+/// Flutter's `kScaleSlop`: the absolute span change a touch must make before a scale is recognized.
-+pub const SCALE_SLOP: f32 = TOUCH_SLOP;
-+/// Flutter's `kPrecisePointerHitSlop`: like [`TOUCH_SLOP`], for precise pointers (a mouse).
-+pub const PRECISE_POINTER_HIT_SLOP: f32 = 1.0;
-+/// Flutter's `kPrecisePointerPanSlop`.
-+pub const PRECISE_POINTER_PAN_SLOP: f32 = PRECISE_POINTER_HIT_SLOP * 2.0;
-+/// Flutter's `kPrecisePointerScaleSlop`.
-+pub const PRECISE_POINTER_SCALE_SLOP: f32 = PRECISE_POINTER_HIT_SLOP;
-+/// Flutter's `kMinFlingVelocity`: the minimum velocity for a fling, in logical pixels per second.
-+pub const MIN_FLING_VELOCITY: f32 = 50.0;
-+/// Flutter's `kMaxFlingVelocity`: the maximum velocity of a fling, in logical pixels per second.
-+pub const MAX_FLING_VELOCITY: f32 = 8000.0;
 +
 +/// Flutter's `computeScaleSlop` and `computePanSlop` (events.dart): `(scale slop, pan slop)` for a pointer kind.
 +/// `touch_slop` is `DeviceGestureSettings.touchSlop`; its pan slop is twice it. A new device kind gets one arm.
 +fn slops(kind: PointerDevice, touch_slop: Option<f32>) -> (f32, f32) {
 +    match kind {
-+        PointerDevice::Mouse => (PRECISE_POINTER_SCALE_SLOP, PRECISE_POINTER_PAN_SLOP),
-+        PointerDevice::Touch | PointerDevice::Pen => {
-+            (SCALE_SLOP, touch_slop.map_or(PAN_SLOP, |slop| slop * 2.0))
-+        }
++        PointerDevice::Mouse => (
++            f32::from(kPrecisePointerScaleSlop),
++            f32::from(kPrecisePointerPanSlop),
++        ),
++        PointerDevice::Touch | PointerDevice::Pen => (
++            f32::from(kScaleSlop),
++            touch_slop.map_or(f32::from(kPanSlop), |slop| slop * 2.0),
++        ),
 +    }
-+}
-+
-+/// What the recognizer needs from Flutter's `VelocityTracker` (velocity_tracker.dart).
-+pub trait PointerVelocityTracker {
-+    /// Flutter's `VelocityTracker.withKind`.
-+    fn with_kind(kind: PointerDevice) -> Self;
-+    /// Flutter's `addPosition`: adds a position as the given time to the tracker.
-+    fn add_position(&mut self, time: Instant, position: Point<Pixels>);
-+    /// Flutter's `getVelocity().pixelsPerSecond`: the velocity of the pointer being tracked, in logical pixels
-+    /// per second, or zero if there is no data on which to base an estimate.
-+    fn velocity(&self) -> Point<f32>;
 +}
 +
 +/// Flutter's `GestureDisposition` (arena.dart): whether a gesture was accepted or rejected.
@@ -233,13 +212,14 @@ index 0000000..bee16b8
 +/// focal point, scale, and rotation change, it outputs [`ScaleOutput::Update`].
 +/// When the pointers are no longer in contact with the screen, it outputs
 +/// [`ScaleOutput::End`].
-+pub struct ScaleGestureRecognizer<V> {
++pub struct ScaleGestureRecognizer {
 +    /// Determines what point is used as the starting point in all calculations
 +    /// involving this gesture.
 +    pub drag_start_behavior: DragStartBehavior,
 +    /// The device kinds this recognizer accepts pointers from; `None` accepts every kind.
 +    pub supported_devices: Option<Vec<PointerDevice>>,
-+    /// Flutter's `gestureSettings.touchSlop`: the platform's touch slop, or `None` for [`TOUCH_SLOP`].
++    /// Flutter's `gestureSettings.touchSlop`: the platform's touch slop, or `None` for
++    /// [`kTouchSlop`](super::constants::kTouchSlop).
 +    pub touch_slop: Option<f32>,
 +
 +    state: ScaleState,
@@ -256,8 +236,8 @@ index 0000000..bee16b8
 +    pointer_locations: IndexMap<TouchId, Point<f32>>,
 +    // A queue to sort pointers in order of entrance
 +    pointer_queue: Vec<TouchId>,
-+    velocity_trackers: HashMap<TouchId, V>,
-+    scale_velocity_tracker: Option<V>,
++    velocity_trackers: HashMap<TouchId, VelocityTracker>,
++    scale_velocity_tracker: Option<VelocityTracker>,
 +    delta: Point<f32>,
 +    initial_event_timestamp: Option<Instant>,
 +    // GestureRecognizer's `_pointerToKind`.
@@ -267,7 +247,7 @@ index 0000000..bee16b8
 +    entries: Vec<TouchId>,
 +}
 +
-+impl<V: PointerVelocityTracker> Default for ScaleGestureRecognizer<V> {
++impl Default for ScaleGestureRecognizer {
 +    fn default() -> Self {
 +        Self {
 +            drag_start_behavior: DragStartBehavior::Down,
@@ -297,7 +277,7 @@ index 0000000..bee16b8
 +    }
 +}
 +
-+impl<V: PointerVelocityTracker> ScaleGestureRecognizer<V> {
++impl ScaleGestureRecognizer {
 +    /// The number of pointers being tracked by the gesture recognizer.
 +    pub fn pointer_count(&self) -> usize {
 +        self.pointer_queue.len()
@@ -364,7 +344,7 @@ index 0000000..bee16b8
 +        self.tracked_pointers.insert(event.id);
 +        self.entries.push(event.id);
 +        self.velocity_trackers
-+            .insert(event.id, V::with_kind(event.device));
++            .insert(event.id, VelocityTracker::with_kind(VelocityTrackerKind::LeastSquares));
 +        self.initial_event_timestamp = Some(time_stamp);
 +        if self.state == ScaleState::Ready {
 +            self.state = ScaleState::Possible;
@@ -411,7 +391,7 @@ index 0000000..bee16b8
 +        self.update_lines();
 +        self.update();
 +
-+        if !did_change_configuration || self.reconfigure(event.id, &mut out) {
++        if !did_change_configuration || self.reconfigure(event.id, time_stamp, &mut out) {
 +            self.advance_state_machine(
 +                should_start_if_accepted,
 +                event.device,
@@ -512,7 +492,12 @@ index 0000000..bee16b8
 +        }
 +    }
 +
-+    fn reconfigure(&mut self, pointer: TouchId, out: &mut Vec<ScaleOutput>) -> bool {
++    fn reconfigure(
++        &mut self,
++        pointer: TouchId,
++        time_stamp: Instant,
++        out: &mut Vec<ScaleOutput>,
++    ) -> bool {
 +        self.initial_focal_point = self
 +            .current_focal_point
 +            .expect("update sets the focal point before reconfigure");
@@ -525,13 +510,13 @@ index 0000000..bee16b8
 +                .velocity_trackers
 +                .get(&pointer)
 +                .expect("add_pointer gives every tracked pointer a velocity tracker");
-+            let pixels_per_second = tracker.velocity();
++            let pixels_per_second = tracker.get_velocity(time_stamp);
 +            let speed_squared = pixels_per_second.x * pixels_per_second.x
 +                + pixels_per_second.y * pixels_per_second.y;
 +            // _isFlingGesture
-+            let velocity = if speed_squared > MIN_FLING_VELOCITY * MIN_FLING_VELOCITY {
-+                if speed_squared > MAX_FLING_VELOCITY * MAX_FLING_VELOCITY {
-+                    pixels_per_second / speed_squared.sqrt() * MAX_FLING_VELOCITY
++            let velocity = if speed_squared > kMinFlingVelocity * kMinFlingVelocity {
++                if speed_squared > kMaxFlingVelocity * kMaxFlingVelocity {
++                    pixels_per_second / speed_squared.sqrt() * kMaxFlingVelocity
 +                } else {
 +                    pixels_per_second
 +                }
@@ -543,16 +528,20 @@ index 0000000..bee16b8
 +                scale_velocity: self
 +                    .scale_velocity_tracker
 +                    .as_ref()
-+                    .map_or(-1.0, |tracker| tracker.velocity().x),
++                    .map_or(-1.0, |tracker| tracker.get_velocity(time_stamp).x),
 +                pointer_count: self.pointer_count(),
 +            }));
 +            self.state = ScaleState::Accepted;
 +            // arbitrary PointerDeviceKind
-+            self.scale_velocity_tracker = Some(V::with_kind(PointerDevice::Touch));
++            self.scale_velocity_tracker = Some(VelocityTracker::with_kind(
++                VelocityTrackerKind::LeastSquares,
++            ));
 +            return false;
 +        }
 +        // arbitrary PointerDeviceKind
-+        self.scale_velocity_tracker = Some(V::with_kind(PointerDevice::Touch));
++        self.scale_velocity_tracker = Some(VelocityTracker::with_kind(
++                VelocityTrackerKind::LeastSquares,
++            ));
 +        true
 +    }
 +
@@ -718,29 +707,15 @@ index 0000000..bee16b8
 +    }
 +}
 +
-+impl PointerVelocityTracker for super::VelocityTracker {
-+    fn with_kind(_kind: PointerDevice) -> Self {
-+        Self::default()
-+    }
-+
-+    fn add_position(&mut self, time: Instant, position: Point<Pixels>) {
-+        self.push(time, position);
-+    }
-+
-+    fn velocity(&self) -> Point<f32> {
-+        super::VelocityTracker::velocity(self)
-+    }
-+}
-+
 +#[cfg(test)]
 +#[path = "scale_tests.rs"]
 +mod tests;
 diff --git a/gpui-pre/src/gestures/scale_tests.rs b/gpui-pre/src/gestures/scale_tests.rs
 new file mode 100644
-index 0000000..daa7899
+index 0000000..3409a11
 --- /dev/null
 +++ b/gpui-pre/src/gestures/scale_tests.rs
-@@ -0,0 +1,759 @@
+@@ -0,0 +1,758 @@
 +// Ported from flutter/flutter packages/flutter/test/gestures/scale_test.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 +// third_party/flutter/LICENSE.
@@ -764,7 +739,6 @@ index 0000000..daa7899
 +use std::time::Duration;
 +
 +use super::*;
-+use crate::gestures::VelocityTracker;
 +
 +#[derive(Clone, Copy, PartialEq)]
 +enum Arena {
@@ -872,12 +846,12 @@ index 0000000..daa7899
 +fn replay(
 +    name: &str,
 +    arena: Arena,
-+    configure: fn(&mut ScaleGestureRecognizer<VelocityTracker>),
++    configure: fn(&mut ScaleGestureRecognizer),
 +    rows: &[Row<'_>],
 +) {
 +    let origin = Instant::now();
 +    let at = |ms: u64| origin + Duration::from_millis(ms);
-+    let mut scale = ScaleGestureRecognizer::<VelocityTracker>::default();
++    let mut scale = ScaleGestureRecognizer::default();
 +    configure(&mut scale);
 +    let mut devices = HashMap::default();
 +    for (index, (event, wants)) in rows.iter().enumerate() {
@@ -1011,9 +985,9 @@ index 0000000..daa7899
 +    }
 +}
 +
-+fn defaults(_: &mut ScaleGestureRecognizer<VelocityTracker>) {}
++fn defaults(_: &mut ScaleGestureRecognizer) {}
 +
-+fn touch_only(scale: &mut ScaleGestureRecognizer<VelocityTracker>) {
++fn touch_only(scale: &mut ScaleGestureRecognizer) {
 +    scale.supported_devices = Some(vec![PointerDevice::Touch]);
 +}
 +
@@ -1514,7 +1488,7 @@ index a57aa9c..0444430 100644
  
 diff --git a/gpui-pre/src/overscroll.rs b/gpui-pre/src/overscroll.rs
 new file mode 100644
-index 0000000..a100bd6
+index 0000000..15e73a5
 --- /dev/null
 +++ b/gpui-pre/src/overscroll.rs
 @@ -0,0 +1,15 @@
@@ -1525,20 +1499,20 @@ index 0000000..a100bd6
 +mod overscroll_indicator;
 +mod scroll_physics;
 +mod scroll_simulation;
-+mod simulation;
 +mod spring_simulation;
++mod utils;
 +
 +pub use overscroll_indicator::*;
 +pub use scroll_physics::*;
 +pub use scroll_simulation::*;
-+pub use simulation::*;
 +pub use spring_simulation::*;
++pub use utils::*;
 diff --git a/gpui-pre/src/overscroll/overscroll_indicator.rs b/gpui-pre/src/overscroll/overscroll_indicator.rs
 new file mode 100644
-index 0000000..341eeea
+index 0000000..29401a1
 --- /dev/null
 +++ b/gpui-pre/src/overscroll/overscroll_indicator.rs
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,787 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/widgets/overscroll_indicator.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `_GlowController` and `_StretchController`, the scroll notification
 +// handling of `_GlowingOverscrollIndicatorState` and `_StretchingOverscrollIndicatorState`, and
@@ -1556,8 +1530,10 @@ index 0000000..341eeea
 +
 +use scheduler::Instant;
 +
++use crate::{Simulation, Tolerance};
++
 +use super::{
-+    ScrollMetrics, Simulation, SpringDescription, SpringSimulation, Tolerance, near_equal,
++    ScrollMetrics, SpringDescription, SpringSimulation, near_equal,
 +};
 +
 +/// Flutter's `clampDouble`: like `f64::clamp`, but never panics (NaN gives `max`, and `min` wins over `max`).
@@ -1912,7 +1888,7 @@ index 0000000..341eeea
 +            self.displacement_ticker = if near_equal(
 +                self.displacement_target,
 +                self.displacement,
-+                Tolerance::DEFAULT.distance,
++                Tolerance::DEFAULT_TOLERANCE.distance,
 +            ) {
 +                DisplacementTicker::Stopped
 +            } else {
@@ -2137,7 +2113,7 @@ index 0000000..341eeea
 +            self.overscroll,
 +            0.0,
 +            velocity * Self::TIME_CORRECTION_FACTOR,
-+            Tolerance::DEFAULT,
++            Tolerance::DEFAULT_TOLERANCE,
 +        )
 +    }
 +
@@ -2826,10 +2802,10 @@ index 0000000..bbff07b
 +}
 diff --git a/gpui-pre/src/overscroll/scroll_physics.rs b/gpui-pre/src/overscroll/scroll_physics.rs
 new file mode 100644
-index 0000000..1996382
+index 0000000..f3f001e
 --- /dev/null
 +++ b/gpui-pre/src/overscroll/scroll_physics.rs
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,259 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_physics.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ScrollDecelerationRate`, `ScrollPhysics.toleranceFor` and its
 +// default spring, `BouncingScrollPhysics`'s overscroll maths and ballistic simulation, and
@@ -2843,7 +2819,8 @@ index 0000000..1996382
 +// `ClampingScrollPhysics.applyBoundaryConditions`'s debug assertion that the call is redundant (it returns 0.0
 +// then, as Flutter does in release builds); `ScrollMetrics`' axis direction.
 +
-+use super::{BouncingScrollSimulation, FrictionSimulation, SpringDescription, Tolerance};
++use super::{BouncingScrollSimulation, SpringDescription};
++use crate::Tolerance;
 +
 +/// The rate at which scroll momentum will be decelerated.
 +#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2886,7 +2863,7 @@ index 0000000..1996382
 +    Tolerance {
 +        velocity: 1.0 / (0.050 * metrics.device_pixel_ratio), // logical pixels per second
 +        distance: 1.0 / metrics.device_pixel_ratio,           // logical pixels
-+        time: Tolerance::DEFAULT.time,
++        time: Tolerance::DEFAULT_TOLERANCE.time,
 +    }
 +}
 +
@@ -3011,12 +2988,12 @@ index 0000000..1996382
 +    }
 +
 +    /// The simulation to run after the user releases a drag at `velocity` (logical pixels per second), or `None`
-+    /// when the position is in range and stationary. `F` is the friction simulation the in-range phase runs.
-+    pub fn create_ballistic_simulation<F: FrictionSimulation>(
++    /// when the position is in range and stationary.
++    pub fn create_ballistic_simulation(
 +        &self,
 +        position: &ScrollMetrics,
 +        velocity: f64,
-+    ) -> Option<BouncingScrollSimulation<F>> {
++    ) -> Option<BouncingScrollSimulation> {
 +        let tolerance = tolerance_for(position);
 +        let is_stationary = velocity.abs() < tolerance.velocity;
 +        let is_rubber_band = is_stationary && position.out_of_range();
@@ -3090,10 +3067,10 @@ index 0000000..1996382
 +mod tests;
 diff --git a/gpui-pre/src/overscroll/scroll_physics_tests.rs b/gpui-pre/src/overscroll/scroll_physics_tests.rs
 new file mode 100644
-index 0000000..c67c5bb
+index 0000000..f70b906
 --- /dev/null
 +++ b/gpui-pre/src/overscroll/scroll_physics_tests.rs
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,188 @@
 +// Ported from flutter/flutter packages/flutter/test/widgets/scroll_physics_test.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 +// third_party/flutter/LICENSE.
@@ -3105,49 +3082,7 @@ index 0000000..c67c5bb
 +//! simulation doesn't alter the velocity for time 0" (other ports).
 +
 +use super::*;
-+use crate::overscroll::Simulation;
-+
-+/// Stands in for Flutter's `FrictionSimulation` with no drag (constant velocity), until the merge plugs in the
-+/// port of it; only the in-range phase of [`BouncingScrollSimulation`] runs it.
-+struct NoFriction {
-+    position: f64,
-+    velocity: f64,
-+    tolerance: Tolerance,
-+}
-+
-+impl Simulation for NoFriction {
-+    fn x(&self, time: f64) -> f64 {
-+        self.position + self.velocity * time
-+    }
-+    fn dx(&self, _time: f64) -> f64 {
-+        self.velocity
-+    }
-+    fn is_done(&self, _time: f64) -> bool {
-+        self.velocity.abs() < self.tolerance.velocity
-+    }
-+}
-+
-+impl FrictionSimulation for NoFriction {
-+    fn new(
-+        _drag: f64,
-+        position: f64,
-+        velocity: f64,
-+        _constant_deceleration: f64,
-+        tolerance: Tolerance,
-+    ) -> Self {
-+        Self {
-+            position,
-+            velocity,
-+            tolerance,
-+        }
-+    }
-+    fn final_x(&self) -> f64 {
-+        self.position + self.velocity * f64::INFINITY
-+    }
-+    fn time_at_x(&self, x: f64) -> f64 {
-+        (x - self.position) / self.velocity
-+    }
-+}
++use crate::Simulation;
 +
 +/// Flutter's `FixedScrollMetrics(minScrollExtent: 0.0, ..., axisDirection: AxisDirection.down)`.
 +fn metrics(
@@ -3183,7 +3118,7 @@ index 0000000..c67c5bb
 +    // Changing velocity for time 0 may cause a sudden, unwanted damping/speedup effect
 +    let position = metrics(100.0, 20.0, 500.0, 3.0);
 +    let simulation = MOBILE
-+        .create_ballistic_simulation::<NoFriction>(&position, 1000.0)
++        .create_ballistic_simulation(&position, 1000.0)
 +        .expect("a moving release makes a simulation");
 +    assert!(more_or_less_equals(simulation.dx(0.0), 1000.0));
 +}
@@ -3280,10 +3215,10 @@ index 0000000..c67c5bb
 +    for (name, pixels, stationary_x) in cases {
 +        let position = metrics(1000.0, pixels, 500.0, 1.0);
 +        let sim_stationary = MOBILE
-+            .create_ballistic_simulation::<NoFriction>(&position, 0.0)
++            .create_ballistic_simulation(&position, 0.0)
 +            .expect("an out-of-range release makes a simulation");
 +        let sim_moving = MOBILE
-+            .create_ballistic_simulation::<NoFriction>(&position, -100.0)
++            .create_ballistic_simulation(&position, -100.0)
 +            .expect("an out-of-range release makes a simulation");
 +        // Stationary simulation should follow the expected spring trajectory.
 +        for (index, wanted) in stationary_x.into_iter().enumerate() {
@@ -3326,10 +3261,10 @@ index 0000000..c67c5bb
 +}
 diff --git a/gpui-pre/src/overscroll/scroll_simulation.rs b/gpui-pre/src/overscroll/scroll_simulation.rs
 new file mode 100644
-index 0000000..bbf4d3e
+index 0000000..efbdf37
 --- /dev/null
 +++ b/gpui-pre/src/overscroll/scroll_simulation.rs
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,135 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_simulation.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `BouncingScrollSimulation`. Copyright 2014 The Flutter Authors.
 +// BSD-3-Clause, see third_party/flutter/LICENSE.
@@ -3337,30 +3272,15 @@ index 0000000..bbf4d3e
 +// Dropped: `ClampingScrollSimulation` (its own port), the `leadingExtent <= trailingExtent` assertion, and the
 +// mutable `tolerance` (fixed at construction; Flutter copies it into the inner simulations on every call).
 +
-+use super::{ScrollSpringSimulation, Simulation, SpringDescription, Tolerance};
-+
-+/// What [`BouncingScrollSimulation`] needs from Flutter's `FrictionSimulation` (friction_simulation.dart).
-+pub trait FrictionSimulation: Simulation {
-+    /// Flutter's `FrictionSimulation(drag, position, velocity, tolerance:, constantDeceleration:)`.
-+    fn new(
-+        drag: f64,
-+        position: f64,
-+        velocity: f64,
-+        constant_deceleration: f64,
-+        tolerance: Tolerance,
-+    ) -> Self;
-+    /// The value of [`Simulation::x`] at `double.infinity`.
-+    fn final_x(&self) -> f64;
-+    /// The time at which the value of `x(time)` will equal `x`, or infinity if it never will.
-+    fn time_at_x(&self, x: f64) -> f64;
-+}
++use super::{ScrollSpringSimulation, SpringDescription};
++use crate::{FrictionSimulation, Simulation, Tolerance};
 +
 +/// An implementation of scroll physics that matches iOS.
 +///
 +/// The simulation starts in a friction phase (or in a spring phase if it starts out of range), and switches to the
 +/// spring once the friction would carry the position past an edge.
 +#[derive(Clone, Copy, Debug)]
-+pub struct BouncingScrollSimulation<F> {
++pub struct BouncingScrollSimulation {
 +    /// When [`Simulation::x`] falls below this value the simulation switches from an internal friction model to a
 +    /// spring model which causes [`Simulation::x`] to "spring" back to [`Self::leading_extent`].
 +    pub leading_extent: f64,
@@ -3371,23 +3291,23 @@ index 0000000..bbf4d3e
 +    pub spring: SpringDescription,
 +    /// How close the simulation must come to rest before it is done.
 +    pub tolerance: Tolerance,
-+    phase: BouncingPhase<F>,
++    phase: BouncingPhase,
 +}
 +
 +/// Flutter's `_frictionSimulation`, `_springSimulation` and `_springTime`, as the one phase plan they encode.
 +#[derive(Clone, Copy, Debug)]
-+enum BouncingPhase<F> {
++enum BouncingPhase {
 +    /// Started out of range (`_springTime` is negative infinity): only the spring runs.
 +    Spring(ScrollSpringSimulation),
 +    /// Friction, then the spring from `spring_time` when the friction would leave the range (`_springTime` is
 +    /// infinite when `then` is `None`).
 +    Friction {
-+        friction: F,
++        friction: FrictionSimulation,
 +        then: Option<(f64, ScrollSpringSimulation)>,
 +    },
 +}
 +
-+impl<F: FrictionSimulation> BouncingScrollSimulation<F> {
++impl BouncingScrollSimulation {
 +    /// The maximum velocity that can be transferred from the inertia of a ballistic scroll into overscroll.
 +    pub const MAX_SPRING_TRANSFER_VELOCITY: f64 = 5000.0;
 +
@@ -3423,7 +3343,8 @@ index 0000000..bbf4d3e
 +        } else {
 +            // Taken from UIScrollView.decelerationRate (.normal = 0.998)
 +            // 0.998^1000 = ~0.135
-+            let friction = F::new(0.135, position, velocity, constant_deceleration, tolerance);
++            let friction =
++                FrictionSimulation::new(0.135, position, velocity, tolerance, constant_deceleration);
 +            let final_x = friction.final_x();
 +            let edge = if velocity > 0.0 && final_x > trailing_extent {
 +                Some(trailing_extent)
@@ -3463,7 +3384,7 @@ index 0000000..bbf4d3e
 +    }
 +}
 +
-+impl<F: FrictionSimulation> Simulation for BouncingScrollSimulation<F> {
++impl Simulation for BouncingScrollSimulation {
 +    fn x(&self, time: f64) -> f64 {
 +        let (simulation, time_offset) = self.simulation(time);
 +        simulation.x(time - time_offset)
@@ -3479,86 +3400,12 @@ index 0000000..bbf4d3e
 +        simulation.is_done(time - time_offset)
 +    }
 +}
-diff --git a/gpui-pre/src/overscroll/simulation.rs b/gpui-pre/src/overscroll/simulation.rs
-new file mode 100644
-index 0000000..830c568
---- /dev/null
-+++ b/gpui-pre/src/overscroll/simulation.rs
-@@ -0,0 +1,68 @@
-+// Ported from flutter/flutter packages/flutter/lib/src/physics/simulation.dart, tolerance.dart and utils.dart @
-+// 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
-+// third_party/flutter/LICENSE.
-+
-+/// The base class for all simulations.
-+///
-+/// A simulation models an object, in a one-dimensional space, on which particular
-+/// forces are being applied, and exposes:
-+///
-+///  * The object's position, [`Simulation::x`]
-+///  * The object's velocity, [`Simulation::dx`]
-+///  * Whether the simulation is "done", [`Simulation::is_done`]
-+///
-+/// A simulation is generally "done" if the object has, to a given [`Tolerance`],
-+/// come to a complete rest.
-+///
-+/// The functions take a time argument, in seconds, which specifies the time for which they are to be evaluated.
-+/// Every simulation here is stateless, so it can be queried with arbitrary times.
-+pub trait Simulation {
-+    /// The position of the object in the simulation at the given time.
-+    fn x(&self, time: f64) -> f64;
-+
-+    /// The velocity of the object in the simulation at the given time.
-+    fn dx(&self, time: f64) -> f64;
-+
-+    /// Whether the simulation is "done" at the given time.
-+    fn is_done(&self, time: f64) -> bool;
-+}
-+
-+/// Structure that specifies maximum allowable magnitudes for distances,
-+/// durations, and velocity differences to be considered equal.
-+#[derive(Clone, Copy, Debug, PartialEq)]
-+pub struct Tolerance {
-+    /// The magnitude of the maximum distance between two points for them to be
-+    /// considered within tolerance.
-+    pub distance: f64,
-+    /// The magnitude of the maximum duration between two times for them to be
-+    /// considered within tolerance.
-+    pub time: f64,
-+    /// The magnitude of the maximum difference between two velocities for them
-+    /// to be considered within tolerance.
-+    pub velocity: f64,
-+}
-+
-+impl Tolerance {
-+    const EPSILON_DEFAULT: f64 = 1e-3;
-+
-+    /// A default tolerance of 0.001 for all three values.
-+    pub const DEFAULT: Self = Self {
-+        distance: Self::EPSILON_DEFAULT,
-+        time: Self::EPSILON_DEFAULT,
-+        velocity: Self::EPSILON_DEFAULT,
-+    };
-+}
-+
-+/// Whether two doubles are within a given distance of each other.
-+///
-+/// The `epsilon` argument must be positive.
-+pub fn near_equal(a: f64, b: f64, epsilon: f64) -> bool {
-+    (a > (b - epsilon)) && (a < (b + epsilon)) || a == b
-+}
-+
-+/// Whether a double is within a given distance of zero.
-+///
-+/// The epsilon argument must be positive.
-+pub fn near_zero(a: f64, epsilon: f64) -> bool {
-+    near_equal(a, 0.0, epsilon)
-+}
 diff --git a/gpui-pre/src/overscroll/spring_simulation.rs b/gpui-pre/src/overscroll/spring_simulation.rs
 new file mode 100644
-index 0000000..b0f7a19
+index 0000000..bd37972
 --- /dev/null
 +++ b/gpui-pre/src/overscroll/spring_simulation.rs
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,220 @@
 +// Ported from flutter/flutter packages/flutter/lib/src/physics/spring_simulation.dart @ 3.50.1
 +// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 +// third_party/flutter/LICENSE.
@@ -3567,7 +3414,8 @@ index 0000000..b0f7a19
 +// (nothing here uses them). GPUI's own `SpringConfig` (spring.rs) steps an f32 state instead; these keep Flutter's
 +// f64 closed forms and its `isDone`, which the ported tests' values depend on.
 +
-+use super::{Simulation, Tolerance, near_zero};
++use super::near_zero;
++use crate::{Simulation, Tolerance};
 +
 +/// Structure that describes a spring's constants.
 +///
@@ -3777,4 +3625,27 @@ index 0000000..b0f7a19
 +            }
 +        }
 +    }
++}
+diff --git a/gpui-pre/src/overscroll/utils.rs b/gpui-pre/src/overscroll/utils.rs
+new file mode 100644
+index 0000000..7f8bf80
+--- /dev/null
++++ b/gpui-pre/src/overscroll/utils.rs
+@@ -0,0 +1,17 @@
++// Ported from flutter/flutter packages/flutter/lib/src/physics/utils.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE. `Simulation` and `Tolerance` are gestures/physics.rs's.
++
++/// Whether two doubles are within a given distance of each other.
++///
++/// The `epsilon` argument must be positive.
++pub fn near_equal(a: f64, b: f64, epsilon: f64) -> bool {
++    (a > (b - epsilon)) && (a < (b + epsilon)) || a == b
++}
++
++/// Whether a double is within a given distance of zero.
++///
++/// The epsilon argument must be positive.
++pub fn near_zero(a: f64, epsilon: f64) -> bool {
++    near_equal(a, 0.0, epsilon)
 +}
