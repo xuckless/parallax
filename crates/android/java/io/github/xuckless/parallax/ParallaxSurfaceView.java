@@ -1,5 +1,8 @@
-// Parallax's own view (not ported). Surface and inset handling read from Flutter's FlutterSurfaceView and
-// FlutterView as reference. How it fits together: docs/android.md.
+// Parallax's own view. Surface and inset handling read from Flutter's FlutterSurfaceView and
+// FlutterView as reference. One line is ported: touchSlop() from
+// engine/src/flutter/shell/platform/android/io/flutter/embedding/android/FlutterView.java @ 3.50.1
+// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause,
+// see third_party/flutter/LICENSE. How it fits together: docs/android.md.
 package io.github.xuckless.parallax;
 
 import android.app.Activity;
@@ -17,6 +20,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewStructure;
 import android.view.WindowInsets;
 import android.view.autofill.AutofillValue;
@@ -37,6 +41,8 @@ import java.nio.ByteBuffer;
 final class ParallaxSurfaceView extends SurfaceView
     implements SurfaceHolder.Callback, Choreographer.FrameCallback, KeyboardManager.ViewDelegate {
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
+  // Every call that sends the density also sends `touchSlop`, the device's touch slop in pixels, as
+  // FlutterView.sendViewportMetricsToFlutter sends devicePixelRatio and physicalTouchSlop together.
   // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops
   // events from a view whose Activity does not own the window (it is covered, or destroyed and its
   // callbacks arrive late). surfaceDestroyed is the exception: it always reaches the surface its
@@ -44,14 +50,19 @@ final class ParallaxSurfaceView extends SurfaceView
   // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
-      int activity, Surface surface, float density, float refreshRate, String languageTags);
+      int activity,
+      Surface surface,
+      float density,
+      int touchSlop,
+      float refreshRate,
+      String languageTags);
 
   // The app's locales after a configuration change (system or per-app language), as above; the
   // per-language font order follows them. Named after Flutter's LocalizationPlugin.sendLocalesToFlutter.
   private static native void nativeLocalesChanged(int activity, String languageTags);
 
   private static native void nativeSurfaceChanged(
-      int activity, int width, int height, float density);
+      int activity, int width, int height, float density, int touchSlop);
 
   private static native void nativeSurfaceDestroyed(int activity);
 
@@ -67,8 +78,12 @@ final class ParallaxSurfaceView extends SurfaceView
   // are none.
   private static native String[] nativeHapticFeedbackCalls(int activity);
 
+  // Also after a density change: ParallaxActivity.onConfigurationChanged re-applies the insets, and
+  // the surface keeps its pixel size, so no surfaceChanged follows.
   private static native void nativeInsets(
       int activity,
+      float density,
+      int touchSlop,
       int safeLeft,
       int safeTop,
       int safeRight,
@@ -189,6 +204,7 @@ final class ParallaxSurfaceView extends SurfaceView
         activity,
         holder.getSurface(),
         density(),
+        touchSlop(),
         getDisplay().getRefreshRate(),
         getResources().getConfiguration().getLocales().toLanguageTags());
   }
@@ -204,7 +220,7 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-    nativeSurfaceChanged(activity, width, height, density());
+    nativeSurfaceChanged(activity, width, height, density(), touchSlop());
   }
 
   @Override
@@ -325,6 +341,8 @@ final class ParallaxSurfaceView extends SurfaceView
       Insets ime = insets.getInsets(WindowInsets.Type.ime());
       nativeInsets(
           activity,
+          density(),
+          touchSlop(),
           safe.left, safe.top, safe.right, safe.bottom, ime.left, ime.top, ime.right, ime.bottom);
     } else {
       // API 28-29: system window insets cover the bars (and the keyboard, which is not split out
@@ -332,6 +350,8 @@ final class ParallaxSurfaceView extends SurfaceView
       DisplayCutout cutout = insets.getDisplayCutout();
       nativeInsets(
           activity,
+          density(),
+          touchSlop(),
           Math.max(insets.getSystemWindowInsetLeft(), cutout == null ? 0 : cutout.getSafeInsetLeft()),
           Math.max(insets.getSystemWindowInsetTop(), cutout == null ? 0 : cutout.getSafeInsetTop()),
           Math.max(
@@ -348,5 +368,11 @@ final class ParallaxSurfaceView extends SurfaceView
 
   private float density() {
     return getResources().getDisplayMetrics().density;
+  }
+
+  // As FlutterView.sendViewportMetricsToFlutter's physicalTouchSlop. ViewConfiguration.get caches one
+  // configuration per density, so this follows a density change.
+  private int touchSlop() {
+    return ViewConfiguration.get(getContext()).getScaledTouchSlop();
   }
 }

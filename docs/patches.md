@@ -71,3 +71,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0016](../patches/0016-touch-pinch.patch) | touch pinch: the scale recognizer in touch dispatch, `PinchEvent::touch`, `on_pinch` for fingers, `Window::join_pinch` ([pinch.md](pinch.md)) |
 | [0017](../patches/0017-overscroll-in-scroll-containers.patch) | overscroll (bounce, stretch, glow) in `div` scroll containers, `GestureTuning::overscroll`, `.overscroll(..)` ([overscroll.md](overscroll.md)) |
 | [0018](../patches/0018-haptic-feedback.patch) | `gpui::Haptic`, `PlatformWindow::perform_haptic` / `Window::perform_haptic`, `GestureTuning::long_press_haptic` on a claimed long press; iOS and web backends ([haptics.md](haptics.md)) |
+| [0019](../patches/0019-window-set-gesture-tuning.patch) | `Window::set_gesture_tuning` retunes an open window, for Android's device touch slop ([core-patches.md](core-patches.md#0019-retune-an-open-window)) |

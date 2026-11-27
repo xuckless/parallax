@@ -67,6 +67,15 @@ else the platform's, else GPUI's default. Each window reads it once and passes i
 `WindowParams::gesture_tuning`, so gpui_web's tap shadow (which decides whether a release may open the keyboard)
 uses the same slop as the recognizer. Parallax feeds it from the [behaviour table](behaviour.md).
 
+## 0019: retune an open window
+
+[0019-window-set-gesture-tuning.patch](../patches/0019-window-set-gesture-tuning.patch) (needs 0014).
+`Window::set_gesture_tuning` changes an open window's tuning in place: touches in progress keep their state and are
+judged by the new values from the next event on. The facade calls it when Android's device touch slop changes with
+the density ([behaviour.md](behaviour.md#how-gpui-gets-it-automatically)); the backend keeps the tuning the window
+opened with (only gpui_web reads it, and the web never retunes). Test: `open_window_takes_a_new_gesture_tuning`
+(window.rs, one row per retune).
+
 ## Tests
 
 Table-driven tests on GPUI's test platform: 0003 `pointer_source_names_the_device_and_synthesis_of_each_event`

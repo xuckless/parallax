@@ -1,0 +1,112 @@
+Let an open window take a new gesture tuning.
+
+What: `Window::set_gesture_tuning(GestureTuning)` is public (it was a test-only helper that rebuilt the touch
+recognizer) and now changes the tuning in place through `TouchGestureRecognizer::set_tuning`: touches in progress
+keep their state and are judged by the new values from the next event on. The platform window keeps the tuning it
+opened with (`WindowParams::gesture_tuning`, which only gpui_web reads, for its keyboard tap shadow). Adds a window
+test with one row per case (not retuned, retuned mid-touch with a 12 px and a 6 px travel).
+
+Why: a window reads its tuning once, when it opens (patch 0014), and its recognizer is private, so neither a
+Parallax crate nor an extension trait can reach it. Android reports its device touch slop
+(`ViewConfiguration.getScaledTouchSlop()`, which Flutter's FlutterView sends as `physicalTouchSlop` with every
+viewport metrics update) and that value changes with the display density while the app's one window stays open for
+the life of the process; without this patch a density change could reach only windows opened later, of which
+Android has none. No cfg: the setter is core and the same on every platform.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index aa3dab0..b3b8bfd 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -530,6 +530,12 @@ impl TouchGestureRecognizer {
+         }
+     }
+ 
++    /// Runs with `tuning` from the next event on; touches in progress keep
++    /// their state and are judged by the new values.
++    pub(crate) fn set_tuning(&mut self, tuning: GestureTuning) {
++        self.tuning = tuning;
++    }
++
+     /// Each gesture is paired with the device it reports: the touch's own,
+     /// except the closing step of a fling this touch catches, which keeps the
+     /// device of the touch that flung, like the momentum steps before it.
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 735b861..e3149a5 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3896,11 +3896,15 @@ impl Window {
+         self.long_press_capture == Some(entity.entity_id())
+     }
+ 
+-    /// Restarts touch recognition with the tuning a test passes, in place of
+-    /// the platform's.
+-    #[cfg(test)]
+-    pub(crate) fn set_gesture_tuning(&mut self, tuning: crate::GestureTuning) {
+-        self.touch_gestures = TouchGestureRecognizer::new(tuning);
++    /// Changes this open window's gesture tuning (slops, timeouts, scroll
++    /// physics) from its next touch event on, for a platform setting that
++    /// changes while the window is open, such as Android's touch slop after a
++    /// density change. Touches in progress continue under the new values.
++    /// [`App::set_gesture_tuning`] covers windows opened later. The platform
++    /// window keeps the tuning it opened with (`WindowParams::gesture_tuning`,
++    /// which only gpui_web reads, for its keyboard tap shadow).
++    pub fn set_gesture_tuning(&mut self, tuning: crate::GestureTuning) {
++        self.touch_gestures.set_tuning(tuning);
+     }
+ 
+     /// The current state of the keyboard's modifiers
+@@ -10586,6 +10590,52 @@ mod tests {
+         }
+     }
+ 
++    #[gpui::test]
++    fn open_window_takes_a_new_gesture_tuning(cx: &mut TestAppContext) {
++        let tap = [("down", true), ("up", true)];
++        let pan = [("scroll", true)];
++        // (name, touch slop set on the open window after the touch starts, finger travel,
++        // events seen). Each row opens its own window with the default tuning.
++        let rows: [(&str, Option<f32>, f32, &[(&str, bool)]); 3] = [
++            ("not retuned: kTouchSlop's 18 px, 12 px taps", None, 12., &tap),
++            (
++                "retuned to 8 px mid-touch (Android after a density change): 12 px pans",
++                Some(8.),
++                12.,
++                &pan,
++            ),
++            ("retuned to 8 px mid-touch: 6 px taps", Some(8.), 6., &tap),
++        ];
++        for (name, touch_slop, travel, expected) in rows {
++            let seen = Rc::new(RefCell::new(Vec::new()));
++            let window = cx.add_window({
++                let seen = seen.clone();
++                move |_, _| PointerSourceRecorder { seen }
++            });
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 10.);
++            if let Some(touch_slop) = touch_slop {
++                window
++                    .update(cx, |_, window, _| {
++                        window.set_gesture_tuning(GestureTuning {
++                            touch_slop: px(touch_slop),
++                            ..GestureTuning::default()
++                        })
++                    })
++                    .unwrap();
++            }
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Moved, 10. + travel);
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Ended, 10. + travel);
++            let mut seen: Vec<_> = seen
++                .borrow()
++                .iter()
++                .filter(|(kind, _)| *kind != "render")
++                .map(|(kind, source)| (*kind, source.is_some()))
++                .collect();
++            seen.dedup();
++            assert_eq!(seen, expected, "{name}");
++        }
++    }
++
+     #[gpui::test]
+     fn long_press_is_claimed_only_when_started_prevents_default(cx: &mut TestAppContext) {
+         for response in [

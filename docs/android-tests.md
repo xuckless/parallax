@@ -59,7 +59,7 @@ are). The shadow extends `ShadowSurfaceView`, so a test can also build a `Parall
 | Native | Shadow field | Stands in for |
 |---|---|---|
 | `nativeDispatchPointerDataPacket` | `renderer` (`Renderer.dispatchPointerDataPacket`) | `FlutterRenderer` |
-| `nativeInsets` | `renderer` (`Renderer.setViewportMetrics`, safe area → padding, IME → inset) | `FlutterRenderer.ViewportMetrics` |
+| `nativeInsets` | `renderer` (`Renderer.setViewportMetrics`, safe area → padding, IME → inset, density → `devicePixelRatio`, touch slop → `physicalTouchSlop`) | `FlutterRenderer.ViewportMetrics` |
 | `nativeDispatchKeyData` | `keyData` (`KeyDataSink`, returns the reply) | the `flutter/keydata` `BinaryMessenger` |
 | `nativeUpdateEditingState`, `nativePerformAction`, `nativeBoundsForRange` | `textInput` (`TextInput`) | `DartExecutor.send` on `flutter/textinput` |
 
