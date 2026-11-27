@@ -34,7 +34,7 @@ was synthesized: [pointer-source.md](pointer-source.md).
 ## 0005: text input configuration
 
 [0005-text-input-keyboard-type.patch](../patches/0005-text-input-keyboard-type.patch). Data only: backends read these
-fields from `TextInputConfiguration` in `set_text_input_configuration`.
+fields from `TextInputConfiguration` in `set_text_input_configuration` (iOS: patch 0030, [ios-text-input.md](ios-text-input.md)).
 
 | Field | Type | Values |
 |---|---|---|
