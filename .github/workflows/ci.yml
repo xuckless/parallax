@@ -1,5 +1,6 @@
 # Six builds, one per target, no feature variants (ROADMAP Phase 0), plus the Java tests, the patch tests (GPUI's own
-# tests on the patched fork crate) and an Android emulator smoke test of examples/hello. See docs/ci.md.
+# tests on the patched fork crate), Linux and Windows touch injection (Gate 3) and an Android emulator smoke test of
+# examples/hello. See docs/ci.md.
 name: CI
 
 on:
@@ -178,6 +179,38 @@ jobs:
             crates/platform/tests/traces/wayland
             crates/platform/tests/traces/x11
             target/record-traces/*/*.log
+
+  # Gate 3 on Windows (docs/windows-touch-harness.md): examples/hello's desktop bin gets synthetic touch and pen
+  # (crates/touch-inject), records the gesture traces, runs the runtime checks of patch 0021, then replays the fresh
+  # traces beside the committed phone and browser ones. The runner's desktop session takes injected input. The checks
+  # and the replay run even after a failed recording, so one run reports every failure.
+  windows-touch:
+    name: windows-touch
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: windows-touch
+      - run: scripts/apply-patches.sh
+      # A hung launch or injection fails its step, not the whole job, after this long.
+      - run: scripts/record-traces.sh windows
+        timeout-minutes: 15
+      - if: ${{ !cancelled() }}
+        run: scripts/windows-touch-checks.sh
+        timeout-minutes: 15
+      - if: ${{ !cancelled() }}
+        run: cargo test -p parallax-platform --test trace_replay -- --nocapture
+      # The fresh traces (commit them when they change) and every launch's log.
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windows-touch
+          path: |
+            crates/platform/tests/traces/windows/
+            target/record-traces/windows/
 
   # examples/hello on an API 35 emulator: scripts/android-smoke.sh builds, installs and drives it (docs/android-smoke.md).
   # It boots an emulator and builds a whole APK, so it runs on main, pull requests and manual runs, not on every

@@ -3,7 +3,8 @@
 Gate 3 ([ROADMAP.md](../ROADMAP.md), Phase 3) asks that touches injected on Windows (`InjectSyntheticPointerInput`)
 and Linux (Weston's headless test protocol; X11 through translation tables), and on macOS later, replay to the same
 gestures and scroll outcomes as the phone and browser traces ([traces.md](traces.md)). This page is the fixture
-contract those harnesses write to; the replay side is already in place.
+contract those harnesses write to; the replay side is already in place. Windows has its harness:
+`scripts/record-traces.sh windows` in CI's `windows-touch` job ([windows-touch-harness.md](windows-touch-harness.md)).
 
 ## Replay
 
@@ -45,6 +46,6 @@ real `wl_touch` events stamped with `CLOCK_MONOTONIC`; it plays the same frames 
 new folder's beside android's, web's and ios's; `trace_line_table` in the same file pins the line format. A gesture
 with no trace in a folder is skipped there, so a harness can land one gesture at a time.
 
-A pen gesture needs a row in the script's `gestures` table and in `GESTURES` only once some platform records pens
-(Windows can inject `PT_PEN`); its trace names `Pen` on every line, and the replay gives it the touch slops
-([desktop-touch-behaviour.md](desktop-touch-behaviour.md)).
+A pen gesture needs a row in the script's `gestures` table and in `GESTURES` only once a second platform records
+pens (Windows injects `PT_PEN`, checked by windows-touch-checks.sh, not yet traced); its trace names `Pen` on every
+line, and the replay gives it the touch slops ([desktop-touch-behaviour.md](desktop-touch-behaviour.md)).

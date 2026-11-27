@@ -1,0 +1,6 @@
+# windows tap: tap 200 400 50
+touch(0, 1, Started, 200.02, 399.98, Touch)
+touch(16, 1, Moved, 200.02, 399.98, Touch)
+touch(32, 1, Moved, 200.02, 399.98, Touch)
+touch(48, 1, Moved, 200.02, 399.98, Touch)
+touch(50, 1, Ended, 200.02, 399.98, Touch)
