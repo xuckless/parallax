@@ -14,8 +14,9 @@ events from `wl_touch`, so nothing is deduplicated.
 
 New file `wayland/touch.rs`, ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @
 v0.30.13 (45a6f047c7eb0d68f37138cbdd38eec9cd4c1575), Apache-2.0, Copyright the winit contributors (credited in
-NOTICE); Flutter's Linux fl_touch_manager.cc @ 3.50.1 is the second reference. Its touch map and clock are pure,
-with table tests (`touches_follow_wl_touch_events`, `touch_time_stamps`); `client.rs` holds only the dispatch glue.
+NOTICE); Flutter's Linux fl_touch_manager.cc @ 3.50.1 is the second reference. Its touch map is pure, with a
+table test (`touches_follow_wl_touch_events`); `client.rs` holds only the dispatch glue. New file `linux/clock.rs`:
+the `CLOCK_MONOTONIC` ms event clock (`Clock`, table test `event_time_stamps`), shared with X11 (patch 0023).
 A port, so one patch whatever its size (AGENTS.md patch rule 4).
 
 Why: upstream's Wayland backend binds only `wl_pointer` and `wl_keyboard`, so a touchscreen on Wayland did nothing
@@ -24,6 +25,110 @@ Parallax crate nor an extension trait can add it. cfg: Linux/FreeBSD with the `w
 
 Upstream PR: not filed yet.
 
+diff --git a/gpui-pre-linux/src/linux.rs b/gpui-pre-linux/src/linux.rs
+index c5afc4a..b7379eb 100644
+--- a/gpui-pre-linux/src/linux.rs
++++ b/gpui-pre-linux/src/linux.rs
+@@ -1,3 +1,5 @@
++#[cfg(any(feature = "wayland", feature = "x11"))]
++mod clock;
+ mod dispatcher;
+ mod display_connection;
+ mod headless;
+diff --git a/gpui-pre-linux/src/linux/clock.rs b/gpui-pre-linux/src/linux/clock.rs
+new file mode 100644
+index 0000000..093c26d
+--- /dev/null
++++ b/gpui-pre-linux/src/linux/clock.rs
+@@ -0,0 +1,88 @@
++//! The display server's input clock read next to GPUI's, so an event's millisecond time becomes a GPUI `Instant`
++//! by its age, as `TouchEvent::time_stamp` wants. Wayland compositors (Weston, Mutter, KWin and wlroots stamp input
++//! from libinput), Xorg and Xwayland (`GetTimeInMillis`) all stamp events with `CLOCK_MONOTONIC` in milliseconds,
++//! wrapping at `u32`, so both backends read it here.
++
++use std::time::{Duration, Instant};
++
++/// An age past this, either way, means the server stamps on another clock (a remote display, a test client's
++/// made-up times): no time stamp, so GPUI times the touch when it dispatches it.
++const MAX_EVENT_AGE_MILLIS: u32 = 10_000;
++
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct Clock {
++    pub(crate) now: Instant,
++    /// `CLOCK_MONOTONIC` at `now` in milliseconds, wrapped to `u32` as event times wrap.
++    pub(crate) monotonic_millis: u32,
++}
++
++impl Clock {
++    pub(crate) fn read() -> Self {
++        let mut time = libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        };
++        // SAFETY: `time` is a valid, writable timespec, and CLOCK_MONOTONIC exists on every Linux and FreeBSD.
++        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
++        let millis = (time.tv_sec as u64)
++            .wrapping_mul(1000)
++            .wrapping_add(time.tv_nsec as u64 / 1_000_000);
++        Self {
++            now: Instant::now(),
++            // Truncation is the point: servers send the low 32 bits.
++            monotonic_millis: millis as u32,
++        }
++    }
++
++    /// When an event stamped `time` happened, on GPUI's clock (Flutter's `PointerEvent.timeStamp`). A stamp a
++    /// little after the clock read counts as now; one more than [`MAX_EVENT_AGE_MILLIS`] away is `None`.
++    pub(crate) fn at(self, time: u32) -> Option<Instant> {
++        // The wrapping difference read as signed, so an age across the u32 wrap stays small.
++        let age = self.monotonic_millis.wrapping_sub(time) as i32;
++        if age.unsigned_abs() > MAX_EVENT_AGE_MILLIS {
++            return None;
++        }
++        self.now
++            .checked_sub(Duration::from_millis(age.max(0) as u64))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // Extend: one row per kind of event time a backend can send.
++    #[test]
++    fn event_time_stamps() {
++        // (row name, CLOCK_MONOTONIC ms at the clock read, the event's time, its age in ms, or None when untimed)
++        let rows: [(&str, u32, u32, Option<u64>); 8] = [
++            ("on time", 5_000, 5_000, Some(0)),
++            ("a frame old", 5_000, 4_984, Some(16)),
++            ("after the clock read is now", 1_000, 1_003, Some(0)),
++            ("across the u32 wrap", 10, u32::MAX - 5, Some(16)),
++            (
++                "ten seconds old is still timed",
++                20_000,
++                10_000,
++                Some(10_000),
++            ),
++            (
++                "older than ten seconds is another clock",
++                20_001,
++                10_000,
++                None,
++            ),
++            ("a foreign clock far behind", 100_000, 30_000, None),
++            ("a foreign clock ahead", 30_000, 100_000, None),
++        ];
++        let now = Instant::now() + Duration::from_secs(60);
++        for (name, monotonic_millis, time, age) in rows {
++            let clock = Clock {
++                now,
++                monotonic_millis,
++            };
++            let expected = age.map(|age| now - Duration::from_millis(age));
++            assert_eq!(clock.at(time), expected, "{name}");
++        }
++    }
++}
 diff --git a/gpui-pre-linux/src/linux/wayland.rs b/gpui-pre-linux/src/linux/wayland.rs
 index cbc962b..7c650c9 100644
 --- a/gpui-pre-linux/src/linux/wayland.rs
@@ -37,7 +142,7 @@ index cbc962b..7c650c9 100644
  
  /// Contains Types for configuring layer_shell surfaces.
 diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
-index c70243b..3e01669 100644
+index c70243b..a2d9ed0 100644
 --- a/gpui-pre-linux/src/linux/wayland/client.rs
 +++ b/gpui-pre-linux/src/linux/wayland/client.rs
 @@ -38,7 +38,7 @@ use wayland_client::{
@@ -49,15 +154,23 @@ index c70243b..3e01669 100644
      },
  };
  use wayland_protocols::ext::background_effect::v1::client::{
-@@ -97,6 +97,7 @@ use crate::linux::{
+@@ -87,6 +87,7 @@ use super::{
+     window::{ImeInput, WaylandWindowStatePtr},
+ };
+ 
++use crate::linux::clock::Clock;
+ use crate::linux::{
+     DOUBLE_CLICK_INTERVAL, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT, SCROLL_LINES,
+     capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
+@@ -97,6 +98,7 @@ use crate::linux::{
          cursor::Cursor,
          serial::{ActivationContext, Serial, SerialKind, SerialTracker},
          to_shape,
-+        touch::{Clock, Touches, WlTouchEvent},
++        touch::{Touches, WlTouchEvent},
          window::WaylandWindow,
      },
      xdg_desktop_portal::{Event as XDPEvent, XDPEventSource},
-@@ -107,8 +108,8 @@ use gpui::{
+@@ -107,8 +109,8 @@ use gpui::{
      KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
      MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
      PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
@@ -68,7 +181,7 @@ index c70243b..3e01669 100644
  };
  use gpui_wgpu::{CompositorGpuHint, GpuContext};
  use wayland_protocols::wp::linux_dmabuf::zv1::client::{
-@@ -367,6 +368,8 @@ pub(crate) struct WaylandClientState {
+@@ -367,6 +369,8 @@ pub(crate) struct WaylandClientState {
      pinch_gesture: Option<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>,
      pinch_scale: f32,
      wl_keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -77,7 +190,7 @@ index c70243b..3e01669 100644
      cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
      data_device: Option<wl_data_device::WlDataDevice>,
      primary_selection: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
-@@ -1070,6 +1073,8 @@ impl WaylandConnection {
+@@ -1070,6 +1074,8 @@ impl WaylandConnection {
              wl_seat: seat,
              wl_pointer: None,
              wl_keyboard: None,
@@ -86,7 +199,7 @@ index c70243b..3e01669 100644
              pinch_gesture: None,
              pinch_scale: 1.0,
              cursor_shape_device: None,
-@@ -1618,8 +1623,14 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
+@@ -1618,8 +1624,14 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                      if let Some(wl_keyboard) = state.wl_keyboard.take() {
                          wl_keyboard.release();
                      }
@@ -101,7 +214,7 @@ index c70243b..3e01669 100644
                  }
                  "wl_output" => {
                      let Ok(version) = wl_output_version(version) else {
-@@ -1711,6 +1722,18 @@ pub(crate) fn get_window(
+@@ -1711,6 +1723,18 @@ pub(crate) fn get_window(
      state.windows.get(surface_id).cloned()
  }
  
@@ -120,7 +233,7 @@ index c70243b..3e01669 100644
  impl Dispatch<wl_surface::WlSurface, ()> for WaylandClientStatePtr {
      fn event(
          this: &mut Self,
-@@ -2005,10 +2028,82 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
+@@ -2005,10 +2029,82 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
  
                  state.wl_pointer = Some(pointer);
              }
@@ -205,10 +318,10 @@ index c70243b..3e01669 100644
          this: &mut Self,
 diff --git a/gpui-pre-linux/src/linux/wayland/touch.rs b/gpui-pre-linux/src/linux/wayland/touch.rs
 new file mode 100644
-index 0000000..6c4e4a7
+index 0000000..f1d2d88
 --- /dev/null
 +++ b/gpui-pre-linux/src/linux/wayland/touch.rs
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,264 @@
 +//! Touch handling.
 +//!
 +//! Ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @ v0.30.13
@@ -219,9 +332,9 @@ index 0000000..6c4e4a7
 +//! Left out of winit's file: smithay-client-toolkit's `TouchHandler` plumbing and the per-seat lookup (GPUI binds
 +//! one seat), and the conversion to physical pixels (Wayland's surface coordinates are logical, as GPUI's are).
 +//! Added for GPUI: a fresh [`TouchId`] per touch, because Wayland reuses `wl_touch` ids and GPUI never reuses one,
-+//! and the event's time stamp on GPUI's clock ([`Clock`]).
++//! and the event's time stamp on GPUI's clock (`linux::clock`).
 +
-+use std::time::{Duration, Instant};
++use std::time::Instant;
 +
 +use collections::HashMap;
 +use gpui::{Pixels, Point, PointerDevice, TouchEvent, TouchId, TouchPhase};
@@ -349,54 +462,6 @@ index 0000000..6c4e4a7
 +    }
 +}
 +
-+/// How old an event may be and still be on `CLOCK_MONOTONIC`. Older means the compositor (or a test client
-+/// injecting touches) stamps on another base, so the touch is timed when GPUI dispatches it.
-+const MAX_EVENT_AGE: Duration = Duration::from_secs(10);
-+
-+/// GPUI's clock and the compositor's input clock read together. `wl_touch` times are milliseconds "with an
-+/// undefined base"; Weston, Mutter, KWin and wlroots stamp input from libinput, on `CLOCK_MONOTONIC`.
-+#[derive(Clone, Copy, Debug)]
-+pub(crate) struct Clock {
-+    now: Instant,
-+    /// `CLOCK_MONOTONIC` at `now` in milliseconds, wrapped to `u32` as compositors wrap event times.
-+    monotonic_millis: u32,
-+}
-+
-+impl Clock {
-+    pub(crate) fn read() -> Self {
-+        let mut time = libc::timespec {
-+            tv_sec: 0,
-+            tv_nsec: 0,
-+        };
-+        // SAFETY: `time` is a valid, writable timespec, and CLOCK_MONOTONIC exists on every Linux and FreeBSD.
-+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
-+        let millis = (time.tv_sec as u64)
-+            .wrapping_mul(1000)
-+            .wrapping_add(time.tv_nsec as u64 / 1_000_000);
-+        Self {
-+            now: Instant::now(),
-+            // Truncation is the point: compositors send the low 32 bits.
-+            monotonic_millis: millis as u32,
-+        }
-+    }
-+
-+    /// When an event stamped `time` happened, on GPUI's clock (Flutter's `PointerEvent.timeStamp`). A stamp after
-+    /// the clock read counts as now; one older than [`MAX_EVENT_AGE`] is `None`.
-+    pub(crate) fn at(self, time: u32) -> Option<Instant> {
-+        let age = self.monotonic_millis.wrapping_sub(time);
-+        // Past half the wrap, `time` is ahead of the read.
-+        let age = Duration::from_millis(if age > u32::MAX / 2 {
-+            0
-+        } else {
-+            u64::from(age)
-+        });
-+        if age > MAX_EVENT_AGE {
-+            return None;
-+        }
-+        self.now.checked_sub(age)
-+    }
-+}
-+
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
@@ -518,38 +583,6 @@ index 0000000..6c4e4a7
 +                })
 +                .collect();
 +            assert_eq!(out, expected, "{name}");
-+        }
-+    }
-+
-+    #[test]
-+    fn touch_time_stamps() {
-+        // (row name, CLOCK_MONOTONIC ms at the clock read, the event's time, its age, or None when untimed).
-+        let cases = [
-+            ("on time", 5_000, 5_000, Some(0)),
-+            ("16 ms old", 5_000, 4_984, Some(16)),
-+            ("across the u32 wrap", 10, u32::MAX - 5, Some(16)),
-+            ("ahead of the read is now", 5_000, 5_010, Some(0)),
-+            (
-+                "ten seconds old is still timed",
-+                20_000,
-+                10_000,
-+                Some(10_000),
-+            ),
-+            (
-+                "older than ten seconds is another clock",
-+                20_001,
-+                10_000,
-+                None,
-+            ),
-+        ];
-+        let now = Instant::now() + Duration::from_secs(60);
-+        for (name, monotonic_millis, time, age) in cases {
-+            let clock = Clock {
-+                now,
-+                monotonic_millis,
-+            };
-+            let expected = age.map(|age| now - Duration::from_millis(age));
-+            assert_eq!(clock.at(time), expected, "{name}");
 +        }
 +    }
 +}

@@ -10,16 +10,16 @@ of `xinput2_button_input`) and `window.rs` (the touch masks), Apache-2.0:
 - XinputTouchBegin / Update / End → `PlatformInput::Touch` (`touch_from_xinput`, table `XI2_TOUCH_PHASES`): the
   detail is the `TouchId` (XI2 touch ids are globally unique and increase per touch), `device: Touch`, the position
   in logical pixels as the pointer events convert theirs, `time_stamp` from the server's ms `time` moved onto GPUI's
-  clock by its age (`X11Clock`: Xorg and Xwayland stamp with CLOCK_MONOTONIC ms, read locally the same way; an age
-  over 10 s either way means a remote server's clock: `None`, timed at dispatch). No `Cancelled`, as in winit and
+  clock by its age (0022's `linux/clock.rs` `Clock`: Xorg and Xwayland stamp with CLOCK_MONOTONIC ms, as Wayland
+  compositors do; an age over 10 s either way means a remote server's clock: `None`, timed at dispatch). No `Cancelled`, as in winit and
   GDK: without XI_TouchOwnership a client gets a touch only once it owns it, and an owned touch ends only with
   XI_TouchEnd.
 - XinputButtonPress / Release / Motion with `POINTER_EMULATED` are dropped, as winit drops them: those the server
   makes from a touch, so a tap clicks once (GPUI makes its own mouse events from the touch), and the scroll-button
   clicks emulated from smooth scrolling, which upstream already skipped (its check inside the scroll arm goes). The
   dropped emulated scroll clicks no longer reset the IME composition, as real clicks do.
-- Table tests in x11/event.rs: XI2 touch event fixtures → TouchEvent, X11 time stamps (wrap, foreign clock), masks
-  per XInput version, the emulation filter.
+- Table tests in x11/event.rs: XI2 touch event fixtures → TouchEvent, masks per XInput version, the emulation
+  filter. Time stamps are 0022's `event_time_stamps` table.
 
 Pen: X11 tablets send pointer events with pressure valuators, not touches, and GPUI's mouse events carry no
 device (docs/pointer-source.md), so a pen stays `Mouse`, as on the web. Deferred.
@@ -32,17 +32,19 @@ Linux/FreeBSD with the `x11` feature.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
-index 6667170..5847a5a 100644
+index 6667170..dad4435 100644
 --- a/gpui-pre-linux/src/linux/x11/client.rs
 +++ b/gpui-pre-linux/src/linux/x11/client.rs
-@@ -41,11 +41,11 @@ use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSIO
+@@ -40,12 +40,14 @@ use xim::{AttributeName, Client, InputStyle, x11rb::X11rbClient};
+ use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION};
  use xkbcommon::xkb::{self as xkbc, STATE_LAYOUT_EFFECTIVE};
  
++use crate::linux::clock::Clock;
++
  use super::{
--    ButtonOrScroll, ScrollDirection, X11Display, X11WindowStatePtr, XcbAtoms, XimCallbackEvent,
+     ButtonOrScroll, ScrollDirection, X11Display, X11WindowStatePtr, XcbAtoms, XimCallbackEvent,
 -    XimHandler, button_or_scroll_from_event_detail, check_reply,
-+    ButtonOrScroll, ScrollDirection, X11Clock, X11Display, X11WindowStatePtr, XcbAtoms,
-+    XimCallbackEvent, XimHandler, XinputVersion, button_or_scroll_from_event_detail, check_reply,
++    XimHandler, XinputVersion, button_or_scroll_from_event_detail, check_reply,
      clipboard::{self, Clipboard},
 -    get_reply, get_valuator_axis_index, handle_connection_error, modifiers_from_state,
 -    pressed_button_from_mask, xcb_flush,
@@ -51,7 +53,7 @@ index 6667170..5847a5a 100644
  };
  
  use crate::linux::{
-@@ -233,7 +233,7 @@ pub struct X11ClientState {
+@@ -233,7 +235,7 @@ pub struct X11ClientState {
  
      pointer_device_states: BTreeMap<xinput::DeviceId, PointerDeviceState>,
  
@@ -60,7 +62,7 @@ index 6667170..5847a5a 100644
  
      pub(crate) common: Rc<RefCell<LinuxCommon>>,
      pub(crate) clipboard: Clipboard,
-@@ -387,9 +387,9 @@ impl X11Connection {
+@@ -387,9 +389,9 @@ impl X11Connection {
          xcb_connection.prefetch_extension_information(xinput::X11_EXTENSION_NAME)?;
  
          // Announce to X server that XInput up to 2.4 is supported.
@@ -73,7 +75,7 @@ index 6667170..5847a5a 100644
          let xinput_version = get_reply(
              || "XInput XiQueryVersion failed",
              xcb_connection.xinput_xi_query_version(2, 4),
-@@ -398,13 +398,14 @@ impl X11Connection {
+@@ -398,13 +400,14 @@ impl X11Connection {
              xinput_version.major_version >= 2,
              "XInput version >= 2 required."
          );
@@ -94,7 +96,7 @@ index 6667170..5847a5a 100644
          );
  
          let pointer_device_states =
-@@ -549,7 +550,7 @@ impl X11Connection {
+@@ -549,7 +552,7 @@ impl X11Connection {
  
                  pointer_device_states,
  
@@ -103,7 +105,7 @@ index 6667170..5847a5a 100644
  
                  clipboard,
                  clipboard_item: None,
-@@ -1228,6 +1229,11 @@ impl X11Client {
+@@ -1228,6 +1231,11 @@ impl X11Client {
                  drop(state);
                  window.handle_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }));
              }
@@ -115,7 +117,7 @@ index 6667170..5847a5a 100644
              Event::XinputButtonPress(event) => {
                  let window = self.get_window(event.event)?;
                  let mut state = self.0.borrow_mut();
-@@ -1283,24 +1289,19 @@ impl X11Client {
+@@ -1283,24 +1291,19 @@ impl X11Client {
                      }
                      Some(ButtonOrScroll::Scroll(direction)) => {
                          drop(state);
@@ -153,7 +155,7 @@ index 6667170..5847a5a 100644
                      }
                      None => {
                          log::error!("Unknown x11 button: {}", event.detail);
-@@ -1445,6 +1446,14 @@ impl X11Client {
+@@ -1445,6 +1448,14 @@ impl X11Client {
                      reset_pointer_device_scroll_positions(pointer);
                  }
              }
@@ -162,13 +164,13 @@ index 6667170..5847a5a 100644
 +            | Event::XinputTouchEnd(event) => {
 +                let window = self.get_window(event.event)?;
 +                let scale_factor = self.0.borrow().scale_factor;
-+                let touch = touch_from_xinput(&event, scale_factor, X11Clock::read())?;
++                let touch = touch_from_xinput(&event, scale_factor, Clock::read())?;
 +                window.handle_input(PlatformInput::Touch(touch));
 +            }
              Event::XinputGesturePinchBegin(event) => {
                  let window = self.get_window(event.event)?;
                  let mut state = self.0.borrow_mut();
-@@ -1706,7 +1715,7 @@ impl X11Client {
+@@ -1706,7 +1717,7 @@ impl X11Client {
          let scale_factor = state.scale_factor;
          let appearance = state.common.borrow().appearance;
          let compositor_gpu = state.compositor_gpu.take();
@@ -177,7 +179,7 @@ index 6667170..5847a5a 100644
          let is_bgr = state
              .resource_database
              .get_string("Xft.rgba", "Xft.Rgba")
-@@ -1726,7 +1735,7 @@ impl X11Client {
+@@ -1726,7 +1737,7 @@ impl X11Client {
              scale_factor,
              appearance,
              parent_window,
@@ -187,18 +189,15 @@ index 6667170..5847a5a 100644
          )?;
          check_reply(
 diff --git a/gpui-pre-linux/src/linux/x11/event.rs b/gpui-pre-linux/src/linux/x11/event.rs
-index 3fb9164..ced17f5 100644
+index 3fb9164..79e314a 100644
 --- a/gpui-pre-linux/src/linux/x11/event.rs
 +++ b/gpui-pre-linux/src/linux/x11/event.rs
-@@ -1,9 +1,14 @@
-+use std::time::{Duration, Instant};
-+
- use x11rb::protocol::{
-     xinput,
+@@ -3,7 +3,11 @@ use x11rb::protocol::{
      xproto::{self, ModMask},
  };
  
 -use gpui::{Modifiers, MouseButton, NavigationDirection};
++use crate::linux::clock::Clock;
 +use gpui::{
 +    Modifiers, MouseButton, NavigationDirection, PointerDevice, TouchEvent, TouchId, TouchPhase,
 +    point, px,
@@ -206,7 +205,7 @@ index 3fb9164..ced17f5 100644
  
  pub(crate) enum ButtonOrScroll {
      Button(MouseButton),
-@@ -65,6 +70,138 @@ pub(crate) fn pressed_button_from_mask(button_mask: u32) -> Option<MouseButton>
+@@ -65,6 +69,97 @@ pub(crate) fn pressed_button_from_mask(button_mask: u32) -> Option<MouseButton>
      })
  }
  
@@ -274,54 +273,13 @@ index 3fb9164..ced17f5 100644
 +    flags.contains(xinput::PointerEventFlags::POINTER_EMULATED)
 +}
 +
-+/// GPUI's clock and the X server's event clock read together, so an event's `time` becomes a GPUI `Instant` by its
-+/// age, as [`TouchEvent::time_stamp`] wants.
-+#[derive(Clone, Copy, Debug)]
-+pub(crate) struct X11Clock {
-+    pub(crate) now: Instant,
-+    /// The X server's clock at `now`, in ms. Xorg and Xwayland stamp events with `CLOCK_MONOTONIC` in ms, wrapping
-+    /// at `u32` (`GetTimeInMillis`), so this reads the local monotonic clock the same way.
-+    pub(crate) server_millis: xproto::Timestamp,
-+}
-+
-+impl X11Clock {
-+    /// An age past this, either way, means the server stamps on another clock (a remote display): no time stamp.
-+    const FOREIGN_CLOCK_MILLIS: u32 = 10_000;
-+
-+    pub(crate) fn read() -> Self {
-+        let mut time = libc::timespec {
-+            tv_sec: 0,
-+            tv_nsec: 0,
-+        };
-+        // SAFETY: `time` is a valid, writable timespec, and CLOCK_MONOTONIC exists on every Linux and FreeBSD.
-+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
-+        Self {
-+            now: Instant::now(),
-+            // Truncating to u32 wraps as the server's CARD32 time does.
-+            server_millis: (time.tv_sec as u64 * 1000 + time.tv_nsec as u64 / 1_000_000) as u32,
-+        }
-+    }
-+
-+    /// When an event stamped `time` happened, on GPUI's clock. A stamp a little after the clock read counts as now;
-+    /// one too far either way is from another clock.
-+    fn at(self, time: xproto::Timestamp) -> Option<Instant> {
-+        // The wrapping difference read as signed, so an age across the u32 wrap stays small.
-+        let age = self.server_millis.wrapping_sub(time) as i32;
-+        if age.unsigned_abs() > Self::FOREIGN_CLOCK_MILLIS {
-+            return None;
-+        }
-+        self.now
-+            .checked_sub(Duration::from_millis(age.max(0) as u64))
-+    }
-+}
-+
 +/// The GPUI touch for an XI2 touch event (winit's `xinput2_touch`), in logical pixels at `scale_factor`. XI2 touch
 +/// ids are globally unique and increase for each new touch (XI2proto), so the detail is the [`TouchId`]. `None` for
 +/// an event type without an [`XI2_TOUCH_PHASES`] row.
 +pub(crate) fn touch_from_xinput(
 +    event: &xinput::TouchBeginEvent,
 +    scale_factor: f32,
-+    clock: X11Clock,
++    clock: Clock,
 +) -> Option<TouchEvent> {
 +    let (_, phase) = XI2_TOUCH_PHASES
 +        .iter()
@@ -345,8 +303,12 @@ index 3fb9164..ced17f5 100644
  pub(crate) fn get_valuator_axis_index(
      valuator_mask: &Vec<u32>,
      valuator_number: u16,
-@@ -126,6 +263,181 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
+@@ -124,8 +219,166 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
+ 
+ #[cfg(test)]
  mod tests {
++    use std::time::{Duration, Instant};
++
      use super::*;
  
 +    /// An XI2 touch event as the server sends it: the fields `touch_from_xinput` reads, the rest as parsed from
@@ -375,9 +337,9 @@ index 3fb9164..ced17f5 100644
 +    // Extend: one row per XI2 touch event shape; batch 2's recorded X11 touch traces add rows here.
 +    #[test]
 +    fn xi2_touch_events() {
-+        let clock = X11Clock {
++        let clock = Clock {
 +            now: Instant::now(),
-+            server_millis: 50_000,
++            monotonic_millis: 50_000,
 +        };
 +        // (name, event, scale factor, expected (id, phase, x, y, age in ms))
 +        let rows: [(
@@ -460,25 +422,6 @@ index 3fb9164..ced17f5 100644
 +            });
 +            // TouchEvent has no PartialEq; its Debug form shows every field.
 +            assert_eq!(format!("{touch:?}"), format!("{expected:?}"), "{name}");
-+        }
-+    }
-+
-+    #[test]
-+    fn x11_time_stamps() {
-+        let now = Instant::now();
-+        // (name, server clock at the read, event time, expected age in ms or None)
-+        let rows: [(&str, u32, u32, Option<u64>); 6] = [
-+            ("on time", 1_000, 1_000, Some(0)),
-+            ("a frame old", 1_000, 984, Some(16)),
-+            ("after the clock read is now", 1_000, 1_003, Some(0)),
-+            ("across the u32 wrap", 5, u32::MAX - 10, Some(16)),
-+            ("a foreign clock behind", 100_000, 30_000, None),
-+            ("a foreign clock ahead", 30_000, 100_000, None),
-+        ];
-+        for (name, server_millis, time, age) in rows {
-+            let clock = X11Clock { now, server_millis };
-+            let expected = age.map(|age| now - Duration::from_millis(age));
-+            assert_eq!(clock.at(time), expected, "{name}");
 +        }
 +    }
 +
