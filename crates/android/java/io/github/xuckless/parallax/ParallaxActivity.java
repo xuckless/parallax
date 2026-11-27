@@ -73,7 +73,8 @@ public class ParallaxActivity extends Activity {
     super.onStop();
   }
 
-  // Not quit: the process and GPUI may outlive this Activity, and a new one reattaches (docs/android-lifecycle.md).
+  // Closes this Activity's GPUI window. Not quit: the process and GPUI may outlive it, and a new
+  // Activity opens a new window (docs/android-multi-window.md).
   @Override
   protected void onDestroy() {
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_DESTROY, 0);

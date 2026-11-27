@@ -1,8 +1,10 @@
-//! The Rust end of `ParallaxSurfaceView`: JNI entry points, the main-thread host and the shell that owns the
-//! surface state machine, the renderer and GPUI's window callbacks.
+//! The Rust end of `ParallaxActivity` and `ParallaxSurfaceView`: JNI entry points, the main-thread host and the
+//! app's shell, which owns the Activities' lifecycle, the shared GPU context and each Activity's window
+//! ([`ActivityWindow`]). How the windows fit together: docs/android-multi-window.md.
 
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{OnceCell, RefCell},
+    collections::BTreeMap,
     ffi::c_void,
     rc::Rc,
     sync::Arc,
@@ -10,28 +12,25 @@ use std::{
 };
 
 use gpui::{
-    App, AppLifecyclePhase, Application, ApplicationHandle, AsyncApp, DevicePixels,
-    DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas, PlatformInput, PlatformInputHandler,
-    RequestFrameOptions, Size, WindowInsets, WindowVisibility, point, px, size,
+    AnyWindowHandle, App, AppLifecyclePhase, Application, ApplicationHandle, AsyncApp,
+    DevicePixels, Edges, Pixels, PlatformAtlas, size,
 };
-use gpui_wgpu::{GpuContext, WgpuRenderer};
+use gpui_wgpu::GpuContext;
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
     objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
     sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
-use serde_json::Value;
 
 use crate::{
     Error,
+    activity_window::{ActivityWindow, Gpui, Slot},
     backend::Device,
-    haptics, keys,
+    keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
-    metrics::Metrics,
-    pointer,
     renderer::{self, NativeWindow},
-    surface::{Action, Surface, SurfaceEvent},
-    text_input::{self, Edit, EditingState},
+    surface::SurfaceEvent,
+    text_input::EditingState,
     text_system::AndroidTextSystem,
 };
 
@@ -120,17 +119,21 @@ fn natives() -> [NativeMethod; 14] {
 struct MainThreadHost {
     shell: Rc<Shell>,
     app: RefCell<AppState>,
+    /// The app's launch ([`crate::android_main!`]'s first argument): it opens the window of the Activity whose first
+    /// surface it runs on, once per Activity.
+    launch: fn(&mut App),
     /// The app's hook for a changed device touch slop ([`crate::android_main!`]'s second argument).
     touch_slop_changed: TouchSlopChanged,
 }
 
 /// Called on the main thread, in its own looper turn, when the device's touch slop moves to a new value (logical
-/// pixels): the facade re-applies the behaviour table's row with it.
-pub type TouchSlopChanged = fn(&mut App, Pixels);
+/// pixels) in one Activity's view: the facade re-applies the behaviour table's row with it, to the app's tuning and
+/// to that Activity's window (`None` before GPUI opens it).
+pub type TouchSlopChanged = fn(&mut App, Option<AnyWindowHandle>, Pixels);
 
 enum AppState {
-    /// `JNI_OnLoad` ran; the app launches on the first surface (GPUI needs one to open its window).
-    Loaded { launch: fn(&mut App) },
+    /// `JNI_OnLoad` ran; GPUI starts on the first Activity's first surface (it needs one to open a window).
+    NotStarted,
     /// GPUI is running. The handle keeps it alive for the life of the process and reaches it when the locales
     /// change; `cx` schedules work on GPUI's next looper turn without entering it; `fonts` is `None` when the
     /// system fonts did not load (logged), then there is no order to change.
@@ -142,29 +145,78 @@ enum AppState {
 }
 
 impl MainThreadHost {
-    /// Takes Java's density and touch slop (sent with every surface and insets report, [`Metrics::rescaled`]) and logs
+    /// Takes Java's density and touch slop (sent with every surface and insets report, [`crate::metrics::Metrics::rescaled`]) and logs
     /// when either moved. A moved logical slop goes to the app's [`TouchSlopChanged`] hook on the next looper turn,
     /// not inside this JNI call, which may be mid-report (the insets are not stored yet) or reached while GPUI runs;
-    /// before launch, the launch reads it ([`crate::touch_slop`]). Returns whether the density moved.
-    fn rescale_and_notify(&self, density: f32, touch_slop: jint) -> bool {
-        let rescaled = self
-            .shell
+    /// before launch, the launch reads it ([`crate::touch_slop`]). Returns whether the density moved. Each Activity's
+    /// view reports its own: `window`'s metrics change.
+    fn rescale_and_notify(&self, window: &ActivityWindow, density: f32, touch_slop: jint) -> bool {
+        let rescaled = window
             .metrics
             .get()
             .rescaled(density, DevicePixels(touch_slop));
-        self.shell.metrics.set(rescaled.metrics);
+        window.metrics.set(rescaled.metrics);
         if rescaled.density_moved || rescaled.touch_slop_moved.is_some() {
             let logical = rescaled.metrics.touch_slop();
-            log::info!("parallax: touch slop {touch_slop} px at density {density}: {logical:?}");
+            log::info!(
+                "parallax: Activity {}: touch slop {touch_slop} px at density {density}: {logical:?}",
+                window.activity.0
+            );
         }
         if let (Some(new), AppState::Running { cx, .. }) =
             (rescaled.touch_slop_moved, &*self.app.borrow())
         {
-            let hook = self.touch_slop_changed;
-            cx.spawn(async move |cx| cx.update(|cx| hook(cx, new)))
+            let (hook, handle) = (self.touch_slop_changed, window.gpui_handle());
+            cx.spawn(async move |cx| cx.update(|cx| hook(cx, handle, new)))
                 .detach();
         }
         rescaled.density_moved
+    }
+
+    /// Runs the app's `launch` for `window`'s Activity, on its first surface: GPUI starts with the first one, and
+    /// each later Activity's launch opens its window in the running app ([`Shell::open_window`] binds it).
+    fn launch(&self, window: &ActivityWindow, locales: &[String]) {
+        *window.gpui.borrow_mut() = Gpui::Launched;
+        // Cloned so the borrow ends before GPUI runs: the launch may reach `self.app` again.
+        let running = match &*self.app.borrow() {
+            AppState::NotStarted => None,
+            AppState::Running { app, .. } => Some(app.clone()),
+        };
+        match running {
+            Some(app) => app.update(|cx| (self.launch)(cx)),
+            None => self.start(locales),
+        }
+        if window.is_launched() {
+            log::warn!(
+                "parallax: launch opened no window for Activity {}: it stays black",
+                window.activity.0
+            );
+        }
+    }
+
+    /// Starts GPUI, whose launch opens the first Activity's window.
+    fn start(&self, locales: &[String]) {
+        let fonts = crate::text_system::load(&self.shell.vm, locales);
+        let platform =
+            match crate::platform::AndroidPlatform::new(self.shell.clone(), fonts.clone()) {
+                Ok(platform) => platform,
+                Err(error) => return log::error!("parallax: cannot start the app: {error}"),
+            };
+        let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
+        let app = Application::with_platform(platform).run_embedded(self.launch);
+        *self.app.borrow_mut() = AppState::Running {
+            cx: app.to_async(),
+            app: Rc::new(app),
+            fonts,
+        };
+        // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
+        let phases = self.shell.lifecycle.borrow().launch_phases();
+        for &phase in phases {
+            self.shell
+                .callbacks
+                .app_lifecycle
+                .with(|callback| callback(phase));
+        }
     }
 
     /// The app's locales now (a configuration change, or a recreated Activity's surface): the per-language font
@@ -173,7 +225,7 @@ impl MainThreadHost {
     fn follow_locales(&self, locales: &[String]) {
         // Cloned so the borrow ends before GPUI runs: code inside `update` may reach `self.app` again.
         let (app, fonts) = match &*self.app.borrow() {
-            AppState::Loaded { .. } | AppState::Running { fonts: None, .. } => return,
+            AppState::NotStarted | AppState::Running { fonts: None, .. } => return,
             AppState::Running {
                 app,
                 fonts: Some(fonts),
@@ -247,7 +299,8 @@ pub unsafe fn on_load(
             HOST.with(|host| {
                 host.get_or_init(|| MainThreadHost {
                     shell: Rc::new(Shell::new(vm)),
-                    app: RefCell::new(AppState::Loaded { launch }),
+                    app: RefCell::new(AppState::NotStarted),
+                    launch,
                     touch_slop_changed,
                 });
             });
@@ -267,22 +320,18 @@ fn with_host(f: impl FnOnce(&MainThreadHost)) {
     });
 }
 
-/// [`with_host`] for an event from `activity`'s view: dropped unless that Activity owns the window
-/// ([`Lifecycle::accepts`], the one rule for surface, frame, inset, touch and key events).
-fn with_owner(activity: jint, f: impl FnOnce(&MainThreadHost)) {
-    with_host(|host| {
-        if host.shell.lifecycle.borrow().accepts(ActivityId(activity)) {
-            f(host)
-        } else {
-            log::warn!(
-                "parallax: event from Activity {activity}, which does not own the window, ignored"
-            );
-        }
+/// [`with_host`] for an event from `activity`'s view, which goes to that Activity's window: the one rule for
+/// surface, frame, inset, touch, key and text-input events. Dropped once the Activity is destroyed.
+fn with_window(activity: jint, f: impl FnOnce(&MainThreadHost, &ActivityWindow)) {
+    with_host(|host| match host.shell.window(ActivityId(activity)) {
+        Some(window) => f(host, &window),
+        None => log::warn!("parallax: event from destroyed Activity {activity} ignored"),
     });
 }
 
-/// `tags`: the app's locales ([`locales`]). The first surface starts the platform with them; a later one (a recreated
-/// Activity) brings the current ones ([`MainThreadHost::follow_locales`]).
+/// `tags`: the app's locales ([`locales`]). The first surface starts the platform with them; a later one brings the
+/// current ones ([`MainThreadHost::follow_locales`]). An Activity's first surface runs the app's launch for it
+/// ([`MainThreadHost::launch`]).
 extern "system" fn surface_created(
     mut env: JNIEnv,
     _class: JClass,
@@ -298,48 +347,23 @@ extern "system" fn surface_created(
     let raw = unsafe {
         ndk_sys::ANativeWindow_fromSurface(env.get_raw().cast(), surface.as_raw().cast())
     };
-    let Some(window) = NativeWindow::from_acquired(raw) else {
+    let Some(native) = NativeWindow::from_acquired(raw) else {
         log::error!("parallax: surfaceCreated without a native window");
         return;
     };
-    // A stale view's window is released on return, unused.
-    with_owner(activity, |host| {
-        let size = window.size();
-        host.rescale_and_notify(density, touch_slop);
-        host.shell.set_display(size, refresh_rate);
-        host.shell.handle(SurfaceEvent::Created {
-            window,
-            activity: ActivityId(activity),
+    // A destroyed Activity's window is released on return, unused.
+    with_window(activity, |host, window| {
+        let size = native.size();
+        host.rescale_and_notify(window, density, touch_slop);
+        window.set_display(size, refresh_rate);
+        window.handle(SurfaceEvent::Created {
+            window: native,
             size,
         });
-        // Read first, so the borrow ends before `follow_locales` runs GPUI.
-        let loaded = match &*host.app.borrow() {
-            AppState::Loaded { launch } => Some(*launch),
-            AppState::Running { .. } => None,
-        };
-        let Some(launch) = loaded else {
-            return host.follow_locales(&locales);
-        };
-        let fonts = crate::text_system::load(&host.shell.vm, &locales);
-        match crate::platform::AndroidPlatform::new(host.shell.clone(), fonts.clone()) {
-            Ok(platform) => {
-                let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
-                let app = Application::with_platform(platform).run_embedded(launch);
-                *host.app.borrow_mut() = AppState::Running {
-                    cx: app.to_async(),
-                    app: Rc::new(app),
-                    fonts,
-                };
-                // GPUI launched after onStart (and usually onResume): tell its observers what they missed.
-                let phases = host.shell.lifecycle.borrow().launch_phases();
-                for &phase in phases {
-                    host.shell
-                        .callbacks
-                        .app_lifecycle
-                        .with(|callback| callback(phase));
-                }
-            }
-            Err(error) => log::error!("parallax: cannot start the app: {error}"),
+        host.follow_locales(&locales);
+        let waiting = matches!(*window.gpui.borrow(), Gpui::Waiting);
+        if waiting {
+            host.launch(window, &locales);
         }
     });
 }
@@ -353,28 +377,23 @@ extern "system" fn surface_changed(
     density: jfloat,
     touch_slop: jint,
 ) {
-    with_owner(activity, |host| {
-        let refresh_rate = host.shell.metrics.get().refresh_rate;
+    with_window(activity, |host, window| {
+        let refresh_rate = window.metrics.get().refresh_rate;
         let size = size(DevicePixels(width), DevicePixels(height));
-        host.rescale_and_notify(density, touch_slop);
-        host.shell.set_display(size, refresh_rate);
-        host.shell.handle(SurfaceEvent::Resized { size });
+        host.rescale_and_notify(window, density, touch_slop);
+        window.set_display(size, refresh_rate);
+        window.handle(SurfaceEvent::Resized { size });
     });
 }
 
-/// Not [`with_owner`]: a view whose Activity no longer owns the window may still hold the current surface, and
-/// the surface state machine releases it only for that view.
 extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jint) {
-    with_host(|host| {
-        host.shell.handle(SurfaceEvent::Destroyed {
-            activity: ActivityId(activity),
-            at: Instant::now(),
-        })
+    with_window(activity, |_, window| {
+        window.handle(SurfaceEvent::Destroyed { at: Instant::now() })
     });
 }
 
-/// `ParallaxActivity.onCreate`: a new live Activity, which owns the window once it starts; Java tags its events
-/// with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
+/// `ParallaxActivity.onCreate`: a new live Activity with its own window, which GPUI opens on its first surface;
+/// Java tags its events with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
 extern "system" fn activity_created(mut env: JNIEnv, _class: JClass) -> jint {
     let created = shell().map(|shell| {
         shell.lifecycle(ActivityEvent::Create);
@@ -426,17 +445,17 @@ extern "system" fn locales_changed(
 /// Every vsync: GPUI draws if anything changed. Java then asks for GPUI's framework calls ([`framework_calls`]) and
 /// runs them after this returns, outside GPUI's draw.
 extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
-    with_owner(activity, |host| host.shell.frame());
+    with_window(activity, |_, window| window.frame());
 }
 
-/// GPUI's pending calls to Java in Flutter's channel encoding, by channel ([`Shell::framework_calls`]), or null
+/// GPUI's pending calls to Java in Flutter's channel encoding, by channel ([`ActivityWindow::framework_calls`]), or null
 /// when there are none. Java asks after each frame and right after `KeyboardManager` handled a key event: a key GPUI
 /// edits the field with reaches Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit
 /// text before the next vsync). A pull, not a call into Java: a haptic fires from a GPUI timer, where Rust holds no
 /// Java frame to call through.
 extern "system" fn framework_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
     let mut calls = None;
-    with_owner(activity, |host| calls = host.shell.framework_calls());
+    with_window(activity, |_, window| calls = window.framework_calls());
     match calls.map(|calls| env.new_string(calls.to_string())) {
         Some(Ok(calls)) => calls.into_raw(),
         Some(Err(error)) => {
@@ -470,13 +489,13 @@ extern "system" fn update_editing_state(
         (selection_start, selection_end),
         (composing_start, composing_end),
     );
-    with_owner(activity, |host| host.shell.update_editing_state(state));
+    with_window(activity, |_, window| window.update_editing_state(state));
 }
 
 /// `TextInputChannel`'s performAction family: the IME's editor action, by Flutter's name. One rule for every
-/// action until GPUI has an action table: it is Enter ([`Shell::perform_action`]), so the name is not read.
+/// action until GPUI has an action table: it is Enter ([`ActivityWindow::perform_action`]), so the name is not read.
 extern "system" fn perform_action(_env: JNIEnv, _class: JClass, activity: jint, _action: JString) {
-    with_owner(activity, |host| host.shell.perform_action());
+    with_window(activity, |_, window| window.perform_action());
 }
 
 /// `TextInputChannel.boundsForRange`: GPUI's bounds of a UTF-16 range in view pixels, into `ltrb`.
@@ -492,8 +511,8 @@ extern "system" fn bounds_for_range(
         return JNI_FALSE;
     };
     let mut bounds = None;
-    with_owner(activity, |host| {
-        bounds = host.shell.bounds_for_range(start..end)
+    with_window(activity, |_, window| {
+        bounds = window.bounds_for_range(start..end)
     });
     let Some(bounds) = bounds else {
         return JNI_FALSE;
@@ -532,13 +551,13 @@ extern "system" fn dispatch_pointer_data_packet(
     // SAFETY: `buffer` is a live direct buffer for this call, `length` is within its capacity, and Java does
     // not touch it until this call returns (AndroidTouchProcessor allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
-    with_owner(activity, |host| host.shell.pointer(packet));
+    with_window(activity, |_, window| window.pointer(packet));
 }
 
 /// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
 /// direct `ByteBuffer`, and the Android event's `isCanceled()` and `getMetaState()` (Parallax's addition: key data has
 /// no field for them).
-/// Returns whether GPUI handled it; Java then redispatches unhandled keys (and a non-owner's) to Android.
+/// Returns whether GPUI handled it; Java then redispatches unhandled keys (and a destroyed Activity's) to Android.
 extern "system" fn dispatch_key_data(
     env: JNIEnv,
     _class: JClass,
@@ -568,7 +587,7 @@ extern "system" fn dispatch_key_data(
     // it until this call returns (KeyData.toBytes allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
     let mut handled = false;
-    with_owner(activity, |host| handled = host.shell.key(packet, extras));
+    with_window(activity, |_, window| handled = window.key(packet, extras));
     if handled { JNI_TRUE } else { JNI_FALSE }
 }
 
@@ -597,263 +616,139 @@ extern "system" fn insets(
         bottom: DevicePixels(bottom),
         left: DevicePixels(left),
     };
-    with_owner(activity, |host| {
+    with_window(activity, |host, window| {
         // A density change keeps the surface's pixel size, so no surfaceChanged brings it: GPUI's scale changes here.
-        let density_changed = host.rescale_and_notify(density, touch_slop);
-        host.shell.set_insets(
+        let density_changed = host.rescale_and_notify(window, density, touch_slop);
+        window.set_insets(
             edges(safe_left, safe_top, safe_right, safe_bottom),
             edges(ime_left, ime_top, ime_right, ime_bottom),
         );
         if density_changed {
-            host.shell.resized();
+            window.resized();
         }
     });
 }
 
-/// A GPUI callback the window registered, taken out while it runs so it can re-enter the shell.
-pub(crate) struct Slot<F: ?Sized>(RefCell<Option<Box<F>>>);
-
-impl<F: ?Sized> Slot<F> {
-    pub(crate) fn set(&self, callback: Box<F>) {
-        *self.0.borrow_mut() = Some(callback);
-    }
-
-    /// Runs `call` on the callback; `None` when GPUI has not registered one.
-    fn with<R>(&self, call: impl FnOnce(&mut F) -> R) -> Option<R> {
-        let mut callback = self.0.borrow_mut().take()?;
-        let result = call(&mut callback);
-        self.0.borrow_mut().get_or_insert(callback);
-        Some(result)
-    }
-}
-
-impl<F: ?Sized> Default for Slot<F> {
-    fn default() -> Self {
-        Self(RefCell::new(None))
-    }
-}
-
+/// The platform's callbacks, not a window's: `Platform::on_app_lifecycle` and `on_memory_warning`.
 #[derive(Default)]
-pub(crate) struct Callbacks {
-    pub(crate) request_frame: Slot<dyn FnMut(RequestFrameOptions)>,
-    /// Pointers arrive here as touch, mouse and scroll input ([`Shell::pointer`]), keys as key, modifier and back events
-    /// ([`Shell::key`]).
-    pub(crate) input: Slot<dyn FnMut(PlatformInput) -> DispatchEventResult>,
-    pub(crate) resize: Slot<dyn FnMut(Size<Pixels>, f32)>,
-    pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
-    pub(crate) active_status: Slot<dyn FnMut(bool)>,
-    pub(crate) visibility: Slot<dyn FnMut(WindowVisibility)>,
-    /// The platform's, not the window's: `Platform::on_app_lifecycle` and `on_memory_warning`.
+pub(crate) struct AppCallbacks {
     pub(crate) app_lifecycle: Slot<dyn FnMut(AppLifecyclePhase)>,
     pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
-/// Whether the renderer's current surface has shown a frame. Each new surface (attach, device recovery) starts
-/// `Pending`; the window's first successful draw on it logs "parallax: first frame drawn on a WxH … surface" and
-/// moves it to `Drawn`. scripts/android-smoke.sh greps that line to know a launch, rotation or resume really drew.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum FirstFrame {
-    Pending,
-    Drawn,
-}
-
-/// The app's one window as Android sees it. Main thread only.
+/// The app as Android sees it: its Activities and their windows, one each. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
     pub(crate) vm: JavaVM,
-    surface: RefCell<Surface<NativeWindow>>,
     pub(crate) lifecycle: RefCell<Lifecycle>,
-    pub(crate) metrics: Cell<Metrics>,
+    /// Shared by every window's renderer, as on GPUI's other wgpu platforms.
     gpu: GpuContext,
     /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
     device: Device,
-    /// `None` until GPUI opens the window; then the renderer for the rest of the process.
-    pub(crate) renderer: RefCell<Option<WgpuRenderer>>,
-    pub(crate) callbacks: Callbacks,
-    pub(crate) pointers: RefCell<pointer::Pointers>,
-    pub(crate) keyboard: RefCell<keys::Keyboard>,
-    /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
-    pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
-    pub(crate) text_input: RefCell<text_input::Session>,
-    /// Haptics GPUI played since Java last asked ([`Shell::framework_calls`]), oldest first; none while frames stop.
-    pub(crate) haptics: RefCell<Vec<Haptic>>,
-    /// A plain `Cell`: only the main thread draws and attaches surfaces.
-    pub(crate) first_frame: Cell<FirstFrame>,
+    /// Each live Activity's window: added on `onCreate`, removed (and its GPUI window closed) on `onDestroy`. The
+    /// lifecycle's live Activities and these keys change together, in [`Shell::lifecycle`] only.
+    windows: RefCell<BTreeMap<ActivityId, Rc<ActivityWindow>>>,
+    pub(crate) callbacks: AppCallbacks,
 }
 
 impl Shell {
     fn new(vm: JavaVM) -> Self {
         Self {
             vm,
-            surface: RefCell::new(Surface::None),
             lifecycle: RefCell::new(Lifecycle::Loaded),
-            metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),
             gpu: Rc::new(RefCell::new(None)),
             device: renderer::device(),
-            renderer: RefCell::new(None),
-            callbacks: Callbacks::default(),
-            pointers: RefCell::new(pointer::Pointers::default()),
-            keyboard: RefCell::new(keys::Keyboard::default()),
-            input_handler: RefCell::new(None),
-            text_input: RefCell::new(text_input::Session::default()),
-            haptics: RefCell::new(Vec::new()),
-            first_frame: Cell::new(FirstFrame::Pending),
+            windows: RefCell::new(BTreeMap::new()),
+            callbacks: AppCallbacks::default(),
         }
     }
 
-    fn set_display(&self, size: Size<DevicePixels>, refresh_rate: f32) {
-        self.metrics.set(Metrics {
-            size,
-            refresh_rate,
-            ..self.metrics.get()
-        });
+    /// Activity `id`'s window; `None` once it is destroyed.
+    pub(crate) fn window(&self, id: ActivityId) -> Option<Rc<ActivityWindow>> {
+        self.windows.borrow().get(&id).cloned()
     }
 
-    fn set_insets(&self, safe_area: Edges<DevicePixels>, ime: Edges<DevicePixels>) {
-        let metrics = Metrics {
-            safe_area,
-            ime,
-            ..self.metrics.get()
-        };
-        self.metrics.set(metrics);
-        log::info!("parallax: insets in pixels: safe area {safe_area:?}, ime {ime:?}");
-        self.callbacks
-            .insets_changed
-            .with(|callback| callback(metrics.insets()));
+    /// The most recently created Activity's window: the one whose metrics stand for the display.
+    pub(crate) fn newest_window(&self) -> Option<Rc<ActivityWindow>> {
+        self.windows.borrow().values().next_back().cloned()
     }
 
-    /// The current native window: ready, or waiting for the renderer to be rebuilt on it.
-    fn current_window(&self) -> Option<NativeWindow> {
-        match &*self.surface.borrow() {
-            Surface::Ready { window, .. } | Surface::Recovering { window, .. } => {
-                Some(window.clone())
-            }
-            Surface::None | Surface::Lost { .. } => None,
-        }
+    /// GPUI's active window: the resumed, focused Activity's, once open.
+    pub(crate) fn active_window(&self) -> Option<AnyWindowHandle> {
+        let active = self.lifecycle.borrow().active()?;
+        self.window(active)?.gpui_handle()
     }
 
-    /// Opens the app's one window: creates the renderer on the ready surface and returns its atlas.
-    pub(crate) fn open_window(&self) -> Result<Arc<dyn PlatformAtlas>, Error> {
-        if self.renderer.borrow().is_some() {
-            return Err(Error::OneWindow);
-        }
-        let window = self.current_window().ok_or(Error::NoSurface)?;
-        let renderer = renderer::create(&self.gpu, self.device, &window, self.metrics.get().size)?;
-        let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
-        *self.renderer.borrow_mut() = Some(renderer);
-        Ok(atlas)
+    /// Opens the window the app's launch asked for: the Activity it runs for ([`MainThreadHost::launch`]), the newest
+    /// waiting for one. Android opens no window without an Activity.
+    pub(crate) fn open_window(
+        &self,
+        handle: AnyWindowHandle,
+    ) -> Result<(Rc<ActivityWindow>, Arc<dyn PlatformAtlas>), Error> {
+        let window = self
+            .windows
+            .borrow()
+            .values()
+            .rev()
+            .find(|window| window.is_launched())
+            .cloned()
+            .ok_or(Error::NoActivityForWindow)?;
+        let atlas = window.open(handle)?;
+        log::info!("parallax: window opened for Activity {}", window.activity.0);
+        Ok((window, atlas))
     }
 
-    /// Feeds one event through the surface state machine and carries out its action on the renderer.
-    fn handle(&self, event: SurfaceEvent<NativeWindow>) {
-        let state = self.surface.replace(Surface::None);
-        let (next, action) = state.next(event);
-        // Not every vsync: Draw and Wait are the quiet steady states.
-        if !matches!(action, Action::Draw | Action::Wait) {
-            log::info!("parallax: surface {next:?}, {action:?}");
-        }
-        *self.surface.borrow_mut() = next;
-        let size = self.metrics.get().size;
-        match action {
-            Action::Attach { previous } => {
-                let attached = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
-                    (Some(renderer), Some(window)) => {
-                        // The old surface lets go of its window first: Vulkan and EGL connect to an ANativeWindow
-                        // once, and the window may be the same one (a resize).
-                        renderer.unconfigure_surface();
-                        let instance = self
-                            .gpu
-                            .borrow()
-                            .as_ref()
-                            .map(|context| context.instance.clone());
-                        instance.ok_or(Error::NoBackend).and_then(|instance| {
-                            renderer
-                                .replace_surface(&window, renderer::surface_config(size), &instance)
-                                .map_err(|error| Error::Renderer(format!("{error:#}")))
-                        })
-                    }
-                    // Before GPUI opens the window there is no renderer: it is created on this window then.
-                    (None, _) | (_, None) => Ok(()),
-                };
-                // Released only now: the renderer has dropped its surface on the previous window.
-                drop(previous);
-                match attached {
-                    Ok(()) => {
-                        self.first_frame.set(FirstFrame::Pending);
-                        self.resized();
-                    }
-                    Err(error) => {
-                        // The state machine rebuilds the renderer after the backoff. scripts/android-smoke.sh fails
-                        // on this line: keep its wording.
-                        log::error!("parallax: cannot attach the new surface: {error}");
-                        self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
-                    }
-                }
-            }
-            Action::Detach { window } => {
-                if let Some(renderer) = self.renderer.borrow_mut().as_mut() {
-                    renderer.unconfigure_surface();
-                }
-                // Android requires the window released before surfaceDestroyed returns.
-                drop(window);
-            }
-            Action::RecoverDevice => {
-                let recovered = match (self.renderer.borrow_mut().as_mut(), self.current_window()) {
-                    (Some(renderer), Some(window)) => {
-                        renderer::recover(&self.gpu, self.device, renderer, &window, size)
-                    }
-                    (None, _) | (_, None) => Err(Error::NoSurface),
-                };
-                match recovered {
-                    Ok(()) => self.handle(SurfaceEvent::Recovered),
-                    Err(error) => {
-                        // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
-                        // this line: keep its wording.
-                        log::error!("parallax: GPU device recovery failed: {error}");
-                        self.handle(SurfaceEvent::RecoveryFailed { at: Instant::now() });
-                    }
-                }
-            }
-            Action::Redraw => {
-                self.first_frame.set(FirstFrame::Pending);
-                self.resized();
-            }
-            Action::Draw => {
-                self.callbacks
-                    .request_frame
-                    .with(|callback| callback(RequestFrameOptions::default()));
-            }
-            Action::Wait => {}
-            Action::Reject { why } => log::warn!("parallax: surface event ignored: {why}"),
-        }
-    }
-
-    /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: the window first, then the
-    /// app's observers, in the order `gpui_ios` uses.
+    /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: that Activity's window first,
+    /// then the app's observers, in the order `gpui_ios` uses. A new Activity gets a window; a destroyed one's
+    /// window closes.
     fn lifecycle(&self, event: ActivityEvent) {
         let before = self.lifecycle.replace(Lifecycle::Loaded);
-        let (was_active, was_visible, was_owner) =
-            (before.is_active(), before.visibility(), before.owner());
+        let id = match event {
+            ActivityEvent::From(id, _) => Some(id),
+            ActivityEvent::Create => None,
+        };
+        let was = id.map(|id| (before.is_active(id), before.visibility(id)));
         let (next, effect) = before.next(event);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
-        let (active, visibility, owner) = (next.is_active(), next.visibility(), next.owner());
-        if !next.runs_frames() {
-            // Paused: nobody pulls them now, and a haptic must not play late, on resume.
-            self.haptics.borrow_mut().clear();
-        }
+        let now = id.map(|id| (next.is_active(id), next.visibility(id)));
+        let (created, gone) = match (event, id) {
+            (ActivityEvent::Create, _) => (next.newest(), None),
+            (ActivityEvent::From(..), Some(id)) => (None, (!next.contains(id)).then_some(id)),
+            (ActivityEvent::From(..), None) => (None, None),
+        };
+        let runs_frames = id.is_some_and(|id| next.runs_frames(id));
         *self.lifecycle.borrow_mut() = next;
-        if owner.is_some() && owner != was_owner {
-            self.text_input.borrow_mut().owner_changed();
+        if let Some(created) = created {
+            let window = ActivityWindow::new(created, self.gpu.clone(), self.device);
+            self.windows.borrow_mut().insert(created, Rc::new(window));
         }
-        if was_active != active {
-            self.callbacks
-                .active_status
-                .with(|callback| callback(active));
+        let window = id.and_then(|id| self.window(id));
+        if let (Some(window), Some((was_active, was_visible)), Some((active, visibility))) =
+            (&window, was, now)
+        {
+            if !runs_frames {
+                // Paused: nobody pulls them now, and a haptic must not play late, on resume.
+                window.haptics.borrow_mut().clear();
+            }
+            if was_active != active {
+                window
+                    .callbacks
+                    .active_status
+                    .with(|callback| callback(active));
+            }
+            if was_visible != visibility {
+                window
+                    .callbacks
+                    .visibility
+                    .with(|callback| callback(visibility));
+            }
         }
-        if was_visible != visibility {
-            self.callbacks
-                .visibility
-                .with(|callback| callback(visibility));
+        if let Some(gone) = gone {
+            let closed = self.windows.borrow_mut().remove(&gone);
+            if let Some(closed) = closed {
+                log::info!("parallax: Activity {} destroyed: its window closes", gone.0);
+                closed.close();
+            }
         }
         match effect {
             Effect::Phases(phases) => {
@@ -870,286 +765,4 @@ impl Shell {
             Effect::Reject { why } => log::warn!("parallax: lifecycle event ignored: {why}"),
         }
     }
-
-    /// Tells GPUI the window size or scale may have changed, then redraws the new surface.
-    fn resized(&self) {
-        let metrics = self.metrics.get();
-        self.callbacks
-            .resize
-            .with(|callback| callback(metrics.bounds().size, metrics.density));
-        self.redraw();
-    }
-
-    /// A full frame: after a new surface, size or device the old content is gone.
-    fn redraw(&self) {
-        self.callbacks.request_frame.with(|callback| {
-            callback(RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-                ..Default::default()
-            })
-        });
-    }
-
-    /// One pointer data packet → GPUI touch, mouse and scroll events, dispatched in packet order. Upstream turns a
-    /// tap into a click; a mouse clicks itself. The keyboard is read before GPUI runs (it reads modifiers too).
-    fn pointer(&self, packet: &[u8]) {
-        let modifiers = self.keyboard.borrow().modifiers();
-        let mut uptime = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: `uptime` is a valid, writable timespec and CLOCK_MONOTONIC always exists on Android; on the
-        // impossible failure it stays zero, which only makes touches read as dispatched now.
-        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut uptime) };
-        #[allow(
-            clippy::useless_conversion,
-            reason = "`time_t` and `c_long` are 32 bits on armv7 and x86: widen before multiplying"
-        )]
-        let clock = pointer::Clock {
-            now: Instant::now(),
-            uptime_micros: i64::from(uptime.tv_sec) * 1_000_000 + i64::from(uptime.tv_nsec) / 1_000,
-        };
-        let events = match pointer::decode(packet) {
-            Ok(data) => self.pointers.borrow_mut().events(
-                &data,
-                self.metrics.get().density,
-                modifiers,
-                clock,
-            ),
-            Err(error) => {
-                log::error!("parallax: pointer packet dropped: {error}");
-                return;
-            }
-        };
-        for event in events {
-            log::debug!("parallax: {event:?}");
-            self.callbacks.input.with(|callback| {
-                callback(event);
-            });
-        }
-    }
-
-    /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
-    /// so the window can read modifiers during dispatch.
-    fn key(&self, packet: &[u8], extras: keys::KeyEventExtras) -> bool {
-        let data = match keys::decode(packet) {
-            Ok(data) => data,
-            Err(error) => {
-                log::error!("parallax: key dropped: {error}");
-                return false;
-            }
-        };
-        // GPUI hit-tests back gestures; Android's back key has none, so it starts at the left edge, mid-height,
-        // where an edge swipe would (iOS's back gesture comes from the leading edge).
-        let back_at = point(px(0.), self.metrics.get().bounds().size.height / 2.);
-        let step = self.keyboard.borrow_mut().input(&data, extras, back_at);
-        log::debug!("parallax: {data:?} → {step:?}");
-        match step {
-            keys::Step::Answer { input, handled } => {
-                if let Some(input) = input {
-                    self.callbacks.input.with(|callback| callback(input));
-                }
-                handled
-            }
-            keys::Step::Ask(input) => {
-                // No window yet: nothing handled it, so Android gets the key.
-                let result = self
-                    .callbacks
-                    .input
-                    .with(|callback| callback(input))
-                    .unwrap_or(DispatchEventResult {
-                        propagate: true,
-                        default_prevented: false,
-                    });
-                self.keyboard.borrow_mut().reply(result)
-            }
-        }
-    }
-
-    /// Runs `call` on the focused field's handler, taken out so GPUI can re-enter the window; `None` without one.
-    /// Re-entrancy: if GPUI installs a new handler during `call` (`set_input_handler`), the newer one is kept and
-    /// this one dropped.
-    fn with_input_handler<R>(
-        &self,
-        call: impl FnOnce(&mut PlatformInputHandler) -> R,
-    ) -> Option<R> {
-        let mut handler = self.input_handler.borrow_mut().take()?;
-        let result = call(&mut handler);
-        self.input_handler.borrow_mut().get_or_insert(handler);
-        Some(result)
-    }
-
-    /// The pending text-input calls for Java, as Flutter's JSON; empties them. Never logs the text (password
-    /// fields included): the calls carry it.
-    fn text_input_calls(&self) -> Option<Value> {
-        let pending = self.text_input.borrow_mut().take()?;
-        let state = if pending.sends_state() {
-            self.with_input_handler(|handler| {
-                let state = read_state(handler)?;
-                match pending.commit(&state) {
-                    Some(edit) => {
-                        log::debug!("parallax: composition committed for a new client");
-                        apply(handler, edit);
-                        read_state(handler)
-                    }
-                    None => Some(state),
-                }
-            })
-            .flatten()
-        } else {
-            None
-        };
-        if pending.sets_client() && state.is_none() {
-            // Once per focus: each focus sets a new client.
-            log::error!(
-                "parallax: the focused field's text is unreadable (no text_length_utf16 or text_for_range): \
-                 the IME sees it empty"
-            );
-        }
-        // The field's text bounds, for autofill's rect: the caret when the field is empty.
-        let reads_bounds = self.text_input.borrow().reads_bounds(&pending);
-        let bounds = if reads_bounds {
-            self.with_input_handler(|handler| {
-                let length = match &state {
-                    Some(state) => state.text.encode_utf16().count(),
-                    None => handler.text_length_utf16().unwrap_or(0),
-                };
-                handler.bounds_for_range(0..length)
-            })
-            .flatten()
-        } else {
-            None
-        };
-        let described = state.as_ref().map_or("none".to_string(), describe);
-        let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
-        log::debug!("parallax: text input {pending:?}, state: {described}");
-        Some(calls)
-    }
-
-    /// GPUI's pending calls for Java, emptied: a JSON object of Flutter channel → its calls, with only the channels
-    /// that have some (`flutter/textinput`: [`Self::text_input_calls`]; `flutter/platform`: the haptics,
-    /// [`haptics::platform_calls`]); `None` when none has.
-    fn framework_calls(&self) -> Option<Value> {
-        let channels = [
-            ("flutter/textinput", self.text_input_calls()),
-            (
-                "flutter/platform",
-                haptics::platform_calls(&self.haptics.take()),
-            ),
-        ];
-        let calls: serde_json::Map<String, Value> = channels
-            .into_iter()
-            .filter_map(|(channel, calls)| Some((channel.to_string(), calls?)))
-            .collect();
-        (!calls.is_empty()).then_some(Value::Object(calls))
-    }
-
-    /// Java's editing state after an IME edit → GPUI, synchronously: merged onto GPUI's state when GPUI changed
-    /// since Java's mirror was last current ([`text_input::Session::java_edit`]).
-    fn update_editing_state(&self, java: EditingState) {
-        self.with_input_handler(|handler| {
-            let Some(gpui) = read_state(handler) else {
-                log::debug!("parallax: IME edit on an unreadable field dropped");
-                return;
-            };
-            let Some(target) = self.text_input.borrow_mut().java_edit(&java, &gpui) else {
-                log::debug!("parallax: IME edit for a client GPUI is replacing dropped");
-                return;
-            };
-            let edits = text_input::edits(&gpui, &target);
-            log::debug!(
-                "parallax: IME {} over {} → {} calls",
-                describe(&java),
-                describe(&gpui),
-                edits.len()
-            );
-            for edit in edits {
-                apply(handler, edit);
-            }
-            // The app may refuse or change the edit (a filter, a length limit): the session decides whether Java
-            // must take GPUI's state.
-            let after = read_state(handler).unwrap_or(target);
-            self.text_input.borrow_mut().java_edited(java, &after);
-        });
-    }
-
-    /// The IME's editor action: GPUI gets Enter, as a hardware key (see [`keys::Keyboard::press`]).
-    fn perform_action(&self) {
-        let inputs = self.keyboard.borrow().press("enter");
-        for input in inputs {
-            self.callbacks.input.with(|callback| callback(input));
-        }
-    }
-
-    /// GPUI's bounds of a UTF-16 range as `[left, top, right, bottom]` in view pixels.
-    fn bounds_for_range(&self, range: std::ops::Range<usize>) -> Option<[f32; 4]> {
-        let bounds = self
-            .with_input_handler(|handler| handler.bounds_for_range(range))
-            .flatten()?;
-        let density = self.metrics.get().density;
-        Some([
-            f32::from(bounds.left()) * density,
-            f32::from(bounds.top()) * density,
-            f32::from(bounds.right()) * density,
-            f32::from(bounds.bottom()) * density,
-        ])
-    }
-
-    /// Every vsync (Choreographer): GPUI draws if anything changed, or device recovery moves on.
-    fn frame(&self) {
-        let device_lost = self
-            .renderer
-            .borrow()
-            .as_ref()
-            .is_some_and(WgpuRenderer::device_lost);
-        self.handle(SurfaceEvent::Frame {
-            at: Instant::now(),
-            device_lost,
-        });
-    }
-}
-
-/// One [`Edit`] as GPUI's `InputHandler` call.
-fn apply(handler: &mut PlatformInputHandler, edit: Edit) {
-    match edit {
-        Edit::Replace { range, text } => handler.replace_text_in_range(Some(range), &text),
-        Edit::Mark {
-            range,
-            text,
-            selected,
-        } => handler.replace_and_mark_text_in_range(Some(range), &text, selected),
-        Edit::Unmark => handler.unmark_text(),
-        Edit::Select(range) => handler.set_selected_text_range(range),
-    }
-}
-
-/// The focused field's whole editing state, in UTF-16, clamped to its text ([`EditingState::clamped`]). The
-/// editable range is not honoured yet: Java mirrors the whole document. A handler without `text_length_utf16`
-/// (GPUI's default is `None`) is asked for everything; the range it adjusts to must start at 0.
-fn read_state(handler: &mut PlatformInputHandler) -> Option<EditingState> {
-    let mut adjusted = None;
-    let text = match handler.text_length_utf16() {
-        Some(length) => handler.text_for_range(0..length, &mut adjusted),
-        None => handler.text_for_range(0..usize::MAX, &mut adjusted),
-    }
-    .filter(|_| adjusted.as_ref().is_none_or(|range| range.start == 0))?;
-    let selection = handler
-        .selected_text_range(false)
-        .map(|selection| match selection.reversed {
-            true => (selection.range.end, selection.range.start),
-            false => (selection.range.start, selection.range.end),
-        });
-    let composing = handler.marked_text_range();
-    Some(EditingState::clamped(text, selection, composing))
-}
-
-/// An editing state for the log: its length and ranges, never its text (it may be a password).
-fn describe(state: &EditingState) -> String {
-    format!(
-        "{} UTF-16 units, selection {:?}, composing {:?}",
-        state.text.encode_utf16().count(),
-        state.selection,
-        state.composing
-    )
 }

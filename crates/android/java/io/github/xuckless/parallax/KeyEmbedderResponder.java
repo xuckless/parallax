@@ -51,7 +51,7 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
 
   // Parallax: no messenger. On `handleEvent`, events are marshalled into byte buffers in the format
   // specified by `KeyData.toBytes` and handed to Rust (see sendKeyEvent) with this Activity id, so
-  // Rust can drop keys from a view whose Activity does not own the window.
+  // Rust routes keys to that Activity's window.
   private final int activity;
   // The keys being pressed currently, mapped from physical keys to logical keys.
   private final HashMap<Long, Long> pressingRecords = new HashMap<>();

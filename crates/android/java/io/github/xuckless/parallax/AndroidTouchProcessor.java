@@ -97,8 +97,8 @@ public class AndroidTouchProcessor {
 
   private final MotionEventTracker motionEventTracker;
 
-  // Parallax: the view's Activity id, in place of FlutterRenderer; Rust drops touches from a view
-  // whose Activity does not own the window.
+  // Parallax: the view's Activity id, in place of FlutterRenderer; Rust routes touches to that
+  // Activity's window (and drops them once it is destroyed).
   private final int activity;
 
   private static final Matrix IDENTITY_TRANSFORM = new Matrix();

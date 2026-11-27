@@ -47,10 +47,9 @@ final class ParallaxSurfaceView extends SurfaceView
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
   // Every call that sends the density also sends `touchSlop`, the device's touch slop in pixels, as
   // FlutterView.sendViewportMetricsToFlutter sends devicePixelRatio and physicalTouchSlop together.
-  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops
-  // events from a view whose Activity does not own the window (it is covered, or destroyed and its
-  // callbacks arrive late). surfaceDestroyed is the exception: it always reaches the surface its
-  // own view created.
+  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust routes
+  // each event to that Activity's own GPUI window, and drops events from a destroyed Activity
+  // (late callbacks).
   // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
@@ -99,7 +98,8 @@ final class ParallaxSurfaceView extends SurfaceView
   static native void nativeDispatchPointerDataPacket(
       int activity, ByteBuffer buffer, int position);
 
-  // ParallaxActivity.onCreate: a new Activity owns the window; returns its id for every later event.
+  // ParallaxActivity.onCreate: a new Activity, with its own GPUI window; returns its id for every
+  // later event.
   // Declared here so one class holds every native JNI_OnLoad binds.
   static native int nativeActivityCreated();
 

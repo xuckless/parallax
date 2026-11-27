@@ -51,11 +51,13 @@ the hit slop of the resolved touch slop: Android passes `parallax_android::touch
 `GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
 `parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
 
-**Density changes (Android):** when the device's logical slop changes while the app runs, parallax-android runs the
-hook the facade's `android_main!` passes (`TouchSlopChanged`) on the next looper turn, and `Behaviour::retune` sets
-the new hit slop on the app's tuning and on each open window's own (`Window::set_gesture_tuning`, patch 0019), while
-the tuning's owner (`TuningSource`, recorded by the facade) is the platform. Logcat:
-`parallax: touch slop <px> px at density <d>` from parallax-android whenever the density or slop moves (the density
+**Density changes (Android):** when an Activity's view reports a new logical slop while the app runs,
+parallax-android runs the hook the facade's `android_main!` passes (`TouchSlopChanged`) on the next looper turn, with
+that Activity's window ([android-multi-window.md](android-multi-window.md)), and `Behaviour::retune` sets the new hit
+slop on the app's tuning and on that window's own (`Window::set_gesture_tuning`, patch 0019), while the tuning's owner
+(`TuningSource`, recorded by the facade) is the platform. The facade applies the row before the first Activity's
+launch only: a later Activity's launch keeps whatever tuning is set. Logcat:
+`parallax: Activity <n>: touch slop <px> px at density <d>` from parallax-android whenever the density or slop moves (the density
 reaches it through `onApplyWindowInsets`), then `gesture tuning's touch slop now …` when the logical slop moved:
 Android scales it with the density, so most changes keep it (`wm density 450` makes it 23 px / 2.8125 = 8.18).
 

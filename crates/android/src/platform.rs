@@ -2,7 +2,6 @@
 //! Stubs are marked "Not yet on Android" (a no-op or [`Error::NotYet`]) and listed in `docs/android.md`.
 
 use std::{
-    cell::Cell,
     ffi::OsString,
     path::{Path, PathBuf},
     rc::Rc,
@@ -31,7 +30,6 @@ pub(crate) struct AndroidPlatform {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
-    active_window: Cell<Option<AnyWindowHandle>>,
 }
 
 impl AndroidPlatform {
@@ -52,12 +50,11 @@ impl AndroidPlatform {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
-            active_window: Cell::new(None),
         })
     }
 }
 
-/// The one display: the Activity's window as Android last reported it.
+/// The one display: an Activity's window as Android last reported it.
 #[derive(Debug)]
 pub(crate) struct AndroidDisplay {
     bounds: Bounds<Pixels>,
@@ -157,7 +154,11 @@ impl Platform for AndroidPlatform {
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        Some(Rc::new(AndroidDisplay::from(self.shell.metrics.get())))
+        let metrics = self
+            .shell
+            .newest_window()
+            .map_or(Metrics::BEFORE_FIRST_SURFACE, |window| window.metrics.get());
+        Some(Rc::new(AndroidDisplay::from(metrics)))
     }
 
     fn on_displays_changed(&self, _callback: Box<dyn FnMut()>) {
@@ -165,18 +166,19 @@ impl Platform for AndroidPlatform {
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        self.active_window.get()
+        self.shell.active_window()
     }
 
+    // One window per Activity: the app's launch, run for an Activity's first surface, opens that Activity's window.
     fn open_window(
         &self,
         handle: AnyWindowHandle,
         _options: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
-        let atlas = self.shell.open_window()?;
-        self.active_window.set(Some(handle));
+        let (window, atlas) = self.shell.open_window(handle)?;
         Ok(Box::new(AndroidWindow {
             shell: self.shell.clone(),
+            window,
             atlas,
         }))
     }

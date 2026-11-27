@@ -330,7 +330,8 @@ pub fn launch(cx: &mut App) {
         })
     });
     match opened {
-        Ok(_) => log::info!("window open"),
+        // One per Android Activity (docs/android-multi-window.md): the count shows a destroyed one's window closed.
+        Ok(_) => log::info!("window open, {} in all", cx.windows().len()),
         Err(error) => log::error!("cannot open the window: {error:#}"),
     }
     cx.activate(true);
