@@ -4,7 +4,8 @@
 ([AGENTS.md](../AGENTS.md#upstream-and-patch-rules), patch rule 14). Its
 [`parallax`](https://github.com/xuckless/zed/tree/parallax) branch is the Zed commit in
 [`upstream/UPSTREAM`](../upstream/UPSTREAM) plus one commit per patch in [`patches/`](../patches/), translated with
-[`patch-paths.sh`](../scripts/patch-paths.sh) ([patches.md](patches.md#translating-for-filing-upstream)).
+[`patch-paths.sh`](../scripts/patch-paths.sh) ([patches.md](patches.md#translating-for-filing-upstream)), or taken
+from its hand-written Zed version in `patches/zed/` when it has a manifest hunk ([patch-translation.md](patch-translation.md)).
 Upstream PRs are cut from it; drafts of them live in `drafts/upstream/` (git-ignored, owner-only).
 
 ## Rebuilding the branch: sync-fork.sh

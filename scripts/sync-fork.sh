@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild the `parallax` branch of our Zed fork: the Zed commit in upstream/UPSTREAM plus one commit per
-# patches/*.patch (translated with patch-paths.sh to-zed), then force-push that one branch. Run after each sync.
+# patches/*.patch (translated with patch-paths.sh to-zed, or its hand-written counterpart in patches/zed/), then
+# force-push that one branch. Run after each sync.
 # Usage: scripts/sync-fork.sh [DIR]    (DIR: scratch Zed checkout, default build/zed-fork; reused across runs)
 # Idempotent: commit dates are pinned to the base commit's, so an unchanged input rebuilds the same SHAs.
 set -euo pipefail
@@ -30,7 +31,14 @@ mkdir -p "$translated"
 paths=('/crates/gpui*/')
 for patch in "${patches[@]}"; do
     out="$translated/$(basename "$patch")"
-    "$root/scripts/patch-paths.sh" to-zed "$patch" > "$out" || die "cannot translate $patch"
+    # A patch patch-paths.sh refuses (a manifest hunk) has a hand-written Zed counterpart of the same name in
+    # patches/zed/, used as is (docs/patch-translation.md).
+    zed="$root/patches/zed/$(basename "$patch")"
+    if [[ -f $zed ]]; then
+        cp "$zed" "$out"
+    else
+        "$root/scripts/patch-paths.sh" to-zed "$patch" > "$out" || die "cannot translate $patch"
+    fi
     mapfile -t -O "${#paths[@]}" paths < <(sed -n 's|^+++ b/|/|p' "$out")
 done
 

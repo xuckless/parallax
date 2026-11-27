@@ -20,7 +20,10 @@ counterpart in Zed's tree:
 
 - **`Cargo.toml`: refused.** crates.io rewrites manifests on publish (workspace inheritance resolved, `gpui-pre-*`
   package names, paths dropped). A vendored manifest hunk has no mechanical Zed equivalent, and a silently wrong
-  translation is worse than none. Hand-write the Zed manifest change when filing.
+  translation is worse than none. Hand-write the Zed manifest change: a patch with one keeps its whole Zed version
+  in `patches/zed/` under the same name (the translated files plus the manifest hunk, e.g. 0018's UIKit features go
+  in Zed's workspace `Cargo.toml`), which [`sync-fork.sh`](../scripts/sync-fork.sh) uses as is. Rewrite it whenever
+  the patch changes.
 - **Packaging artifacts: refused.** `Cargo.toml.orig`, `Cargo.lock`, `.cargo-checksum.json` exist only in the vendored copy.
 - **gpui-pre's own files: refused.** `gpui-pre-apple/vendor/` (a copy of `crates/gpui` sources for its `build.rs`;
   patch `gpui-pre/` instead) and `gpui-pre-macros/src/gpui_pre_facade_paths.rs`.
