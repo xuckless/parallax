@@ -41,8 +41,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Trace lines take an optional sixth field, the device (`Touch` or `Pen`); lines without it read as `Touch`. hello's
   trace pad logs it.
 - hello's desktop window is 400 × 700 logical px (was 400 × 400), so the recorded gestures fit on desktop.
-- `parallax-gpui-windows` is `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` (patch 0021 ports from
-  Flutter's Windows embedder).
+- `parallax-gpui-windows` and `parallax-gpui-macos` are `Apache-2.0 AND BSD-3-Clause` and ship `LICENSE-FLUTTER`
+  (patches 0021 and 0024 port from Flutter's Windows and macOS embedders). `parallax-gpui-windows` and
+  `parallax-gpui-linux` credit winit in their READMEs (patches 0021–0023 port from it; the licence stays Apache-2.0).
+- macOS's behaviour row asks for a 36 pt touch target, Apple's macOS 27 touch guidance (was Cupertino's 44: Flutter has
+  no macOS touch value).
 
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
