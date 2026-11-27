@@ -11,7 +11,8 @@ use gpui::Haptic;
 use serde_json::{Value, json};
 
 /// The `HapticFeedback.vibrate` argument for `haptic`; `None` is `HapticFeedback.vibrate()`'s missing argument
-/// (Java's `STANDARD`). The match is the table: exhaustive, so a new kind cannot be missed.
+/// (Java's `STANDARD`). The match is the table: exhaustive, so a new kind cannot be missed. The one list of these
+/// strings: Java's `HapticArgumentsTest` reads this match to check that each resolves.
 pub(crate) fn flutter_argument(haptic: Haptic) -> Option<&'static str> {
     match haptic {
         Haptic::Vibrate => None,
