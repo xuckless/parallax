@@ -1,0 +1,98 @@
+iOS keyboard layout change: UIKit's input-mode notification reaches GPUI's on_keyboard_layout_change.
+
+What: gpui_ios's `Platform::on_keyboard_layout_change` dropped its callback (the gap audit's "layout change a
+no-op"), so `App::on_keyboard_layout_change` observers never ran on iOS. It now observes
+`UITextInputCurrentInputModeDidChangeNotification` (the user switching layout or language with the globe key, a
+hardware keyboard's shortcut, or the emoji keyboard) and runs the callback on the foreground executor, after UIKit's
+callback unwinds, as gpui_ios already does for display notifications (the notification can arrive inside a UIKit
+text-input call, while GPUI's app may be borrowed). A second registration replaces the first; the observer is
+removed on drop with the display observers. `keyboard_layout()` still names one layout: GPUI rereads it and its
+mapper on each change, as on macOS.
+
+Why: GPUI rebuilds keymap state and notifies apps on a layout change; on iOS that never happened. The platform's
+observers are private to gpui_ios, so neither a Parallax crate nor an extension trait can add it. cfg: the crate's
+own (iOS). Written after gpui_macos's `on_keyboard_layout_change` (an input-source notification calling the stored
+callback) and gpui_ios's own display observers; no Flutter counterpart (Flutter has no layout-change event).
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-ios/src/ios/platform.rs b/gpui-pre-ios/src/ios/platform.rs
+index f1c5be7..b93aa1c 100644
+--- a/gpui-pre-ios/src/ios/platform.rs
++++ b/gpui-pre-ios/src/ios/platform.rs
+@@ -31,8 +31,9 @@ use objc2_foundation::{
+     NSBundle, NSDictionary, NSNotification, NSNotificationCenter, NSObjectProtocol, NSString, NSURL,
+ };
+ use objc2_ui_kit::{
+-    UIApplication, UIPasteboard, UIScreenModeDidChangeNotification, UITraitEnvironment,
+-    UIUserInterfaceStyle, UIViewController,
++    UIApplication, UIPasteboard, UIScreenModeDidChangeNotification,
++    UITextInputCurrentInputModeDidChangeNotification, UITraitEnvironment, UIUserInterfaceStyle,
++    UIViewController,
+ };
+ #[allow(deprecated)]
+ // Match UIScreen enumeration, including displays without a connected scene.
+@@ -56,6 +57,8 @@ pub(crate) struct IosPlatformState {
+     display_observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
+     display_task: RefCell<Option<Task<()>>>,
+     displays_changed_callback: CallbackSlot<Box<dyn FnMut()>>,
++    /// Observes the keyboard's input mode (a hardware layout or software keyboard language) changing.
++    keyboard_layout_observer: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
+ }
+ 
+ impl Default for IosPlatform {
+@@ -80,6 +83,7 @@ impl IosPlatform {
+             display_observers: RefCell::new(Vec::new()),
+             display_task: RefCell::new(None),
+             displays_changed_callback: CallbackSlot::default(),
++            keyboard_layout_observer: RefCell::new(None),
+         });
+         let (sender, mut receiver) = mpsc::unbounded();
+         let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
+@@ -456,8 +460,30 @@ impl Platform for IosPlatform {
+             .spawn(async move { Ok(keychain::delete_credentials(&url)?) })
+     }
+ 
+-    fn on_keyboard_layout_change(&self, _callback: Box<dyn FnMut()>) {
+-        // iOS handles keyboard layout changes differently
++    fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
++        // The user switching keyboard (another layout or language, from the globe key or a hardware keyboard's
++        // shortcut) posts UIKit's input-mode notification. It can arrive inside a UIKit text callback, so GPUI runs
++        // after it unwinds, as the display notifications above.
++        let callback = Rc::new(RefCell::new(callback));
++        let executor = self.0.foreground_executor.clone();
++        let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
++            let callback = callback.clone();            executor
++                .spawn(async move { (callback.borrow_mut())() })
++                .detach();
++        });
++        // SAFETY: UIKit's notification name, an immutable static; the observer is removed on drop.
++        let observer = unsafe {
++            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
++                Some(UITextInputCurrentInputModeDidChangeNotification),
++                None,
++                None,
++                &block,
++            )
++        };
++        if let Some(previous) = self.0.keyboard_layout_observer.replace(Some(observer)) {
++            // SAFETY: an observer this platform added.
++            unsafe { NSNotificationCenter::defaultCenter().removeObserver(previous.as_ref()) };
++        }
+     }
+ 
+     fn thermal_state(&self) -> ThermalState {
+@@ -489,7 +515,12 @@ impl Platform for IosPlatform {
+ 
+ impl Drop for IosPlatformState {
+     fn drop(&mut self) {
+-        for observer in self.display_observers.get_mut().drain(..) {
++        for observer in self
++            .display_observers
++            .get_mut()
++            .drain(..)
++            .chain(self.keyboard_layout_observer.get_mut().take())
++        {
+             unsafe { NSNotificationCenter::defaultCenter().removeObserver(observer.as_ref()) };
+         }
+     }
