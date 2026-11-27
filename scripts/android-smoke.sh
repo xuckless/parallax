@@ -74,9 +74,10 @@ dismiss_dialogs() {
 }
 
 # The display's rotation (0-3) as the window manager reports it; dumpsys prints ROTATION_90 or 1 by Android version.
+# The whole `dumpsys window`: API 28 prints mCurrentRotation outside its `displays` section.
 display_rotation() {
   local rotation
-  rotation=$(on_device dumpsys window displays | grep -m 1 -oE 'mCurrentRotation=(ROTATION_)?[0-9]+' | grep -oE '[0-9]+$' || true)
+  rotation=$(on_device dumpsys window | grep -m 1 -oE 'mCurrentRotation=(ROTATION_)?[0-9]+' | grep -oE '[0-9]+$' || true)
   case $rotation in 90) echo 1 ;; 180) echo 2 ;; 270) echo 3 ;; *) echo "$rotation" ;; esac
 }
 

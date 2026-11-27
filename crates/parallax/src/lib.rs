@@ -95,30 +95,23 @@ pub fn run(launch: impl FnOnce(&mut gpui::App) + 'static) -> Result<(), parallax
     Ok(())
 }
 
-/// What [`android_main!`] runs once per process: the behaviour row, `launch` as the default way to open a later
-/// Activity's window (`launch` may replace it), then `launch`. Public only for the macro.
-#[doc(hidden)]
-#[cfg(target_os = "android")]
-pub fn android_launch(cx: &mut gpui::App, launch: fn(&mut gpui::App)) {
-    apply_platform_behaviour(cx);
-    if let Err(error) = parallax_android::on_activity_window(launch) {
-        log::error!("parallax: later Activities get no window: {error}");
-    }
-    launch(cx)
-}
-
-/// Android entry point: `parallax_android::android_main!`, applying the platform behaviour row before `launch` (once
-/// per process: it opens the first Activity's window) and again, per window, when the device's touch slop changes
-/// (the facade's job: `parallax_android`'s own macro can't read the table, which `parallax_platform` builds on it).
+/// Android entry point: `parallax_android::android_main!`, applying the platform behaviour row before `launch` and
+/// again, per window, when the device's touch slop changes (the facade's job: `parallax_android`'s own macro can't
+/// read the table, which `parallax_platform` builds on it).
 ///
-/// Each later Activity's window comes from `parallax_android::on_activity_window`. The default is `launch` itself,
-/// so an app written for one window keeps working, but binds its keys again per Activity; an app that calls
-/// `on_activity_window` in `launch` replaces it (docs/android-multi-window.md).
+/// Both functions are required. `launch` sets the app up (keys, globals) once per process, as desktop GPUI's
+/// launch does; `open_window` opens one window and runs for every `ParallaxActivity`, the first one's right after
+/// `launch` (docs/android-multi-window.md). The desktop equivalent is
+/// `parallax::run(|cx| { launch(cx); open_window(cx) })`.
 #[macro_export]
 macro_rules! android_main {
-    ($launch:expr) => {
+    ($launch:expr, $open_window:expr) => {
         $crate::parallax_android::android_main!(
-            |cx: &mut $crate::gpui::App| $crate::android_launch(cx, $launch),
+            |cx: &mut $crate::gpui::App| {
+                $crate::apply_platform_behaviour(cx);
+                ($launch)(cx)
+            },
+            $open_window,
             $crate::device_touch_slop_changed
         );
     };

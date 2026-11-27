@@ -9,7 +9,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0035).
 
 Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
-window.
+window; `android_main!` takes a required `open_window` next to `launch`.
+
+Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_window(cx: &mut App)`, then write
+`parallax::android_main!(launch, open_window)` and, on desktop, iOS and the web,
+`parallax::run(|cx| { launch(cx); open_window(cx) })`.
 
 ### Added
 
@@ -50,15 +54,18 @@ window.
 - `parallax-gpui-ios`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: it ships React Native's keyboard
   spring (MIT) as Flutter does, with `LICENSE-REACT-NATIVE`.
 - Android: one GPUI window per `ParallaxActivity` (was one per process, drawn only by the most recently started
-  Activity). Two Activities in split screen both draw and take touch and text. The app's `launch` still runs once
-  per process, as on desktop, and opens the first Activity's window; each later Activity's window comes from the new
-  `parallax_android::on_activity_window` callback, which the facade's `android_main!` defaults to `launch` (apps
-  need no change; set your own to bind keys once). `onDestroy` closes the Activity's window, and an app closing its
-  window finishes its Activity (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most
-  foreground Activity (`parallax-android`, docs/android-multi-window.md).
+  Activity). Two Activities in split screen both draw and take touch and text; each gets its window from the app's
+  `open_window` (below). `onDestroy` closes the Activity's window, and an app closing its window finishes its
+  Activity (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most foreground Activity
+  (`parallax-android`, docs/android-multi-window.md).
 - Breaking: `parallax_android::TouchSlopChanged` takes the reporting Activity's window
   (`fn(&mut App, Option<AnyWindowHandle>, Pixels)`), and the facade retunes that window instead of every window
-  (`parallax`). Apps using `parallax::android_main!` need no change.
+  (`parallax`). Apps using `parallax::android_main!` need no change for it.
+- Breaking: `parallax::android_main!(launch, open_window)` and `parallax_android::android_main!(launch, open_window
+  [, touch_slop_changed])` take the window opener as a required second argument (`parallax_android::on_load` too).
+  `launch` sets the app up once per process; `open_window` opens one window and runs for every `ParallaxActivity`,
+  the first one's right after `launch`, so a later Activity never silently re-runs `launch` (re-binding keys and
+  globals). Migration: see the top of this section. hello's `launch` and `open_window` are shared by every target.
 
 ### Deprecated
 
@@ -67,6 +74,12 @@ window.
 
 ### Fixed
 
+- Android 9–10 (API 28–29): `WindowInsets::ime` now reports the on-screen keyboard (it stayed 0), and the
+  keyboard no longer counts as bottom safe area: Flutter's `guessBottomKeyboardInset`, ported, and the generated
+  manifest's `android:windowSoftInputMode="adjustResize"` (Flutter's app template), without which the keyboard never
+  reached the view's insets (`parallax-android`, `cargo-parallax`).
+- Android: Copy and Paste work: `read_from_clipboard` / `write_to_clipboard` reach `ClipboardManager` through
+  Flutter's ported `PlatformPlugin` clipboard methods (plain text; `parallax-android`, docs/android-clipboard.md).
 - Android: Gboard's select mode (text-editing panel, Select on) extends the selection: a key event's meta state now
   reaches GPUI's keystroke, since Flutter's responder synthesizes no Shift for a virtual keyboard
   (`parallax-android`; Gate 1's known limit 5).

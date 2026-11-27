@@ -4,12 +4,15 @@
     <application android:label="{{name}}"{{icon}}>
         <!-- Read by ParallaxActivity to System.loadLibrary the app's cdylib. -->
         <meta-data android:name="parallax.lib_name" android:value="{{lib}}" />
-        <!-- singleTop as in Flutter's app template: an intent for the shown Activity reuses it, not a second one. -->
+        <!-- singleTop as in Flutter's app template: an intent for the shown Activity reuses it, not a second one.
+             adjustResize, as in Flutter's app template: before API 30 the keyboard reaches the view's insets
+             (ParallaxSurfaceView.onApplyWindowInsets) only when the window resizes for it. -->
         <activity
             android:name="io.github.xuckless.parallax.ParallaxActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode">
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize">
             <!-- Like Flutter's FlutterActivity: config changes (rotation, keyboard, locale, theme) reach
                  onConfigurationChanged instead of recreating the Activity, so GPUI's state lives on. -->
             <intent-filter>

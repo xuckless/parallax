@@ -48,7 +48,7 @@ mod text_system;
 mod window;
 
 #[cfg(target_os = "android")]
-pub use host::{TouchSlopChanged, on_activity_window, on_load};
+pub use host::{TouchSlopChanged, on_load};
 #[doc(hidden)]
 #[cfg(target_os = "android")]
 pub use jni;
@@ -56,31 +56,31 @@ pub use jni;
 /// Declares the app's entry point on Android. Write it once in the app's `cdylib` crate:
 ///
 /// ```ignore
-/// fn launch(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
-/// parallax::android_main!(launch);
+/// fn launch(cx: &mut parallax::gpui::App) { /* bind keys, set globals */ }
+/// fn open_window(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
+/// parallax::android_main!(launch, open_window);
 /// ```
 ///
-/// On Android it defines `JNI_OnLoad`, which `ParallaxActivity`'s `System.loadLibrary` calls; GPUI then runs
-/// `launch` on the main thread when the first Activity's surface exists, once per process, as desktop GPUI runs its
-/// launch: it binds keys, sets globals and opens that Activity's window. Each `ParallaxActivity` has its own GPUI
-/// window; a later Activity (split screen, a deep link, a relaunch after the last one was destroyed) gets its window
-/// from the callback `launch` gives [`on_activity_window`]. On other targets it expands to nothing.
+/// On Android it defines `JNI_OnLoad`, which `ParallaxActivity`'s `System.loadLibrary` calls. Each
+/// `ParallaxActivity` has its own GPUI window. When the first Activity's surface exists GPUI starts on the main
+/// thread and runs `launch`, once per process, as desktop GPUI runs its launch; then `open_window` opens that
+/// Activity's window. Every later Activity (split screen, a deep link, a relaunch after the last one was destroyed)
+/// gets its window from `open_window` too, in the running app. On other targets it expands to nothing.
 ///
 /// Use the facade's `parallax::android_main!`, as above: it applies the platform behaviour table (Android's
-/// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`, and makes `launch` the
-/// default [`on_activity_window`] callback. This crate's own
+/// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`. This crate's own
 /// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
 /// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
 ///
-/// The optional second argument is a `TouchSlopChanged` hook, run on its own looper turn when an Activity's view
+/// The optional third argument is a `TouchSlopChanged` hook, run on its own looper turn when an Activity's view
 /// reports a new device touch slop while the app runs (a density change), with that Activity's window. The facade
 /// passes one that re-applies the table's row.
 #[macro_export]
 macro_rules! android_main {
-    ($launch:expr) => {
-        $crate::android_main!($launch, |_, _, _| {});
+    ($launch:expr, $open_window:expr) => {
+        $crate::android_main!($launch, $open_window, |_, _, _| {});
     };
-    ($launch:expr, $touch_slop_changed:expr) => {
+    ($launch:expr, $open_window:expr, $touch_slop_changed:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
         /// # Safety
@@ -91,7 +91,7 @@ macro_rules! android_main {
             _reserved: *mut ::core::ffi::c_void,
         ) -> $crate::jni::sys::jint {
             // SAFETY: the JVM calls JNI_OnLoad with its own JavaVM pointer, on the thread loading the library.
-            unsafe { $crate::on_load(vm, $launch, $touch_slop_changed) }
+            unsafe { $crate::on_load(vm, $launch, $open_window, $touch_slop_changed) }
         }
     };
 }
@@ -167,7 +167,7 @@ pub enum Error {
     #[error("key data packet's character is not UTF-8")]
     KeyCharacter,
     #[error(
-        "no Activity waits for a window: each ParallaxActivity has one, opened by the launch that runs for it"
+        "no Activity waits for a window: each ParallaxActivity has one, opened by the open_window that runs for it"
     )]
     NoActivityForWindow,
 }

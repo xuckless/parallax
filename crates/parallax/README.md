@@ -7,9 +7,12 @@ One GPUI app on desktop, web, iOS and Android. This facade re-exports `gpui` (`p
 Entry points apply each platform's feel (Flutter's gesture and scroll tuning) before your code runs:
 
 ```rust
-fn launch(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
-fn main() -> Result<(), parallax::parallax_platform::Error> { parallax::run(launch) } // desktop, iOS, web
-parallax::android_main!(launch);         // Android
+fn launch(cx: &mut parallax::gpui::App) { /* bind keys, set globals: once per process */ }
+fn open_window(cx: &mut parallax::gpui::App) { /* cx.open_window(...) */ }
+fn main() -> Result<(), parallax::parallax_platform::Error> { // desktop, iOS, web
+    parallax::run(|cx| { launch(cx); open_window(cx) })
+}
+parallax::android_main!(launch, open_window); // Android: open_window runs once per Activity
 ```
 
 Pre-alpha. Start with the [hello example](https://github.com/xuckless/parallax/blob/main/docs/examples.md); plan and

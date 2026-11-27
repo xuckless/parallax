@@ -33,4 +33,4 @@ deprecated APIs today), `minSdk` 24 (here 28).
 
 Ported so far (cases kept of Flutter's; the ledger names the dropped ones): `AndroidTouchProcessorTest` 14/15,
 `KeyboardManagerTest` 25/29, `InputConnectionAdaptorTest` 26/36, `TextInputPluginTest` 42/53, `ListenableEditingStateTest`
-13/13, `TextEditingDeltaTest` 2/2, `PlatformPluginTest` 2/30 (the haptic cases, [haptics.md](haptics.md)).
+13/13, `TextEditingDeltaTest` 2/2, `PlatformPluginTest` 9/30 (the clipboard reads, [android-clipboard.md](android-clipboard.md); haptics, [haptics.md](haptics.md); the no-delegate pop).

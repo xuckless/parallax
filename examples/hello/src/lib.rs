@@ -6,7 +6,7 @@
 //! long the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as
 //! a `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
 //! of the keyboard inset and of the OS's reduce-motion and reduce-transparency settings (docs/os-settings.md).
-//! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
+//! `launch` and `open_window` run on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
 
@@ -310,22 +310,18 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
         .into_any_element()
 }
 
-/// Once per process, as on desktop: binds the keys, logs the app's lifecycle and opens the window. On Android each
-/// later Activity opens its own window with `open_window` (docs/android-multi-window.md).
+/// Once per process, on every target: binds the keys, logs the app's lifecycle and activates the app. Opens no
+/// window: [`open_window`] does, once on desktop and the web, once per Activity on Android
+/// (docs/android-multi-window.md).
 pub fn launch(cx: &mut App) {
     text_field::bind_keys(cx);
     cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
         .detach();
-    #[cfg(target_os = "android")]
-    if let Err(error) = parallax::parallax_android::on_activity_window(open_window) {
-        log::error!("later Activities get no window: {error}");
-    }
-    open_window(cx);
     cx.activate(true);
 }
 
 /// Opens one window. Android and the web size it themselves and ignore the bounds.
-fn open_window(cx: &mut App) {
+pub fn open_window(cx: &mut App) {
     // Tall enough for record-traces.sh's gestures (logical y up to 650) on desktop harnesses (docs/traces.md).
     let bounds = Bounds::centered(None, size(px(400.), px(700.)), cx);
     let options = WindowOptions {
@@ -376,7 +372,7 @@ fn open_window(cx: &mut App) {
     }
 }
 
-parallax::android_main!(launch);
+parallax::android_main!(launch, open_window);
 
 /// Fonts the web build embeds: a browser gives GPUI no system fonts, and with none loaded the first text draw
 /// panics. Noto Sans is in GPUI's fallback stack for `.SystemUIFont`; Noto Sans Arabic covers `SCRIPTS`' Arabic.
@@ -397,7 +393,10 @@ pub fn start() {
     let started = parallax::run(|cx| {
         let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
         match cx.text_system().add_fonts(fonts) {
-            Ok(()) => launch(cx),
+            Ok(()) => {
+                launch(cx);
+                open_window(cx);
+            }
             Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),
         }
     });

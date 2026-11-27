@@ -18,7 +18,7 @@ use gpui::{
 use gpui_wgpu::GpuContext;
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
+    objects::{GlobalRef, JByteBuffer, JClass, JFloatArray, JObject, JString},
     sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
 
@@ -80,7 +80,7 @@ fn natives() -> [NativeMethod; 15] {
         ),
         row(
             "nativeActivityCreated",
-            "()I",
+            "(Lio/github/xuckless/parallax/PlatformPlugin;)I",
             activity_created as *mut c_void,
         ),
         row(
@@ -124,12 +124,12 @@ fn natives() -> [NativeMethod; 15] {
 struct MainThreadHost {
     shell: Rc<Shell>,
     app: RefCell<AppState>,
-    /// The app's launch ([`crate::android_main!`]'s first argument): run once, on the first Activity's first surface,
-    /// where it starts GPUI and opens that Activity's window.
+    /// The app's setup ([`crate::android_main!`]'s first argument): run once, on the first Activity's first surface,
+    /// where it starts GPUI, as desktop GPUI runs its launch.
     launch: fn(&mut App),
-    /// How the running app opens each later Activity's window ([`crate::on_activity_window`]); unset, a later
-    /// Activity stays black (logged).
-    open_activity_window: Slot<dyn FnMut(&mut App)>,
+    /// How the app opens one Activity's window ([`crate::android_main!`]'s second argument): run on every
+    /// Activity's first surface, the first one's right after `launch`.
+    open_window: fn(&mut App),
     /// The app's hook for a changed device touch slop ([`crate::android_main!`]'s second argument).
     touch_slop_changed: TouchSlopChanged,
 }
@@ -181,9 +181,9 @@ impl MainThreadHost {
         rescaled.density_moved
     }
 
-    /// Asks the app for `window`'s Activity's GPUI window, on its first surface: the first Activity's starts GPUI,
-    /// whose `launch` (once per process, as on desktop) opens it; each later one runs the app's
-    /// [`crate::on_activity_window`] callback in the running app. [`Shell::open_window`] binds the window either opens.
+    /// Asks the app for `window`'s Activity's GPUI window, on its first surface: the app's `open_window`, after
+    /// starting GPUI and running its `launch` for the first Activity (once per process, as on desktop).
+    /// [`Shell::open_window`] binds the window it opens.
     fn request_window(&self, window: &ActivityWindow, locales: &[String]) {
         *window.gpui.borrow_mut() = Gpui::Requested;
         // Cloned so the borrow ends before GPUI runs: the app's code may reach `self.app` again.
@@ -192,14 +192,7 @@ impl MainThreadHost {
             AppState::Running { app, .. } => Some(app.clone()),
         };
         match running {
-            Some(app) => {
-                let opener = app.update(|cx| self.open_activity_window.with(|open| open(cx)));
-                if opener.is_none() {
-                    log::warn!(
-                        "parallax: the app set no on_activity_window to open a later Activity's window"
-                    );
-                }
-            }
+            Some(app) => app.update(self.open_window),
             None => self.start(locales),
         }
         if window.is_requested() {
@@ -210,7 +203,7 @@ impl MainThreadHost {
         }
     }
 
-    /// Starts GPUI, whose launch opens the first Activity's window.
+    /// Starts GPUI: the app's `launch`, then its `open_window` for the first Activity.
     fn start(&self, locales: &[String]) {
         let fonts = crate::text_system::load(&self.shell.vm, locales);
         let platform =
@@ -219,7 +212,11 @@ impl MainThreadHost {
                 Err(error) => return log::error!("parallax: cannot start the app: {error}"),
             };
         let platform: Rc<dyn gpui::Platform> = Rc::new(platform);
-        let app = Application::with_platform(platform).run_embedded(self.launch);
+        let (launch, open_window) = (self.launch, self.open_window);
+        let app = Application::with_platform(platform).run_embedded(move |cx| {
+            launch(cx);
+            open_window(cx);
+        });
         *self.app.borrow_mut() = AppState::Running {
             cx: app.to_async(),
             app: Rc::new(app),
@@ -293,6 +290,7 @@ pub(crate) fn shell() -> Result<Rc<Shell>, Error> {
 pub unsafe fn on_load(
     vm: *mut jni::sys::JavaVM,
     launch: fn(&mut App),
+    open_window: fn(&mut App),
     touch_slop_changed: TouchSlopChanged,
 ) -> jint {
     android_logger::init_once(
@@ -317,7 +315,7 @@ pub unsafe fn on_load(
                     shell: Rc::new(Shell::new(vm)),
                     app: RefCell::new(AppState::NotStarted),
                     launch,
-                    open_activity_window: Slot::default(),
+                    open_window,
                     touch_slop_changed,
                 });
             });
@@ -328,19 +326,6 @@ pub unsafe fn on_load(
             JNI_ERR
         }
     }
-}
-
-/// Sets how the running app opens the GPUI window of each `ParallaxActivity` after the first (split screen, a deep
-/// link, a relaunch after the last Activity was destroyed in the same process): `open` runs on the main thread, on
-/// that Activity's first surface, and must open one window (`cx.open_window`), as a desktop app opens a window from
-/// a reopen callback. Call it in `launch`, which runs once per process; a later call replaces the earlier `open`.
-/// The facade's `parallax::android_main!` sets the app's `launch` as the default (docs/android-multi-window.md).
-pub fn on_activity_window(open: impl FnMut(&mut App) + 'static) -> Result<(), Error> {
-    HOST.with(|host| {
-        let host = host.get().ok_or(Error::NotLoaded)?;
-        host.open_activity_window.set(Box::new(open));
-        Ok(())
-    })
 }
 
 fn with_host(f: impl FnOnce(&MainThreadHost)) {
@@ -423,12 +408,21 @@ extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jin
 }
 
 /// `ParallaxActivity.onCreate`: a new live Activity with its own window, which GPUI opens on its first surface;
-/// Java tags its events with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
-extern "system" fn activity_created(mut env: JNIEnv, _class: JClass) -> jint {
-    let created = shell().map(|shell| {
-        shell.lifecycle(ActivityEvent::Create);
-        shell.lifecycle.borrow().newest()
-    });
+/// Java tags its events with the returned id. `platform_plugin` is the Activity's `PlatformPlugin`. Without a host
+/// there is no id to give: `onCreate` gets an `IllegalStateException`.
+extern "system" fn activity_created(
+    mut env: JNIEnv,
+    _class: JClass,
+    platform_plugin: JObject,
+) -> jint {
+    let created = env
+        .new_global_ref(platform_plugin)
+        .map_err(Error::Jni)
+        .and_then(|platform_plugin| {
+            let shell = shell()?;
+            shell.lifecycle(ShellEvent::Create { platform_plugin });
+            Ok(shell.lifecycle.borrow().newest())
+        });
     let why = match created {
         Ok(Some(activity)) => return activity.0,
         Ok(None) => "the lifecycle handed out no id".to_string(),
@@ -453,7 +447,7 @@ extern "system" fn activity_event(
     match Callback::from_java(code, value) {
         Some(callback) => with_host(|host| {
             host.shell
-                .lifecycle(ActivityEvent::From(ActivityId(activity), callback))
+                .lifecycle(ShellEvent::From(ActivityId(activity), callback))
         }),
         None => log::error!("parallax: unknown Activity event {code} ({value})"),
     }
@@ -693,6 +687,13 @@ pub(crate) struct AppCallbacks {
     pub(crate) accessibility_display_change: Slot<dyn FnMut(AccessibilityDisplaySettings)>,
 }
 
+/// What [`Shell::lifecycle`] takes: a lifecycle event, with the Java objects that come with it. `onCreate` brings the
+/// new Activity's `PlatformPlugin`, which its window keeps (the clipboard, [`ActivityWindow::platform_plugin`]).
+enum ShellEvent {
+    Create { platform_plugin: GlobalRef },
+    From(ActivityId, Callback),
+}
+
 /// The app as Android sees it: its Activities and their windows, one each. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
@@ -772,7 +773,13 @@ impl Shell {
     /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: that Activity's window first,
     /// then the app's observers, in the order `gpui_ios` uses. A new Activity gets a window; a destroyed one's
     /// window closes.
-    fn lifecycle(&self, event: ActivityEvent) {
+    fn lifecycle(&self, event: ShellEvent) {
+        let (event, platform_plugin) = match event {
+            ShellEvent::Create { platform_plugin } => {
+                (ActivityEvent::Create, Some(platform_plugin))
+            }
+            ShellEvent::From(id, callback) => (ActivityEvent::From(id, callback), None),
+        };
         let before = self.lifecycle.replace(Lifecycle::Loaded);
         let id = match event {
             ActivityEvent::From(id, _) => Some(id),
@@ -789,8 +796,9 @@ impl Shell {
         };
         let runs_frames = id.is_some_and(|id| next.runs_frames(id));
         *self.lifecycle.borrow_mut() = next;
-        if let Some(created) = created {
-            let window = ActivityWindow::new(created, self.gpu.clone(), self.device);
+        if let (Some(created), Some(platform_plugin)) = (created, platform_plugin) {
+            let window =
+                ActivityWindow::new(created, self.gpu.clone(), self.device, platform_plugin);
             self.windows.borrow_mut().insert(created, Rc::new(window));
         }
         let window = id.and_then(|id| self.window(id));
