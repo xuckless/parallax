@@ -47,6 +47,11 @@ pub use jni;
 ///
 /// On Android it defines `JNI_OnLoad`, which `ParallaxActivity`'s `System.loadLibrary` calls; GPUI then runs
 /// `launch` on the main thread when the first surface exists. On other targets it expands to nothing.
+///
+/// Use the facade's `parallax::android_main!`, as above: it applies the platform behaviour table (Android's
+/// touch slop, scroll physics and velocity tracker, docs/behaviour.md) before `launch`. This crate's own
+/// `parallax_android::android_main!` does not: the table lives in `parallax-platform`, which depends on this crate,
+/// so without the facade GPUI keeps `GestureTuning::default()` (Flutter's iOS values) unless `launch` sets one.
 #[macro_export]
 macro_rules! android_main {
     ($launch:expr) => {
