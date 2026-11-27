@@ -9,7 +9,7 @@
 //
 // Parallax changes: package. The `flutter/textinput` MethodChannel becomes JNI: Rust (GPUI) sends
 // the framework's calls in Flutter's JSON form as the return value of
-// ParallaxSurfaceView.nativeFrame (handleFrameworkCalls below, in place of the channel's
+// ParallaxSurfaceView.nativeFrameworkCalls (handleFrameworkCalls below, in place of the channel's
 // MethodCallHandler), and the calls to the framework become static natives on
 // ParallaxSurfaceView, tagged with the view's Activity id (which replaces the DartExecutor).
 // Kept: show, hide, setClient, setEditingState, clearClient, requestAutofill,
@@ -56,15 +56,15 @@ public class TextInputChannel {
   private TextInputMethodHandler textInputMethodHandler;
 
   // Parallax: the channel's MethodCallHandler. `calls` is a JSON array of {"method", "args"}
-  // objects in Flutter's `flutter/textinput` encoding, in order (host.rs builds it).
-  void handleFrameworkCalls(String calls) {
+  // objects in Flutter's `flutter/textinput` encoding, in order (host.rs builds it; the view takes
+  // it from nativeFrameworkCalls).
+  void handleFrameworkCalls(JSONArray callList) {
     if (textInputMethodHandler == null) {
       // If no explicit TextInputMethodHandler has been registered then we don't
       // need to forward this call to an API. Return.
       return;
     }
     try {
-      final JSONArray callList = new JSONArray(calls);
       for (int i = 0; i < callList.length(); i++) {
         final JSONObject call = callList.getJSONObject(i);
         final String method = call.getString("method");

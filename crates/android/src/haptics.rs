@@ -2,11 +2,13 @@
 // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 // third_party/flutter/LICENSE.
 
-//! GPUI's haptics on Android: each `gpui::Haptic` becomes the argument Flutter's `HapticFeedback` sends with
-//! `HapticFeedback.vibrate`, which Java's ported `PlatformChannel.HapticFeedbackType.fromValue` reads and
-//! `PlatformPlugin.vibrateHapticFeedback` plays (docs/haptics.md). Java asks for the pending ones every vsync.
+//! GPUI's haptics on Android: each `gpui::Haptic` becomes the `HapticFeedback.vibrate` call Flutter's
+//! `HapticFeedback` sends on `flutter/platform`, which Java's ported `PlatformChannel.HapticFeedbackType.fromValue`
+//! reads and `PlatformPlugin.vibrateHapticFeedback` plays (docs/haptics.md). Java pulls them with the other framework
+//! calls every vsync.
 
 use gpui::Haptic;
+use serde_json::{Value, json};
 
 /// The `HapticFeedback.vibrate` argument for `haptic`; `None` is `HapticFeedback.vibrate()`'s missing argument
 /// (Java's `STANDARD`). The match is the table: exhaustive, so a new kind cannot be missed.
@@ -23,58 +25,37 @@ pub(crate) fn flutter_argument(haptic: Haptic) -> Option<&'static str> {
     }
 }
 
+/// `haptics` as Flutter's `flutter/platform` calls, in order, in the `{"method", "args"}` JSON the view reads
+/// (`args` null for `vibrate()`); `None` when there are none.
+pub(crate) fn platform_calls(haptics: &[Haptic]) -> Option<Value> {
+    (!haptics.is_empty()).then(|| {
+        haptics
+            .iter()
+            .map(|&haptic| json!({"method": "HapticFeedback.vibrate", "args": flutter_argument(haptic)}))
+            .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn flutter_argument_table() {
-        // (row name: the haptic_feedback.dart call, haptic, argument). Java's PlatformPluginTest checks each
-        // argument's Android HapticFeedbackConstants.
+    fn platform_calls_table() {
+        // (row name, haptics GPUI played, the calls Java gets)
         let rows = [
+            ("none: no calls", vec![], None),
             (
-                "vibrate: no argument (STANDARD, LONG_PRESS)",
-                Haptic::Vibrate,
-                None,
-            ),
-            (
-                "lightImpact (VIRTUAL_KEY)",
-                Haptic::LightImpact,
-                Some("HapticFeedbackType.lightImpact"),
-            ),
-            (
-                "mediumImpact (KEYBOARD_TAP)",
-                Haptic::MediumImpact,
-                Some("HapticFeedbackType.mediumImpact"),
-            ),
-            (
-                "heavyImpact (CONTEXT_CLICK)",
-                Haptic::HeavyImpact,
-                Some("HapticFeedbackType.heavyImpact"),
-            ),
-            (
-                "selectionClick (CLOCK_TICK)",
-                Haptic::SelectionClick,
-                Some("HapticFeedbackType.selectionClick"),
-            ),
-            (
-                "successNotification (CONFIRM from API 30)",
-                Haptic::SuccessNotification,
-                Some("HapticFeedbackType.successNotification"),
-            ),
-            (
-                "warningNotification (KEYBOARD_TAP from API 30)",
-                Haptic::WarningNotification,
-                Some("HapticFeedbackType.warningNotification"),
-            ),
-            (
-                "errorNotification (REJECT from API 30)",
-                Haptic::ErrorNotification,
-                Some("HapticFeedbackType.errorNotification"),
+                "in order; vibrate() sends a null argument",
+                vec![Haptic::HeavyImpact, Haptic::Vibrate],
+                Some(json!([
+                    {"method": "HapticFeedback.vibrate", "args": "HapticFeedbackType.heavyImpact"},
+                    {"method": "HapticFeedback.vibrate", "args": null},
+                ])),
             ),
         ];
-        for (name, haptic, argument) in rows {
-            assert_eq!(flutter_argument(haptic), argument, "{name}");
+        for (name, haptics, calls) in rows {
+            assert_eq!(platform_calls(&haptics), calls, "{name}");
         }
     }
 }

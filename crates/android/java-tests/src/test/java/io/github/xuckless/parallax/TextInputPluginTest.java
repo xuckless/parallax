@@ -128,7 +128,7 @@ public class TextInputPluginTest {
     try {
       JSONObject methodCall =
           new JSONObject().put("method", method).put("args", args == null ? JSONObject.NULL : args);
-      textInputChannel.handleFrameworkCalls(new JSONArray().put(methodCall).toString());
+      textInputChannel.handleFrameworkCalls(new JSONArray().put(methodCall));
     } catch (JSONException e) {
       throw new AssertionError(e);
     }
@@ -672,7 +672,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0));
+            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class)));
 
             InputMethodSubtype inputMethodSubtype = mock(InputMethodSubtype.class);
             TestImm testImm = Shadow.extract(ctx.getSystemService(Context.INPUT_METHOD_SERVICE));
@@ -1008,7 +1008,7 @@ public class TextInputPluginTest {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
-    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0, mock(PlatformPlugin.class));
     TextInputChannel textInputChannel = new TextInputChannel(0);
     TextInputPlugin textInputPlugin =
         new TextInputPlugin(
@@ -1068,7 +1068,7 @@ public class TextInputPluginTest {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
-    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0, mock(PlatformPlugin.class));
     TextInputChannel textInputChannel = new TextInputChannel(0);
     TextInputPlugin textInputPlugin =
         new TextInputPlugin(
@@ -1106,7 +1106,7 @@ public class TextInputPluginTest {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
-    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0, mock(PlatformPlugin.class));
     TextInputChannel textInputChannel = new TextInputChannel(0);
     TextInputPlugin textInputPlugin =
         new TextInputPlugin(
@@ -1156,7 +1156,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class));
             TextInputChannel textInputChannel = new TextInputChannel(0);
             TextInputPlugin textInputPlugin =
                 new TextInputPlugin(
@@ -1251,7 +1251,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class));
             TextInputChannel textInputChannel = new TextInputChannel(0);
             TextInputPlugin textInputPlugin =
                 new TextInputPlugin(
@@ -1311,7 +1311,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class));
             TextInputChannel textInputChannel = new TextInputChannel(0);
             TextInputPlugin textInputPlugin =
                 new TextInputPlugin(
@@ -1447,7 +1447,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class));
             TextInputChannel textInputChannel = spy(new TextInputChannel(0));
             TextInputPlugin textInputPlugin =
                 new TextInputPlugin(
@@ -1545,7 +1545,7 @@ public class TextInputPluginTest {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
-    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0);
+    ParallaxSurfaceView testView = new ParallaxSurfaceView(ctx, 0, mock(PlatformPlugin.class));
     TextInputChannel textInputChannel = spy(new TextInputChannel(0));
     TextInputPlugin textInputPlugin =
         new TextInputPlugin(
@@ -1601,7 +1601,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0);
+            ParallaxSurfaceView testView = new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class));
             TextInputChannel textInputChannel = new TextInputChannel(0);
             TextInputPlugin textInputPlugin =
                 new TextInputPlugin(
@@ -1709,7 +1709,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0));
+            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class)));
             when(testView.getWindowSystemUiVisibility())
                 .thenReturn(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
 
@@ -1799,7 +1799,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0));
+            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class)));
             when(testView.getWindowSystemUiVisibility())
                 .thenReturn(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
 
@@ -1889,7 +1889,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0));
+            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class)));
             when(testView.getWindowSystemUiVisibility())
                 .thenReturn(
                     View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -1981,7 +1981,7 @@ public class TextInputPluginTest {
     try (ActivityScenario<Activity> scenario = ActivityScenario.launch(Activity.class)) {
       scenario.onActivity(
           activity -> {
-            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0));
+            ParallaxSurfaceView testView = spy(new ParallaxSurfaceView(activity, 0, mock(PlatformPlugin.class)));
             when(testView.getWindowSystemUiVisibility())
                 .thenReturn(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
 

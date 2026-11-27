@@ -18,11 +18,9 @@ use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
     objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
-    sys::{
-        JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jobjectArray,
-        jstring,
-    },
+    sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
+use serde_json::Value;
 
 use crate::{
     Error,
@@ -42,7 +40,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 15] {
+fn natives() -> [NativeMethod; 14] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -71,14 +69,9 @@ fn natives() -> [NativeMethod; 15] {
             locales_changed as *mut c_void,
         ),
         row(
-            "nativeTextInputCalls",
+            "nativeFrameworkCalls",
             "(I)Ljava/lang/String;",
-            text_input_calls as *mut c_void,
-        ),
-        row(
-            "nativeHapticFeedbackCalls",
-            "(I)[Ljava/lang/String;",
-            haptic_feedback_calls as *mut c_void,
+            framework_calls as *mut c_void,
         ),
         row("nativeInsets", "(IFIIIIIIIII)V", insets as *mut c_void),
         row(
@@ -430,55 +423,28 @@ extern "system" fn locales_changed(
     with_host(|host| host.follow_locales(&locales));
 }
 
-/// Every vsync: GPUI draws if anything changed. Java then asks for the text-input calls ([`text_input_calls`]) and
+/// Every vsync: GPUI draws if anything changed. Java then asks for GPUI's framework calls ([`framework_calls`]) and
 /// runs them after this returns, outside GPUI's draw.
 extern "system" fn frame(_env: JNIEnv, _class: JClass, activity: jint) {
     with_owner(activity, |host| host.shell.frame());
 }
 
-/// GPUI's pending text-input calls for `TextInputChannel.handleFrameworkCalls` (Flutter's JSON), or null. Java asks
-/// after each frame and right after `KeyboardManager` handled a key event: a key GPUI edits the field with reaches
-/// Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit text before the next vsync).
-extern "system" fn text_input_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
+/// GPUI's pending calls to Java in Flutter's channel encoding, by channel ([`Shell::framework_calls`]), or null
+/// when there are none. Java asks after each frame and right after `KeyboardManager` handled a key event: a key GPUI
+/// edits the field with reaches Java's mirror before the IME's next call (Gboard sends DEL as a key, then may commit
+/// text before the next vsync). A pull, not a call into Java: a haptic fires from a GPUI timer, where Rust holds no
+/// Java frame to call through.
+extern "system" fn framework_calls(env: JNIEnv, _class: JClass, activity: jint) -> jstring {
     let mut calls = None;
-    with_owner(activity, |host| calls = host.shell.text_input_calls());
-    match calls.map(|calls| env.new_string(calls)) {
+    with_owner(activity, |host| calls = host.shell.framework_calls());
+    match calls.map(|calls| env.new_string(calls.to_string())) {
         Some(Ok(calls)) => calls.into_raw(),
         Some(Err(error)) => {
-            log::error!("parallax: text input calls dropped: {error}");
+            log::error!("parallax: framework calls dropped: {error}");
             std::ptr::null_mut()
         }
         None => std::ptr::null_mut(),
     }
-}
-
-/// GPUI's pending haptics as Flutter's `HapticFeedback.vibrate` arguments (null for `vibrate()`), for
-/// `PlatformPlugin.vibrateHapticFeedback`, or a null array when there are none. Java asks every vsync.
-extern "system" fn haptic_feedback_calls(
-    mut env: JNIEnv,
-    _class: JClass,
-    activity: jint,
-) -> jobjectArray {
-    let mut pending = Vec::new();
-    with_owner(activity, |host| pending = host.shell.haptics.take());
-    if pending.is_empty() {
-        return std::ptr::null_mut();
-    }
-    let calls = (|| -> jni::errors::Result<jobjectArray> {
-        let length = i32::try_from(pending.len()).unwrap_or(i32::MAX);
-        let calls = env.new_object_array(length, "java/lang/String", JObject::null())?;
-        for (index, haptic) in (0..length).zip(pending) {
-            if let Some(argument) = haptics::flutter_argument(haptic) {
-                let argument = env.new_string(argument)?;
-                env.set_object_array_element(&calls, index, argument)?;
-            }
-        }
-        Ok(calls.into_raw())
-    })();
-    calls.unwrap_or_else(|error| {
-        log::error!("parallax: haptics dropped: {error}");
-        std::ptr::null_mut()
-    })
 }
 
 /// `TextInputChannel.updateEditingState`: Java's editing state after an IME edit (UTF-16 offsets, -1 for none).
@@ -705,7 +671,7 @@ pub(crate) struct Shell {
     /// The focused field's handler: GPUI installs it every frame ([`crate::window`]), the IME queries it.
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) text_input: RefCell<text_input::Session>,
-    /// Haptics GPUI played since Java last asked ([`haptic_feedback_calls`]), oldest first.
+    /// Haptics GPUI played since Java last asked ([`Shell::framework_calls`]), oldest first.
     pub(crate) haptics: RefCell<Vec<Haptic>>,
     /// A plain `Cell`: only the main thread draws and attaches surfaces.
     pub(crate) first_frame: Cell<FirstFrame>,
@@ -1008,7 +974,7 @@ impl Shell {
 
     /// The pending text-input calls for Java, as Flutter's JSON; empties them. Never logs the text (password
     /// fields included): the calls carry it.
-    fn text_input_calls(&self) -> Option<String> {
+    fn text_input_calls(&self) -> Option<Value> {
         let pending = self.text_input.borrow_mut().take()?;
         let state = if pending.sends_state() {
             self.with_input_handler(|handler| {
@@ -1050,7 +1016,25 @@ impl Shell {
         let described = state.as_ref().map_or("none".to_string(), describe);
         let calls = self.text_input.borrow_mut().send(pending, state, bounds)?;
         log::debug!("parallax: text input {pending:?}, state: {described}");
-        Some(calls.to_string())
+        Some(calls)
+    }
+
+    /// GPUI's pending calls for Java, emptied: a JSON object of Flutter channel → its calls, with only the channels
+    /// that have some (`flutter/textinput`: [`Self::text_input_calls`]; `flutter/platform`: the haptics,
+    /// [`haptics::platform_calls`]); `None` when none has.
+    fn framework_calls(&self) -> Option<Value> {
+        let channels = [
+            ("flutter/textinput", self.text_input_calls()),
+            (
+                "flutter/platform",
+                haptics::platform_calls(&self.haptics.take()),
+            ),
+        ];
+        let calls: serde_json::Map<String, Value> = channels
+            .into_iter()
+            .filter_map(|(channel, calls)| Some((channel.to_string(), calls?)))
+            .collect();
+        (!calls.is_empty()).then_some(Value::Object(calls))
     }
 
     /// Java's editing state after an IME edit → GPUI, synchronously: merged onto GPUI's state when GPUI changed

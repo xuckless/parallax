@@ -9,7 +9,7 @@
 //
 // Parallax changes: package. Only the haptic part is kept: the Activity and
 // vibrateHapticFeedback. The constructor takes the Activity alone (no PlatformChannel: GPUI's
-// haptics arrive through ParallaxSurfaceView.nativeHapticFeedbackCalls). Dropped:
+// haptics arrive through ParallaxSurfaceView.nativeFrameworkCalls). Dropped:
 // PlatformChannel, PlatformPluginDelegate and mPlatformMessageHandler; destroy; system sounds,
 // system chrome and overlays, orientation, app switcher description, clipboard, share, back
 // navigation; androidx annotations; io.flutter.Log; io.flutter.Build.API_LEVELS (→
