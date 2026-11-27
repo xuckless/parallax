@@ -43,7 +43,7 @@ tests on those rows. Their pure decision modules (plain values, no `windows`, ob
 here: after GPUI's tests, the script adds one scratch crate per `pure_crates` row (`windows-pure`, `web-pure`,
 `ios-pure`) to the scratch workspace, with each module of the row included by `#[path]` on `parallax-gpui`, and runs
 its lib tests, in the backend's own edition (read from its fork manifest). Today: gpui_windows's `pointer.rs`
-([desktop-touch-windows.md](desktop-touch-windows.md)); gpui_web's `text_editing.rs`
+([desktop-touch-windows.md](desktop-touch-windows.md)) and `accessibility_display.rs` ([os-settings.md](os-settings.md)); gpui_web's `text_editing.rs`
 ([web-text-input.md](web-text-input.md)), `page_lifecycle.rs` and `keyboard_inset.rs`
 ([web-lifecycle.md](web-lifecycle.md)); gpui_ios's `ios/keyboard.rs`, `ios/keyboard_inset.rs` and `ios/spring_animation.rs`
 ([ios-keyboard.md](ios-keyboard.md)). A listed module must use only `gpui` and `std`.

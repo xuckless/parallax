@@ -34,11 +34,19 @@ window.
   (docs/web-lifecycle.md).
 - Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
   viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
+- OS reduce-motion and reduce-transparency settings on every target (patches 0039–0041, `parallax-android`):
+  `App::reduce_motion` now starts as the OS setting and follows changes (iOS, macOS, Android's Remove animations,
+  Windows' Animation effects, Linux's desktop portal, the web's `prefers-reduced-motion`), so GPUI's animations,
+  animated SVGs and images stop moving when the user asks; new `App::reduce_transparency` /
+  `set_reduce_transparency` likewise (iOS, macOS, Windows, Chromium), for translucent materials
+  ([docs/os-settings.md](docs/os-settings.md)).
 - Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
   windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
 
 ### Changed
 
+- `parallax-android`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: its reduce-motion reading is ported from
+  React Native's `AccessibilityInfoModule.kt` (MIT), with `LICENSE-REACT-NATIVE`.
 - `parallax-gpui-ios`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: it ships React Native's keyboard
   spring (MIT) as Flutter does, with `LICENSE-REACT-NATIVE`.
 - Android: one GPUI window per `ParallaxActivity` (was one per process, drawn only by the most recently started

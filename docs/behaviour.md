@@ -39,6 +39,8 @@ deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, 
   `BrowserDetection.detectOperatingSystem`; unknown → Android), but with Flutter's slops (`web_behaviour`): Flutter
   web never sets `physicalTouchSlop`, so an Android browser keeps 18 / 36.
 - **Desktop touch:** touch slops, the row's physics, drags scroll: [desktop-touch-behaviour.md](desktop-touch-behaviour.md).
+- **Not in the table:** reduce motion and reduce transparency are the user's OS settings, read at runtime on every
+  target, not per-target defaults: [os-settings.md](os-settings.md).
 - The same everywhere (Flutter's `constants.dart`, `gpui::constants`): long press 500 ms, double tap within 300 ms,
   at least 40 ms apart, 100 px apart at most; taps count per target ([gesture-recognizers.md](gesture-recognizers.md)).
 

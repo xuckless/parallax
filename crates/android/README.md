@@ -15,6 +15,6 @@ Pre-alpha, verified on the Android emulator (no real-device testing yet). Build 
 [cargo-parallax](https://crates.io/crates/cargo-parallax). How it works:
 [docs/android.md](https://github.com/xuckless/parallax/blob/main/docs/android.md).
 
-Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0 AND BSD-3-Clause (code ported from Flutter, see
-[PORTED.md](https://github.com/xuckless/parallax/blob/main/third_party/flutter/PORTED.md) and
-[NOTICE](https://github.com/xuckless/parallax/blob/main/NOTICE)).
+Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0 AND BSD-3-Clause AND MIT (code ported from Flutter, see
+[PORTED.md](https://github.com/xuckless/parallax/blob/main/third_party/flutter/PORTED.md), and from React Native,
+see LICENSE-REACT-NATIVE and [NOTICE](https://github.com/xuckless/parallax/blob/main/NOTICE)).

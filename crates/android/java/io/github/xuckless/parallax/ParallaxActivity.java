@@ -31,6 +31,7 @@ public class ParallaxActivity extends Activity {
   private static final int EVENT_TRIM_MEMORY = 6;
 
   private ParallaxSurfaceView view;
+  private AccessibilityInfoModule accessibilityInfo;
 
   /** This instance's id from nativeActivityCreated: Rust ignores events from a replaced Activity. */
   private int activity;
@@ -41,6 +42,8 @@ public class ParallaxActivity extends Activity {
     // The app's JNI_OnLoad (android_main!) runs here, on the main thread, and binds the natives.
     System.loadLibrary(libName());
     activity = ParallaxSurfaceView.nativeActivityCreated();
+    accessibilityInfo = new AccessibilityInfoModule(getContentResolver());
+    accessibilityInfo.initialize();
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
     view = new ParallaxSurfaceView(this, activity, new PlatformPlugin(this));
@@ -57,12 +60,14 @@ public class ParallaxActivity extends Activity {
   protected void onResume() {
     super.onResume();
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_RESUME, 0);
+    accessibilityInfo.onHostResume();
     view.startFrames();
   }
 
   @Override
   protected void onPause() {
     view.stopFrames();
+    accessibilityInfo.onHostPause();
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_PAUSE, 0);
     super.onPause();
   }

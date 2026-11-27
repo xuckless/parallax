@@ -11,11 +11,12 @@ use std::{
 
 use futures::channel::oneshot;
 use gpui::{
-    Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, Bounds,
-    ClipboardItem, CursorStyle, DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu,
-    MenuItem, OperatingSystem, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformInfo,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem,
-    PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
+    AccessibilityDisplaySettings, Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase,
+    BackgroundExecutor, Bounds, ClipboardItem, CursorStyle, DisplayId, DummyKeyboardMapper,
+    ForegroundExecutor, Keymap, Menu, MenuItem, OperatingSystem, PathPromptOptions, Pixels,
+    Platform, PlatformDisplay, PlatformInfo, PlatformKeyboardLayout, PlatformKeyboardMapper,
+    PlatformTarget, PlatformTextSystem, PlatformWindow, Task, ThermalState, WindowAppearance,
+    WindowParams,
 };
 
 use gpui_wgpu::CosmicTextSystem;
@@ -249,6 +250,20 @@ impl Platform for AndroidPlatform {
 
     fn on_memory_warning(&self, callback: Box<dyn FnMut()>) {
         self.shell.callbacks.memory_warning.set(callback);
+    }
+
+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
+        self.shell.accessibility_display.get()
+    }
+
+    fn on_accessibility_display_settings_change(
+        &self,
+        callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
+    ) {
+        self.shell
+            .callbacks
+            .accessibility_display_change
+            .set(callback);
     }
 
     fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {
