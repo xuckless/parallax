@@ -54,8 +54,7 @@ element sees (last scale and focal point, [pinch.md](pinch.md)), then checks:
   compared at the script's speed (`at_scripted_speed` stretches a trace so its last move comes 150 ms after its
   first touch): momentum grows with the finger's speed, and idb swipes slower than asked. `slow-drag` moves at
   40 px/s, under every row's minimum fling velocity, so how long a driver waits before lifting cannot make it fling.
-- **Known differences** (`KNOWN_DIFFERENCES`): printed, not compared, each with its open fix. None today: flings
-  agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
+- **No known differences:** every platform's outcome is compared; flings agree within 5 % under every row. Before time stamps (patch 0020) the web's came out ~40 % short; before the
   web driver stamped each move when its fingers were there, its last move, clamped to the end point a frame late,
   read as the finger slowing (~35 % short).
 
