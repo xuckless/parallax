@@ -35,14 +35,14 @@ Waves 1–7 built Phase 0 and the 0.1.1 skeleton.
 | 8 | 1 | Upstream: fork Zed to `xuckless/zed` with a `parallax` branch carrying our patches (rule 14), notes for the BSD-licence question and patch 0001 (upstreaming paused) · Keys: port `KeyboardManager` + `KeyEmbedderResponder`, key-code table, back button · Fonts: `fonts.xml` parser, fallback table, CBDT emoji, locale (with the `CosmicTextSystem` patch and its rule-11 local copy) · Java tests: Robolectric/Gradle setup, first ported test (`AndroidTouchProcessorTest`) · Lifecycle + device loss following the backend table | 0.1.2 |
 | 9 | 1 | Publish our GPUI fork as `parallax-gpui*` crates (patch rule 11) and move the Parallax crates onto it, dropping the local queue copy and fonts workaround · Core patches (rule 12): pointer device + synthesized tags, touch opt-out, keyboard type / secure / autofill · Back button: claim it again after typing (patch) · Emoji: Android rasterizes emoji glyphs via Canvas/Typeface (COLRv1 on Android 13+) · Text input: port `InputConnectionAdaptor`, `ListenableEditingState`, `TextEditingDelta`, `FlutterTextUtils`, `ImeSyncDeferringInsetsCallback`, `TextInputPlugin` parts; bridge to `InputHandler` · `examples/hello`: a text field and the multi-script screen | 0.1.3 |
 | 10 | 1 | Port the Android Java tests (`InputConnectionAdaptorTest`, `TextInputPluginTest`, `KeyboardManagerTest`, `ListenableEditingStateTest`, `TextEditingDeltaTest`) · Emulator matrix API 28/33/35 with Gboard (Play images) and CI wiring for the Java tests · Runtime locale changes (follow per-app / system locale after start) · composing check with a second IME/language (Gboard opened no composing region in Wave 9) · emoji picker timing (100 new emoji ≈ 0.2 s in Wave 9; measure, move rasterizing off the hot path only if over budget) · patch tests in CI · Android mouse/trackpad as a real mouse · per-touch device attribution (patch 0003) · back key's `pointer_source` · decide public touch opt-out for custom elements · Gate 1 bug fixes | 0.1.4 = **Gate 1** |
-| 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.5 |
-| 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches on the fork with drafts in `drafts/upstream/`) · Android multi-window (decide a window per Activity) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.6 = **Gate 2** |
+| 11 | 2 | Gesture oracle tables through GPUI's test platform: velocity + least squares · physics (friction, clamping, fling) · recognizers (tap, double-tap, long-press, drag) · platform behaviour table (slop, physics preset, touch → mouse, haptics, touch-target minimum) | 0.1.6 |
+| 12 | 2 | Pinch / multi-touch and overscroll (Parallax side first, patches on the fork with drafts in `drafts/upstream/`) · Android multi-window (decide a window per Activity) · trace recorder (Android emulator, iOS simulator, browser) + replay across platforms | 0.1.7 = **Gate 2** |
 | 13 | 3 | Confirm the macOS 27 touchscreen API · desktop touch patches `touch-windows`, `touch-linux` (Wayland + X11), `touch-macos` (numbered when they land) · synthetic touch injection for testing (Windows `InjectTouchInput`, Linux `uinput`) | repo builds |
-| 14 | 3 | Desktop traces replayed against phone and browser traces · prepare the touch patches on the fork (upstreaming paused) | 0.1.7 = **Gate 3** |
-| 15 | 4 | iOS: the 39 `UITextInput` cases as tables + fixes, hardware keyboard, keyboard inset (iOS simulator) · web: `ime_mirror` cases, lifecycle, keyboard inset | 0.1.8 |
-| 16 | 4 | Selection: native `UITextInteraction` on iOS, Flutter's selection behaviour on Android and touch desktops · remaining lifecycle and safe-area gaps · `parallax-ext` friction items | 0.1.9 = **Gate 4** |
-| 17 | 5 | `cargo parallax run ios` (Xcode project, iOS simulator) · `cargo parallax run web` · `cargo parallax build android --release` (signing + App Bundle) | 0.1.10 |
-| 18 | 5 | Getting-started docs per target, the behaviour table and touch → mouse docs, example polish, a last full review | 0.1.11 = **Gate 5**, closes v0.1.x |
+| 14 | 3 | Desktop traces replayed against phone and browser traces · prepare the touch patches on the fork (upstreaming paused) | 0.1.8 = **Gate 3** |
+| 15 | 4 | iOS: the 39 `UITextInput` cases as tables + fixes, hardware keyboard, keyboard inset (iOS simulator) · web: `ime_mirror` cases, lifecycle, keyboard inset | 0.1.9 |
+| 16 | 4 | Selection: native `UITextInteraction` on iOS, Flutter's selection behaviour on Android and touch desktops · remaining lifecycle and safe-area gaps · `parallax-ext` friction items | 0.1.10 = **Gate 4** |
+| 17 | 5 | `cargo parallax run ios` (Xcode project, iOS simulator) · `cargo parallax run web` · `cargo parallax build android --release` (signing + App Bundle) | 0.1.11 |
+| 18 | 5 | Getting-started docs per target, the behaviour table and touch → mouse docs, example polish, a last full review | 0.1.12 = **Gate 5**, closes v0.1.x |
 
 Known limits of this plan:
 
@@ -220,15 +220,41 @@ fix goes in as a patch to our published fork, with a draft kept in `drafts/upstr
 Tests drive GPUI through its test platform (touch events in, gestures and scroll offsets out); a small public-seam
 patch only for a case that can't be reached that way. Order follows the [oracle inventory](docs/audits/oracle-inventory.md).
 
-- [ ] Velocity: `velocity_tracker` and `lsq_solver` cases.
-- [ ] Physics: `friction_simulation`, clamping and `scroll_physics` (fling) cases.
-- [ ] Recognizers: tap, double-tap, long-press and drag cases. (Flutter's `arena` is skipped: GPUI resolves
-      competing gestures by claims, not an arena.)
-- [ ] Multi-touch and pinch in `gestures.rs` (upstream has none), with Flutter's `scale` tests as the oracle.
-- [ ] Overscroll (bounce, glow, clamp): a row in the behaviour table and a scroll-container patch.
-- [ ] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
-      Covers scroll physics preset, gesture tuning (GPUI's touch slop is 8 px, Flutter's 18), touch → mouse
-      emulation, overscroll, haptics, touch-target minimum.
+- [x] Velocity: `velocity_tracker` and `lsq_solver` cases. Wave 11: Flutter's trackers ported (patch 0011,
+      [velocity-tracking.md](docs/velocity-tracking.md)).
+- [x] Physics: `friction_simulation`, clamping and `scroll_physics` (fling) cases. Wave 11: GPUI's `ScrollPhysics` is
+      Flutter's (`Bouncing { deceleration_rate }`, `Clamping`), one type for flings, overscroll and the table, with
+      Flutter's physics module on upstream's springs (patch 0012, [scroll-physics.md](docs/scroll-physics.md)).
+- [x] Recognizers: tap, double-tap, long-press and drag cases. (Flutter's `arena` is skipped: GPUI resolves
+      competing gestures by claims, not an arena.) Wave 11: `constants.dart` and the slop rule ported once into GPUI,
+      Flutter's double-tap rule counted per target, `isFlingGesture`, executor clock (patch 0013,
+      [gesture-recognizers.md](docs/gesture-recognizers.md)).
+- [x] Platform behaviour table: target → behaviour (Flutter's `TargetPlatform` defaults), desktop touch included.
+      Covers scroll physics, gesture tuning, overscroll, haptics, touch-target minimum (touch → mouse is the same
+      everywhere: GPUI's default). Wave 11: the table in `parallax_platform::behaviour`, patch 0014's
+      `App::set_gesture_tuning`, applied by every entry point (`parallax::run`, the facade's `android_main!`)
+      ([behaviour.md](docs/behaviour.md)).
+- [ ] Multi-touch and pinch in `gestures.rs` (upstream has none), with Flutter's `scale` tests as the oracle. Wave 11
+      ported the recognizer as maths (patch 0015, [scale-and-overscroll.md](docs/scale-and-overscroll.md)); Wave 12
+      wires it into touch dispatch.
+- [ ] Overscroll (bounce, glow, clamp): a row in the behaviour table and a scroll-container patch. Wave 11 ported the
+      maths (patch 0015); Wave 12 wires bouncing physics and the indicators into GPUI's scroll containers.
+- [ ] Left from Wave 11:
+      - [ ] Haptics: GPUI has no haptics hook, so the table's `haptics` are data only. Needs a platform hook (Android
+            `View.performHapticFeedback`, iOS `UIFeedbackGenerator`) and callers (long press, selection handles, pickers).
+      - [ ] Android touch slop from `ViewConfiguration.getScaledTouchSlop()` at runtime, as Flutter's embedding sends it;
+            the row holds AOSP's default 8 dp.
+      - [ ] iOS `carriedMomentum`: repeated flings speed up ([scroll-physics.md](docs/scroll-physics.md)).
+      - [ ] Momentum's stop tolerance is `toleranceFor` at a fixed device pixel ratio of 2; pass the window's scale factor
+            (`tolerance_for` already takes it).
+      - [ ] Touch timestamps: `TouchEvent` has no timestamp, so velocity trackers time samples by dispatch; a stalled
+            main thread delivers a burst that reads as a velocity spike. Add the platform's event time to `TouchEvent`
+            (Android `MotionEvent.getEventTime`, iOS `UITouch.timestamp`, web `PointerEvent.timeStamp`) and track by it.
+      - [ ] Scale: trackpad pan/zoom cases of `scale_test.dart` (GPUI reports trackpad pinches as `PinchEvent`).
+      - [ ] Recognizers: Flutter's multi-pointer drag cases (GPUI's recognizer ignores extra touches).
+      - [ ] Row values GPUI doesn't read yet (Wave 12): pan and scale slops, `dragStartDistanceMotionThreshold`,
+            overscroll style, haptics and touch-target minimum, until the scale recognizer, scroll containers and
+            widgets read them.
 - [ ] Trace recorder: capture raw touch traces into test fixtures, starting with the Android emulator, the iOS simulator and a browser until the owner has devices.
 - [ ] Trace replay: run the traces through the gesture and physics test tables on every platform.
 
@@ -325,10 +351,15 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-26 | gpui-pre 0.3.14 | AccessKit adapters exist on macOS, Windows and Linux; none on iOS or web. AccessKit is pinned at 0.24. |
 | 2026-11-26 | gpui-pre 0.3.14 | The vendored `gpui-pre-ios` example doesn't build as shipped (uses `gpui_platform`, not a dev-dependency). Built from crates.io `=0.3.14` instead; it runs on the iOS 26.5 simulator. |
 | 2026-11-26 | gpui-pre 0.3.14 vs flutter 3.50.1 | GPUI's touch slop is 8 px, Flutter's 18 px. All gesture logic (`VelocityTracker`, fling, recognizers) is private to `gestures.rs`. |
+| 2026-11-26 | zed `f126950f` | `TouchEvent` carries no timestamp, so the recognizer's velocity tracker times samples by when they are dispatched (`background_executor().now()`): a main-thread stall that delivers queued moves together reads as a velocity spike. Flutter tracks by each event's own time. |
+| 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | `TouchGestureRecognizer` read `Instant::now()` while its long-press timer ran on the executor, so the test platform could not drive tap timing; its click count timed and measured taps up to up (400 ms, 16 px) with no minimum interval, so a split touch counted as a double tap. Patch 0013 ([gesture-recognizers.md](docs/gesture-recognizers.md)). |
+| 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | Core already has `GestureTuning` (touch slop, multi-tap interval and slop, long press, `ScrollPhysics`, min fling) read once per window from `Platform::gestures()`; only `gpui_web` fills it (user-agent physics). Its tap shadow in `events.rs` hard-codes `GestureTuning::default().touch_slop`. |
+| 2026-11-26 | flutter 3.50.1 | Flutter's per-platform gesture values are few: the touch slop comes from the device (Android sends `ViewConfiguration`'s; iOS, web and desktop send none, so 18), the rest is per scroll physics class, plus overscroll, haptics and the velocity tracker per `TargetPlatform`. Android's stretch vs glow follows `useMaterial3`, not the Android version. |
 | 2026-11-26 | fontdb 0.23, swash 0.2.10 | fontdb has no Android font discovery (empty list, no warning); swash draws CBDT and COLR v0, not COLRv1. See the [font audit](docs/audits/android-fonts.md). |
 | 2026-11-26 | gpui-pre 0.3.14 on Android emulator | GPUI draws via `gpui_wgpu` on Vulkan and GLES 3.1 with no glue patch; a backend needs ~10 `Platform` + ~12 `PlatformWindow` methods for real (~1,500 lines). Start with `Application::run_embedded`. `PriorityQueue*` is not exported on Android. Emulator needs `-gpu host` (`swiftshader_indirect` crashed). See the [spike](docs/android-spike.md). |
 | 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | `gpui_web` turns only `pointerType == "touch"` into a `TouchEvent`; pens take the mouse path, so with patch 0003 a web pen reads as `PointerDevice::Mouse` (`events.rs`). |
 | 2026-11-26 | gpui-pre 0.3.14 = zed `f126950` | Chorded mouse: a div's `on_click` fires on the first `MouseUpEvent` after a Left `MouseDownEvent`, whichever button goes up (`elements/div.rs`, `pending_mouse_down`); same on every desktop backend. |
+| 2026-11-26 | gpui-pre 0.3.14 vs flutter 3.50.1 | GPUI's private `VelocityTracker` approximates only Flutter's base least-squares tracker (no iOS/macOS strategy): it passes Flutter's recorded traces, but reports an endpoint velocity from 2 samples where Flutter reports zero. Replaced by the port in patch 0011 ([velocity-tracking.md](docs/velocity-tracking.md)). |
 | 2026-11-26 | wgpu-hal 30.0.2 | GL on Android: `choose_config` asks for no colour sizes unless EGL has sRGB (1.5 or `EGL_KHR_gl_colorspace`), so EGL's sort picks a 16-bit RGB 565 config; the emulator's EGL has neither. `configure` keeps the EGL window surface on resize. |
 | 2026-11-25 | gpui-ce main | `gpui-ce` has no `gpui_ios` and is moving to Parley text with API drift. Not used. |
 | 2026-11-25 | zed `8aeb64f7` | `gpui_ios` exists (added 2026-10-14, #63068): UIKit, Metal, CoreText, text input (49 KB), safe area, back gesture. |
@@ -341,4 +372,5 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-25 | accesskit | `accesskit_android` exists (permissive: Apache, MIT, Chromium-derived BSD). Use it, don't port Flutter's `AccessibilityBridge`. 0.9.1 needs AccessKit 0.25; upstream pins 0.24, so use the 0.7.x line until upstream bumps. |
 | 2026-11-26 | zed `f126950f` | A tap's focus change is drawn inside the touch dispatch (`draw_before_touch_release`), so a platform learns of it after the left field's input handler is dropped; core ends a composition on focus moves only toward a native view (`end_composition_before_focusing_native_view`). Patch 0010 ends it in the draw. |
 | 2026-11-26 | zed `f126950f` | `notify` inside a focus listener (`on_blur`, …) is ignored: listeners run in the draw's Focus phase, where `invalidate_view` marks nothing dirty. Defer it (`defer_in`). |
+| 2026-11-26 | zed `f126950f` | `ScrollPhysics::android()` ran AOSP's `SplineOverScroller` spline, which Flutter replaced (flutter/flutter#120338) because it is not ballistic (starts below the release velocity, stops with a jump): fails Flutter's clamping tests. Patch 0012 runs Flutter's `ClampingScrollSimulation`. |
 | 2026-11-26 | gpui-pre 0.3.14 | `gpui_platform`'s `font-kit` feature is off by default and is the only thing that gives `gpui_macos` a real text system; without it macOS silently uses `NoopTextSystem` (one `log::warn!`). `gpui_linux` and `gpui_ios` turn their font-kit on themselves. |

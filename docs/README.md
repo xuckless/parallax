@@ -9,11 +9,15 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch on xuckless/zed (patches in Zed's layout, for upstream PRs), rebuilding it with sync-fork.sh, and how it differs from the published fork crates |
 | [gpui-fork-crates.md](gpui-fork-crates.md) | The published `parallax-gpui*` fork crates: naming, versioning and content hash, fork-crates.sh, fork-version.sh, publish-fork.sh, CI checks |
 | [patches.md](patches.md) | Writing, numbering and making patches; the patch table |
-| [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008 and 0010: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss |
+| [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008, 0010 and 0014: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss, the app's gesture tuning |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
+| [velocity-tracking.md](velocity-tracking.md) | Patch 0011: Flutter's velocity trackers and least-squares solver ported into GPUI, the kinds, which platform gets which, the ported tests |
+| [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer and glow and stretch overscroll state on 0012's physics; how to drive them, and what Wave 12 wires |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
+| [gesture-recognizers.md](gesture-recognizers.md) | Patch 0013: Flutter's recognizer tests as table rows through the test platform, the tuning, slop, per-target tap-count and fling-distance fixes, the touch trace format for trace replay |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
+| [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [ci.md](ci.md) | The nine CI jobs (six targets, Java tests, patch tests, Android smoke), what each checks, when each runs, running the checks locally, adding a target |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
@@ -37,3 +41,4 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
 | [gate-1.md](gate-1.md) | Gate 1 on the Android emulator (API 28, 33, 35, Gboard): the results matrix, the failures found, and how to rerun it |
+| [scroll-physics.md](scroll-physics.md) | Patch 0012: GPUI's one `ScrollPhysics` (Flutter's bouncing and clamping physics) for flings, overscroll and the table, Flutter's physics module on GPUI's springs, what is not ported yet, the ported test tables |

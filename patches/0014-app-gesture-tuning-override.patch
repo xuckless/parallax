@@ -1,0 +1,391 @@
+Let the app override the platform's gesture tuning, and tune the fling ceiling.
+
+What: `App::set_gesture_tuning(GestureTuning)` stores an override; `App::gesture_tuning()` returns it, else the
+platform's `PlatformGestures::tuning()`, else `GestureTuning::default()`. `Window::new` reads `cx.gesture_tuning()`
+once, builds its touch recognizer from it (before: the platform's tuning only) and passes it to the backend in the
+new `WindowParams::gesture_tuning`, so a window keeps the tuning it opened with. gpui_web's tap-candidate shadow in
+`events.rs`, which mirrors the recognizer's slop to decide synchronously whether a touch release may open the
+keyboard, reads that window's slop (`WebWindowInner::touch_slop`) instead of `GestureTuning::default()`, so it agrees
+with the recognizer under any tuning. `GestureTuning` gains `max_fling_velocity` (default `ScrollPhysics::ios()`'s,
+kMaxFlingVelocity), which the recognizer clamps a release to in place of the constant. Adds a window test with one
+row per override (none, 18 px, 4 px) checking that a touch of a given travel taps or pans, and a recognizer test
+that a flick flings at the tuned ceiling (8000 and 64000 px/s).
+
+Why: the recognizer's slops, timeouts and fling physics come only from `Platform::gestures()`, which each upstream
+backend fills with its own values (GPUI's defaults, Flutter's constants since 0013; the web's user-agent physics).
+Parallax ports Flutter's per-platform values (Android's 8 dp device touch slop, `ClampingScrollPhysics` and the
+least-squares tracker on Android, Linux and Windows, macOS's fast deceleration with its 8x fling ceiling) into one
+visible target -> behaviour table in parallax-platform and lets apps override it (AGENTS.md "Platform feel"). Without
+this patch that table could reach the recognizer only by patching every backend's `gestures()` (splitting the table
+across crates) or by wrapping the whole `Platform` trait. The fling ceiling was a constant, so macOS's
+`BouncingScrollPhysics(decelerationRate: fast)` ceiling could not reach the recognizer. The web's shadow had to
+follow, or a touch travelling between the default slop and a smaller tuned one would tap (and focus a field) without
+opening the keyboard. No cfg: the override is core and the same on every platform.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+index 2116396..b1a18a6 100644
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -1,8 +1,8 @@
+ use std::{collections::HashMap, rc::Rc};
+ 
+ use gpui::{
+-    Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
+-    Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
++    Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, Image,
++    ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
+     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
+     Pixels, PlatformInput, Point, PointerDevice, ScrollDelta, ScrollEvent, ScrollSource,
+     TouchEvent, TouchId, TouchPhase, point, px,
+@@ -580,8 +580,7 @@ impl WebWindowInner {
+                 // pointerup handler.
+                 if let Some((pointer_id, start_position)) = this.touch_tap_candidate.get()
+                     && pointer_id == event.pointer_id()
+-                    && (position - start_position).magnitude()
+-                        > f64::from(GestureTuning::default().touch_slop)
++                    && (position - start_position).magnitude() > f64::from(this.touch_slop)
+                 {
+                     this.touch_tap_candidate.set(None);
+                 }
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index 1a8a3bd..2463a70 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -84,6 +84,10 @@ pub(crate) struct WebWindowInner {
+     /// pans must leave them untouched, or scrolling over editable content
+     /// flickers the keyboard and drags the caret around.
+     pub(crate) touch_tap_candidate: Cell<Option<(i32, Point<Pixels>)>>,
++    /// The gesture recognizer's touch slop for this window
++    /// (`WindowParams::gesture_tuning`), so the shadow above clears exactly
++    /// when gpui's recognizer stops treating the touch as a tap.
++    pub(crate) touch_slop: Pixels,
+     mql_handle: RefCell<Option<MqlHandle>>,
+     pending_physical_size: Cell<Option<(u32, u32)>>,
+     raf_id: Cell<Option<i32>>,
+@@ -143,7 +147,7 @@ impl WebWindow {
+ 
+     pub(crate) fn new(
+         _handle: AnyWindowHandle,
+-        _params: WindowParams,
++        params: WindowParams,
+         context: &WgpuContext,
+         canvas: web_sys::HtmlCanvasElement,
+         surface: wgpu::Surface<'static>,
+@@ -223,6 +227,7 @@ impl WebWindow {
+             suppress_focus_status_events: Cell::new(false),
+             gesture_start_visual_viewport_height: Cell::new(0.0),
+             touch_tap_candidate: Cell::new(None),
++            touch_slop: params.gesture_tuning.touch_slop,
+             mql_handle: RefCell::new(None),
+             pending_physical_size: Cell::new(None),
+             raf_id: Cell::new(None),
+diff --git a/gpui-pre/src/app.rs b/gpui-pre/src/app.rs
+index 9e64eae..e143547 100644
+--- a/gpui-pre/src/app.rs
++++ b/gpui-pre/src/app.rs
+@@ -49,14 +49,14 @@ use crate::{
+     AnyWindowHandle, AppContext, AppLifecyclePhase, Arena, ArenaBox, Asset, AssetSource,
+     BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle, DispatchPhase,
+     DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
+-    FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap, Keystroke, LayoutId,
+-    Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay,
+-    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority, PromptBuilder,
+-    PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
+-    Reservation, ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer,
+-    SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
+-    ThermalState, Window, WindowAppearance, WindowBounds, WindowButtonLayout, WindowHandle,
+-    WindowId, WindowInvalidator, WindowingRequest,
++    FocusMap, ForegroundExecutor, GestureTuning, Global, KeyBinding, KeyContext, Keymap, Keystroke,
++    LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform,
++    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority,
++    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
++    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
++    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
++    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowBounds,
++    WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator, WindowingRequest,
+     colors::{Colors, GlobalColors},
+     hash, init_app_menus,
+ };
+@@ -975,6 +975,8 @@ pub struct App {
+     pub(crate) mode: GpuiMode,
+     pub(crate) cursor_hide_mode: CursorHideMode,
+     pub(crate) reduce_motion: bool,
++    /// The app's override of the platform's gesture tuning, set by [`App::set_gesture_tuning`].
++    gesture_tuning: Option<GestureTuning>,
+     /// Origin of the shared clock that phase-locks synced repeating animations.
+     pub(crate) synced_animation_epoch: Instant,
+     power_mode: PowerMode,
+@@ -1093,6 +1095,7 @@ impl App {
+                 quitting: false,
+                 cursor_hide_mode: CursorHideMode::default(),
+                 reduce_motion: false,
++                gesture_tuning: None,
+                 synced_animation_epoch,
+                 power_mode,
+                 accessibility_force_disabled: false,
+@@ -1412,6 +1415,23 @@ impl App {
+         self.reduce_motion
+     }
+ 
++    /// The gesture tuning windows open with: the app's override from
++    /// [`App::set_gesture_tuning`], else the platform's, else GPUI's default.
++    pub fn gesture_tuning(&self) -> GestureTuning {
++        self.gesture_tuning.unwrap_or_else(|| {
++            self.platform
++                .gestures()
++                .map_or_else(GestureTuning::default, |gestures| gestures.tuning())
++        })
++    }
++
++    /// Overrides the platform's gesture tuning (slops, timeouts, scroll physics)
++    /// for windows opened after this call; open windows keep theirs. Call it
++    /// before opening the first window.
++    pub fn set_gesture_tuning(&mut self, tuning: GestureTuning) {
++        self.gesture_tuning = Some(tuning);
++    }
++
+     /// Sets whether non-essential animations (e.g. loading spinners) should be
+     /// rendered in a static state instead of animating.
+     pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index f165502..80748c7 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -17,8 +17,8 @@ mod velocity_tracker_data;
+ mod velocity_tracker_test;
+ 
+ use constants::{
+-    kDoubleTapMinTime, kDoubleTapSlop, kDoubleTapTimeout, kLongPressTimeout, kMaxFlingVelocity,
+-    kPanSlop, kPrecisePointerHitSlop, kPrecisePointerPanSlop, kPrecisePointerScaleSlop, kScaleSlop,
++    kDoubleTapMinTime, kDoubleTapSlop, kDoubleTapTimeout, kLongPressTimeout, kPanSlop,
++    kPrecisePointerHitSlop, kPrecisePointerPanSlop, kPrecisePointerScaleSlop, kScaleSlop,
+     kTouchSlop,
+ };
+ pub use velocity_tracker::VelocityTrackerKind;
+@@ -147,6 +147,8 @@ pub struct GestureTuning {
+     /// Minimum release velocity, in pixels per second, required to start
+     /// scroll momentum.
+     pub min_fling_velocity: f32,
++    /// Release velocities are clamped to this magnitude, in pixels per second.
++    pub max_fling_velocity: f32,
+     /// How a touch's release velocity is estimated: one of Flutter's
+     /// per-platform velocity trackers.
+     pub velocity_tracker: VelocityTrackerKind,
+@@ -167,8 +169,9 @@ impl Default for GestureTuning {
+             multi_tap_min_interval: kDoubleTapMinTime,
+             long_press_duration: kLongPressTimeout,
+             scroll_physics: ScrollPhysics::ios(),
+-            // BouncingScrollPhysics' kMinFlingVelocity * 2, with the iOS physics above.
++            // BouncingScrollPhysics' fling limits, with the iOS physics above.
+             min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
++            max_fling_velocity: ScrollPhysics::ios().max_fling_velocity(),
+             velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
+         }
+     }
+@@ -794,7 +797,7 @@ impl TouchGestureRecognizer {
+                         && distance > f32::from(self.tuning.scroll_physics.min_fling_distance())
+                     {
+                         let direction = point(velocity.x / speed, velocity.y / speed);
+-                        let speed = speed.min(kMaxFlingVelocity);
++                        let speed = speed.min(self.tuning.max_fling_velocity);
+                         if let Some(simulation) =
+                             fling_simulation(self.tuning.scroll_physics, speed)
+                         {
+@@ -1665,6 +1668,39 @@ mod tests {
+         }
+     }
+ 
++    /// A 20000 px/s flick flings at the tuning's `max_fling_velocity`:
++    /// (row, max fling velocity).
++    #[test]
++    fn fling_is_clamped_to_the_tunings_max_velocity() {
++        let rows = [
++            ("kMaxFlingVelocity", 8000.),
++            ("BouncingScrollPhysics(fast): kMaxFlingVelocity * 8", 64000.),
++        ];
++        for (name, max_fling_velocity) in rows {
++            let mut recognizer = TouchGestureRecognizer::new(GestureTuning {
++                max_fling_velocity,
++                ..GestureTuning::default()
++            });
++            let now = Instant::now();
++            let touch = TouchId(1);
++            for (ms, y, phase) in [
++                (0, 0., TouchPhase::Started),
++                (10, 200., TouchPhase::Moved),
++                (20, 400., TouchPhase::Moved),
++                (30, 600., TouchPhase::Moved),
++                (30, 600., TouchPhase::Ended),
++            ] {
++                let at = now + Duration::from_millis(ms);
++                recognizer.handle_event_at(&touch_event(touch, phase, 0., y), at, None);
++            }
++            let speed = recognizer
++                .momentum
++                .as_ref()
++                .map(|momentum| momentum.simulation.dx(0.) as f32);
++            assert_eq!(speed, Some(max_fling_velocity.min(20000.)), "{name}");
++        }
++    }
++
+     #[test]
+     fn slow_release_does_not_start_momentum() {
+         let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index dbd0298..9f9d978 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -39,11 +39,11 @@ pub(crate) type PlatformScreenCaptureFrame =
+ use crate::{
+     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds, Corners,
+     DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, ExternalDragPayload, Font,
+-    FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs, Hsla, ImageSource, Keymap,
+-    LineLayout, MissingGlyphSink, Pixels, PlatformGestures, PlatformInput, Point, Priority,
+-    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
+-    ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea,
+-    hash, point, px, size,
++    FontId, FontMetrics, FontRun, ForegroundExecutor, GestureTuning, GlyphId, GpuSpecs, Hsla,
++    ImageSource, Keymap, LineLayout, MissingGlyphSink, Pixels, PlatformGestures, PlatformInput,
++    Point, Priority, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene,
++    ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window,
++    WindowControlArea, hash, point, px, size,
+ };
+ #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+ use anyhow::bail;
+@@ -2922,6 +2922,10 @@ pub struct WindowParams {
+ 
+     #[cfg(target_os = "macos")]
+     pub use_display_p3: bool,
++
++    /// The tuning the window's gesture recognizer runs with ([`crate::App::gesture_tuning`]).
++    /// A backend that mirrors a recognizer rule, such as the web's tap slop, reads it here.
++    pub gesture_tuning: GestureTuning,
+ }
+ 
+ /// Represents the status of how a window should be opened.
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index f43d430..735b861 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -27,9 +27,7 @@ use crate::{
+     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+ };
+ 
+-use crate::gestures::{
+-    BackGestureSource, GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer,
+-};
++use crate::gestures::{BackGestureSource, RecognizedTouchGesture, TouchGestureRecognizer};
+ use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
+ use anyhow::{Context as _, Result, anyhow};
+ use collections::{FxHashMap, FxHashSet};
+@@ -1752,6 +1750,7 @@ impl Window {
+             .map(|(_, bounds)| bounds);
+         let window_bounds = window_bounds
+             .unwrap_or_else(|| default_bounds(active_window_bounds, display.as_deref()));
++        let gesture_tuning = cx.gesture_tuning();
+         let mut platform_window = cx.platform.open_window(
+             handle,
+             WindowParams {
+@@ -1772,6 +1771,7 @@ impl Window {
+                 tabbing_identifier,
+                 #[cfg(target_os = "macos")]
+                 use_display_p3,
++                gesture_tuning,
+             },
+         )?;
+ 
+@@ -2540,11 +2540,7 @@ impl Window {
+             #[cfg(feature = "profiler")]
+             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
+             last_input_modality: InputModality::Mouse,
+-            touch_gestures: TouchGestureRecognizer::new(
+-                cx.platform
+-                    .gestures()
+-                    .map_or_else(GestureTuning::default, |gestures| gestures.tuning()),
+-            ),
++            touch_gestures: TouchGestureRecognizer::new(gesture_tuning),
+             touch_prediction_enabled: true,
+             pointer_source: None,
+             touch_routes: FxHashMap::default(),
+@@ -3903,7 +3899,7 @@ impl Window {
+     /// Restarts touch recognition with the tuning a test passes, in place of
+     /// the platform's.
+     #[cfg(test)]
+-    pub(crate) fn set_gesture_tuning(&mut self, tuning: GestureTuning) {
++    pub(crate) fn set_gesture_tuning(&mut self, tuning: crate::GestureTuning) {
+         self.touch_gestures = TouchGestureRecognizer::new(tuning);
+     }
+ 
+@@ -8614,12 +8610,13 @@ mod tests {
+         AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
+         Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
+         ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
+-        InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke,
+-        LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+-        Pixels, PlatformInput, Point, PointerDevice, PointerSource, Render, RequestFrameOptions,
+-        ScaledPixels, ScrollEvent, StatefulInteractiveElement as _, Styled, TestAppContext,
+-        ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline, UnderlineStyle,
+-        Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px, size,
++        GestureTuning, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
++        Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
++        ParentElement, Pixels, PlatformInput, Point, PointerDevice, PointerSource, Render,
++        RequestFrameOptions, ScaledPixels, ScrollEvent, StatefulInteractiveElement as _, Styled,
++        TestAppContext, ThermalState, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Underline,
++        UnderlineStyle, Window, WindowAppearance, WindowOptions, canvas, div, hsla, point, px,
++        size,
+     };
+ 
+     #[gpui::test]
+@@ -10545,6 +10542,50 @@ mod tests {
+         }
+     }
+ 
++    #[gpui::test]
++    fn app_gesture_tuning_overrides_the_platform_for_new_windows(cx: &mut TestAppContext) {
++        let tuning = |touch_slop| GestureTuning {
++            touch_slop: px(touch_slop),
++            ..GestureTuning::default()
++        };
++        let tap = [("down", true), ("up", true)];
++        let pan = [("scroll", true)];
++        // (name, override set before the window opens, finger travel, events seen). The row
++        // without an override runs first: an override stays for the rest of the app.
++        let rows: [(&str, Option<GestureTuning>, f32, &[(&str, bool)]); 4] = [
++            ("no override: kTouchSlop's 18 px, 12 px taps", None, 12., &tap),
++            (
++                "override 8 px (Android's ViewConfiguration): 12 px pans",
++                Some(tuning(8.)),
++                12.,
++                &pan,
++            ),
++            ("override 8 px: 6 px taps", Some(tuning(8.)), 6., &tap),
++            ("override 4 px: 6 px pans", Some(tuning(4.)), 6., &pan),
++        ];
++        for (name, tuning, travel, expected) in rows {
++            if let Some(tuning) = tuning {
++                cx.update(|cx| cx.set_gesture_tuning(tuning));
++            }
++            let seen = Rc::new(RefCell::new(Vec::new()));
++            let window = cx.add_window({
++                let seen = seen.clone();
++                move |_, _| PointerSourceRecorder { seen }
++            });
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Started, 10.);
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Moved, 10. + travel);
++            dispatch_touch(window, cx, TouchId(1), TouchPhase::Ended, 10. + travel);
++            let mut seen: Vec<_> = seen
++                .borrow()
++                .iter()
++                .filter(|(kind, _)| *kind != "render")
++                .map(|(kind, source)| (*kind, source.is_some()))
++                .collect();
++            seen.dedup();
++            assert_eq!(seen, expected, "{name}");
++        }
++    }
++
+     #[gpui::test]
+     fn long_press_is_claimed_only_when_started_prevents_default(cx: &mut TestAppContext) {
+         for response in [

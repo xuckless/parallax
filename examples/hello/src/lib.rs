@@ -205,14 +205,15 @@ const WEB_FONTS: [&[u8]; 2] = [
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn start() {
     parallax::parallax_platform::web_init();
-    match parallax::parallax_platform::current_platform(false) {
-        Ok(platform) => parallax::gpui::Application::with_platform(platform).run(|cx| {
-            let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
-            match cx.text_system().add_fonts(fonts) {
-                Ok(()) => launch(cx),
-                Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),
-            }
-        }),
-        Err(error) => log::error!("no web platform: {error}"),
+    // parallax::run applies the platform behaviour table first (docs/behaviour.md).
+    let started = parallax::run(|cx| {
+        let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
+        match cx.text_system().add_fonts(fonts) {
+            Ok(()) => launch(cx),
+            Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),
+        }
+    });
+    if let Err(error) = started {
+        log::error!("no web platform: {error}");
     }
 }

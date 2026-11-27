@@ -4,7 +4,61 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased]
+## [Unreleased] (0.1.6)
+
+Wave 11: Phase 2's gestures and physics, ported from Flutter 3.50.1 into our GPUI fork (patches 0011–0015, fork
+`parallax-gpui*` 0.3.14-parallax.8) with Flutter's tests as the oracle.
+
+### Added
+
+- Flutter's velocity trackers (patch 0011): `VelocityTrackerKind` (`LeastSquares`, `IOSScrollViewFling`,
+  `MacOSScrollViewFling`) and `GestureTuning::velocity_tracker`; a fling starts from the estimate each platform's
+  native scroll views use.
+- Flutter's physics (patch 0012): `gpui::physics` (`Tolerance`, `Simulation`, `FrictionSimulation`,
+  `SpringSimulation`, `ScrollSpringSimulation`, `near_equal`, `near_zero`, `precisionErrorTolerance`), with springs on
+  GPUI's own `SpringConfig` (new `SpringConfig::with_damping_ratio`); `BouncingScrollSimulation`,
+  `ClampingScrollSimulation`, `ScrollMetrics`, `ScrollDecelerationRate` and `tolerance_for` at the crate root.
+- `gpui::constants`: Flutter's `constants.dart` under its own names (`kTouchSlop`, `kDoubleTapTimeout`, ...), and
+  `gpui::slops(kind, touch_slop)` / `gpui::Slops`: Flutter's hit, pan and scale slops per pointer kind.
+- `App::set_gesture_tuning` / `App::gesture_tuning` (patch 0014): the app's tuning for windows opened afterwards;
+  `GestureTuning::max_fling_velocity`, the fling ceiling (macOS's is 64000 px/s).
+- `parallax-platform`: the target → behaviour table (`behaviour::TABLE`, `current_behaviour()`, `web_behaviour`):
+  Flutter's `TargetPlatform` defaults for touch slop, scroll physics, velocity tracker, overscroll, haptics and touch
+  target ([docs/behaviour.md](docs/behaviour.md)).
+- `parallax::run(launch)`: the desktop, iOS and web entry point. It and the facade's `android_main!` apply the
+  current target's behaviour row before `launch`, so every app gets its platform's feel and may override it in
+  `launch`. `parallax::set_platform_gesture_tuning` returns `Result<(), parallax_platform::Error>`.
+- Flutter's scale (pinch/rotate) recognizer (`gpui::scale`) and overscroll indicator state (`gpui::overscroll`: glow,
+  stretch, `AxisDirection`), patch 0015. Ported and tested, **not wired** into touch dispatch or scroll containers
+  yet (Wave 12).
+
+### Changed
+
+- **Breaking:** `ScrollPhysics` is Flutter's: `Bouncing { deceleration_rate: ScrollDecelerationRate }` and
+  `Clamping` replace `Exponential { decay_per_ms }` and `FrictionSpline { friction, pixels_per_inch }`
+  (`ScrollPhysics::ios()` and `::android()` remain, now `const fn`). It carries Flutter's fling limits, spring and
+  overscroll maths (`create_ballistic_simulation`, `apply_physics_to_user_offset`, `apply_boundary_conditions`).
+  **Breaking:** `GestureTuning` has a new field, `max_fling_velocity`.
+
+Behaviour apps will feel:
+
+- Touch slop is Flutter's `kTouchSlop`, 18 px (was 8): a touch may wander further and still tap. Android uses its
+  `ViewConfiguration` default of 8 dp; the web keeps 18 on every host, Android included, as Flutter web does.
+- Double tap is Flutter's: the second tap must start within 300 ms of the first's release (was 400 ms, timed up to
+  up), within 100 px of where the first started (was 16 px), at least 40 ms after the first started
+  (`GestureTuning::multi_tap_min_interval`, new), and on the same target: a tap on another button nearby starts a new
+  count instead of double-clicking it.
+- A release flings only if it is fast enough and moved more than 18 px over the samples its velocity came from
+  (Flutter's `isFlingGesture`): a slow, short drag no longer flings.
+- Android flings run Flutter's `ClampingScrollSimulation`: they start at the release velocity and stop smoothly
+  instead of with a jump (AOSP's spline fails Flutter's tests). iOS flings run `BouncingScrollSimulation`'s friction;
+  macOS flings decelerate faster (Flutter's `fast` rate) and may start up to 64000 px/s.
+- iOS and macOS rows, and `GestureTuning::default()`, need a 100 px/s release to fling (Flutter's
+  `BouncingScrollPhysics`); the others 50 px/s.
+- The touch recognizer reads the executor's clock (`background_executor().now()`), so GPUI's test platform can drive
+  tap, long-press and fling timing.
+- **Licence:** `parallax-gpui` is now `Apache-2.0 AND BSD-3-Clause` and ships Flutter's licence as `LICENSE-FLUTTER`;
+  `parallax-platform` likewise (its behaviour table ports Flutter's defaults).
 
 ## [0.1.5] - 2026-11-26 — macOS text hotfix
 

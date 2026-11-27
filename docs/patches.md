@@ -63,3 +63,8 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
 | [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
 | [0010](../patches/0010-end-composition-on-focus-loss.patch) | a field that focus leaves ends its IME composition ([core-patches.md](core-patches.md)) |
+| [0011](../patches/0011-flutter-velocity-tracker.patch) | Flutter's velocity trackers and least-squares solver, `GestureTuning::velocity_tracker`, with Flutter's tests ([velocity-tracking.md](velocity-tracking.md)) |
+| [0012](../patches/0012-flutter-scroll-simulations.patch) | `ScrollPhysics` is Flutter's (`Bouncing { deceleration_rate }`, `Clamping`), with its simulations and Flutter's physics module on GPUI's springs ([scroll-physics.md](scroll-physics.md)) |
+| [0013](../patches/0013-gesture-recognizer-flutter-oracle.patch) | Flutter's gesture constants, slops, per-target double-tap counting and fling rule in the touch recognizer, executor clock, Flutter recognizer test rows ([gesture-recognizers.md](gesture-recognizers.md)) |
+| [0014](../patches/0014-app-gesture-tuning-override.patch) | `App::set_gesture_tuning` overrides the platform's gesture tuning; `GestureTuning::max_fling_velocity` ([behaviour.md](behaviour.md)) |
+| [0015](../patches/0015-scale-and-overscroll-ports.patch) | Flutter's scale recognizer and overscroll indicators, new modules only ([scale-and-overscroll.md](scale-and-overscroll.md)) |

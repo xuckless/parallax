@@ -24,9 +24,11 @@ a typed `Error`, so the table is tested on any host.
 ## How an app gets its platform
 
 ```rust
-let platform = parallax::parallax_platform::current_platform(false)?;
-gpui::Application::with_platform(platform).run(|cx| { /* ... */ });
+parallax::run(|cx| { /* open windows */ })?; // the platform plus its behaviour row (behaviour.md)
 ```
+
+`parallax::run` is `current_platform(false)` and `gpui::Application::with_platform(platform).run(..)`, with the
+[behaviour table](behaviour.md)'s row applied before the closure.
 
 On the web, call `parallax_platform::web_init()` first (upstream's panic hook and console logger, re-exported on
 wasm only), as upstream's web examples do; [hello](../examples/hello/src/lib.rs) shows it.
@@ -55,11 +57,13 @@ off: without them Linux finds no display server, starts headless and draws nothi
 `font-kit` for the same reason: without it `gpui_macos` uses GPUI's `NoopTextSystem` and macOS draws no text, only a
 `log::warn!` (iOS and Linux turn it on themselves).
 
+Per-target behaviour (slops, scroll physics, haptics) is a second table in the same crate: [behaviour.md](behaviour.md).
+
 ## Adding a target or backend
 
 1. Add a `Target` variant, a row in `TABLE`, and its arm in `CURRENT_TARGET`.
 2. Add a named row to the `lookup_table` test.
-3. Update the table above.
+3. Update the table above, and add the target's row to the [behaviour table](behaviour.md).
 
 A new Parallax backend: make its crate a target-only dependency, set its row to `Status::Parallax`, and add its
 `cfg_select!` arm to `current_platform`'s `Status::Parallax` branch.

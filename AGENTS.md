@@ -108,6 +108,7 @@ third_party/
 2. **Dependencies point one way.** Parallax depends on GPUI. GPUI never depends on Parallax.
 3. **Add, don't modify.** New behaviour goes in a Parallax crate or an extension trait first. A patch needs a written reason why neither works.
 4. **Patches are small and gated.** One concern each, about 200 lines max, behind a target `cfg` when the code is platform-specific. No feature flags for behaviour.
+   Flutter ports are exempt from the size limit: one patch per port, whatever its size (owner decision, 2026-11-26).
 5. **Each patch has a header:** what it changes, why, and the upstream PR link once filed.
 6. **Upstream what you can.** Every patch is written so it could be filed upstream (filing is paused, see rule 14). When upstream merges it, delete it at the next sync.
 7. **No editor code.** Never copy Zed's editor or text stack crates (GPL). Only Apache-licensed GPUI crates.
