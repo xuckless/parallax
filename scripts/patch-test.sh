@@ -72,7 +72,7 @@ done
 pure_crates=(
     "windows-pure:parallax-gpui-windows:pointer"
     "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
-    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
 )
 for row in "${pure_crates[@]}"; do
     IFS=: read -r name backend modules <<<"$row"

@@ -45,7 +45,7 @@ here: after GPUI's tests, the script adds one scratch crate per `pure_crates` ro
 its lib tests, in the backend's own edition (read from its fork manifest). Today: gpui_windows's `pointer.rs`
 ([desktop-touch-windows.md](desktop-touch-windows.md)); gpui_web's `text_editing.rs`
 ([web-text-input.md](web-text-input.md)), `page_lifecycle.rs` and `keyboard_inset.rs`
-([web-lifecycle.md](web-lifecycle.md)); gpui_ios's `ios/keyboard.rs` and `ios/keyboard_inset.rs`
+([web-lifecycle.md](web-lifecycle.md)); gpui_ios's `ios/keyboard.rs`, `ios/keyboard_inset.rs` and `ios/spring_animation.rs`
 ([ios-keyboard.md](ios-keyboard.md)). A listed module must use only `gpui` and `std`.
 
 ## CI

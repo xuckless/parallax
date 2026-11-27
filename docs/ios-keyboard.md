@@ -43,14 +43,18 @@ Three patches to gpui_ios. Two are ported from Flutter's iOS embedder (ledger:
   keyboards cover nothing); Slide Over's offset is added; the inset is the docked frame intersected with the view
   in the screen's coordinate space (Stage Manager windows, split view).
 - **Animation.** A new target starts an animation of a hidden view's `y` from the current inset, with the
-  notification's duration (UIKit applies the keyboard's curve inside its notification). Each display-link frame
-  reads the view's presentation layer as the inset; the completion of the animation still running sets the target.
+  notification's duration (UIKit applies the keyboard's curve inside its notification). When UIKit animates it with
+  a `CASpringAnimation` (the keyboard's), its parameters become Flutter's spring (React Native's `SpringAnimation`,
+  MIT, [spring_animation.rs](../patches/0032-ios-keyboard-inset.patch)), and each display-link frame sets the inset to
+  the spring at the link's `targetTimestamp`, frame-exact with the keyboard; without a spring it reads the view's
+  presentation layer. The completion of the animation still running sets the target.
   A same-direction change while one runs continues it (Flutter's compounding). A hide with no duration right after a
   show (the password manager's prompt) drops the inset to 0 at once.
-- **Changed from Flutter.** Lengths are points. No spring: Flutter fits the keyboard's `CASpringAnimation` with React
-  Native's spring (MIT), which this port leaves out; the presentation layer can trail the keyboard by a frame. GPUI's
-  own `SpringConfig` is no stand-in: with the keyboard's spring (mass 3, stiffness 1000, damping 500) it is
-  overdamped and reaches only about 70 % in 0.6 s, where Core Animation's keyboard lands.
+- **Changed from Flutter.** Lengths are points; the display link replaces Flutter's vsync client. GPUI's own
+  `SpringConfig` is no stand-in for the spring: with the keyboard's (mass 3, stiffness 1000, damping 500) it is
+  overdamped and reaches only about 70 % in 0.6 s, where Flutter's curve (its critically damped branch) and Core
+  Animation's keyboard land. The spring makes parallax-gpui-ios `Apache-2.0 AND BSD-3-Clause AND MIT`
+  ([gpui-fork-crates.md](gpui-fork-crates.md)).
 
 ## Layout change (0033)
 

@@ -23,7 +23,8 @@ window.
   (patch 0031, ported from Flutter's iOS key responder).
 - iOS keyboard inset: `WindowInsets::ime` counts only the docked keyboard's part over the window (floating and
   undocked iPad keyboards, Split View, Slide Over, Stage Manager) and follows the keyboard's animation instead of
-  jumping (patch 0032, ported from Flutter's keyboard inset manager).
+  jumping, frame-exact on the keyboard's own spring curve (patch 0032, ported from Flutter's keyboard inset
+  manager and its React Native spring).
 - iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
 - iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
   (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
@@ -38,6 +39,8 @@ window.
 
 ### Changed
 
+- `parallax-gpui-ios`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: it ships React Native's keyboard
+  spring (MIT) as Flutter does, with `LICENSE-REACT-NATIVE`.
 - Android: one GPUI window per `ParallaxActivity` (was one per process, drawn only by the most recently started
   Activity). Two Activities in split screen both draw and take touch and text. The app's `launch` still runs once
   per process, as on desktop, and opens the first Activity's window; each later Activity's window comes from the new

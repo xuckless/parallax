@@ -10,17 +10,22 @@ space; a new target starts an animation, a same-direction change while one runs 
 duration right after a show (the password manager's prompt) drops it to 0 at once. `window.rs` observes
 `UIKeyboardWillShow` / `WillChangeFrame` / `WillHide` (was: WillChangeFrame and WillHide), answers the geometry
 (`convertRect:toCoordinateSpace:` the screen's, `isPadInSlideOverOrStageManagerMode`), animates a hidden view's `y`
-with the notification's duration as Flutter does, and each display-link frame (`request_frame`) reads its
-presentation layer as the inset; the completion of the animation still running sets the target. Table tests
-`keyboard_inset::tests`: one row per keyboard case of FlutterViewControllerTest.mm; they run on the host
-(scripts/patch-test.sh, `ios-pure`).
+with the notification's duration as Flutter does, and when UIKit animates it with a `CASpringAnimation` (the
+keyboard's curve) each display-link frame (`request_frame`, now given the link's `targetTimestamp`) sets the inset to
+that spring at the frame's target time (new `spring_animation.rs`), frame-exact; without a spring it reads the view's
+presentation layer. The completion of the animation still running sets the target. Table tests
+`keyboard_inset::tests` (one row per keyboard case of FlutterViewControllerTest.mm, plus the spring's) and
+`spring_animation::tests` (SpringAnimationTest.mm) run on the host (scripts/patch-test.sh, `ios-pure`).
 
 Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/KeyboardInsetManager.swift,
 FlutterViewController.mm (keyboard notifications, `isPadInSlideOverOrStageManagerMode`, `convertViewRectToScreen:`)
 and the keyboard test cases of FlutterViewControllerTest.mm @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
-Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE. Left out: the spring
-(`SpringAnimation`, React Native's, MIT: the presentation layer is always sampled, which can trail the keyboard by a
-frame; GPUI's `SpringConfig` treats the keyboard's spring as overdamped and lags far behind it), the `VSyncClient`
+Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE. The spring: ported from
+flutter/flutter engine/src/flutter/third_party/spring_animation/spring_animation.mm and SpringAnimationTest.mm @ 3.50.1,
+derived from facebook/react-native Libraries/Animated/animations/SpringAnimation.js
+@ 494c47360f62761176033a4da359f43b53c2182f. Copyright (c) Meta Platforms, Inc. and affiliates. MIT, see
+LICENSE-REACT-NATIVE (GPUI's `SpringConfig` cannot stand in: it treats the keyboard's spring as overdamped and lags
+far behind it, where Flutter's curve takes the critically damped branch). Left out: the `VSyncClient`
 (the display link already ticks every frame), the engine view-controller check (each window observes for itself).
 Changed: lengths are points, not physical pixels.
 
@@ -31,10 +36,19 @@ Parallax crate nor an extension trait can change them. cfg: the crate's own (iOS
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index cdff2c2..4e03484 100644
+index d570615..33ceef8 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
-@@ -141,6 +141,7 @@ features = [
+@@ -121,6 +121,8 @@ default-features = false
+ version = "0.3.2"
+ features = [
+     "std",
++    "CAAnimation",
++    "CABase",
+     "CALayer",
+     "CAMetalDisplayLink",
+     "CAMetalLayer",
+@@ -141,6 +143,7 @@ features = [
      "UICommand",
      "UICornerConfiguration",
      "UICornerRadius",
@@ -42,24 +56,31 @@ index cdff2c2..4e03484 100644
      "UIEvent",
      "UIFeedbackGenerator",
      "UIImpactFeedbackGenerator",
-diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
-index 7de9471..794ecf8 100644
---- a/gpui-pre-ios/src/ios.rs
-+++ b/gpui-pre-ios/src/ios.rs
-@@ -4,6 +4,7 @@ mod application;
- mod display;
- mod events;
- mod keyboard;
-+mod keyboard_inset;
- mod platform;
- mod text_input;
- mod window;
+diff --git a/gpui-pre-ios/src/ios/application.rs b/gpui-pre-ios/src/ios/application.rs
+index addd040..e557131 100644
+--- a/gpui-pre-ios/src/ios/application.rs
++++ b/gpui-pre-ios/src/ios/application.rs
+@@ -289,9 +289,12 @@ define_class!(
+         }
+ 
+         #[unsafe(method(renderFrame:))]
+-        fn render_frame(&self, _display_link: &CADisplayLink) {
++        fn render_frame(&self, display_link: &CADisplayLink) {
+             if let Some(platform) = self.ivars().upgrade() {
+-                platform.application.with_windows(IosWindowState::request_frame);
++                let target_time = display_link.targetTimestamp();
++                platform
++                    .application
++                    .with_windows(|window| window.request_frame(target_time));
+             }
+         }
+     }
 diff --git a/gpui-pre-ios/src/ios/keyboard_inset.rs b/gpui-pre-ios/src/ios/keyboard_inset.rs
 new file mode 100644
-index 0000000..2d31086
+index 0000000..a99aede
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/keyboard_inset.rs
-@@ -0,0 +1,663 @@
+@@ -0,0 +1,793 @@
 +// Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/KeyboardInsetManager.swift
 +// and the keyboard test cases of FlutterViewControllerTest.mm @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
 +// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
@@ -67,8 +88,12 @@ index 0000000..2d31086
 +//!
 +//! Flutter's `FlutterKeyboardInsetManager`: a keyboard notification's end frame becomes the part of the docked
 +//! keyboard that covers the view (floating, undocked and split keyboards cover nothing), in the screen's coordinate
-+//! space, with Slide Over's offset; then an animation toward it, which the window samples each frame. Lengths are
-+//! points (Flutter's are physical pixels: it multiplies by the screen's scale, GPUI's insets are logical).
++//! space, with Slide Over's offset; then an animation toward it, which the window samples each frame: on the
++//! keyboard's own spring curve when UIKit animates it with a `CASpringAnimation` (spring_animation.rs), else from the
++//! hidden view's presentation layer. Lengths are points (Flutter's are physical pixels: it multiplies by the screen's
++//! scale, GPUI's insets are logical).
++
++use super::spring_animation::SpringAnimation;
 +
 +/// A `CGRect` as plain values.
 +#[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -153,15 +178,38 @@ index 0000000..2d31086
 +}
 +
 +/// The animation toward the target inset.
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++#[derive(Clone, Copy, Debug, PartialEq)]
 +pub enum KeyboardAnimation {
 +    Idle,
 +    /// Flutter's `keyboardAnimationIsShowing` while its vsync client lives; `generation` names the animation, so a
-+    /// completion of one that was replaced is ignored (Flutter compares vsync clients).
++    /// completion of one that was replaced is ignored (Flutter compares vsync clients). `spring` is Flutter's
++    /// `keyboardSpringAnimation` with its `keyboardAnimationStartTime` (`CACurrentMediaTime`, seconds), set once
++    /// UIKit animates with a spring; `None`: the presentation layer is sampled.
 +    Running {
 +        showing: bool,
 +        generation: u64,
++        spring: Option<(SpringAnimation, f64)>,
 +    },
++}
++
++/// A `CASpringAnimation`'s parameters.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct KeyboardSpring {
++    pub stiffness: f64,
++    pub damping: f64,
++    pub mass: f64,
++    pub initial_velocity: f64,
++}
++
++/// Where the inset is on a frame (Flutter's `handleKeyboardAnimationCallback(withTargetTime:)`).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum InsetSample {
++    /// No animation runs: the inset stays.
++    Idle,
++    /// The spring's value at the frame's target time.
++    Spring(f64),
++    /// No spring: the hidden view's presented `y`.
++    PresentationLayer,
 +}
 +
 +/// What the window does for a notification.
@@ -232,9 +280,14 @@ index 0000000..2d31086
 +        // Animation calls made while the keyboard animates the same way let the current animation continue with
 +        // the new target instead of starting a new one.
 +        let keyboard_will_show = notification.begin.y > notification.end.y;
-+        if let KeyboardAnimation::Running { showing, .. } = self.animation
-+            && showing == keyboard_will_show
++        if let KeyboardAnimation::Running {
++            showing, spring, ..
++        } = &mut self.animation
++            && *showing == keyboard_will_show
 +        {
++            if let Some((spring, _)) = spring {
++                spring.to_value = self.target_view_inset_bottom;
++            }
 +            return KeyboardInsetAction::Compound;
 +        }
 +        let generation = self.next_generation;
@@ -242,10 +295,48 @@ index 0000000..2d31086
 +        self.animation = KeyboardAnimation::Running {
 +            showing: keyboard_will_show,
 +            generation,
++            spring: None,
 +        };
 +        KeyboardInsetAction::Start {
 +            duration: notification.duration,
 +            generation,
++        }
++    }
++
++    /// Flutter's `setUpKeyboardSpringAnimationIfNeeded(_:)`, once UIKit animates the running animation: a spring
++    /// (`keyboard_spring`, the hidden view's `CASpringAnimation`) from `original_view_inset_bottom` to the target,
++    /// started at `start_time`; `None` (not a spring) samples the presentation layer.
++    pub fn set_up_keyboard_spring_animation_if_needed(
++        &mut self,
++        keyboard_spring: Option<KeyboardSpring>,
++        original_view_inset_bottom: f64,
++        start_time: f64,
++    ) {
++        let target = self.target_view_inset_bottom;
++        if let KeyboardAnimation::Running { spring, .. } = &mut self.animation {
++            *spring = keyboard_spring.map(|keyboard| {
++                let animation = SpringAnimation::new(
++                    keyboard.stiffness,
++                    keyboard.damping,
++                    keyboard.mass,
++                    keyboard.initial_velocity,
++                    original_view_inset_bottom,
++                    target,
++                );
++                (animation, start_time)
++            });
++        }
++    }
++
++    /// The inset on a frame whose vsync target is `target_time` (`CACurrentMediaTime`'s clock).
++    pub fn sample(&self, target_time: f64) -> InsetSample {
++        match self.animation {
++            KeyboardAnimation::Idle => InsetSample::Idle,
++            KeyboardAnimation::Running {
++                spring: Some((spring, start_time)),
++                ..
++            } => InsetSample::Spring(spring.curve_function(target_time - start_time)),
++            KeyboardAnimation::Running { spring: None, .. } => InsetSample::PresentationLayer,
 +        }
 +    }
 +
@@ -688,6 +779,66 @@ index 0000000..2d31086
 +    }
 +
 +    #[test]
++    fn keyboard_spring_rows() {
++        // The keyboard's spring (iOS's CASpringAnimation: mass 3, stiffness 1000, damping 500), as Flutter's
++        // keyboardSpringAnimation drives the inset. (row, frame time after the start, sample)
++        let keyboard = KeyboardSpring {
++            stiffness: 1000.,
++            damping: 500.,
++            mass: 3.,
++            initial_velocity: 0.,
++        };
++        let show = KeyboardNotification {
++            name: WillShow,
++            begin: Rect::new(0., H, W, 320.),
++            end: Rect::new(0., H - 320., W, 320.),
++            duration: 0.5,
++            is_local: Some(true),
++        };
++        let mut manager = KeyboardInsetManager::default();
++        assert_eq!(manager.sample(10.), InsetSample::Idle, "idle");
++        manager.handle_keyboard_notification(&show, &FULL);
++        assert_eq!(
++            manager.sample(10.),
++            InsetSample::PresentationLayer,
++            "no spring yet: the presentation layer"
++        );
++        manager.set_up_keyboard_spring_animation_if_needed(Some(keyboard), 0., 10.);
++        let spring = |manager: &KeyboardInsetManager, time| match manager.sample(time) {
++            InsetSample::Spring(value) => value,
++            other => panic!("not a spring sample: {other:?}"),
++        };
++        let rows = [
++            ("starts at the current inset", 10., 0.),
++            ("reaches the target by 0.6 s", 10.6, 320.),
++        ];
++        for (name, time, expected) in rows {
++            let value = spring(&manager, time);
++            assert!((value - expected).abs() < 1., "{name}: {value}");
++        }
++        let halfway = spring(&manager, 10.1);
++        assert!(0. < halfway && halfway < 320., "between: {halfway}");
++        // testKeyboardAnimationIsShowingAndCompounding: a same-direction change moves the spring's target.
++        let higher = KeyboardNotification {
++            name: WillChangeFrame,
++            begin: show.end,
++            end: Rect::new(0., H - 400., W, 400.),
++            ..show
++        };
++        assert_eq!(
++            manager.handle_keyboard_notification(&higher, &FULL),
++            KeyboardInsetAction::Compound
++        );
++        assert!((spring(&manager, 10.6) - 400.).abs() < 1., "compounded target");
++        manager.set_up_keyboard_spring_animation_if_needed(None, 0., 10.);
++        assert_eq!(
++            manager.sample(10.6),
++            InsetSample::PresentationLayer,
++            "not a spring"
++        );
++    }
++
++    #[test]
 +    fn finish_only_the_running_animation() {
 +        // Flutter's completion block acts only while its vsync client is still the current one.
 +        let mut manager = KeyboardInsetManager::default();
@@ -723,8 +874,153 @@ index 0000000..2d31086
 +        assert!(!manager.finish(1), "a second completion");
 +    }
 +}
+diff --git a/gpui-pre-ios/src/ios/spring_animation.rs b/gpui-pre-ios/src/ios/spring_animation.rs
+new file mode 100644
+index 0000000..1fc1499
+--- /dev/null
++++ b/gpui-pre-ios/src/ios/spring_animation.rs
+@@ -0,0 +1,139 @@
++// Ported from flutter/flutter engine/src/flutter/third_party/spring_animation/spring_animation.mm and
++// SpringAnimationTest.mm @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7), which Flutter derived from
++// facebook/react-native Libraries/Animated/animations/SpringAnimation.js
++// @ 494c47360f62761176033a4da359f43b53c2182f. Copyright (c) Meta Platforms, Inc. and affiliates. MIT, see
++// LICENSE-REACT-NATIVE. The tests: Copyright 2014 The Flutter Authors. BSD-3-Clause, see LICENSE-FLUTTER.
++//! The iOS keyboard's spring curve, as Flutter's keyboard inset manager computes it: the inset follows the
++//! keyboard's `CASpringAnimation` frame-exact instead of sampling a hidden view's presentation layer.
++
++/// Flutter's `SpringAnimation`: a spring from `from_value` to `to_value`, sampled by time since it started.
++// Spring code adapted from React Native's Animation Library, see:
++// https://github.com/facebook/react-native/blob/main/Libraries/Animated/animations/SpringAnimation.js
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct SpringAnimation {
++    pub stiffness: f64,
++    pub damping: f64,
++    pub mass: f64,
++    pub initial_velocity: f64,
++    pub from_value: f64,
++    pub to_value: f64,
++    zeta: f64,
++    omega0: f64,
++    omega1: f64,
++    v0: f64,
++}
++
++impl SpringAnimation {
++    pub fn new(
++        stiffness: f64,
++        damping: f64,
++        mass: f64,
++        initial_velocity: f64,
++        from_value: f64,
++        to_value: f64,
++    ) -> Self {
++        let zeta = damping / (2. * (stiffness * mass).sqrt()); // Damping ratio.
++        let omega0 = (stiffness / mass).sqrt(); // Undamped angular frequency of the oscillator.
++        let omega1 = omega0 * (1.0 - zeta * zeta).sqrt(); // Exponential decay.
++        Self {
++            stiffness,
++            damping,
++            mass,
++            initial_velocity,
++            from_value,
++            to_value,
++            zeta,
++            omega0,
++            omega1,
++            v0: -initial_velocity,
++        }
++    }
++
++    /// The value `t` seconds after the spring started.
++    pub fn curve_function(&self, t: f64) -> f64 {
++        let x0 = self.to_value - self.from_value;
++
++        if self.zeta < 1. {
++            // Under damped.
++            let envelope = (-self.zeta * self.omega0 * t).exp();
++            self.to_value
++                - envelope
++                    * (((self.v0 + self.zeta * self.omega0 * x0) / self.omega1)
++                        * (self.omega1 * t).sin()
++                        + x0 * (self.omega1 * t).cos())
++        } else {
++            // Critically damped.
++            let envelope = (-self.omega0 * t).exp();
++            self.to_value - envelope * (x0 + (self.v0 + self.omega0 * x0) * t)
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// The keyboard curve config on iOS platform.
++    fn keyboard(from_value: f64, to_value: f64) -> SpringAnimation {
++        SpringAnimation::new(1000., 500., 3., 0., from_value, to_value)
++    }
++
++    #[test]
++    fn can_initialize_correctly() {
++        // SpringAnimationTest.CanInitializeCorrectly
++        let animation = keyboard(0., 1000.);
++        assert_eq!(
++            (
++                animation.stiffness,
++                animation.damping,
++                animation.mass,
++                animation.initial_velocity,
++                animation.from_value,
++                animation.to_value
++            ),
++            (1000., 500., 3., 0., 0., 1000.)
++        );
++    }
++
++    #[test]
++    fn curve_function_rows() {
++        // (Flutter test, from, to, time, expected value, accuracy)
++        let rows = [
++            (
++                "CurveFunctionCanWorkCorrectly: starts at fromValue",
++                0.,
++                1000.,
++                0.,
++                0.,
++                1.,
++            ),
++            (
++                "CurveFunctionCanWorkCorrectly: reaches toValue by 0.6 s",
++                0.,
++                1000.,
++                0.6,
++                1000.,
++                1.,
++            ),
++        ];
++        for (name, from, to, time, expected, accuracy) in rows {
++            let value = keyboard(from, to).curve_function(time);
++            assert!((value - expected).abs() < accuracy, "{name}: {value}");
++        }
++    }
++
++    #[test]
++    fn can_update_position_values_and_calculate_correctly() {
++        // SpringAnimationTest.CanUpdatePositionValuesAndCalculateCorrectly
++        let animation = keyboard(0., 1000.);
++        let (start_value1, to_value1) = (animation.curve_function(0.), animation.curve_function(0.6));
++        let animation = SpringAnimation {
++            from_value: 10.,
++            to_value: 800.,
++            ..animation
++        };
++        assert_eq!((animation.from_value, animation.to_value), (10., 800.));
++        assert!(animation.curve_function(0.) > start_value1);
++        assert!(animation.curve_function(0.6) < to_value1);
++    }
++}
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 3dbdc58..5f0367b 100644
+index 3dbdc58..6542b73 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
 @@ -11,6 +11,10 @@
@@ -732,7 +1028,7 @@ index 3dbdc58..5f0367b 100644
  use super::events::*;
  use super::keyboard::{KeyResponder, Press, PressPhase, Primary};
 +use super::keyboard_inset::{
-+    KeyboardAnimation, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification,
++    InsetSample, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification, KeyboardSpring,
 +    NotificationName, Rect, ViewGeometry,
 +};
  use super::text_input::TextInputView;
@@ -746,7 +1042,8 @@ index 3dbdc58..5f0367b 100644
 +    NSArray, NSNotification, NSNotificationCenter, NSNumber, NSObjectProtocol, NSSet, NSString,
 +    NSValue,
  };
- use objc2_quartz_core::CAMetalLayer;
+-use objc2_quartz_core::CAMetalLayer;
++use objc2_quartz_core::{CACurrentMediaTime, CAMetalLayer, CASpringAnimation};
  use objc2_ui_kit::{
 -    NSValueUIGeometryExtensions, UIKeyboardFrameEndUserInfoKey,
 -    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIStatusBarStyle,
@@ -767,7 +1064,7 @@ index 3dbdc58..5f0367b 100644
 +    /// The inset's target and animation (keyboard_inset.rs).
 +    keyboard_inset: RefCell<KeyboardInsetManager>,
 +    /// Flutter's `keyboardAnimationView`: a hidden view whose `y` UIKit animates with the keyboard's duration and
-+    /// curve; each frame reads its presentation layer as the inset.
++    /// curve; its spring (or, without one, its presentation layer) gives each frame's inset.
 +    keyboard_animation_view: Retained<UIView>,
      /// Current mouse position (from touch)
      mouse_position: Cell<Point<Pixels>>,
@@ -792,7 +1089,7 @@ index 3dbdc58..5f0367b 100644
              mouse_position: Cell::new(Point::default()),
              modifiers: Cell::new(Modifiers::default()),
              key_responder: RefCell::default(),
-@@ -548,50 +568,155 @@ impl IosWindowState {
+@@ -548,50 +568,182 @@ impl IosWindowState {
      }
  
      fn register_keyboard_observers(self: &Rc<Self>) {
@@ -852,7 +1149,18 @@ index 3dbdc58..5f0367b 100644
 +        });
 +        self.keyboard_observers.borrow_mut().extend(observers);
 +    }
-+
+ 
+-            let frame_observer = notification_center.addObserverForName_object_queue_usingBlock(
+-                Some(UIKeyboardWillChangeFrameNotification),
+-                None,
+-                None,
+-                &frame_change_block,
+-            );
+-            let hide_observer = notification_center.addObserverForName_object_queue_usingBlock(
+-                Some(UIKeyboardWillHideNotification),
+-                None,
+-                None,
+-                &hide_block,
 +    // Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/
 +    // KeyboardInsetManager.swift (`handleKeyboardNotification(_:)`, `startKeyBoardAnimation(_:)`,
 +    // `handleKeyboardAnimationCallback(withTargetTime:)`) and FlutterViewController.mm (`keyboardWillShowNotification:`,
@@ -926,13 +1234,17 @@ index 3dbdc58..5f0367b 100644
 +    }
 +
 +    /// Flutter's `startKeyBoardAnimation(_:)`: UIKit animates the hidden view's `y` from the current inset to the
-+    /// target with the keyboard's duration (and, inside the notification, its curve); `step_keyboard_animation`
-+    /// reads it each frame. The completion of the animation still running sets the target.
++    /// target with the keyboard's duration (and, inside the notification, its curve); its `CASpringAnimation`, if
++    /// it is one, becomes the spring `step_keyboard_animation` samples each frame. The completion of the animation
++    /// still running sets the target.
 +    fn start_keyboard_animation(&self, duration: f64, generation: u64) {
 +        let view = &self.keyboard_animation_view;
 +        view.layer().removeAllAnimations();
 +        let frame_at = |inset: f64| CGRect::new(CGPoint::new(0., inset), CGSize::ZERO);
-+        view.setFrame(frame_at(self.keyboard_height.get() as f64));
++        let original_view_inset_bottom = self.keyboard_height.get() as f64;
++        view.setFrame(frame_at(original_view_inset_bottom));
++        // Core Animation's clock, the one the display link's target times are on.
++        let start_time = CACurrentMediaTime();
 +        let target = self.keyboard_inset.borrow().target_view_inset_bottom;
 +        let animations = block2::RcBlock::new({
 +            let view = view.clone();
@@ -957,45 +1269,59 @@ index 3dbdc58..5f0367b 100644
 +            Some(&completion),
 +            view.mtm(),
 +        );
-+    }
- 
--            let frame_observer = notification_center.addObserverForName_object_queue_usingBlock(
--                Some(UIKeyboardWillChangeFrameNotification),
--                None,
--                None,
--                &frame_change_block,
--            );
--            let hide_observer = notification_center.addObserverForName_object_queue_usingBlock(
--                Some(UIKeyboardWillHideNotification),
--                None,
--                None,
--                &hide_block,
--            );
++        // The animation UIKit added for the new frame inside the notification: the keyboard's own curve.
++        // SAFETY: reading the layer's animation for a key on the main thread.
++        let animation = unsafe { view.layer().animationForKey(&NSString::from_str("position")) };
++        let keyboard_spring = animation
++            .and_then(|animation| animation.downcast::<CASpringAnimation>().ok())
++            .map(|spring| KeyboardSpring {
++                stiffness: spring.stiffness(),
++                damping: spring.damping(),
++                mass: spring.mass(),
++                initial_velocity: spring.initialVelocity(),
++            });
++        self.keyboard_inset
++            .borrow_mut()
++            .set_up_keyboard_spring_animation_if_needed(
++                keyboard_spring,
++                original_view_inset_bottom,
++                start_time,
+             );
 -            self.keyboard_observers
 -                .borrow_mut()
 -                .extend([frame_observer, hide_observer]);
-+    /// Flutter's `handleKeyboardAnimationCallback(withTargetTime:)` without its spring: while the animation runs,
-+    /// the inset is the hidden view's presented `y`.
-+    fn step_keyboard_animation(&self) {
-+        if self.keyboard_inset.borrow().animation == KeyboardAnimation::Idle {
-+            return;
-+        }
-+        // SAFETY: reading the presentation copy of a layer on the main thread.
-+        if let Some(presented) = unsafe { self.keyboard_animation_view.layer().presentationLayer() }
-+        {
-+            self.set_keyboard_height(presented.frame().origin.y as f32);
++    }
++
++    /// Flutter's `handleKeyboardAnimationCallback(withTargetTime:)`: while the animation runs, the inset is the
++    /// keyboard's spring at the frame's vsync target time, or without a spring the hidden view's presented `y`.
++    fn step_keyboard_animation(&self, target_time: f64) {
++        let sample = self.keyboard_inset.borrow().sample(target_time);
++        match sample {
++            InsetSample::Idle => {}
++            InsetSample::Spring(inset) => self.set_keyboard_height(inset as f32),
++            InsetSample::PresentationLayer => {
++                // SAFETY: reading the presentation copy of a layer on the main thread.
++                if let Some(presented) =
++                    unsafe { self.keyboard_animation_view.layer().presentationLayer() }
++                {
++                    self.set_keyboard_height(presented.frame().origin.y as f32);
++                }
++            }
          }
      }
  
-@@ -751,6 +876,7 @@ impl IosWindowState {
+@@ -750,7 +902,9 @@ impl IosWindowState {
+         }
      }
  
-     pub(super) fn request_frame(&self) {
-+        self.step_keyboard_animation();
+-    pub(super) fn request_frame(&self) {
++    /// One display-link frame; `target_time` is its vsync target (`CADisplayLink.targetTimestamp`).
++    pub(super) fn request_frame(&self, target_time: f64) {
++        self.step_keyboard_animation(target_time);
          self.request_frame_callback.with(|callback| {
              let force_render = self.force_next_frame.replace(false);
              callback(RequestFrameOptions {
-@@ -908,6 +1034,16 @@ impl IosWindowState {
+@@ -908,6 +1062,16 @@ impl IosWindowState {
      }
  }
  
@@ -1012,3 +1338,17 @@ index 3dbdc58..5f0367b 100644
  /// A `UIPress`'s phase as keyboard.rs's.
  fn press_phase(phase: UIPressPhase) -> PressPhase {
      match phase {
+diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
+index 7de9471..e3d1b02 100644
+--- a/gpui-pre-ios/src/ios.rs
++++ b/gpui-pre-ios/src/ios.rs
+@@ -4,7 +4,9 @@ mod application;
+ mod display;
+ mod events;
+ mod keyboard;
++mod keyboard_inset;
+ mod platform;
++mod spring_animation;
+ mod text_input;
+ mod window;
+ 
