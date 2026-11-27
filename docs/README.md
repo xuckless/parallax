@@ -27,6 +27,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [haptics.md](haptics.md) | Patch 0018 and Android: `Window::perform_haptic`, the long-press haptic from the behaviour table, each kind per platform (Android, iOS, web), the Android pull, the tests |
 | [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
+| [text-selection.md](text-selection.md) | Flutter's text selection for Android and touch desktops (`parallax-ext`): the engine, how an app feeds it and draws its overlay, the per-platform rules, the tests, what is not ported |
 | [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [ci.md](ci.md) | The eleven CI jobs (six targets, Java tests, patch tests, Linux touch, Windows touch, Android smoke), what each checks, when each runs, adding a target |

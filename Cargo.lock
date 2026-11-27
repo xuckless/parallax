@@ -2199,6 +2199,8 @@ dependencies = [
  "env_logger",
  "log",
  "parallax",
+ "parallax-ext",
+ "parallax-gpui",
  "unicode-segmentation",
  "wasm-bindgen",
  "web-time",
@@ -3628,6 +3630,10 @@ dependencies = [
 [[package]]
 name = "parallax-ext"
 version = "0.1.8"
+dependencies = [
+ "parallax-gpui",
+ "parallax-platform",
+]
 
 [[package]]
 name = "parallax-gpui"
