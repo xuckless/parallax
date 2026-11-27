@@ -136,13 +136,14 @@ pub enum Overscroll {
     None,
 }
 
-/// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from.
+/// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from. Named as patch 0011's
+/// `gpui::VelocityTrackerKind`, which replaces it once that patch lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VelocityTracker {
+pub enum VelocityTrackerKind {
     /// `IOSScrollViewFlingVelocityTracker`.
-    IosScrollView,
+    IOSScrollViewFling,
     /// `MacOSScrollViewFlingVelocityTracker`.
-    MacOsScrollView,
+    MacOSScrollViewFling,
     /// `VelocityTracker.withKind`: least squares.
     LeastSquares,
 }
@@ -176,7 +177,7 @@ pub struct Behaviour {
     pub touch_slops: Slops,
     /// `ScrollBehavior.getScrollPhysics`.
     pub scroll: ScrollPresetRow,
-    pub velocity_tracker: VelocityTracker,
+    pub velocity_tracker: VelocityTrackerKind,
     pub overscroll: Overscroll,
     pub haptics: Haptics,
     /// Smallest tap target a control should have: Material's 48 or Cupertino's 44 (the set `.adaptive` widgets
@@ -200,7 +201,7 @@ pub const TABLE: [Behaviour; 5] = [
         target: Target::Android,
         touch_slops: ANDROID_TOUCH_SLOPS,
         scroll: CLAMPING,
-        velocity_tracker: VelocityTracker::LeastSquares,
+        velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::Stretch,
         haptics: Haptics {
             long_press: Some(Haptic::Vibrate),
@@ -214,7 +215,7 @@ pub const TABLE: [Behaviour; 5] = [
         target: Target::Ios,
         touch_slops: FLUTTER_TOUCH_SLOPS,
         scroll: BOUNCING,
-        velocity_tracker: VelocityTracker::IosScrollView,
+        velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: Haptics {
             long_press: Some(Haptic::HeavyImpact),
@@ -228,7 +229,7 @@ pub const TABLE: [Behaviour; 5] = [
         target: Target::MacOs,
         touch_slops: FLUTTER_TOUCH_SLOPS,
         scroll: BOUNCING_DESKTOP,
-        velocity_tracker: VelocityTracker::MacOsScrollView,
+        velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimensionCupertino,
@@ -238,7 +239,7 @@ pub const TABLE: [Behaviour; 5] = [
         target: Target::Windows,
         touch_slops: FLUTTER_TOUCH_SLOPS,
         scroll: CLAMPING,
-        velocity_tracker: VelocityTracker::LeastSquares,
+        velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
@@ -248,7 +249,7 @@ pub const TABLE: [Behaviour; 5] = [
         target: Target::Linux,
         touch_slops: FLUTTER_TOUCH_SLOPS,
         scroll: CLAMPING,
-        velocity_tracker: VelocityTracker::LeastSquares,
+        velocity_tracker: VelocityTrackerKind::LeastSquares,
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
@@ -353,12 +354,13 @@ mod tests {
             preset: ScrollPreset,
             overscroll: Overscroll,
             long_press: Option<Haptic>,
+            velocity_tracker: VelocityTrackerKind,
             min_touch_target: f32,
         }
         // (row name with its Flutter sources, target, expected values)
         let rows = [
             (
-                "android: ViewConfiguration touch slop (FlutterView.java), getScrollPhysics clamping, \
+                "android: ViewConfiguration touch slop (FlutterView.java), getScrollPhysics clamping, least squares, \
                  MaterialScrollBehavior stretch, Feedback.forLongPress vibrate, kMinInteractiveDimension",
                 Target::Android,
                 Expected {
@@ -369,6 +371,7 @@ mod tests {
                     preset: ScrollPreset::Clamping,
                     overscroll: Overscroll::Stretch,
                     long_press: Some(Haptic::Vibrate),
+                    velocity_tracker: VelocityTrackerKind::LeastSquares,
                     min_touch_target: 48.,
                 },
             ),
@@ -384,6 +387,7 @@ mod tests {
                     preset: ScrollPreset::Bouncing,
                     overscroll: Overscroll::Bounce,
                     long_press: Some(Haptic::HeavyImpact),
+                    velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
                     min_touch_target: 44.,
                 },
             ),
@@ -399,6 +403,7 @@ mod tests {
                     preset: ScrollPreset::BouncingDesktop,
                     overscroll: Overscroll::Bounce,
                     long_press: None,
+                    velocity_tracker: VelocityTrackerKind::MacOSScrollViewFling,
                     min_touch_target: 44.,
                 },
             ),
@@ -413,6 +418,7 @@ mod tests {
                     preset: ScrollPreset::Clamping,
                     overscroll: Overscroll::None,
                     long_press: None,
+                    velocity_tracker: VelocityTrackerKind::LeastSquares,
                     min_touch_target: 48.,
                 },
             ),
@@ -427,6 +433,7 @@ mod tests {
                     preset: ScrollPreset::Clamping,
                     overscroll: Overscroll::None,
                     long_press: None,
+                    velocity_tracker: VelocityTrackerKind::LeastSquares,
                     min_touch_target: 48.,
                 },
             ),
@@ -462,6 +469,7 @@ mod tests {
             assert_eq!(row.scroll.preset, expected.preset, "{name}");
             assert_eq!(row.overscroll, expected.overscroll, "{name}");
             assert_eq!(row.haptics.long_press, expected.long_press, "{name}");
+            assert_eq!(row.velocity_tracker, expected.velocity_tracker, "{name}");
             assert_eq!(
                 row.min_touch_target,
                 px(expected.min_touch_target),

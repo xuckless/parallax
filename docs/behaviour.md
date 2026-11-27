@@ -7,13 +7,13 @@ comment next to each names its Flutter source. Flutter's tuning wins over GPUI's
 
 ## The table
 
-| Target | Touch slop (hit / pan / scale) | Scroll physics | Overscroll | Velocity tracker | Haptics | Touch target |
+| Target | Touch slop (hit / pan / scale) | Scroll physics | Overscroll | `velocity_tracker` | Haptics | Touch target |
 |---|---|---|---|---|---|---|
-| Android | 8 / 16 / 18 | `CLAMPING` | `Stretch` | least squares | long press `Vibrate`, selection handle `SelectionClick` | 48 |
-| iOS | 18 / 36 / 18 | `BOUNCING` | `Bounce` | iOS scroll view | long press `HeavyImpact`, picker item `SelectionClick` | 44 |
-| macOS | 18 / 36 / 18 | `BOUNCING_DESKTOP` | `Bounce` | macOS scroll view | none | 44 |
-| Windows | 18 / 36 / 18 | `CLAMPING` | `None` | least squares | none | 48 |
-| Linux | 18 / 36 / 18 | `CLAMPING` | `None` | least squares | none | 48 |
+| Android | 8 / 16 / 18 | `CLAMPING` | `Stretch` | `LeastSquares` | long press `Vibrate`, selection handle `SelectionClick` | 48 |
+| iOS | 18 / 36 / 18 | `BOUNCING` | `Bounce` | `IOSScrollViewFling` | long press `HeavyImpact`, picker item `SelectionClick` | 44 |
+| macOS | 18 / 36 / 18 | `BOUNCING_DESKTOP` | `Bounce` | `MacOSScrollViewFling` | none | 44 |
+| Windows | 18 / 36 / 18 | `CLAMPING` | `None` | `LeastSquares` | none | 48 |
+| Linux | 18 / 36 / 18 | `CLAMPING` | `None` | `LeastSquares` | none | 48 |
 
 | Scroll physics | GPUI fling model | Min / max fling (px/s) | Drag start threshold |
 |---|---|---|---|
