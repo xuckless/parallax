@@ -1,0 +1,3 @@
+# web tap: tap 200 400 50
+touch(0, 1, Started, 200.00, 400.00)
+touch(59, 1, Ended, 200.00, 400.00)

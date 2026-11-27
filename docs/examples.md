@@ -20,6 +20,7 @@ Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the ap
 (`EMOJI_GRID`) and logs `hello: emoji grid: frame …`, the cost of drawing them
 ([android-emoji.md](android-emoji.md#cost)). The grid scrolls in a box shorter than its rows, so a swipe past an
 edge shows the platform's overscroll: stretch on Android, bounce on iOS and macOS ([overscroll.md](overscroll.md)).
+"Record touches" swaps the window for a trace pad that logs every touch in the trace format ([traces.md](traces.md)).
 
 The field ([text_field.rs](../examples/hello/src/text_field.rs), configured per instance) is example-local: upstream GPUI has no text field
 outside Zed's editor (GPL, never copied), so it is upstream's `examples/input.rs` (Apache-2.0) cut down to one
@@ -79,5 +80,5 @@ Logcat shows the renderer, the surface and `hello: window open`. Taps reach GPUI
 
 ### iOS
 
-Built by CI only for now: `cargo check --workspace --target aarch64-apple-ios` ([ci.md](ci.md)). Running it on a
-simulator waits for `cargo parallax run ios`.
+CI checks it: `cargo check --workspace --target aarch64-apple-ios` ([ci.md](ci.md)). Until `cargo parallax run ios`,
+[record-traces.sh](traces.md#recording) runs main.rs's bin on a simulator as a bare `.app` (`ios_setup`).
