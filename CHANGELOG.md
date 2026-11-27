@@ -59,6 +59,9 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   a touch drag once the touch passes the drag's slop, as Flutter's tap-and-drag recognizers do, so a text field keeps
   its taps and long presses. `TouchDragEvent` gains `start` (`TouchDragStart::Down` or `PastSlop(kind)`);
   `TextSelection::touch_drag_kind` gives the field's kind; hello's text field uses it ([docs/touch-drag.md](docs/touch-drag.md)).
+- Touch pans in a scroll container that scrolls on one axis start only on that axis' travel, as Flutter's
+  `VerticalDragGestureRecognizer` / `HorizontalDragGestureRecognizer` do (patch 0042), so a sideways drag in a
+  vertical list (a field's caret drag, a desktop field's selection pan) is no longer taken as a scroll.
 
 ### Changed
 

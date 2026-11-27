@@ -31,10 +31,18 @@ when it passes the slop (`gpui::slops` from the window's `GestureTuning::touch_s
 | `Horizontal` | `TapAndHorizontalDragGestureRecognizer` | the signed horizontal travel | the hit slop (18 px for a finger) |
 | `Pan` | `TapAndPanGestureRecognizer` | the path length | the pan slop (36 px) |
 
-GPUI's pan stands in for a scroll view's drag recognizer: it takes the touch once it passes `touch_slop` in any
-direction. So a horizontal drag wins mostly horizontal moves (a diagonal one past 18 px but under 18 px along x is
-the pan's), and a `Pan` drag only wins a move that crosses both slops at once. To add a kind: one arm in each of
-`TouchDragKind`'s two methods.
+GPUI's pan stands in for the drag recognizers of the scroll containers under the touch: each scrolling div reports
+its axes while the touch's `Started` is dispatched (`Window::scroll_container_under_touch`), and the pan accepts by them:
+
+| Containers under the touch | Flutter recognizer | The pan takes the touch once | Locked to |
+|---|---|---|---|
+| only vertical ones | `VerticalDragGestureRecognizer` | the travel along y passes `touch_slop` | y |
+| only horizontal ones | `HorizontalDragGestureRecognizer` | the travel along x passes `touch_slop` | x |
+| none, a two-axis one, or both kinds | `PanGestureRecognizer`'s place | the travel in any direction passes `touch_slop` | the dominant axis |
+
+So in a vertical list a horizontal drag wins sideways moves, and a `Pan` drag (a desktop field) wins a mostly
+horizontal one past 36 px; outside a one-axis container a `Pan` drag only wins a move that crosses both slops at once.
+`list()` reports no axes. To add a kind: one arm in each of `TouchDragKind`'s two methods.
 
 ## Who uses it
 
@@ -45,8 +53,10 @@ engine as a touch press at the start and its moves ([text-selection.md](text-sel
 
 ## Tests
 
-`gestures::recognizer_tests::flutter_recognizer_tests_pass`: 6 rows from `tap_and_drag_test.dart` and 4 GPUI rows (a
-text field's pair: a claimed long press plus a competing horizontal drag). Run `scripts/patch-test.sh recognizer`.
+`gestures::recognizer_tests::flutter_recognizer_tests_pass`: 6 rows from `tap_and_drag_test.dart` (their
+`VerticalDragGestureRecognizer` as a vertical container), 2 rows for monodrag.dart's one-axis acceptance and 5 GPUI rows
+(a text field's pair: a claimed long press plus a competing drag, one in a vertical list); `pan_axes_join_…` tables
+how containers combine. Run `scripts/patch-test.sh recognizer`.
 hello's `touch_selects_by_the_android_row` drives the field with touches through GPUI's test platform.
 
 ## Not ported
