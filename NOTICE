@@ -15,7 +15,8 @@ under Flutter's BSD 3-Clause License.
 
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER
-in the parallax-android package).
+in the parallax-android package). The parallax-gpui crate carries some too: patch 0013 ports
+Flutter's gesture constants, double-tap rule and recognizer test cases.
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.
 
