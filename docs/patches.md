@@ -63,3 +63,4 @@ One row per file in [`patches/`](../patches/); the header of each says what and 
 | [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
 | [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
 | [0010](../patches/0010-end-composition-on-focus-loss.patch) | a field that focus leaves ends its IME composition ([core-patches.md](core-patches.md)) |
+| [0014](../patches/0014-app-gesture-tuning-override.patch) | `App::set_gesture_tuning` overrides the platform's gesture tuning ([behaviour.md](behaviour.md)) |
