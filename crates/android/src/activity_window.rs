@@ -15,6 +15,7 @@ use gpui::{
     point, px,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
+use jni::objects::GlobalRef;
 use serde_json::Value;
 
 use crate::{
@@ -149,11 +150,20 @@ pub(crate) struct ActivityWindow {
     pub(crate) haptics: RefCell<Vec<Haptic>>,
     /// A plain `Cell`: only the main thread draws and attaches surfaces.
     pub(crate) first_frame: Cell<FirstFrame>,
+    /// The Activity's Java `PlatformPlugin` (Flutter's, ported): the clipboard goes through it (platform.rs). Freed
+    /// with the window, so a destroyed Activity is not kept alive.
+    pub(crate) platform_plugin: GlobalRef,
 }
 
 impl ActivityWindow {
-    pub(crate) fn new(activity: ActivityId, gpu: GpuContext, device: Device) -> Self {
+    pub(crate) fn new(
+        activity: ActivityId,
+        gpu: GpuContext,
+        device: Device,
+        platform_plugin: GlobalRef,
+    ) -> Self {
         Self {
+            platform_plugin,
             activity,
             surface: RefCell::new(Surface::None),
             metrics: Cell::new(Metrics::BEFORE_FIRST_SURFACE),

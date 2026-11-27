@@ -70,6 +70,8 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   keyboard no longer counts as bottom safe area: Flutter's `guessBottomKeyboardInset`, ported, and the generated
   manifest's `android:windowSoftInputMode="adjustResize"` (Flutter's app template), without which the keyboard never
   reached the view's insets (`parallax-android`, `cargo-parallax`).
+- Android: Copy and Paste work: `read_from_clipboard` / `write_to_clipboard` reach `ClipboardManager` through
+  Flutter's ported `PlatformPlugin` clipboard methods (plain text; `parallax-android`, docs/android-clipboard.md).
 - Android: Gboard's select mode (text-editing panel, Select on) extends the selection: a key event's meta state now
   reaches GPUI's keystroke, since Flutter's responder synthesizes no Shift for a virtual keyboard
   (`parallax-android`; Gate 1's known limit 5).

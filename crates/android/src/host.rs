@@ -18,7 +18,7 @@ use gpui::{
 use gpui_wgpu::GpuContext;
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
-    objects::{JByteBuffer, JClass, JFloatArray, JObject, JString},
+    objects::{GlobalRef, JByteBuffer, JClass, JFloatArray, JObject, JString},
     sys::{JNI_ERR, JNI_FALSE, JNI_TRUE, JNI_VERSION_1_6, jboolean, jfloat, jint, jstring},
 };
 
@@ -80,7 +80,7 @@ fn natives() -> [NativeMethod; 14] {
         ),
         row(
             "nativeActivityCreated",
-            "()I",
+            "(Lio/github/xuckless/parallax/PlatformPlugin;)I",
             activity_created as *mut c_void,
         ),
         row(
@@ -403,12 +403,21 @@ extern "system" fn surface_destroyed(_env: JNIEnv, _class: JClass, activity: jin
 }
 
 /// `ParallaxActivity.onCreate`: a new live Activity with its own window, which GPUI opens on its first surface;
-/// Java tags its events with the returned id. Without a host there is no id to give: `onCreate` gets an `IllegalStateException`.
-extern "system" fn activity_created(mut env: JNIEnv, _class: JClass) -> jint {
-    let created = shell().map(|shell| {
-        shell.lifecycle(ActivityEvent::Create);
-        shell.lifecycle.borrow().newest()
-    });
+/// Java tags its events with the returned id. `platform_plugin` is the Activity's `PlatformPlugin`. Without a host
+/// there is no id to give: `onCreate` gets an `IllegalStateException`.
+extern "system" fn activity_created(
+    mut env: JNIEnv,
+    _class: JClass,
+    platform_plugin: JObject,
+) -> jint {
+    let created = env
+        .new_global_ref(platform_plugin)
+        .map_err(Error::Jni)
+        .and_then(|platform_plugin| {
+            let shell = shell()?;
+            shell.lifecycle(ShellEvent::Create { platform_plugin });
+            Ok(shell.lifecycle.borrow().newest())
+        });
     let why = match created {
         Ok(Some(activity)) => return activity.0,
         Ok(None) => "the lifecycle handed out no id".to_string(),
@@ -433,7 +442,7 @@ extern "system" fn activity_event(
     match Callback::from_java(code, value) {
         Some(callback) => with_host(|host| {
             host.shell
-                .lifecycle(ActivityEvent::From(ActivityId(activity), callback))
+                .lifecycle(ShellEvent::From(ActivityId(activity), callback))
         }),
         None => log::error!("parallax: unknown Activity event {code} ({value})"),
     }
@@ -646,6 +655,13 @@ pub(crate) struct AppCallbacks {
     pub(crate) memory_warning: Slot<dyn FnMut()>,
 }
 
+/// What [`Shell::lifecycle`] takes: a lifecycle event, with the Java objects that come with it. `onCreate` brings the
+/// new Activity's `PlatformPlugin`, which its window keeps (the clipboard, [`ActivityWindow::platform_plugin`]).
+enum ShellEvent {
+    Create { platform_plugin: GlobalRef },
+    From(ActivityId, Callback),
+}
+
 /// The app as Android sees it: its Activities and their windows, one each. Main thread only.
 pub(crate) struct Shell {
     /// The JVM that loaded the app: the text system calls Java through it to draw emoji.
@@ -711,7 +727,13 @@ impl Shell {
     /// Feeds one Activity callback through the lifecycle and tells GPUI what changed: that Activity's window first,
     /// then the app's observers, in the order `gpui_ios` uses. A new Activity gets a window; a destroyed one's
     /// window closes.
-    fn lifecycle(&self, event: ActivityEvent) {
+    fn lifecycle(&self, event: ShellEvent) {
+        let (event, platform_plugin) = match event {
+            ShellEvent::Create { platform_plugin } => {
+                (ActivityEvent::Create, Some(platform_plugin))
+            }
+            ShellEvent::From(id, callback) => (ActivityEvent::From(id, callback), None),
+        };
         let before = self.lifecycle.replace(Lifecycle::Loaded);
         let id = match event {
             ActivityEvent::From(id, _) => Some(id),
@@ -728,8 +750,9 @@ impl Shell {
         };
         let runs_frames = id.is_some_and(|id| next.runs_frames(id));
         *self.lifecycle.borrow_mut() = next;
-        if let Some(created) = created {
-            let window = ActivityWindow::new(created, self.gpu.clone(), self.device);
+        if let (Some(created), Some(platform_plugin)) = (created, platform_plugin) {
+            let window =
+                ActivityWindow::new(created, self.gpu.clone(), self.device, platform_plugin);
             self.windows.borrow_mut().insert(created, Rc::new(window));
         }
         let window = id.and_then(|id| self.window(id));

@@ -101,9 +101,9 @@ final class ParallaxSurfaceView extends SurfaceView
       int activity, ByteBuffer buffer, int position);
 
   // ParallaxActivity.onCreate: a new Activity, with its own GPUI window; returns its id for every
-  // later event.
+  // later event. `platformPlugin`: the Activity's, which Rust keeps for the clipboard.
   // Declared here so one class holds every native JNI_OnLoad binds.
-  static native int nativeActivityCreated();
+  static native int nativeActivityCreated(PlatformPlugin platformPlugin);
 
   // ParallaxActivity's lifecycle, focus and memory callbacks: its id, one of its EVENT_* codes and a
   // value (focus flag or trim level).

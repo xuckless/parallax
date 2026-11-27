@@ -19,6 +19,10 @@ use gpui::{
 };
 
 use gpui_wgpu::CosmicTextSystem;
+use jni::{
+    JNIEnv,
+    objects::{JObject, JString, JValue},
+};
 
 use crate::{
     Error, dispatcher::AndroidDispatcher, host::Shell, metrics::Metrics,
@@ -51,6 +55,24 @@ impl AndroidPlatform {
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
         })
+    }
+
+    /// Runs `f` with the newest Activity's Java `PlatformPlugin` (the clipboard is the system's, not one Activity's,
+    /// so any live one serves) in its own local frame; `None` with no live Activity. A Java exception becomes an
+    /// error and is cleared.
+    fn platform_plugin<T>(
+        &self,
+        f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>,
+    ) -> Result<Option<T>, Error> {
+        let Some(window) = self.shell.newest_window() else {
+            return Ok(None);
+        };
+        let mut env = self.shell.vm.get_env()?;
+        let result = env.with_local_frame(8, |env| f(env, window.platform_plugin.as_obj()));
+        if result.is_err() && env.exception_check()? {
+            env.exception_clear()?;
+        }
+        Ok(Some(result?))
     }
 }
 
@@ -307,12 +329,56 @@ impl Platform for AndroidPlatform {
         true // Android hides scrollbars when idle
     }
 
+    // Plain text, as Flutter's Android clipboard: `PlatformPlugin.getClipboardData` with no format (its
+    // channel's default, plain text) (docs/android-clipboard.md).
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        None // Not yet on Android: ClipboardManager over JNI.
+        let read = self.platform_plugin(|env, plugin| {
+            let format = JObject::null();
+            let text = env
+                .call_method(
+                    plugin,
+                    "getClipboardData",
+                    "(Lio/github/xuckless/parallax/PlatformChannel$ClipboardContentFormat;)Ljava/lang/CharSequence;",
+                    &[JValue::Object(&format)],
+                )?
+                .l()?;
+            if text.is_null() {
+                return Ok(None);
+            }
+            let text = JString::from(
+                env.call_method(&text, "toString", "()Ljava/lang/String;", &[])?
+                    .l()?,
+            );
+            Ok(Some(String::from(env.get_string(&text)?)))
+        });
+        match read {
+            Ok(text) => text.flatten().map(ClipboardItem::new_string),
+            Err(error) => {
+                log::error!("parallax: cannot read the clipboard: {error}");
+                None
+            }
+        }
     }
 
-    fn write_to_clipboard(&self, _item: ClipboardItem) {
-        // Not yet on Android: ClipboardManager over JNI.
+    // `PlatformPlugin.setClipboardData`: the item's text; GPUI's metadata and images do not reach Android's
+    // clipboard (docs/android-clipboard.md).
+    fn write_to_clipboard(&self, item: ClipboardItem) {
+        let Some(text) = item.text() else {
+            return log::warn!("parallax: only text reaches the Android clipboard");
+        };
+        let written = self.platform_plugin(|env, plugin| {
+            let text = env.new_string(text)?;
+            env.call_method(
+                plugin,
+                "setClipboardData",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&text)],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = written {
+            log::error!("parallax: cannot write the clipboard: {error}");
+        }
     }
 
     fn write_credentials(

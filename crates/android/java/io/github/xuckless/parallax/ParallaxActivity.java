@@ -40,10 +40,11 @@ public class ParallaxActivity extends Activity {
     super.onCreate(savedInstanceState);
     // The app's JNI_OnLoad (android_main!) runs here, on the main thread, and binds the natives.
     System.loadLibrary(libName());
-    activity = ParallaxSurfaceView.nativeActivityCreated();
+    PlatformPlugin platformPlugin = new PlatformPlugin(this);
+    activity = ParallaxSurfaceView.nativeActivityCreated(platformPlugin);
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
-    view = new ParallaxSurfaceView(this, activity, new PlatformPlugin(this));
+    view = new ParallaxSurfaceView(this, activity, platformPlugin);
     setContentView(view);
   }
 

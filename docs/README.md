@@ -56,6 +56,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
 | [ios-text-input.md](ios-text-input.md) | Patches 0028–0030: Flutter's `FlutterTextInputPluginTest.mm` cases as a table against gpui_ios's `UITextInput` view on the simulator (ios-text-oracle.sh), the failures and Flutter's fixes, cases left out, the size limit |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |
+| [android-clipboard.md](android-clipboard.md) | Android clipboard: GPUI's clipboard calls → the ported PlatformPlugin clipboard methods over JNI, plain text only |
 | [android-autofill.md](android-autofill.md) | Android autofill: GPUI's hint → Flutter's `Configuration.Autofill`, the field id, AutofillManager calls, filled values through the merge path, the hint table |
 | [android-emoji.md](android-emoji.md) | Android colour emoji: fonts.xml emoji faces drawn by Android over JNI, one glyph per cluster, metrics, emoji-picker cost |
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
