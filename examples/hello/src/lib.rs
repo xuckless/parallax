@@ -107,7 +107,9 @@ impl Render for Hello {
                     })),
             )
             .child(match self.shown {
-                // Near a picker's emoji size; rows of ten fit a phone's width and all rows its height.
+                // Near a picker's emoji size; rows of ten fit a phone's width. The grid scrolls in a box a little
+                // shorter than its rows, so a touch past either edge shows the platform's overscroll (stretch on
+                // Android, bounce on iOS and macOS; docs/overscroll.md).
                 Shown::EmojiGrid => {
                     let emoji: Vec<char> = EMOJI_GRID
                         .iter()
@@ -116,6 +118,9 @@ impl Render for Hello {
                         .filter_map(char::from_u32)
                         .collect();
                     div()
+                        .id("emoji-grid")
+                        .h(px(300.))
+                        .overflow_y_scroll()
                         .text_size(px(28.))
                         .children(
                             emoji

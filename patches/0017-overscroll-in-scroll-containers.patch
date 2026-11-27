@@ -1,0 +1,1420 @@
+Wire Flutter's overscroll physics and indicators into GPUI's scroll containers (`div` with overflow scroll).
+
+What:
+- `gpui::overscroll::Overscroll` (`Bounce`, `Stretch`, `Glow`, `None`) and `GestureTuning::overscroll`, default
+  `None` (GPUI's hard stop, so upstream behaviour is unchanged until a platform or app sets it). A container
+  overrides it with `StatefulInteractiveElement::overscroll(..)`; `.overscroll(Overscroll::None)` opts it out.
+- `overscroll/scroll_position.rs`: the glue, ported from Flutter's `ScrollPosition.setPixels`,
+  `ScrollPositionWithSingleContext.applyUserOffset` / `goBallistic`, `ScrollDragController.end` / `cancel` and
+  `BallisticScrollActivity` (`_tick`, `_end`, `applyMoveTo`): per axis, one `Activity` (`Idle`, `Drag`,
+  `Ballistic`) and one `Indicator` (`Off`, `Stretch`, `Glow`), driven by touch scroll steps (`state × phase → next`
+  in `handle_drag`) and frames (`tick`). Drags go through 0012's `apply_physics_to_user_offset` and
+  `apply_boundary_conditions`; the release starts 0012's `create_ballistic_simulation` with the container's extents
+  and the recognizer's release velocity, so a bouncing fling into an edge springs past it and back, and a clamping
+  one hands its velocity to the stretch (`absorb_impact`). The refused overscroll feeds 0015's indicators.
+- `div`: the scroll listener sends touch scrolls (`ScrollSource::Touch`) to it and ignores the recognizer's own
+  momentum steps after the release (the container runs Flutter's simulation instead); wheels and trackpads stop a
+  drag or fling and stay clamped, as Flutter's `PointerScrollEvent`. Prepaint ticks it, leaves an axis it is moving
+  unclamped, requests frames while it animates, and moves each child as `StretchEffect`'s scale would move its
+  centre (GPUI has no scale transform for every primitive, so sizes stay). Paint draws the glow per
+  `GlowController::paint` (`_GlowingOverscrollIndicatorPainter`'s geometry, mirrored or transposed per edge) in
+  Material 2's default secondary colour.
+- `uniform_list` stays a hard stop: its visible range assumes an in-range offset.
+- `TouchGestureRecognizer::fling_velocity`, `Window::gesture_tuning` / `touch_fling_velocity` (crate-private): the
+  release velocity Flutter's `DragEndDetails` carries, read during the release's scroll step.
+- Tests: `overscroll::scroll_position::tests::touch_overscroll_follows_flutter`, one row per behaviour, replaying
+  touch traces (0013's `TraceEvent`, now crate-visible) through the test platform: bounce friction and spring back,
+  a fling bouncing at the bottom, `None`, a per-container opt-out, stretch rising and receding, glow showing and
+  fading, a wheel staying clamped, and nested containers each overscrolling only on their own axis.
+
+Why: Parallax's platform behaviour table picks overscroll per target (bounce on iOS and macOS, stretch on
+Android); GPUI's containers only clamp. The physics and indicators are already Flutter ports (0012, 0015), so this
+patch is the glue Flutter's `ScrollPosition` is, ported the same way. It lives in `div.rs` because the scroll
+offset, its clamp and the scroll listener are `Interactivity`'s private state; no extension trait can reach them.
+At about 450 changed lines plus 380 test lines it is over the 200-line guide: the glow painter, the stretch and the
+position state are one concern (what a container does past its edge) and none works without the others' glue.
+Code ported from Flutter, Copyright 2014 The Flutter Authors, BSD-3-Clause; the new file names its sources at
+Flutter 3.50.1.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
+index 6e4ff9f..72bc9f6 100644
+--- a/gpui-pre/src/elements/div.rs
++++ b/gpui-pre/src/elements/div.rs
+@@ -15,6 +15,9 @@
+ //! and Tailwind-like styling that you can use to build your own custom elements. Div is
+ //! constructed by combining these two systems into an all-in-one element.
+ 
++use crate::overscroll::{
++    AxisDirection, DragStep, GLOW_COLOR, Overscroll, OverscrollPosition, stretch_displacement,
++};
+ use crate::{
+     Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, BackGestureEvent, Bounds, ClickEvent,
+     DispatchPhase, Display, Element, ElementId, Entity, EntityId, ExternalDragPayload,
+@@ -23,10 +26,11 @@ use crate::{
+     KeyboardButton, KeyboardClickEvent, LayoutId, LongPressEvent, ModifiersChangedEvent,
+     MouseButton, MouseClickEvent, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+     MousePressureEvent, MouseUpEvent, OngoingScroll, Overflow, ParentElement, PinchEvent, Pixels,
+-    Point, PointerSource, Render, ScrollEvent, SharedString, Size, Style, StyleRefinement, Styled,
+-    Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, Visibility, Window,
+-    WindowControlArea, point, px, size,
++    Point, PointerSource, Render, ScrollEvent, ScrollSource, SharedString, Size, Style,
++    StyleRefinement, Styled, Task, TooltipId, TouchClickEvent, TouchEvent, TouchPhase, Visibility,
++    Window, WindowControlArea, point, px, size,
+ };
++use crate::{ContentMask, Hsla, PathBuilder, rgb};
+ use collections::HashMap;
+ use gpui_util::ResultExt;
+ use refineable::Refineable;
+@@ -1601,6 +1605,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
+         self
+     }
+ 
++    /// What this container does when a touch drags or flings it past an edge,
++    /// in place of the window's [`GestureTuning::overscroll`](crate::GestureTuning::overscroll);
++    /// `Overscroll::None` opts it out.
++    fn overscroll(mut self, overscroll: Overscroll) -> Self {
++        self.interactivity().overscroll = Some(overscroll);
++        self
++    }
++
+     /// Restrict scrolling of this element to the axis of the input gesture.
+     ///
+     /// See [`Style::restrict_scroll_to_axis`](crate::Style::restrict_scroll_to_axis) for details.
+@@ -2142,6 +2154,8 @@ impl Element for Div {
+             (child_max - child_min).into()
+         };
+ 
++        let overscroll_position = self.interactivity.overscroll_position.clone();
++        let child_layout_ids = &request_layout.child_layout_ids;
+         self.interactivity.prepaint(
+             global_id,
+             inspector_id,
+@@ -2155,18 +2169,48 @@ impl Element for Div {
+                     return hitbox;
+                 }
+ 
++                let stretch = overscroll_position.as_ref().map_or((0., 0.), |position| {
++                    let position = position.borrow();
++                    (position.x.stretch_strength(), position.y.stretch_strength())
++                });
++                // The overscroll stretch moves each child as scaling the
++                // content about the stretched edge would.
++                let child_count = self.children.len();
++                let mut prepaint_child = |index: usize, window: &mut Window, cx: &mut App| {
++                    let Some(child) = self.children.get_mut(index) else {
++                        return;
++                    };
++                    let offset = match (stretch, child_layout_ids.get(index)) {
++                        ((0., 0.), _) | (_, None) => Point::default(),
++                        ((x, y), Some(layout_id)) => {
++                            let center = window.layout_bounds(*layout_id).center();
++                            point(
++                                px(stretch_displacement(
++                                    x,
++                                    center.x.to_f64(),
++                                    bounds.left().to_f64(),
++                                    bounds.right().to_f64(),
++                                ) as f32),
++                                px(stretch_displacement(
++                                    y,
++                                    center.y.to_f64(),
++                                    bounds.top().to_f64(),
++                                    bounds.bottom().to_f64(),
++                                ) as f32),
++                            )
++                        }
++                    };
++                    window.with_element_offset(offset, |window| child.prepaint(window, cx));
++                };
+                 window.with_image_cache(image_cache, |window| {
+                     window.with_element_offset(scroll_offset, |window| {
+                         if let Some(order_fn) = &self.prepaint_order_fn {
+-                            let order = order_fn(window, cx);
+-                            for idx in order {
+-                                if let Some(child) = self.children.get_mut(idx) {
+-                                    child.prepaint(window, cx);
+-                                }
++                            for index in order_fn(window, cx) {
++                                prepaint_child(index, window, cx);
+                             }
+                         } else {
+-                            for child in &mut self.children {
+-                                child.prepaint(window, cx);
++                            for index in 0..child_count {
++                                prepaint_child(index, window, cx);
+                             }
+                         }
+                     });
+@@ -2197,6 +2241,7 @@ impl Element for Div {
+             .as_mut()
+             .map(|provider| provider.provide(window, cx));
+ 
++        let overscroll_position = self.interactivity.overscroll_position.clone();
+         window.with_image_cache(image_cache, |window| {
+             self.interactivity.paint(
+                 global_id,
+@@ -2214,6 +2259,23 @@ impl Element for Div {
+                     for child in &mut self.children {
+                         child.paint(window, cx);
+                     }
++
++                    // Material 2's overscroll glow, over the children.
++                    let glows = overscroll_position
++                        .as_ref()
++                        .map(|position| position.borrow().glow_shapes(bounds));
++                    for glow in glows.into_iter().flatten() {
++                        let mut path = PathBuilder::fill();
++                        path.add_polygon(&glow.outline, true);
++                        let Ok(path) = path.build() else {
++                            continue;
++                        };
++                        let color = Hsla::from(rgb(GLOW_COLOR)).opacity(glow.opacity);
++                        window
++                            .with_content_mask(Some(ContentMask { bounds: glow.clip }), |window| {
++                                window.paint_path(path, color)
++                            });
++                    }
+                 },
+             )
+         });
+@@ -2265,6 +2327,9 @@ pub struct Interactivity {
+     pub(crate) scroll_anchor: Option<ScrollAnchor>,
+     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+     pub(crate) ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
++    /// This container's overscroll; `None` takes the window's gesture tuning.
++    pub(crate) overscroll: Option<Overscroll>,
++    pub(crate) overscroll_position: Option<Rc<RefCell<OverscrollPosition>>>,
+     pub(crate) group: Option<SharedString>,
+     /// The base style of the element, before any modifications are applied
+     /// by focus, active, etc.
+@@ -2393,6 +2458,8 @@ impl Interactivity {
+                     let scroll_handle_state = scroll_handle.0.borrow();
+                     self.scroll_offset = Some(scroll_handle_state.offset.clone());
+                     self.ongoing_scroll = Some(scroll_handle_state.ongoing_scroll.clone());
++                    self.overscroll_position =
++                        Some(scroll_handle_state.overscroll_position.clone());
+                 } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
+                     || self.base_style.overflow.y == Some(Overflow::Scroll))
+                     && let Some(element_state) = element_state.as_mut()
+@@ -2409,6 +2476,12 @@ impl Interactivity {
+                             .get_or_insert_with(|| Rc::new(RefCell::new(OngoingScroll::default())))
+                             .clone(),
+                     );
++                    self.overscroll_position = Some(
++                        element_state
++                            .overscroll_position
++                            .get_or_insert_with(Rc::default)
++                            .clone(),
++                    );
+                 }
+ 
+                 let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
+@@ -2560,7 +2633,7 @@ impl Interactivity {
+         bounds: Bounds<Pixels>,
+         style: &Style,
+         window: &mut Window,
+-        _cx: &mut App,
++        cx: &mut App,
+     ) -> Point<Pixels> {
+         fn round_to_two_decimals(pixels: Pixels) -> Pixels {
+             const ROUNDING_FACTOR: f32 = 100.0;
+@@ -2609,11 +2682,54 @@ impl Interactivity {
+             // Clamp scroll offset in case scroll max is smaller now (e.g., if children
+             // were removed or the bounds became larger).
+             let mut scroll_offset = scroll_offset.borrow_mut();
+-
+-            scroll_offset.x = scroll_offset.x.clamp(-scroll_max.x, px(0.));
++            let scroll_offset = &mut *scroll_offset;
++
++            // While a touch drags or flings an axis, the overscroll physics
++            // owns it and may leave it past the edge; it springs back itself.
++            let mut moving = Point::<bool>::default();
++            let tuning = window.gesture_tuning();
++            if let Some(position) = self.overscroll_position.as_ref()
++                && self.overscroll.unwrap_or(tuning.overscroll) != Overscroll::None
++            {
++                let now = cx.background_executor().now();
++                let scale = f64::from(window.scale_factor());
++                let mut animating = false;
++                let OverscrollPosition { x, y } = &mut *position.borrow_mut();
++                for (axis, max, viewport, cross, offset, moving) in [
++                    (
++                        x,
++                        scroll_max.x,
++                        bounds.size.width,
++                        bounds.size.height,
++                        &mut scroll_offset.x,
++                        &mut moving.x,
++                    ),
++                    (
++                        y,
++                        scroll_max.y,
++                        bounds.size.height,
++                        bounds.size.width,
++                        &mut scroll_offset.y,
++                        &mut moving.y,
++                    ),
++                ] {
++                    axis.set_extents(max.to_f64(), viewport.to_f64(), cross.to_f64(), scale);
++                    let mut pixels = -offset.to_f64();
++                    axis.tick(&mut pixels, tuning.scroll_physics, now);
++                    *offset = px(-pixels as f32);
++                    *moving = axis.is_moving();
++                    animating |= axis.is_animating();
++                }
++                if animating {
++                    window.request_animation_frame();
++                }
++            }
++            if !moving.x {
++                scroll_offset.x = scroll_offset.x.clamp(-scroll_max.x, px(0.));
++            }
+             if scroll_to_bottom {
+                 scroll_offset.y = -scroll_max.y;
+-            } else {
++            } else if !moving.y {
+                 scroll_offset.y = scroll_offset.y.clamp(-scroll_max.y, px(0.));
+             }
+ 
+@@ -3523,6 +3639,8 @@ impl Interactivity {
+     ) {
+         if let Some(scroll_offset) = self.scroll_offset.clone() {
+             let ongoing_scroll = self.ongoing_scroll.clone();
++            let overscroll_position = self.overscroll_position.clone();
++            let overscroll = self.overscroll;
+             let overflow = style.overflow;
+             let allow_concurrent_scroll = style.allow_concurrent_scroll;
+             let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
+@@ -3532,6 +3650,7 @@ impl Interactivity {
+             window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                     let mut scroll_offset = scroll_offset.borrow_mut();
++                    let scroll_offset = &mut *scroll_offset;
+                     let old_scroll_offset = *scroll_offset;
+                     let mut delta = event.delta.pixel_delta(line_height);
+ 
+@@ -3569,8 +3688,71 @@ impl Interactivity {
+                             delta_x = Pixels::ZERO;
+                         }
+                     }
+-                    scroll_offset.y += delta_y;
+-                    scroll_offset.x += delta_x;
++                    let tuning = window.gesture_tuning();
++                    let overscroll = overscroll.unwrap_or(tuning.overscroll);
++                    let overscrolling = overscroll_position
++                        .as_ref()
++                        .filter(|_| overscroll != Overscroll::None);
++                    let now = cx.background_executor().now();
++                    if let (Some(position), ScrollSource::Touch) = (overscrolling, event.source) {
++                        let velocity = window.touch_fling_velocity(cx);
++                        let pan = event.position - hitbox.origin;
++                        let OverscrollPosition { x, y } = &mut *position.borrow_mut();
++                        let axes = [
++                            (
++                                x,
++                                overflow.x,
++                                delta_x,
++                                velocity.x,
++                                pan.y,
++                                AxisDirection::Right,
++                            ),
++                            (
++                                y,
++                                overflow.y,
++                                delta_y,
++                                velocity.y,
++                                pan.x,
++                                AxisDirection::Down,
++                            ),
++                        ];
++                        let offsets = [&mut scroll_offset.x, &mut scroll_offset.y];
++                        for ((axis, overflow, delta, velocity, cross, direction), offset) in
++                            axes.into_iter().zip(offsets)
++                        {
++                            if overflow != Overflow::Scroll {
++                                continue;
++                            }
++                            let step = DragStep {
++                                phase: event.touch_phase,
++                                delta: delta.to_f64(),
++                                velocity: f64::from(velocity),
++                                cross_axis_offset: cross.to_f64(),
++                            };
++                            let mut pixels = -offset.to_f64();
++                            axis.handle_drag(
++                                step,
++                                &mut pixels,
++                                tuning.scroll_physics,
++                                overscroll,
++                                direction,
++                                now,
++                            );
++                            *offset = px(-pixels as f32);
++                        }
++                        // The stretch can change without the offset.
++                        cx.notify(current_view);
++                    } else {
++                        // A wheel or trackpad stops a touch drag or fling and
++                        // never overscrolls, as in Flutter.
++                        if let Some(position) = overscrolling {
++                            let OverscrollPosition { x, y } = &mut *position.borrow_mut();
++                            x.go_idle(-scroll_offset.x.to_f64(), now);
++                            y.go_idle(-scroll_offset.y.to_f64(), now);
++                        }
++                        scroll_offset.y += delta_y;
++                        scroll_offset.x += delta_x;
++                    }
+                     if *scroll_offset != old_scroll_offset {
+                         cx.notify(current_view);
+                     }
+@@ -3815,6 +3997,7 @@ pub struct InteractiveElementState {
+     pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
+     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
++    overscroll_position: Option<Rc<RefCell<OverscrollPosition>>>,
+     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
+     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+ }
+@@ -4403,6 +4586,7 @@ impl ScrollAnchor {
+ struct ScrollHandleState {
+     offset: Rc<RefCell<Point<Pixels>>>,
+     ongoing_scroll: Rc<RefCell<OngoingScroll>>,
++    overscroll_position: Rc<RefCell<OverscrollPosition>>,
+     bounds: Bounds<Pixels>,
+     max_offset: Point<Pixels>,
+     child_bounds: Vec<Bounds<Pixels>>,
+diff --git a/gpui-pre/src/elements/uniform_list.rs b/gpui-pre/src/elements/uniform_list.rs
+index ad31cda..fec1b35 100644
+--- a/gpui-pre/src/elements/uniform_list.rs
++++ b/gpui-pre/src/elements/uniform_list.rs
+@@ -279,6 +279,9 @@ impl Element for UniformList {
+         window: &mut Window,
+         cx: &mut App,
+     ) -> (LayoutId, Self::RequestLayoutState) {
++        // Its visible range assumes an in-range offset: touch overscroll is
++        // wired into `div` only, so a uniform list stops hard at its edges.
++        self.interactivity.overscroll = Some(crate::overscroll::Overscroll::None);
+         let max_items = self.item_count;
+         let item_size = self.measure_item(None, window, cx);
+         let layout_id = self.interactivity.request_layout(
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+index aa3dab0..74dc57b 100644
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -33,7 +33,8 @@ use smallvec::SmallVec;
+ use crate::{
+     Axis, Bounds, GestureEvent, InputEvent, IsZero, Modifiers, MouseButton, MouseDownEvent,
+     MouseEvent, MouseUpEvent, Pixels, PlatformInput, Point, PointerDevice, ScrollDelta,
+-    ScrollEvent, ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
++    ScrollEvent, ScrollSource, TouchEvent, TouchId, TouchPhase, overscroll::Overscroll, point, px,
++    seal::Sealed,
+ };
+ 
+ pub mod scale;
+@@ -154,6 +155,10 @@ pub struct GestureTuning {
+     /// How a touch's release velocity is estimated: one of Flutter's
+     /// per-platform velocity trackers.
+     pub velocity_tracker: VelocityTrackerKind,
++    /// What scroll containers do when a touch drags or flings them past an
++    /// edge, unless a container sets its own
++    /// ([`StatefulInteractiveElement::overscroll`](crate::StatefulInteractiveElement::overscroll)).
++    pub overscroll: Overscroll,
+ }
+ 
+ // Flutter's gesture constants (constants.rs), whose recognizer tests these
+@@ -175,6 +180,8 @@ impl Default for GestureTuning {
+             min_fling_velocity: ScrollPhysics::ios().min_fling_velocity(),
+             max_fling_velocity: ScrollPhysics::ios().max_fling_velocity(),
+             velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
++            // GPUI's hard stop at the edge; platforms that overscroll set it.
++            overscroll: Overscroll::None,
+         }
+     }
+ }
+@@ -977,6 +984,23 @@ impl TouchGestureRecognizer {
+         self.momentum.is_some()
+     }
+ 
++    pub(crate) fn tuning(&self) -> GestureTuning {
++        self.tuning
++    }
++
++    /// The finger velocity of the fling in progress at `now`, in pixels per
++    /// second (zero when none): during the release's scroll step, the
++    /// release velocity Flutter's `DragEndDetails` carries.
++    pub(crate) fn fling_velocity(&self, now: Instant) -> Point<f32> {
++        self.momentum
++            .as_ref()
++            .map_or_else(Point::default, |momentum| {
++                let elapsed = now.duration_since(momentum.started_at).as_secs_f64();
++                let speed = momentum.simulation.dx(elapsed) as f32;
++                point(momentum.direction.x * speed, momentum.direction.y * speed)
++            })
++    }
++
+     /// Advances post-fling momentum by one frame, returning the scroll step
+     /// to dispatch, or `None` when no momentum is in progress. The final step
+     /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
+@@ -1034,7 +1058,7 @@ fn scroll_event(
+ }
+ 
+ #[cfg(test)]
+-mod recognizer_tests;
++pub(crate) mod recognizer_tests;
+ 
+ #[cfg(test)]
+ mod tests {
+diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
+index fb3aa12..89ba7f3 100644
+--- a/gpui-pre/src/gestures/recognizer_tests.rs
++++ b/gpui-pre/src/gestures/recognizer_tests.rs
+@@ -24,15 +24,15 @@ use TouchPhase::{Cancelled, Ended, Moved, Started};
+ /// One touch event of a recorded trace: what the platform reported, and when,
+ /// in milliseconds from the trace's start. Wave 12's recorder emits these.
+ #[derive(Clone, Copy)]
+-struct TraceEvent {
+-    at_ms: u64,
++pub(crate) struct TraceEvent {
++    pub(crate) at_ms: u64,
+     id: u64,
+     phase: TouchPhase,
+     x: f32,
+     y: f32,
+ }
+ 
+-const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
++pub(crate) const fn touch(at_ms: u64, id: u64, phase: TouchPhase, x: f32, y: f32) -> TraceEvent {
+     TraceEvent {
+         at_ms,
+         id,
+@@ -178,15 +178,7 @@ fn replay(row: &Row, cx: &mut TestAppContext) -> Vec<(u64, Seen)> {
+         run_until(cx, event.at_ms);
+         window
+             .update(cx, |_, window, cx| {
+-                let touch = TouchEvent {
+-                    id: TouchId(event.id),
+-                    phase: event.phase,
+-                    position: point(px(event.x), px(event.y)),
+-                    predicted_position: None,
+-                    force: None,
+-                    device: PointerDevice::Touch,
+-                };
+-                window.dispatch_event(touch.to_platform_input(), cx);
++                window.dispatch_event(event.to_touch_event().to_platform_input(), cx);
+             })
+             .unwrap();
+     }
+@@ -194,6 +186,20 @@ fn replay(row: &Row, cx: &mut TestAppContext) -> Vec<(u64, Seen)> {
+     seen.take()
+ }
+ 
++impl TraceEvent {
++    /// The platform event this trace event replays.
++    pub(crate) fn to_touch_event(self) -> TouchEvent {
++        TouchEvent {
++            id: TouchId(self.id),
++            phase: self.phase,
++            position: point(px(self.x), px(self.y)),
++            predicted_position: None,
++            force: None,
++            device: PointerDevice::Touch,
++        }
++    }
++}
++
+ /// Two side-by-side tap targets for the per-target rows.
+ const BUTTON_A: Bounds<Pixels> = Bounds {
+     origin: point(px(0.), px(0.)),
+diff --git a/gpui-pre/src/overscroll.rs b/gpui-pre/src/overscroll.rs
+index 35fc492..fccac12 100644
+--- a/gpui-pre/src/overscroll.rs
++++ b/gpui-pre/src/overscroll.rs
+@@ -1,7 +1,11 @@
+-//! The state of Android's stretch and glow overscroll indicators, ported from Flutter: pure values and functions of
+-//! time, driven by scroll notifications; nothing here is wired into GPUI's scroll containers yet. Their physics
+-//! (`ScrollPhysics`, the springs) is `gestures/scroll_physics.rs` and `gpui::physics`.
++//! Overscroll, ported from Flutter: Android's stretch and glow indicators (pure values and functions of time, driven
++//! by scroll notifications) and the scroll position glue that drives them and the bouncing physics from a scroll
++//! container's touch scrolls. The physics (`ScrollPhysics`, the springs) is `gestures/scroll_physics.rs` and
++//! `gpui::physics`.
+ 
+ mod overscroll_indicator;
++mod scroll_position;
+ 
+ pub use overscroll_indicator::*;
++pub use scroll_position::Overscroll;
++pub(crate) use scroll_position::{DragStep, GLOW_COLOR, OverscrollPosition, stretch_displacement};
+diff --git a/gpui-pre/src/overscroll/scroll_position.rs b/gpui-pre/src/overscroll/scroll_position.rs
+new file mode 100644
+index 0000000..3ee105e
+--- /dev/null
++++ b/gpui-pre/src/overscroll/scroll_position.rs
+@@ -0,0 +1,453 @@
++// Ported from flutter/flutter packages/flutter/lib/src/widgets/scroll_position.dart (`setPixels`),
++// scroll_position_with_single_context.dart (`applyUserOffset`, `goBallistic`, `goIdle`), scroll_activity.dart
++// (`ScrollDragController.end` / `cancel`, `BallisticScrollActivity._tick` / `_end` / `applyMoveTo`) and
++// stretch_effect.dart (the `Transform` fallback's scale and alignment) @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++// third_party/flutter/LICENSE.
++//
++// Dropped: the activity delegate plumbing, `HoldScrollActivity`, `carriedMomentum`, user scroll direction, ignore
++// pointer, and dispatching `OverscrollIndicatorNotification` to ancestors (nobody receives it). Glue: GPUI's scroll
++// offset along an axis is Flutter's `pixels` negated, and a touch scroll's delta is Flutter's drag delta.
++
++use scheduler::Instant;
++
++use super::{
++    AxisDirection, GlowingOverscrollIndicator, OverscrollDrag, OverscrollIndicatorNotification,
++    ScrollNotification, StretchingOverscrollIndicator,
++};
++use crate::physics::{Simulation, precisionErrorTolerance};
++use crate::{Bounds, Pixels, Point, ScrollMetrics, ScrollPhysics, TouchPhase, point, px};
++
++/// What a scroll container does past its edge when a touch drags or flings it there. The physics
++/// (`GestureTuning::scroll_physics`) decides whether it may go past: bouncing physics overscrolls and springs back,
++/// clamping physics refuses, and the refused overscroll drives the indicator. Mouse wheels and trackpads never
++/// overscroll, as in Flutter.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Overscroll {
++    /// The physics alone: iOS's and macOS's bounce, with `ScrollPhysics::Bouncing`.
++    Bounce,
++    /// Material 3's stretch (`StretchingOverscrollIndicator`).
++    Stretch,
++    /// Material 2's glow (`GlowingOverscrollIndicator`).
++    Glow,
++    /// A hard stop at the edge: GPUI's scrolling as it was, touch momentum included.
++    None,
++}
++
++/// `ScrollActivity`: what moves one axis.
++#[derive(Default)]
++enum Activity {
++    #[default]
++    Idle,
++    Drag,
++    Ballistic {
++        simulation: Box<dyn Simulation>,
++        started: Instant,
++    },
++}
++
++/// The indicator an axis shows, kept across drags so a recede finishes.
++#[derive(Default)]
++enum Indicator {
++    #[default]
++    Off,
++    Stretch(StretchingOverscrollIndicator),
++    Glow(GlowingOverscrollIndicator),
++}
++
++/// One axis of a scroll container as Flutter's `ScrollPosition`: `pixels` grows as the content moves up or left.
++#[derive(Default)]
++pub(crate) struct AxisPosition {
++    activity: Activity,
++    indicator: Indicator,
++    /// The last layout's metrics: `pixels` is overwritten per call.
++    metrics: Option<ScrollMetrics>,
++    /// The container's size across this axis.
++    cross_extent: f64,
++}
++
++/// What one touch scroll step tells an axis.
++pub(crate) struct DragStep {
++    pub phase: TouchPhase,
++    /// The finger's movement along the axis.
++    pub delta: f64,
++    /// The finger's release velocity along the axis (`DragEndDetails.primaryVelocity`): zero unless it flings.
++    pub velocity: f64,
++    /// Where the pan is across the axis, from the container's leading edge.
++    pub cross_axis_offset: f64,
++}
++
++impl AxisPosition {
++    /// Records this frame's layout: the scroll range, the viewport and the container's cross size.
++    pub(crate) fn set_extents(
++        &mut self,
++        max_scroll_extent: f64,
++        viewport: f64,
++        cross_extent: f64,
++        scale: f64,
++    ) {
++        self.metrics = Some(ScrollMetrics {
++            min_scroll_extent: 0.0,
++            max_scroll_extent,
++            pixels: 0.0,
++            viewport_dimension: viewport,
++            device_pixel_ratio: scale,
++        });
++        self.cross_extent = cross_extent;
++    }
++
++    /// Whether the physics, not the layout, owns `pixels`: while dragged or flung it may be out of range.
++    pub(crate) fn is_moving(&self) -> bool {
++        match self.activity {
++            Activity::Idle => false,
++            Activity::Drag | Activity::Ballistic { .. } => true,
++        }
++    }
++
++    /// Whether the next frame changes what this axis draws.
++    pub(crate) fn is_animating(&self) -> bool {
++        let indicator_visible = match &self.indicator {
++            Indicator::Off => false,
++            Indicator::Stretch(stretch) => stretch.stretch_strength() != 0.0,
++            Indicator::Glow(glow) => {
++                glow.leading.paint(1.0, 1.0).is_some() || glow.trailing.paint(1.0, 1.0).is_some()
++            }
++        };
++        indicator_visible || matches!(self.activity, Activity::Ballistic { .. })
++    }
++
++    /// `StretchEffect.stretchStrength`: positive stretches from the leading edge, negative from the trailing one.
++    pub(crate) fn stretch_strength(&self) -> f64 {
++        match &self.indicator {
++            Indicator::Stretch(stretch) => stretch.stretch_strength(),
++            Indicator::Off | Indicator::Glow(_) => 0.0,
++        }
++    }
++
++    pub(crate) fn glow(&self) -> Option<&GlowingOverscrollIndicator> {
++        match &self.indicator {
++            Indicator::Glow(glow) => Some(glow),
++            Indicator::Off | Indicator::Stretch(_) => None,
++        }
++    }
++
++    /// A non-touch scroll takes over: the drag or fling stops where it is.
++    pub(crate) fn go_idle(&mut self, pixels: f64, now: Instant) {
++        if self.is_moving() {
++            self.activity = Activity::Idle;
++            self.notify(
++                ScrollNotification::End {
++                    drag_velocity: None,
++                },
++                pixels,
++                now,
++            );
++        }
++    }
++
++    /// One touch scroll step: `state × phase → next`. Steps of GPUI's own fling (moves and ends after the drag
++    /// ended) are ignored: this axis runs Flutter's ballistic simulation itself, with its extents.
++    pub(crate) fn handle_drag(
++        &mut self,
++        step: DragStep,
++        pixels: &mut f64,
++        physics: ScrollPhysics,
++        overscroll: Overscroll,
++        axis_direction: AxisDirection,
++        now: Instant,
++    ) {
++        match (step.phase, &self.activity) {
++            (TouchPhase::Started, _) => {
++                self.indicator = match (overscroll, std::mem::take(&mut self.indicator)) {
++                    (Overscroll::Stretch, Indicator::Stretch(stretch)) => {
++                        Indicator::Stretch(stretch)
++                    }
++                    (Overscroll::Stretch, _) => {
++                        Indicator::Stretch(StretchingOverscrollIndicator::new(axis_direction))
++                    }
++                    (Overscroll::Glow, Indicator::Glow(glow)) => Indicator::Glow(glow),
++                    (Overscroll::Glow, _) => Indicator::Glow(GlowingOverscrollIndicator::default()),
++                    (Overscroll::Bounce | Overscroll::None, _) => Indicator::Off,
++                };
++                self.go_idle(*pixels, now);
++                self.activity = Activity::Drag;
++                self.notify(ScrollNotification::Start, *pixels, now);
++                self.apply_user_offset(&step, pixels, physics, now);
++            }
++            (TouchPhase::Moved, Activity::Drag) => {
++                self.apply_user_offset(&step, pixels, physics, now)
++            }
++            (TouchPhase::Ended, Activity::Drag) => {
++                self.apply_user_offset(&step, pixels, physics, now);
++                self.notify(
++                    ScrollNotification::End {
++                        drag_velocity: Some(step.velocity),
++                    },
++                    *pixels,
++                    now,
++                );
++                // ScrollDragController.end: a downward touch scrolls the content up.
++                self.go_ballistic(-step.velocity, *pixels, physics, now);
++            }
++            (TouchPhase::Cancelled, Activity::Drag) => {
++                self.notify(
++                    ScrollNotification::End {
++                        drag_velocity: None,
++                    },
++                    *pixels,
++                    now,
++                );
++                self.go_ballistic(0.0, *pixels, physics, now);
++            }
++            (
++                TouchPhase::Moved | TouchPhase::Ended | TouchPhase::Cancelled,
++                Activity::Idle | Activity::Ballistic { .. },
++            ) => {}
++        }
++    }
++
++    /// Advances to the frame at `now`: the ballistic simulation (`BallisticScrollActivity._tick`, then `_end` once
++    /// it is done) and the indicator.
++    pub(crate) fn tick(&mut self, pixels: &mut f64, physics: ScrollPhysics, now: Instant) {
++        if let Activity::Ballistic {
++            simulation,
++            started,
++        } = &self.activity
++        {
++            let time = now.saturating_duration_since(*started).as_secs_f64();
++            let (value, velocity, done) = (
++                simulation.x(time),
++                simulation.dx(time),
++                simulation.is_done(time),
++            );
++            // applyMoveTo: a move the boundary refuses ends the fling.
++            if self.set_pixels(value, velocity, None, pixels, physics, now) != 0.0 {
++                self.activity = Activity::Idle;
++                self.notify(
++                    ScrollNotification::End {
++                        drag_velocity: None,
++                    },
++                    *pixels,
++                    now,
++                );
++            } else if done {
++                self.go_ballistic(0.0, *pixels, physics, now);
++            }
++        }
++        match &mut self.indicator {
++            Indicator::Off => {}
++            Indicator::Stretch(stretch) => stretch.controller.tick(now),
++            Indicator::Glow(glow) => glow.tick(now),
++        }
++    }
++
++    /// `applyUserOffset`.
++    fn apply_user_offset(
++        &mut self,
++        step: &DragStep,
++        pixels: &mut f64,
++        physics: ScrollPhysics,
++        now: Instant,
++    ) {
++        if step.delta == 0.0 {
++            return;
++        }
++        let Some(metrics) = self.metrics_at(*pixels) else {
++            return;
++        };
++        let new_pixels = *pixels - physics.apply_physics_to_user_offset(&metrics, step.delta);
++        let drag = OverscrollDrag {
++            cross_axis_offset: step.cross_axis_offset,
++            main_axis_extent: metrics.viewport_dimension,
++            cross_axis_extent: self.cross_extent,
++        };
++        self.set_pixels(new_pixels, 0.0, Some(drag), pixels, physics, now);
++    }
++
++    /// `goBallistic`: a simulation when the physics has one, else idle.
++    fn go_ballistic(&mut self, velocity: f64, pixels: f64, physics: ScrollPhysics, now: Instant) {
++        let simulation = self
++            .metrics_at(pixels)
++            .and_then(|metrics| physics.create_ballistic_simulation(&metrics, velocity));
++        self.activity = match simulation {
++            Some(simulation) => {
++                self.notify(ScrollNotification::Start, pixels, now);
++                Activity::Ballistic {
++                    simulation,
++                    started: now,
++                }
++            }
++            None => {
++                if matches!(self.activity, Activity::Ballistic { .. }) {
++                    self.notify(
++                        ScrollNotification::End {
++                            drag_velocity: None,
++                        },
++                        pixels,
++                        now,
++                    );
++                }
++                Activity::Idle
++            }
++        };
++    }
++
++    /// `setPixels`: moves to what the boundary allows of `new_pixels` and returns the overscroll it refused, sent to
++    /// the indicator with the activity's `velocity` and the `drag` that caused it.
++    fn set_pixels(
++        &mut self,
++        new_pixels: f64,
++        velocity: f64,
++        drag: Option<OverscrollDrag>,
++        pixels: &mut f64,
++        physics: ScrollPhysics,
++        now: Instant,
++    ) -> f64 {
++        let Some(metrics) = self.metrics_at(*pixels) else {
++            return 0.0;
++        };
++        if new_pixels == *pixels {
++            return 0.0;
++        }
++        let overscroll = physics.apply_boundary_conditions(&metrics, new_pixels);
++        let old_pixels = *pixels;
++        *pixels = new_pixels - overscroll;
++        if *pixels != old_pixels {
++            let dragging = drag.is_some();
++            self.notify(ScrollNotification::Update { dragging }, *pixels, now);
++        }
++        if overscroll.abs() > precisionErrorTolerance {
++            self.notify(
++                ScrollNotification::Overscroll {
++                    overscroll,
++                    velocity,
++                    drag,
++                },
++                *pixels,
++                now,
++            );
++            return overscroll;
++        }
++        0.0
++    }
++
++    fn metrics_at(&self, pixels: f64) -> Option<ScrollMetrics> {
++        self.metrics
++            .map(|metrics| ScrollMetrics { pixels, ..metrics })
++    }
++
++    fn notify(&mut self, notification: ScrollNotification, pixels: f64, now: Instant) {
++        let Some(metrics) = self.metrics_at(pixels) else {
++            return;
++        };
++        // OverscrollIndicatorNotification has no receiver in GPUI: every indicator is allowed.
++        let mut dispatch = |_: &mut OverscrollIndicatorNotification| {};
++        match &mut self.indicator {
++            Indicator::Off => {}
++            Indicator::Stretch(stretch) => {
++                stretch.handle_scroll_notification(notification, &metrics, now, &mut dispatch)
++            }
++            Indicator::Glow(glow) => {
++                glow.handle_scroll_notification(notification, &metrics, now, &mut dispatch)
++            }
++        }
++    }
++}
++
++/// Both axes of one scroll container.
++#[derive(Default)]
++pub(crate) struct OverscrollPosition {
++    pub x: AxisPosition,
++    pub y: AxisPosition,
++}
++
++/// Material 2's default light theme's `colorScheme.secondary` (`Colors.blue`), the colour
++/// `MaterialScrollBehavior` gives the glow; GPUI has no theme.
++pub(crate) const GLOW_COLOR: u32 = 0x2196F3;
++
++/// Segments of the glow's circle outline.
++const GLOW_SEGMENTS: usize = 64;
++
++/// One glow to draw: its circle, as an outline, clipped to `clip`, in [`GLOW_COLOR`] at `opacity`.
++pub(crate) struct GlowShape {
++    pub clip: Bounds<Pixels>,
++    pub outline: Vec<Point<Pixels>>,
++    pub opacity: f32,
++}
++
++impl OverscrollPosition {
++    /// The glows to draw over a container at `bounds`, as `_GlowingOverscrollIndicatorPainter` does: each
++    /// controller paints its edge as if it were the top, mirrored for a trailing edge and transposed for a
++    /// horizontal axis. To add an edge, add a row.
++    pub(crate) fn glow_shapes(&self, bounds: Bounds<Pixels>) -> Vec<GlowShape> {
++        // (glow, transposed: horizontal axis, mirrored: trailing edge)
++        let edges = [
++            (self.y.glow().map(|glow| &glow.leading), false, false),
++            (self.y.glow().map(|glow| &glow.trailing), false, true),
++            (self.x.glow().map(|glow| &glow.leading), true, false),
++            (self.x.glow().map(|glow| &glow.trailing), true, true),
++        ];
++        let (left, top) = (bounds.left().to_f64(), bounds.top().to_f64());
++        let (width, height) = (bounds.size.width.to_f64(), bounds.size.height.to_f64());
++        edges
++            .into_iter()
++            .filter_map(|(glow, transposed, mirrored)| {
++                let (cross, main) = if transposed {
++                    (height, width)
++                } else {
++                    (width, height)
++                };
++                let paint = glow?.paint(cross, main)?;
++                // canvas.translate(0, translate_y); canvas.scale(1, scale_y), then the edge's flip.
++                let map = |u: f64, v: f64| {
++                    let v = paint.translate_y + v * paint.scale_y;
++                    let v = if mirrored { main - v } else { v };
++                    let (x, y) = if transposed {
++                        (left + v, top + u)
++                    } else {
++                        (left + u, top + v)
++                    };
++                    point(px(x as f32), px(y as f32))
++                };
++                let (corner, opposite) = (map(0.0, 0.0), map(cross, paint.clip_height));
++                let clip = Bounds::from_corners(corner.min(&opposite), corner.max(&opposite));
++                let outline = (0..GLOW_SEGMENTS)
++                    .map(|segment| {
++                        let angle = std::f64::consts::TAU * segment as f64 / GLOW_SEGMENTS as f64;
++                        map(
++                            paint.center.0 + paint.radius * angle.cos(),
++                            paint.center.1 + paint.radius * angle.sin(),
++                        )
++                    })
++                    .collect();
++                Some(GlowShape {
++                    clip,
++                    outline,
++                    opacity: paint.opacity as f32,
++                })
++            })
++            .collect()
++    }
++}
++
++impl std::fmt::Debug for OverscrollPosition {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("OverscrollPosition")
++            .field("x_moving", &self.x.is_moving())
++            .field("y_moving", &self.y.is_moving())
++            .finish()
++    }
++}
++
++/// How far the stretch moves a child centred at `center` along an axis of a viewport from `start` to `end`:
++/// `StretchEffect`'s fallback scales the content by `1 + |strength|` about the leading edge (positive strength) or
++/// the trailing one. GPUI has no scale transform for every primitive, so children move as the scale would move their
++/// centres; their sizes stay.
++pub(crate) fn stretch_displacement(strength: f64, center: f64, start: f64, end: f64) -> f64 {
++    let anchor = if strength > 0.0 { start } else { end };
++    (center - anchor) * strength.abs()
++}
++
++#[cfg(test)]
++#[path = "scroll_position_tests.rs"]
++mod tests;
+diff --git a/gpui-pre/src/overscroll/scroll_position_tests.rs b/gpui-pre/src/overscroll/scroll_position_tests.rs
+new file mode 100644
+index 0000000..d055733
+--- /dev/null
++++ b/gpui-pre/src/overscroll/scroll_position_tests.rs
+@@ -0,0 +1,384 @@
++//! Touch overscroll through the test platform: a recorded touch trace (the recognizer tests' format) goes into a
++//! window holding a scroll container, and each frame's scroll offsets, stretch and glow come out. One row per
++//! behaviour; the expected values are what Flutter's physics and indicators do with the same drag.
++
++use std::{ops::RangeInclusive, time::Duration};
++
++use crate::gestures::recognizer_tests::{TraceEvent, touch};
++use crate::{
++    AnyWindowHandle, AppContext as _, Context, GestureTuning, InputEvent as _,
++    InteractiveElement as _, IntoElement, Modifiers, ParentElement as _, Render, ScrollDelta,
++    ScrollEvent, ScrollHandle, ScrollPhysics, ScrollSource, StatefulInteractiveElement as _,
++    Styled as _, TestAppContext, TouchPhase, Window, div, point, px,
++};
++
++use super::Overscroll;
++use TouchPhase::{Ended, Moved, Started};
++
++/// A 100 × 200 vertical list (max offset 400) whose first child is a horizontal strip, 100 × 30, of three 80 px
++/// cells (max offset 140); the rows below it are 30 px each.
++struct Scroller {
++    outer: ScrollHandle,
++    inner: ScrollHandle,
++    opt_out: Option<Overscroll>,
++}
++
++/// The row whose rendered position shows the stretch: its layout centre is 195 px below the list's top.
++const STRETCH_PROBE: &str = "row-5";
++
++impl Render for Scroller {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        let mut list = div()
++            .id("outer")
++            .h(px(200.))
++            .w(px(100.))
++            .overflow_y_scroll()
++            .restrict_scroll_to_axis()
++            .track_scroll(&self.outer);
++        if let Some(overscroll) = self.opt_out {
++            list = list.overscroll(overscroll);
++        }
++        div().size_full().child(
++            list.child(
++                div()
++                    .id("inner")
++                    .flex()
++                    .h(px(30.))
++                    .w_full()
++                    .flex_none()
++                    .overflow_x_scroll()
++                    .restrict_scroll_to_axis()
++                    .track_scroll(&self.inner)
++                    .children((0..3).map(|_| div().flex_none().w(px(80.)).h_full())),
++            )
++            .children((0..19).map(|index| {
++                div()
++                    .debug_selector(move || format!("row-{index}"))
++                    .w_full()
++                    .h(px(30.))
++                    .flex_none()
++            })),
++        )
++    }
++}
++
++#[derive(Clone, Copy)]
++enum Input {
++    Touch(TraceEvent),
++    /// A mouse wheel notch's worth of pixels at the list's middle, at `at_ms`.
++    Wheel {
++        at_ms: u64,
++        dy: f32,
++    },
++}
++
++impl Input {
++    fn at_ms(self) -> u64 {
++        match self {
++            Self::Touch(event) => event.at_ms,
++            Self::Wheel { at_ms, .. } => at_ms,
++        }
++    }
++}
++
++const fn t(at_ms: u64, phase: TouchPhase, x: f32, y: f32) -> Input {
++    Input::Touch(touch(at_ms, 1, phase, x, y))
++}
++
++/// What one frame shows.
++#[derive(Clone, Debug)]
++enum Check {
++    /// The list's offset (positive: pulled down past its top).
++    Y(RangeInclusive<f32>),
++    /// The strip's offset (positive: pulled right past its left edge).
++    InnerX(RangeInclusive<f32>),
++    /// How far the stretch moved [`STRETCH_PROBE`] down from where its layout puts it.
++    Shift(RangeInclusive<f32>),
++    /// How many glows the frame painted.
++    Glows(RangeInclusive<usize>),
++}
++
++struct Row<'a> {
++    name: &'static str,
++    tuning: GestureTuning,
++    opt_out: Option<Overscroll>,
++    trace: &'a [Input],
++    until_ms: u64,
++    /// `(time in ms, what the last frame by then shows)`.
++    checks: &'a [(u64, Check)],
++    /// The furthest either container went past an edge over all frames.
++    overshoot: RangeInclusive<f32>,
++}
++
++/// One frame's sample.
++#[derive(Debug)]
++struct Frame {
++    at_ms: u64,
++    y: f32,
++    inner_x: f32,
++    shift: f32,
++    glows: usize,
++}
++
++const FRAME_MS: u64 = 16;
++
++fn replay(row: &Row, cx: &mut TestAppContext) -> Vec<Frame> {
++    let (outer, inner) = (ScrollHandle::new(), ScrollHandle::new());
++    let window: AnyWindowHandle = cx
++        .add_window({
++            let (outer, inner, opt_out) = (outer.clone(), inner.clone(), row.opt_out);
++            move |_, _| Scroller {
++                outer,
++                inner,
++                opt_out,
++            }
++        })
++        .into();
++    let tuning = row.tuning;
++    cx.update_window(window, |_, window, cx| {
++        window.set_gesture_tuning(tuning);
++        window.draw(cx).clear(cx);
++    })
++    .unwrap();
++    let started_at = cx.executor().now();
++    let mut pending = row.trace.iter().peekable();
++    let mut frames = Vec::new();
++    for at_ms in (0..=row.until_ms).step_by(FRAME_MS as usize) {
++        let elapsed = cx.executor().now().duration_since(started_at);
++        cx.executor()
++            .advance_clock(Duration::from_millis(at_ms).saturating_sub(elapsed));
++        while let Some(input) = pending.next_if(|input| input.at_ms() <= at_ms) {
++            cx.update_window(window, |_, window, cx| {
++                let event = match *input {
++                    Input::Touch(event) => event.to_touch_event().to_platform_input(),
++                    Input::Wheel { dy, .. } => ScrollEvent {
++                        position: point(px(50.), px(100.)),
++                        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
++                        modifiers: Modifiers::default(),
++                        touch_phase: Moved,
++                        source: ScrollSource::Pointer,
++                    }
++                    .to_platform_input(),
++                };
++                window.dispatch_event(event, cx);
++            })
++            .unwrap();
++        }
++        cx.run_until_parked();
++        let frame = cx
++            .update_window(window, |_, window, cx| {
++                window.simulate_next_frame(cx);
++                window.draw(cx).clear(cx);
++                let y = f32::from(outer.offset().y);
++                let probe = window.rendered_frame.debug_bounds[STRETCH_PROBE];
++                Frame {
++                    at_ms,
++                    y,
++                    inner_x: f32::from(inner.offset().x),
++                    shift: f32::from(probe.origin.y) - (180. + y),
++                    glows: window.rendered_frame.scene.paths.len(),
++                }
++            })
++            .unwrap();
++        frames.push(frame);
++    }
++    frames
++}
++
++#[crate::test]
++fn touch_overscroll_follows_flutter(cx: &mut TestAppContext) {
++    let bounce = GestureTuning {
++        overscroll: Overscroll::Bounce,
++        ..GestureTuning::default()
++    };
++    let clamping = |overscroll| GestureTuning {
++        scroll_physics: ScrollPhysics::android(),
++        overscroll,
++        ..GestureTuning::default()
++    };
++    // A slow drag 100 px down from the list's middle, held still before release: no fling.
++    let pull_down = [
++        t(0, Started, 50., 100.),
++        t(16, Moved, 50., 120.),
++        t(32, Moved, 50., 140.),
++        t(48, Moved, 50., 160.),
++        t(64, Moved, 50., 180.),
++        t(80, Moved, 50., 200.),
++        t(300, Ended, 50., 200.),
++    ];
++    let rows = [
++        Row {
++            // BouncingScrollPhysics.applyPhysicsToUserOffset: 0.52 friction at the edge, falling as it goes.
++            name: "Bounce: a drag past the top eases with Flutter's friction, then springs back",
++            tuning: bounce,
++            opt_out: None,
++            trace: &pull_down,
++            until_ms: 1500,
++            checks: &[(288, Check::Y(20.0..=60.0)), (1500, Check::Y(0.0..=0.0))],
++            overshoot: 20.0..=60.0,
++        },
++        Row {
++            // BouncingScrollSimulation: friction until the edge, then a spring past it and back.
++            name: "Bounce: a fling into the bottom edge goes past it and springs back",
++            tuning: bounce,
++            opt_out: None,
++            trace: &[
++                t(0, Started, 50., 180.),
++                t(16, Moved, 50., 150.),
++                t(32, Moved, 50., 120.),
++                t(48, Moved, 50., 90.),
++                t(64, Moved, 50., 60.),
++                t(64, Ended, 50., 60.),
++            ],
++            until_ms: 3000,
++            checks: &[(3000, Check::Y(-400.0..=-400.0))],
++            overshoot: 1.0..=200.0,
++        },
++        Row {
++            name: "None: a drag stops hard at the top, as GPUI did",
++            tuning: GestureTuning {
++                overscroll: Overscroll::None,
++                ..bounce
++            },
++            opt_out: None,
++            trace: &pull_down,
++            until_ms: 400,
++            checks: &[(288, Check::Y(0.0..=0.0)), (288, Check::Shift(0.0..=0.0))],
++            overshoot: 0.0..=0.0,
++        },
++        Row {
++            name: "A container's .overscroll(None) opts it out of the tuning's bounce",
++            tuning: bounce,
++            opt_out: Some(Overscroll::None),
++            trace: &pull_down,
++            until_ms: 400,
++            checks: &[(288, Check::Y(0.0..=0.0))],
++            overshoot: 0.0..=0.0,
++        },
++        Row {
++            // ClampingScrollPhysics refuses the overscroll; StretchingOverscrollIndicator pulls with it, anchored at
++            // the top, and its spring recedes after release.
++            name: "Stretch: clamping physics holds the edge, the content stretches from the top and recedes",
++            tuning: clamping(Overscroll::Stretch),
++            opt_out: None,
++            trace: &pull_down,
++            until_ms: 2000,
++            checks: &[
++                (288, Check::Y(0.0..=0.0)),
++                (288, Check::Shift(1.0..=20.0)),
++                (2000, Check::Shift(0.0..=0.0)),
++            ],
++            overshoot: 0.0..=0.0,
++        },
++        Row {
++            name: "Glow: clamping physics holds the edge, the top glows and fades",
++            tuning: clamping(Overscroll::Glow),
++            opt_out: None,
++            trace: &pull_down,
++            until_ms: 3000,
++            checks: &[
++                (96, Check::Glows(1..=1)),
++                (96, Check::Shift(0.0..=0.0)),
++                (3000, Check::Glows(0..=0)),
++            ],
++            overshoot: 0.0..=0.0,
++        },
++        Row {
++            // Flutter's PointerScrollEvent moves a scrollable within its extents only.
++            name: "A wheel never overscrolls, even with bounce",
++            tuning: bounce,
++            opt_out: None,
++            trace: &[Input::Wheel { at_ms: 0, dy: 50. }],
++            until_ms: 100,
++            checks: &[(100, Check::Y(0.0..=0.0))],
++            overshoot: 0.0..=0.0,
++        },
++        Row {
++            name: "Nested: a vertical drag on the strip overscrolls the list only",
++            tuning: bounce,
++            opt_out: None,
++            trace: &[
++                t(0, Started, 50., 15.),
++                t(16, Moved, 50., 35.),
++                t(32, Moved, 50., 55.),
++                t(48, Moved, 50., 75.),
++                t(64, Moved, 50., 95.),
++                t(80, Moved, 50., 115.),
++                t(300, Ended, 50., 115.),
++            ],
++            until_ms: 1500,
++            checks: &[
++                (288, Check::Y(20.0..=60.0)),
++                (288, Check::InnerX(0.0..=0.0)),
++                (1500, Check::Y(0.0..=0.0)),
++            ],
++            overshoot: 20.0..=60.0,
++        },
++        Row {
++            name: "Nested: a horizontal drag on the strip overscrolls the strip only",
++            tuning: bounce,
++            opt_out: None,
++            trace: &[
++                t(0, Started, 10., 15.),
++                t(16, Moved, 30., 15.),
++                t(32, Moved, 50., 15.),
++                t(48, Moved, 70., 15.),
++                t(64, Moved, 90., 15.),
++                t(80, Moved, 110., 15.),
++                t(300, Ended, 110., 15.),
++            ],
++            until_ms: 1500,
++            checks: &[
++                (288, Check::InnerX(20.0..=60.0)),
++                (288, Check::Y(0.0..=0.0)),
++                (1500, Check::InnerX(0.0..=0.0)),
++            ],
++            overshoot: 20.0..=60.0,
++        },
++    ];
++
++    let mut failures = Vec::new();
++    for row in &rows {
++        let frames = replay(row, cx);
++        let overshoot = frames
++            .iter()
++            .map(|frame| {
++                frame
++                    .y
++                    .max(-frame.y - 400.)
++                    .max(frame.inner_x)
++                    .max(-frame.inner_x - 140.)
++                    .max(0.)
++            })
++            .fold(0f32, f32::max);
++        if !row.overshoot.contains(&overshoot) {
++            failures.push(format!(
++                "{}: overshoot {overshoot}, expected {:?}",
++                row.name, row.overshoot
++            ));
++        }
++        for (at_ms, check) in row.checks {
++            let Some(frame) = frames.iter().rev().find(|frame| frame.at_ms <= *at_ms) else {
++                failures.push(format!("{}: no frame at {at_ms} ms", row.name));
++                continue;
++            };
++            // Half a pixel: what Flutter's tolerance at a device pixel ratio of 2 calls settled.
++            let near = |range: &RangeInclusive<f32>, value: f32| {
++                *range.start() - 0.5 <= value && value <= *range.end() + 0.5
++            };
++            let holds = match check {
++                Check::Y(range) => near(range, frame.y),
++                Check::InnerX(range) => near(range, frame.inner_x),
++                Check::Shift(range) => near(range, frame.shift),
++                Check::Glows(range) => range.contains(&frame.glows),
++            };
++            if !holds {
++                failures.push(format!(
++                    "{}: at {at_ms} ms {check:?} failed: {frame:?}",
++                    row.name
++                ));
++            }
++        }
++    }
++    assert!(failures.is_empty(), "{}", failures.join("\n"));
++}
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 735b861..a84231a 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3896,6 +3896,18 @@ impl Window {
+         self.long_press_capture == Some(entity.entity_id())
+     }
+ 
++    /// The tuning this window's touch recognition runs with.
++    pub(crate) fn gesture_tuning(&self) -> crate::GestureTuning {
++        self.touch_gestures.tuning()
++    }
++
++    /// The finger velocity of the touch fling in progress, in pixels per
++    /// second; zero when none.
++    pub(crate) fn touch_fling_velocity(&self, cx: &App) -> Point<f32> {
++        self.touch_gestures
++            .fling_velocity(cx.background_executor().now())
++    }
++
+     /// Restarts touch recognition with the tuning a test passes, in place of
+     /// the platform's.
+     #[cfg(test)]

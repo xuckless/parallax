@@ -28,15 +28,9 @@ use crate::{Error, Target};
 pub const kMinInteractiveDimension: Pixels = px(48.0);
 pub const kMinInteractiveDimensionCupertino: Pixels = px(44.0);
 
-/// What a scrollable shows past its edge: bounce (the physics overscrolls), Material 3's stretch
-/// (`StretchingOverscrollIndicator`, `useMaterial3` defaults to true), Material 2's glow, or nothing (clamped).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overscroll {
-    Bounce,
-    Stretch,
-    Glow,
-    None,
-}
+/// What a scrollable shows past its edge: GPUI's `Overscroll` (bounce, Material 3's stretch, Material 2's glow, or a
+/// hard stop), the one copy, re-exported so a row reads as data.
+pub use gpui::overscroll::Overscroll;
 
 /// A `HapticFeedback` call (services/haptic_feedback.dart).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +64,7 @@ pub struct Behaviour {
     pub scroll_physics: ScrollPhysics,
     /// `ScrollBehavior.velocityTrackerBuilder`: which velocity estimate a fling starts from.
     pub velocity_tracker: VelocityTrackerKind,
+    /// `ScrollBehavior.buildOverscrollIndicator` (bouncing physics shows none: the physics overscrolls).
     pub overscroll: Overscroll,
     pub haptics: Haptics,
     /// Smallest tap target a control should have: Material's 48 or Cupertino's 44 (the set `.adaptive` widgets
@@ -149,7 +144,8 @@ pub const TABLE: [Behaviour; 5] = [
 ];
 
 impl Behaviour {
-    /// The values GPUI's touch recognizer takes: the row's touch slop, physics and tracker; the rest are Flutter's
+    /// The values GPUI's touch recognizer and scroll containers take: the row's touch slop, physics, tracker and
+    /// overscroll; the rest are Flutter's
     /// constants, which `GestureTuning::default()` holds. Pass it, or a changed copy, to `App::set_gesture_tuning`
     /// (patch 0014) before opening a window.
     pub fn gesture_tuning(&self) -> GestureTuning {
@@ -159,6 +155,7 @@ impl Behaviour {
             min_fling_velocity: self.scroll_physics.min_fling_velocity(),
             max_fling_velocity: self.scroll_physics.max_fling_velocity(),
             velocity_tracker: self.velocity_tracker,
+            overscroll: self.overscroll,
             ..GestureTuning::default()
         }
     }
@@ -375,7 +372,7 @@ mod tests {
                 "{name}"
             );
             assert_eq!(tuning.scroll_physics, expected.physics, "{name}");
-            assert_eq!(row.overscroll, expected.overscroll, "{name}");
+            assert_eq!(tuning.overscroll, expected.overscroll, "{name}");
             assert_eq!(row.haptics.long_press, expected.long_press, "{name}");
             assert_eq!(tuning.velocity_tracker, expected.velocity_tracker, "{name}");
             assert_eq!(
