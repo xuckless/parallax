@@ -220,6 +220,12 @@ impl TextField {
         if let Some(selection) = effects.selection {
             self.selection = selection;
             window.notify_text_selection_changed(&self.focus_handle);
+            // Offsets only, never the text: what weston-selection-checks.sh asserts on.
+            log::info!(
+                "text field selection: {}..{}",
+                selection.base,
+                selection.extent
+            );
         }
         if effects.request_keyboard {
             window.focus(&self.focus_handle, cx);

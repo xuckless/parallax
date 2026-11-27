@@ -57,6 +57,16 @@ toolbar anchors and placement, the magnifier's positioning tests and `shiftWithi
 the field through GPUI's test platform with mouse events, `touch_selects_by_the_android_row` with touches on
 Android's row (tap, long press, a horizontal finger drag moving the caret, a vertical drag left to the pan).
 
+## Live checks
+
+[weston-selection-checks.sh](../scripts/weston-selection-checks.sh) runs hello under Weston's headless backend
+([traces-desktop.md](traces-desktop.md#linux-weston-headless), CI's `linux-touch` job), types `abc def ghi` into the
+first field, finds its glyphs on screen (`locate-colour.py ffffff ink`), then sends real mouse and `wl_touch` input
+through Weston's test plugin: click, click left of the text, double and triple click, a drag backwards, a double-click
+drag (word by word), a shift-click, a touch long press, and a long press then an end-handle drag. Each row checks
+hello's last `text field selection: base..extent` log line (offsets only, never the text). Run it with
+`WESTON_RUN="podman exec <container>"` where Weston's build dependencies live in a container; add a check as a row.
+
 ## Not ported (yet)
 
 - A finger drag right after a double tap (word by word): GPUI's won drag carries no tap count.
