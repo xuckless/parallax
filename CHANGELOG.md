@@ -6,6 +6,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.9)
+
+- `parallax-ext::text_selection`: Flutter's text selection behaviour for Android and touch desktops as a pure state
+  machine (taps, double and triple taps, long press, shift-tap, mouse drags, handle drags, toolbar anchors, the
+  Material magnifier's position), with the per-platform rules as a new `text_selection` column of the behaviour
+  table (`TextSelectionControls`; iOS is `Native`). hello's text field uses it and draws plain handles, a loupe and
+  a Copy / Paste / Select all toolbar ([docs/text-selection.md](docs/text-selection.md)).
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`
