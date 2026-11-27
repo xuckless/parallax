@@ -60,6 +60,18 @@ Behaviour apps will feel:
 - **Licence:** `parallax-gpui` is now `Apache-2.0 AND BSD-3-Clause` and ships Flutter's licence as `LICENSE-FLUTTER`;
   `parallax-platform` likewise (its behaviour table ports Flutter's defaults).
 
+## [0.1.5] - 2026-11-26 — macOS text hotfix
+
+Every macOS app built on Parallax 0.1.1 to 0.1.4 drew no text. Upgrading to 0.1.5 fixes it with no app changes.
+Still built on the GPUI fork `parallax-gpui*` 0.3.14-parallax.7 (no patch changes).
+
+### Fixed
+
+- macOS draws text: `parallax-platform` now turns on `gpui_platform`'s `font-kit` feature. 0.1.1 to 0.1.4 built
+  without it, so `gpui_macos` used GPUI's `NoopTextSystem` and every macOS app drew no text (boxes only).
+- The `hello` example's desktop binary logs to stderr (`env_logger`, `warn,hello=info` by default, `RUST_LOG` to
+  change the level).
+
 ## [0.1.4] - 2026-11-26 — Gate 1
 
 Wave 10: **Gate 1 passes**: Android text input, mouse, autofill and locales, checked with Gboard on API 28, 33 and 35

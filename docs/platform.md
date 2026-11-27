@@ -53,7 +53,9 @@ there, so [Cargo.toml](../crates/platform/Cargo.toml) depends on it only off And
 Android. On wasm it runs
 single-threaded on stable Rust: the [workspace](../Cargo.toml) turns off `gpui_platform`'s default `multithreaded`
 feature, which needs nightly (AGENTS.md "Web threading"). It turns on `wayland` and `x11`, which upstream leaves
-off: without them Linux finds no display server, starts headless and draws nothing, with no error.
+off: without them Linux finds no display server, starts headless and draws nothing, with no error. It turns on
+`font-kit` for the same reason: without it `gpui_macos` uses GPUI's `NoopTextSystem` and macOS draws no text, only a
+`log::warn!` (iOS and Linux turn it on themselves).
 
 Per-target behaviour (slops, scroll physics, haptics) is a second table in the same crate: [behaviour.md](behaviour.md).
 

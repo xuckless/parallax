@@ -26,9 +26,9 @@ What it shows: one shared `launch(cx)` and a thin entry point per target, all th
 
 | Target | Entry point | How it starts |
 |---|---|---|
-| Desktop | [main.rs](../examples/hello/src/main.rs) | `parallax_platform::current_platform` ([platform.md](platform.md)) then `Application::run(launch)` |
+| Desktop | [main.rs](../examples/hello/src/main.rs) | `parallax::run(launch)`: the platform ([platform.md](platform.md)) with its behaviour row ([behaviour.md](behaviour.md)) |
 | Android | `parallax::android_main!(launch)` in lib.rs | `ParallaxActivity` loads the `cdylib` ([android.md](android.md)) |
-| Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs | [index.html](../examples/hello/index.html) imports the wasm-pack module; `favicon.svg` links to the brand icon in [assets/brand/](../assets/brand/) |
+| Web | `start` (`#[wasm_bindgen(start)]`) in lib.rs: `parallax::run` | [index.html](../examples/hello/index.html) imports the wasm-pack module; `favicon.svg` links to the brand icon in [assets/brand/](../assets/brand/) |
 | iOS | none yet | |
 
 Run every command from the repo root after `scripts/apply-patches.sh`.
@@ -40,7 +40,9 @@ cargo run -p hello
 ```
 
 Linux needs the `LINUX_PACKAGES` of [ci.yml](../.github/workflows/ci.yml) (on Fedora: `libxkbcommon-x11-devel`,
-`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop installs no logger, so `log` lines are silent there.
+`wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop logs to stderr through
+[env_logger](https://docs.rs/env_logger): warnings, plus `info` from hello; `RUST_LOG` overrides it
+(e.g. `RUST_LOG=debug`).
 
 ### Web
 
