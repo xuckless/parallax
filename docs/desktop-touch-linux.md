@@ -11,6 +11,9 @@ v0.30.13 (Apache-2.0, credited in [NOTICE](../NOTICE)) and time touches with one
 another clock base (a remote display) and gives `None`, so GPUI times the touch at dispatch
 ([touch-time-stamps.md](touch-time-stamps.md)). Its table test, `event_time_stamps`, holds both backends' rows.
 
+**Blocked windows.** A window a modal child blocks drops input, but a touch's end or cancel still reaches it
+(`reaches_blocked_window` in `linux.rs`, table test `blocked_window_input`), so no touch stays open in GPUI.
+
 ## Wayland
 
 [Patch 0022](../patches/0022-touch-wayland.patch) binds `wl_touch` in `gpui_linux`'s Wayland client
@@ -22,7 +25,7 @@ as the second reference. `client.rs` only binds the object and dispatches.
 
 | `wl_touch` event | GPUI |
 |---|---|
-| `down` on a GPUI window's surface | `Started`, a fresh `TouchId` (Wayland reuses ids; GPUI never does). A down on any other surface is dropped, and so is the rest of that touch |
+| `down` on a GPUI window's surface | `Started`, the next `TouchId` (from 0, wrapping; Wayland reuses ids). A down on any other surface is dropped, and so is the rest of that touch |
 | `motion` / `up` | `Moved` / `Ended` (at the last motion's position) |
 | `cancel` (the compositor took the touches, e.g. for a system gesture) | `Cancelled` for every touch still down |
 | `frame`, `shape`, `orientation` | ignored, as in winit: each event is delivered as it comes |

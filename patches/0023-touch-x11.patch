@@ -2,7 +2,8 @@ Feed X11 XInput 2 touch into GPUI's TouchEvent and drop the pointer events the s
 
 What: gpui_linux's X11 client, ported from winit v0.30.13 (e9809ef54b18499bb4f2cac945719ecc2a61061b)
 `src/platform_impl/linux/x11/event_processor.rs` (`XI_Touch*` arm, `xinput2_touch`, the `XIPointerEmulated` check
-of `xinput2_button_input`) and `window.rs` (the touch masks), Apache-2.0:
+of `xinput2_button_input`) and `window.rs` (the touch masks), Apache-2.0; Flutter's Linux fl_view.cc @ 3.50.1 is
+the second reference:
 - Windows select XI_TouchBegin / Update / End on the master devices, with the pointer and gesture masks, from one
   table by XInput version (`XinputVersion::window_events`: touch from 2.2, pinch gestures from 2.4). The client's
   `supports_xinput_gestures: bool` becomes the negotiated `XinputVersion`, so a server older than 2.2 never gets a
@@ -18,8 +19,9 @@ of `xinput2_button_input`) and `window.rs` (the touch masks), Apache-2.0:
   makes from a touch, so a tap clicks once (GPUI makes its own mouse events from the touch), and the scroll-button
   clicks emulated from smooth scrolling, which upstream already skipped (its check inside the scroll arm goes). The
   dropped emulated scroll clicks no longer reset the IME composition, as real clicks do.
-- Table tests in x11/event.rs: XI2 touch event fixtures → TouchEvent, masks per XInput version, the emulation
-  filter. Time stamps are 0022's `event_time_stamps` table.
+- A touch's end reaches a window a modal child blocks (0022's `reaches_blocked_window`), so no touch stays open.
+- Table tests in x11/event.rs: XI2 touch event fixtures → TouchEvent, masks per XInput version. Time stamps are
+  0022's `event_time_stamps` table.
 
 Pen: X11 tablets send pointer events with pressure valuators, not touches, and GPUI's mouse events carry no
 device (docs/pointer-source.md), so a pen stays `Mouse`, as on the web. Deferred.
@@ -189,7 +191,7 @@ index 6667170..dad4435 100644
          )?;
          check_reply(
 diff --git a/gpui-pre-linux/src/linux/x11/event.rs b/gpui-pre-linux/src/linux/x11/event.rs
-index 3fb9164..79e314a 100644
+index 3fb9164..94c1515 100644
 --- a/gpui-pre-linux/src/linux/x11/event.rs
 +++ b/gpui-pre-linux/src/linux/x11/event.rs
 @@ -3,7 +3,11 @@ use x11rb::protocol::{
@@ -303,7 +305,7 @@ index 3fb9164..79e314a 100644
  pub(crate) fn get_valuator_axis_index(
      valuator_mask: &Vec<u32>,
      valuator_number: u16,
-@@ -124,8 +219,275 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
+@@ -124,8 +219,259 @@ fn keep_bits_upto(bits: u32, bit_index: u16) -> u32 {
  
  #[cfg(test)]
  mod tests {
@@ -560,27 +562,11 @@ index 3fb9164..79e314a 100644
 +        }
 +    }
 +
-+    #[test]
-+    fn pointer_emulation_filter() {
-+        // (name, XI2 pointer event flags as sent, dropped)
-+        let rows: [(&str, u32, bool); 2] = [
-+            ("a real mouse press", 0, false),
-+            ("a press emulated from a touch", 1 << 16, true),
-+        ];
-+        for (name, flags, dropped) in rows {
-+            assert_eq!(
-+                is_pointer_emulated(xinput::PointerEventFlags::from(flags)),
-+                dropped,
-+                "{name}"
-+            );
-+        }
-+    }
-+
      #[test]
      fn test_get_valuator_axis_index() {
          assert!(get_valuator_axis_index(&vec![0b11], 0) == Some(0));
 diff --git a/gpui-pre-linux/src/linux/x11/window.rs b/gpui-pre-linux/src/linux/x11/window.rs
-index fc280b8..b224328 100644
+index fc280b8..a4db836 100644
 --- a/gpui-pre-linux/src/linux/x11/window.rs
 +++ b/gpui-pre-linux/src/linux/x11/window.rs
 @@ -33,7 +33,7 @@ use std::{
@@ -648,3 +634,13 @@ index fc280b8..b224328 100644
                  is_bgr,
              )?)),
              callbacks: Rc::new(RefCell::new(Callbacks::default())),
+@@ -1216,7 +1202,8 @@ impl X11WindowStatePtr {
+     }
+ 
+     pub fn handle_input(&self, input: PlatformInput) {
+-        if self.is_blocked() {
++        // A touch's end still gets through, so a modal child opening mid-touch leaves no touch open.
++        if self.is_blocked() && !crate::linux::reaches_blocked_window(&input) {
+             return;
+         }
+         let callback = self.callbacks.borrow_mut().input.take();

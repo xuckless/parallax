@@ -4,13 +4,15 @@ What: gpui_linux's Wayland client binds `wl_touch` on a seat with the touch capa
 that loses it, or is replaced, cancels its touches) and turns `down`/`motion`/`up`/`cancel` into `TouchEvent`s:
 `Started`/`Moved`/`Ended`, `Cancelled` for every touch still down on `cancel`, device `Touch`, surface-local
 logical pixels (Wayland's surface coordinates are logical, so winit's physical-pixel scaling is dropped), an up at
-the last motion's position. Wayland reuses `wl_touch` ids and GPUI never reuses a `TouchId`, so each down gets a
-fresh one. `time_stamp` is the event's millisecond time moved onto GPUI's clock by its age against
+the last motion's position. Wayland reuses `wl_touch` ids, so each down takes the next `TouchId` (from 0,
+wrapping), given up at its up or cancel; motion, up or cancel with no live down is dropped. `time_stamp` is the event's millisecond time moved onto GPUI's clock by its age against
 `CLOCK_MONOTONIC` (what libinput-based compositors stamp with), as patch 0020 does on iOS and the web; an event
 older than 10 s is on another base (a test client's made-up times) and is timed at dispatch. `frame`, `shape` and
 `orientation` are ignored, as in winit: each event is delivered as it comes. A touch down's serial is recorded as a
 press, so moves, popup grabs, selections and activation tokens work from a tap. Compositors never make pointer
-events from `wl_touch`, so nothing is deduplicated.
+events from `wl_touch`, so nothing is deduplicated. A touch's up or cancel reaches a window a modal child blocks
+(`reaches_blocked_window` in linux.rs, shared with X11, table test `blocked_window_input`): dropped there, GPUI's
+touch would stay open once the child closes.
 
 New file `wayland/touch.rs`, ported from rust-windowing/winit src/platform_impl/linux/wayland/seat/touch/mod.rs @
 v0.30.13 (e9809ef54b18499bb4f2cac945719ecc2a61061b), Apache-2.0, Copyright the winit contributors (credited in
@@ -26,7 +28,7 @@ Parallax crate nor an extension trait can add it. cfg: Linux/FreeBSD with the `w
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-linux/src/linux.rs b/gpui-pre-linux/src/linux.rs
-index c5afc4a..b7379eb 100644
+index c5afc4a..a0420d3 100644
 --- a/gpui-pre-linux/src/linux.rs
 +++ b/gpui-pre-linux/src/linux.rs
 @@ -1,3 +1,5 @@
@@ -35,6 +37,60 @@ index c5afc4a..b7379eb 100644
  mod dispatcher;
  mod display_connection;
  mod headless;
+@@ -32,6 +34,53 @@ use std::rc::Rc;
+ 
+ use gpui::WindowingModes;
+ 
++/// Whether `input` reaches a window a modal child blocks. A touch's end or cancel does, or GPUI's touch would stay
++/// open once the child closes; other input is dropped, as upstream drops all of it.
++#[cfg(any(feature = "wayland", feature = "x11"))]
++pub(crate) fn reaches_blocked_window(input: &gpui::PlatformInput) -> bool {
++    use gpui::{PlatformInput, TouchEvent, TouchPhase};
++    matches!(
++        input,
++        PlatformInput::Touch(TouchEvent {
++            phase: TouchPhase::Ended | TouchPhase::Cancelled,
++            ..
++        })
++    )
++}
++
++#[cfg(all(test, any(feature = "wayland", feature = "x11")))]
++mod tests {
++    use gpui::{PlatformInput, TouchEvent, TouchPhase};
++
++    #[test]
++    fn blocked_window_input() {
++        let touch = |phase| {
++            PlatformInput::Touch(TouchEvent {
++                phase,
++                ..TouchEvent::default()
++            })
++        };
++        let rows = [
++            ("a touch ends", touch(TouchPhase::Ended), true),
++            ("a touch is cancelled", touch(TouchPhase::Cancelled), true),
++            (
++                "rejected: a touch starts",
++                touch(TouchPhase::Started),
++                false,
++            ),
++            ("rejected: a touch moves", touch(TouchPhase::Moved), false),
++            (
++                "rejected: a key",
++                PlatformInput::ModifiersChanged(Default::default()),
++                false,
++            ),
++        ];
++        for (name, input, reaches) in rows {
++            assert_eq!(super::reaches_blocked_window(&input), reaches, "{name}");
++        }
++    }
++}
++
+ /// Returns the default platform implementation for the current OS.
+ ///
+ /// A windowed platform connects to the display server the process environment names, or starts
 diff --git a/gpui-pre-linux/src/linux/clock.rs b/gpui-pre-linux/src/linux/clock.rs
 new file mode 100644
 index 0000000..093c26d
@@ -318,7 +374,7 @@ index c70243b..a2d9ed0 100644
          this: &mut Self,
 diff --git a/gpui-pre-linux/src/linux/wayland/touch.rs b/gpui-pre-linux/src/linux/wayland/touch.rs
 new file mode 100644
-index 0000000..f1d2d88
+index 0000000..5fe613b
 --- /dev/null
 +++ b/gpui-pre-linux/src/linux/wayland/touch.rs
 @@ -0,0 +1,264 @@
@@ -547,7 +603,7 @@ index 0000000..f1d2d88
 +                ],
 +            ),
 +            (
-+                "motion, up and cancel without a down are dropped",
++                "rejected: motion, up and cancel without a live down",
 +                vec![motion(0, 1., 1.), up(0), cancel.clone()],
 +                &[],
 +            ),
@@ -586,3 +642,17 @@ index 0000000..f1d2d88
 +        }
 +    }
 +}
+diff --git a/gpui-pre-linux/src/linux/wayland/window.rs b/gpui-pre-linux/src/linux/wayland/window.rs
+index 1f7d22d..7ee7a11 100644
+--- a/gpui-pre-linux/src/linux/wayland/window.rs
++++ b/gpui-pre-linux/src/linux/wayland/window.rs
+@@ -1608,7 +1608,8 @@ impl WaylandWindowStatePtr {
+     }
+ 
+     pub fn handle_input(&self, input: PlatformInput) {
+-        if self.is_blocked() {
++        // A touch's end still gets through, so a modal child opening mid-touch leaves no touch open.
++        if self.is_blocked() && !crate::linux::reaches_blocked_window(&input) {
+             return;
+         }
+         let callback = self.callbacks.borrow_mut().input.take();
