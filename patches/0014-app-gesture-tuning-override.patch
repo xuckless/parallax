@@ -178,7 +178,7 @@ index dbd0298..9f9d978 100644
  
  /// Represents the status of how a window should be opened.
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index aff770f..c5d2e02 100644
+index d93beac..b612f39 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -27,9 +27,7 @@ use crate::{
@@ -221,7 +221,7 @@ index aff770f..c5d2e02 100644
              touch_prediction_enabled: true,
              pointer_source: None,
              touch_routes: FxHashMap::default(),
-@@ -8583,12 +8579,13 @@ mod tests {
+@@ -8605,12 +8601,13 @@ mod tests {
          AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
          Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
          ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
@@ -241,7 +241,7 @@ index aff770f..c5d2e02 100644
      };
  
      #[gpui::test]
-@@ -10511,6 +10508,50 @@ mod tests {
+@@ -10536,6 +10533,50 @@ mod tests {
          }
      }
  

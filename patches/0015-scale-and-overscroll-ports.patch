@@ -27,10 +27,10 @@ each file names its source at Flutter 3.50.1.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 21db052..9ea8c9d 100644
+index 4367004..ba6f5ac 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -19,6 +19,8 @@ use crate::{
+@@ -30,6 +30,8 @@ use crate::{
      ScrollSource, TouchEvent, TouchId, TouchPhase, point, px, seal::Sealed,
  };
  

@@ -36,10 +36,10 @@ rewrapping call sites that gained the `now` argument.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 21db052..b6bd66f 100644
+index de7f9cf..4367004 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -104,17 +104,24 @@ impl OngoingScroll {
+@@ -115,17 +115,24 @@ impl OngoingScroll {
  }
  
  /// Feel constants consumed by gesture recognizers. Provided on a best-effort
@@ -68,8 +68,8 @@ index 21db052..b6bd66f 100644
      /// How long a touch must remain within [`Self::touch_slop`] to be
      /// recognized as a long press.
      pub long_press_duration: Duration,
-@@ -125,14 +132,29 @@ pub struct GestureTuning {
-     pub min_fling_velocity: f32,
+@@ -139,14 +146,29 @@ pub struct GestureTuning {
+     pub velocity_tracker: VelocityTrackerKind,
  }
  
 +// Ported from flutter/flutter packages/flutter/lib/src/gestures/constants.dart @ 3.50.1.
@@ -99,9 +99,9 @@ index 21db052..b6bd66f 100644
              scroll_physics: ScrollPhysics::ios(),
 +            // kMinFlingVelocity.
              min_fling_velocity: 50.,
+             velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
          }
-     }
-@@ -588,6 +610,8 @@ enum TouchGestureState {
+@@ -480,6 +502,8 @@ enum TouchGestureState {
  
  struct ActiveTouch {
      id: TouchId,
@@ -110,7 +110,7 @@ index 21db052..b6bd66f 100644
      /// What the gestures recognized from this touch report as their device.
      device: PointerDevice,
      start_position: Point<Pixels>,
-@@ -605,8 +629,9 @@ struct ActiveTouch {
+@@ -497,8 +521,9 @@ struct ActiveTouch {
  }
  
  struct CompletedTap {
@@ -122,7 +122,7 @@ index 21db052..b6bd66f 100644
      count: usize,
  }
  
-@@ -643,15 +668,17 @@ impl TouchGestureRecognizer {
+@@ -534,15 +559,17 @@ impl TouchGestureRecognizer {
      /// Each gesture is paired with the device it reports: the touch's own,
      /// except the closing step of a fling this touch catches, which keeps the
      /// device of the touch that flung, like the momentum steps before it.
@@ -141,15 +141,15 @@ index 21db052..b6bd66f 100644
          // A touch that catches a fling closes the fling's scroll first.
          let fling_end = flung_by.and_then(|device| Some((device, gestures.next()?)));
          fling_end
-@@ -684,6 +711,7 @@ impl TouchGestureRecognizer {
-                     velocity_tracker.push(now, event.position);
+@@ -576,6 +603,7 @@ impl TouchGestureRecognizer {
+                     velocity_tracker.add_position(now, event.position);
                      let touch = ActiveTouch {
                          id: event.id,
 +                        start_time: now,
                          device: event.device,
                          start_position: event.position,
                          last_position: event.position,
-@@ -821,19 +849,30 @@ impl TouchGestureRecognizer {
+@@ -713,19 +741,30 @@ impl TouchGestureRecognizer {
              },
              TouchPhase::Ended => match mem::replace(&mut self.state, TouchGestureState::Idle) {
                  TouchGestureState::Pending { touch, .. } if touch.id == event.id => {
@@ -185,7 +185,7 @@ index 21db052..b6bd66f 100644
                          count: tap_count,
                      });
                      recognized.push(RecognizedTouchGesture::Tap {
-@@ -973,7 +1012,10 @@ impl TouchGestureRecognizer {
+@@ -852,7 +891,10 @@ impl TouchGestureRecognizer {
          recognized
      }
  
@@ -197,7 +197,7 @@ index 21db052..b6bd66f 100644
          let TouchGestureState::Pending {
              touch,
              deadline,
-@@ -986,7 +1028,7 @@ impl TouchGestureRecognizer {
+@@ -865,7 +907,7 @@ impl TouchGestureRecognizer {
          Some((
              touch.id,
              touch.device,
@@ -206,7 +206,7 @@ index 21db052..b6bd66f 100644
          ))
      }
  
-@@ -1068,9 +1110,12 @@ impl TouchGestureRecognizer {
+@@ -947,9 +989,12 @@ impl TouchGestureRecognizer {
      /// to dispatch, or `None` when no momentum is in progress. The final step
      /// carries [`TouchPhase::Ended`] to close the synthetic scroll stream.
      /// Paired with the device of the touch that flung.
@@ -221,8 +221,8 @@ index 21db052..b6bd66f 100644
      }
  
      fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
-@@ -1221,6 +1266,9 @@ fn quadratic_velocity_at_newest(times: &[f64], values: &[f64]) -> Option<f64> {
-     Some(linear_determinant / determinant)
+@@ -996,6 +1041,9 @@ fn scroll_event(
+     }
  }
  
 +#[cfg(test)]
@@ -231,7 +231,7 @@ index 21db052..b6bd66f 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -2279,11 +2327,17 @@ mod tests {
+@@ -2017,11 +2065,17 @@ mod tests {
      fn long_press_offer_is_one_shot_and_specific_to_pending_touch() {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let touch = TouchId(1);
@@ -251,7 +251,7 @@ index 21db052..b6bd66f 100644
                  .is_empty()
          );
          assert!(recognizer.offer_long_press(TouchId(2)).is_none());
-@@ -2311,16 +2365,25 @@ mod tests {
+@@ -2049,16 +2103,25 @@ mod tests {
      fn claimed_long_press_emits_cancelled_for_its_touch_only() {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let touch = TouchId(1);
@@ -280,7 +280,7 @@ index 21db052..b6bd66f 100644
          let [(_, RecognizedTouchGesture::LongPress(cancelled))] = cancelled.as_slice() else {
              panic!("expected cancelled long press, got {cancelled:?}");
          };
-@@ -2334,11 +2397,14 @@ mod tests {
+@@ -2072,11 +2135,14 @@ mod tests {
          for phase in [TouchPhase::Ended, TouchPhase::Cancelled] {
              let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
              let touch = TouchId(1);
@@ -297,7 +297,7 @@ index 21db052..b6bd66f 100644
                      .is_empty()
              );
              assert!(recognizer.offer_long_press(touch).is_some());
-@@ -2350,9 +2416,18 @@ mod tests {
+@@ -2088,9 +2154,18 @@ mod tests {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
          let completed_touch = TouchId(1);
          let replacement_touch = TouchId(2);
