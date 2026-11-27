@@ -22,7 +22,7 @@ an extension trait can add it. No cfg: the field is core; each backend fills it 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/src/ios/events.rs b/gpui-pre-ios/src/ios/events.rs
-index 7205282..bbea48c 100644
+index 7205282..df20a16 100644
 --- a/gpui-pre-ios/src/ios/events.rs
 +++ b/gpui-pre-ios/src/ios/events.rs
 @@ -5,10 +5,12 @@ use gpui::{
@@ -38,10 +38,15 @@ index 7205282..bbea48c 100644
  
  /// A release faster than this, in points per second toward going back, commits
  /// a back gesture regardless of how far it travelled.
-@@ -128,6 +130,15 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
+@@ -128,6 +130,20 @@ pub fn touch_force(touch: &UITouch) -> Option<f32> {
      Some((touch.force() / maximum_force).clamp(0.0, 1.0) as f32)
  }
  
++// Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/
++// framework/Source/FlutterViewController.mm (`dispatchTouches:`, its
++// `pointer_data.time_stamp = touch.timestamp * kMicrosecondsPerSecond`) @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter
++// Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +/// When UIKit says the touch happened (`UITouch.timestamp`, which Flutter's
 +/// iOS embedder sends as `PointerEvent.timeStamp`), on GPUI's clock: both
 +/// `timestamp` and `NSProcessInfo.systemUptime` count seconds since boot, so
@@ -55,7 +60,7 @@ index 7205282..bbea48c 100644
  /// click arrives as an indirect-pointer touch.
  pub fn touch_device(touch: &UITouch) -> PointerDevice {
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index cda2bdb..d00bb74 100644
+index a49cc22..ce42ad2 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
 @@ -535,8 +535,8 @@ impl IosWindowState {
@@ -78,7 +83,7 @@ index cda2bdb..d00bb74 100644
          self.handle_keyboard_dismiss_touch(&event);
          self.input_callback
 diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
-index b1a18a6..7fd0432 100644
+index 55857d0..a50dd53 100644
 --- a/gpui-pre-web/src/events.rs
 +++ b/gpui-pre-web/src/events.rs
 @@ -1,4 +1,4 @@
@@ -127,7 +132,7 @@ index b1a18a6..7fd0432 100644
                  }));
                  return;
              }
-@@ -1407,6 +1412,22 @@ fn compute_key_char(
+@@ -1407,6 +1412,26 @@ fn compute_key_char(
      None
  }
  
@@ -139,6 +144,10 @@ index b1a18a6..7fd0432 100644
 +    fn performance_now() -> f64;
 +}
 +
++// Ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/
++// pointer_binding.dart (`_BaseAdapter._eventTimeStampToDuration(event.timeStamp)`)
++// @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The
++// Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 +/// When the browser says `event` happened (`Event.timeStamp`, Flutter's
 +/// `PointerEvent.timeStamp` on the web), on GPUI's clock: `Instant` here is
 +/// `performance.now()`, so the event's age is taken off the current instant.
@@ -151,10 +160,10 @@ index b1a18a6..7fd0432 100644
      let mouse_event: &web_sys::MouseEvent = event.as_ref();
      mouse_position_in_element(mouse_event)
 diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
-index d93b33d..dcdf695 100644
+index c08d6e2..c1446cd 100644
 --- a/gpui-pre/src/elements/div.rs
 +++ b/gpui-pre/src/elements/div.rs
-@@ -5332,6 +5332,7 @@ mod tests {
+@@ -5347,6 +5347,7 @@ mod tests {
                          predicted_position: None,
                          force: None,
                          device: PointerDevice::Touch,
@@ -162,7 +171,7 @@ index d93b33d..dcdf695 100644
                      }
                      .to_platform_input(),
                      cx,
-@@ -5359,6 +5360,7 @@ mod tests {
+@@ -5374,6 +5375,7 @@ mod tests {
                          predicted_position: None,
                          force: None,
                          device: PointerDevice::Touch,
@@ -170,7 +179,7 @@ index d93b33d..dcdf695 100644
                      }
                      .to_platform_input(),
                      cx,
-@@ -5381,6 +5383,7 @@ mod tests {
+@@ -5396,6 +5398,7 @@ mod tests {
                          predicted_position: None,
                          force: None,
                          device: PointerDevice::Touch,
@@ -178,7 +187,7 @@ index d93b33d..dcdf695 100644
                      }
                      .to_platform_input(),
                      cx,
-@@ -5666,6 +5669,7 @@ mod tests {
+@@ -5681,6 +5684,7 @@ mod tests {
                      position: point(px(75.), px(75.)),
                      force: None,
                      device: PointerDevice::Touch,
@@ -186,7 +195,7 @@ index d93b33d..dcdf695 100644
                      predicted_position: None,
                  };
                  window.dispatch_event(started.clone().to_platform_input(), cx);
-@@ -5726,6 +5730,7 @@ mod tests {
+@@ -5741,6 +5745,7 @@ mod tests {
                              predicted_position: None,
                              force: None,
                              device: PointerDevice::Touch,
@@ -194,7 +203,7 @@ index d93b33d..dcdf695 100644
                          }
                          .to_platform_input(),
                          cx,
-@@ -6269,6 +6274,7 @@ mod tests {
+@@ -6284,6 +6289,7 @@ mod tests {
                  predicted_position: None,
                  force: None,
                  device: PointerDevice::Touch,
@@ -203,10 +212,10 @@ index d93b33d..dcdf695 100644
              .to_platform_input()
          };
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index 300eafc..49f4be1 100644
+index 18bf459..a14dd14 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -609,6 +609,10 @@ impl TouchGestureRecognizer {
+@@ -649,6 +649,10 @@ impl TouchGestureRecognizer {
          now: Instant,
          target: TapTarget,
      ) -> SmallVec<[RecognizedTouchGesture; 2]> {
@@ -217,7 +226,7 @@ index 300eafc..49f4be1 100644
          let mut recognized = SmallVec::new();
          match event.phase {
              TouchPhase::Started => {
-@@ -626,7 +630,7 @@ impl TouchGestureRecognizer {
+@@ -666,7 +670,7 @@ impl TouchGestureRecognizer {
                  if matches!(self.state, TouchGestureState::Idle) {
                      let mut velocity_tracker =
                          VelocityTracker::with_kind(self.tuning.velocity_tracker);
@@ -226,7 +235,7 @@ index 300eafc..49f4be1 100644
                      let touch = ActiveTouch {
                          id: event.id,
                          target,
-@@ -669,7 +673,9 @@ impl TouchGestureRecognizer {
+@@ -709,7 +713,9 @@ impl TouchGestureRecognizer {
                      long_press_offered,
                      touch_drag_offered,
                  } if touch.id == event.id => {
@@ -237,7 +246,7 @@ index 300eafc..49f4be1 100644
                      touch.last_position = event.position;
                      let accumulated = event.position - touch.start_position;
                      if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
-@@ -721,7 +727,9 @@ impl TouchGestureRecognizer {
+@@ -761,7 +767,9 @@ impl TouchGestureRecognizer {
                      if raw_delta != Point::default() {
                          touch.last_movement = raw_delta;
                      }
@@ -248,7 +257,7 @@ index 300eafc..49f4be1 100644
                      touch.last_position = event.position;
                      let mut target = event.predicted_position.unwrap_or(event.position);
                      let mut delta = target - touch.emitted_position;
-@@ -833,7 +841,7 @@ impl TouchGestureRecognizer {
+@@ -873,7 +881,7 @@ impl TouchGestureRecognizer {
                      let VelocityEstimate {
                          pixels_per_second: mut velocity,
                          mut offset,
@@ -257,7 +266,7 @@ index 300eafc..49f4be1 100644
                      match axis {
                          Axis::Vertical => (velocity.x, offset.x) = (0., 0.),
                          Axis::Horizontal => (velocity.y, offset.y) = (0., 0.),
-@@ -1732,6 +1740,54 @@ mod tests {
+@@ -1787,6 +1795,54 @@ mod tests {
          }
      }
  
@@ -312,7 +321,7 @@ index 300eafc..49f4be1 100644
      /// A 20000 px/s flick flings at the tuning's `max_fling_velocity`:
      /// (row, max fling velocity).
      #[test]
-@@ -2453,6 +2509,7 @@ mod tests {
+@@ -2508,6 +2564,7 @@ mod tests {
              predicted_position: None,
              force: None,
              device: PointerDevice::Touch,
@@ -321,10 +330,10 @@ index 300eafc..49f4be1 100644
      }
  }
 diff --git a/gpui-pre/src/gestures/pinch.rs b/gpui-pre/src/gestures/pinch.rs
-index cb86eaf..dd0af38 100644
+index b7bec92..2152b24 100644
 --- a/gpui-pre/src/gestures/pinch.rs
 +++ b/gpui-pre/src/gestures/pinch.rs
-@@ -88,6 +88,9 @@ impl PinchArena {
+@@ -155,6 +155,9 @@ impl PinchArena {
          now: Instant,
          touch_slop: Pixels,
      ) -> PinchStep {
@@ -335,17 +344,17 @@ index cb86eaf..dd0af38 100644
              to_recognizer: true,
              won: SmallVec::new(),
 diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
-index 4c7a1da..187cd79 100644
+index 54ed332..eeaf8e0 100644
 --- a/gpui-pre/src/gestures/recognizer_tests.rs
 +++ b/gpui-pre/src/gestures/recognizer_tests.rs
-@@ -207,6 +207,7 @@ impl TraceEvent {
+@@ -183,6 +183,7 @@ impl TraceEvent {
              predicted_position: None,
              force: None,
              device: PointerDevice::Touch,
 +            time_stamp: None,
          }
      }
- }
+ 
 diff --git a/gpui-pre/src/input.rs b/gpui-pre/src/input.rs
 index 734dce0..0c25b89 100644
 --- a/gpui-pre/src/input.rs
@@ -359,7 +368,7 @@ index 734dce0..0c25b89 100644
                              window.dispatch_event(touch.to_platform_input(), cx);
                          }
 diff --git a/gpui-pre/src/interactive.rs b/gpui-pre/src/interactive.rs
-index 1bbef6e..d68a62d 100644
+index f8323cb..e57d2bd 100644
 --- a/gpui-pre/src/interactive.rs
 +++ b/gpui-pre/src/interactive.rs
 @@ -2,6 +2,7 @@ use crate::{
@@ -386,10 +395,10 @@ index 1bbef6e..d68a62d 100644
  
  /// The kind of device behind a pointer event.
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index ff5002f..b147a73 100644
+index 8d1f9e5..bc72cc3 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -10363,6 +10363,7 @@ mod tests {
+@@ -10405,6 +10405,7 @@ mod tests {
              predicted_position: None,
              force: None,
              device: PointerDevice::Touch,
@@ -397,7 +406,7 @@ index ff5002f..b147a73 100644
          }
          .to_platform_input();
          let rows = [
-@@ -10504,6 +10505,7 @@ mod tests {
+@@ -10546,6 +10547,7 @@ mod tests {
                  predicted_position: None,
                  force: None,
                  device,
@@ -405,7 +414,7 @@ index ff5002f..b147a73 100644
              }
              .to_platform_input()
          };
-@@ -11529,6 +11531,7 @@ mod tests {
+@@ -11571,6 +11573,7 @@ mod tests {
                          predicted_position: None,
                          force: None,
                          device: PointerDevice::Touch,

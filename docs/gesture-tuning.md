@@ -16,9 +16,11 @@ uses the same slop as the recognizer. Parallax feeds it from the [behaviour tabl
 
 [0019-window-set-gesture-tuning.patch](../patches/0019-window-set-gesture-tuning.patch) (needs 0014).
 `Window::set_gesture_tuning` changes an open window's tuning in place: touches in progress keep their state and are
-judged by the new values from the next event on. The facade calls it when Android's device touch slop changes with
-the density ([behaviour.md](behaviour.md#how-gpui-gets-it-automatically)); the backend keeps the tuning the window
-opened with (only gpui_web reads it, and the web never retunes).
+judged by the new values from the next event on. `Window::gesture_tuning()` reads it, so one value can be retuned:
+`window.set_gesture_tuning(GestureTuning { touch_slop, ..window.gesture_tuning() })`. The facade does that when
+Android's device touch slop changes with the density ([behaviour.md](behaviour.md#how-gpui-gets-it-automatically)).
+The backend gets it too (`PlatformWindow::set_gesture_tuning`, a no-op by default): gpui_web's tap shadow follows
+the new slop.
 
 ## Tests
 

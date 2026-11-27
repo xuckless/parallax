@@ -41,7 +41,7 @@ index 5b3acd8..1d9ef66 100644
      "UIGestureRecognizer",
      "UIPanGestureRecognizer",
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 0ca4cd3..cda2bdb 100644
+index 0ca4cd3..a49cc22 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
 @@ -58,6 +58,15 @@ use std::{
@@ -60,14 +60,16 @@ index 0ca4cd3..cda2bdb 100644
  #[derive(Clone, Copy)]
  struct KeyboardDismissTouch {
      id: TouchId,
-@@ -1042,6 +1051,45 @@ impl PlatformWindow for IosWindow {
+@@ -1042,6 +1051,47 @@ impl PlatformWindow for IosWindow {
          self.hide_keyboard();
      }
  
 +    // Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/
-+    // framework/Source/FlutterPlatformPlugin.mm @ 3.50.1 (`vibrateHapticFeedback:`).
-+    // Copyright 2014 The Flutter Authors. BSD-3-Clause. A fresh generator per
-+    // call, as Flutter's; the match is exhaustive, one arm per Flutter branch.
++    // framework/Source/FlutterPlatformPlugin.mm (`vibrateHapticFeedback:`) @ 3.50.1
++    // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter
++    // Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++    // A fresh generator per call, as Flutter's; the match is exhaustive, one arm
++    // per Flutter branch.
 +    #[allow(
 +        deprecated,
 +        reason = "Flutter's initWithStyle:, deprecated by iOS 17.5's feedbackGeneratorWithStyle:forView:"
@@ -107,18 +109,19 @@ index 0ca4cd3..cda2bdb 100644
          self.text_input_view.state_changed(change);
      }
 diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 2463a70..3465b21 100644
+index 2463a70..f172578 100644
 --- a/gpui-pre-web/src/window.rs
 +++ b/gpui-pre-web/src/window.rs
-@@ -825,6 +825,40 @@ impl PlatformWindow for WebWindow {
+@@ -825,6 +825,41 @@ impl PlatformWindow for WebWindow {
          }
      }
  
 +    // Ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/
 +    // platform_dispatcher.dart (`HapticFeedback.vibrate`, `_getHapticFeedbackDuration`)
-+    // and safe_browser_api.dart (`vibrate`) @ 3.50.1. Copyright 2014 The Flutter
-+    // Authors. BSD-3-Clause. Browsers without `navigator.vibrate` (Safari) play
-+    // nothing, as in Flutter web.
++    // and safe_browser_api.dart (`vibrate`) @ 3.50.1
++    // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter
++    // Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++    // Browsers without `navigator.vibrate` (Safari) play nothing, as in Flutter web.
 +    fn perform_haptic(&self, haptic: gpui::Haptic) {
 +        use gpui::Haptic;
 +        #[allow(non_upper_case_globals, reason = "Flutter's names")]
@@ -152,10 +155,10 @@ index 2463a70..3465b21 100644
          self.inner.viewport.borrow().visible_bounds
      }
 diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
-index ed36be4..c580c4f 100644
+index c9c6ac5..b591a99 100644
 --- a/gpui-pre/src/gestures.rs
 +++ b/gpui-pre/src/gestures.rs
-@@ -162,6 +162,33 @@ pub struct GestureTuning {
+@@ -163,6 +163,33 @@ pub struct GestureTuning {
      /// edge, unless a container sets its own
      /// ([`StatefulInteractiveElement::overscroll`](crate::StatefulInteractiveElement::overscroll)).
      pub overscroll: Overscroll,
@@ -189,7 +192,7 @@ index ed36be4..c580c4f 100644
  }
  
  // Flutter's gesture constants (constants.rs), whose recognizer tests these
-@@ -185,6 +212,8 @@ impl Default for GestureTuning {
+@@ -186,6 +213,8 @@ impl Default for GestureTuning {
              velocity_tracker: VelocityTrackerKind::IOSScrollViewFling,
              // GPUI's hard stop at the edge; platforms that overscroll set it.
              overscroll: Overscroll::None,
@@ -257,10 +260,10 @@ index 503d754..90f7467 100644
          self.0.lock().bounds
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index cb9820a..650b0c6 100644
+index c41e0f5..b854084 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -3954,6 +3954,14 @@ impl Window {
+@@ -3971,6 +3971,14 @@ impl Window {
              .fling_velocity(cx.background_executor().now())
      }
  
@@ -275,7 +278,7 @@ index cb9820a..650b0c6 100644
      /// Restarts touch recognition with the tuning a test passes, in place of
      /// the platform's.
      #[cfg(test)]
-@@ -6694,6 +6702,12 @@ impl Window {
+@@ -6729,6 +6737,12 @@ impl Window {
                      if !claimed {
                          self.long_press_capture = None;
                      }
@@ -288,7 +291,7 @@ index cb9820a..650b0c6 100644
                  }
                  if ended {
                      self.long_press_capture = None;
-@@ -10730,6 +10744,57 @@ mod tests {
+@@ -10769,6 +10783,57 @@ mod tests {
          }
      }
  
