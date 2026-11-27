@@ -13,9 +13,9 @@ use std::{cell::RefCell, path::Path, rc::Rc};
 
 use gpui::{
     AnyWindowHandle, App, Context, DispatchPhase, GestureTuning, InputEvent as _, IntoElement,
-    LongPressEvent, MouseDownEvent, PinchEvent, Pixels, PlatformInput, Point, PointerDevice, Render, ScrollDelta,
-    ScrollEvent, TestAppContext, TouchEvent, TraceStep, TouchId, TouchPhase, TouchPinch, Window, canvas, div,
-    play_trace, point, prelude::*, px,
+    LongPressEvent, MouseDownEvent, PinchEvent, Pixels, PlatformInput, Point, PointerDevice,
+    Render, ScrollDelta, ScrollEvent, TestAppContext, TouchEvent, TouchId, TouchPhase, TouchPinch,
+    TraceStep, Window, canvas, div, play_trace, point, prelude::*, px,
 };
 use parallax_platform::{
     Target,
