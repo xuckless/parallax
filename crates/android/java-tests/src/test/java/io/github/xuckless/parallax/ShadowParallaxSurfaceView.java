@@ -93,7 +93,7 @@ public class ShadowParallaxSurfaceView extends ShadowSurfaceView {
 
   @Implementation
   protected static boolean nativeDispatchKeyData(
-      int activity, ByteBuffer packet, boolean canceled) {
+      int activity, ByteBuffer packet, boolean canceled, int metaState) {
     return keyData.dispatchKeyData(packet, canceled);
   }
 

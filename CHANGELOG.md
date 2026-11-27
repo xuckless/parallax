@@ -6,6 +6,12 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Fixed
+
+- Android: Gboard's select mode (text-editing panel, Select on) extends the selection: a key event's meta state now
+  reaches GPUI's keystroke, since Flutter's responder synthesizes no Shift for a virtual keyboard
+  (`parallax-android`; Gate 1's known limit 5).
+
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 
 Wave 13: desktop touch on Windows, Wayland, X11 and macOS 27 (patches 0021–0027, fork `parallax-gpui*`

@@ -91,7 +91,7 @@ fn natives() -> [NativeMethod; 14] {
         ),
         row(
             "nativeDispatchKeyData",
-            "(ILjava/nio/ByteBuffer;Z)Z",
+            "(ILjava/nio/ByteBuffer;ZI)Z",
             dispatch_key_data as *mut c_void,
         ),
         row(
@@ -536,7 +536,8 @@ extern "system" fn dispatch_pointer_data_packet(
 }
 
 /// The ported `KeyEmbedderResponder` hands over one Flutter key data packet from `activity`'s view: the whole
-/// direct `ByteBuffer`, and the Android event's `isCanceled()` (Parallax's addition: key data has no field for it).
+/// direct `ByteBuffer`, and the Android event's `isCanceled()` and `getMetaState()` (Parallax's addition: key data has
+/// no field for them).
 /// Returns whether GPUI handled it; Java then redispatches unhandled keys (and a non-owner's) to Android.
 extern "system" fn dispatch_key_data(
     env: JNIEnv,
@@ -544,7 +545,12 @@ extern "system" fn dispatch_key_data(
     activity: jint,
     packet: JByteBuffer,
     canceled: jboolean,
+    meta_state: jint,
 ) -> jboolean {
+    let extras = keys::KeyEventExtras {
+        canceled: canceled != JNI_FALSE,
+        meta_state,
+    };
     let (address, length) = match (
         env.get_direct_buffer_address(&packet),
         env.get_direct_buffer_capacity(&packet),
@@ -562,9 +568,7 @@ extern "system" fn dispatch_key_data(
     // it until this call returns (KeyData.toBytes allocates one per event).
     let packet = unsafe { std::slice::from_raw_parts(address.cast_const(), length) };
     let mut handled = false;
-    with_owner(activity, |host| {
-        handled = host.shell.key(packet, canceled != JNI_FALSE)
-    });
+    with_owner(activity, |host| handled = host.shell.key(packet, extras));
     if handled { JNI_TRUE } else { JNI_FALSE }
 }
 
@@ -928,7 +932,7 @@ impl Shell {
 
     /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
     /// so the window can read modifiers during dispatch.
-    fn key(&self, packet: &[u8], canceled: bool) -> bool {
+    fn key(&self, packet: &[u8], extras: keys::KeyEventExtras) -> bool {
         let data = match keys::decode(packet) {
             Ok(data) => data,
             Err(error) => {
@@ -939,7 +943,7 @@ impl Shell {
         // GPUI hit-tests back gestures; Android's back key has none, so it starts at the left edge, mid-height,
         // where an edge swipe would (iOS's back gesture comes from the leading edge).
         let back_at = point(px(0.), self.metrics.get().bounds().size.height / 2.);
-        let step = self.keyboard.borrow_mut().input(&data, canceled, back_at);
+        let step = self.keyboard.borrow_mut().input(&data, extras, back_at);
         log::debug!("parallax: {data:?} → {step:?}");
         match step {
             keys::Step::Answer { input, handled } => {

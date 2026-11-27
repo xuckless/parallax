@@ -22,7 +22,8 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
    (`ViewDelegate.onTextInputKeyEvent` → `TextInputPlugin.handleKeyEvent`, [android-text-input.md](android-text-input.md)), and otherwise redispatches it to the root
    view, which hands it on to Android: volume to the system, an unclaimed back to the Activity.
 4. **JNI.** A row in `natives` in [host.rs](../crates/android/src/host.rs) borrows the buffer for the call and hands
-   it to `Shell::key`, which returns GPUI's answer. Keys from a view whose Activity does not own the window are
+   it to `Shell::key` with the Android event's `isCanceled()` and `getMetaState()` (`KeyEventExtras`: key data has
+   no field for them), which returns GPUI's answer. Keys from a view whose Activity does not own the window are
    dropped unhandled ([android-lifecycle.md](android-lifecycle.md#several-activities)).
 5. **Decoder and table.** [keys.rs](../crates/android/src/keys.rs) reads the packet with Flutter's layout (the `Field`
    enum: `charSize`, then `key_data.h`'s `KeyData` in order, then the UTF-8 character). The `KEYS` table maps a Flutter
@@ -30,7 +31,11 @@ How a key press becomes a GPUI event in [`parallax-android`](../crates/android/s
    Unicode plane are their own character. Logical keys without a row send nothing and go back to Android.
 6. **GPUI.** `Keyboard::input` decides, `Keyboard::reply` reads GPUI's answer; the keyboard is not borrowed while GPUI
    runs. Keys become `KeyDown` (repeat: `is_held`) and `KeyUp` with the held modifiers; `key_char` is Flutter's character
-   unless it is a control character. Modifier keys become `ModifiersChanged` only, as on GPUI's other platforms; Caps
+   unless it is a control character. A keystroke's modifiers are the held ones plus its own event's meta state
+   (the `META` table): Flutter 3.50.1's responder trusts a virtual keyboard's meta state and synthesizes no modifier
+   events for it, and Gboard's select mode (text-editing panel, Select on) sends arrows with `META_SHIFT_ON` and no
+   Shift held. A Shift + arrow GPUI leaves unhandled goes to the ported `InputConnectionAdaptor`, which extends the
+   selection as Flutter does. Modifier keys become `ModifiersChanged` only, as on GPUI's other platforms; Caps
    Lock toggles on its down. `PlatformWindow::modifiers` and `capslock` read the same state.
 
 ## Back

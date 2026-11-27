@@ -108,10 +108,11 @@ final class ParallaxSurfaceView extends SurfaceView
   static native void nativeActivityEvent(int activity, int event, int value);
 
   // Flutter's key data packet (KeyData.toBytes, the whole direct buffer), read before the call
-  // returns, and the event's isCanceled() (key data has no field for it: a cancelled back release
-  // must not go back). Returns whether GPUI handled it: the reply Flutter's framework sends
+  // returns, the event's isCanceled() (key data has no field for it: a cancelled back release
+  // must not go back) and its getMetaState() (Gboard's select mode holds Shift only there). Returns whether GPUI handled it: the reply Flutter's framework sends
   // asynchronously.
-  static native boolean nativeDispatchKeyData(int activity, ByteBuffer packet, boolean canceled);
+  static native boolean nativeDispatchKeyData(
+      int activity, ByteBuffer packet, boolean canceled, int metaState);
 
   // Text input (TextInputChannel): the editing state after an IME edit, in UTF-16 offsets, -1 for
   // none (Flutter's TextInputClient.updateEditingState); GPUI applies it synchronously.
