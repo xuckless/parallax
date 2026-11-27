@@ -12,9 +12,8 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   (18 / 36 / 18; the desktop embedders send none) and a mouse the precise-pointer ones, checked by
   `desktop_pointer_slops_table`; documented with Flutter's drag devices and desktop tap-target rules
   (docs/desktop-touch-behaviour.md).
-- Gate 3 replay plumbing: `trace_replay` reads `windows`, `wayland`, `x11` and `macos` trace folders when present
-  and compares them with the phone and browser traces under every row; the fixture contract for desktop harnesses is
-  docs/traces-desktop.md.
+- Gate 3 replay: `trace_replay` reads the `windows`, `wayland` and `x11` trace folders and compares them with the
+  phone and browser traces under every row; the fixture contract for desktop harnesses is docs/traces-desktop.md.
 - Windows touch and pen (patch 0021, fork `parallax-gpui*` 0.3.14-parallax.10): touchscreen and pen input on Windows
   reaches GPUI as `TouchEvent`s (`device` Touch or Pen, pen pressure as `force`, the pointer's own time stamp), so
   taps, pans, flings, long presses and pinches work as on a phone. Windows' `WM_POINTER` handling is ported from
@@ -23,7 +22,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   once, through GPUI's recognizer. Mouse and touchpad input are unchanged
   ([docs/desktop-touch-windows.md](docs/desktop-touch-windows.md)). Each `WM_POINTER` message reads its own pointer's
   samples, as Flutter's embedder does, not winit's whole frame: skipping a frame's other messages stopped Windows
-  sending a pinch's later frames.
+  sending a pinch's later frames. Each sample carries its own pressure; a pointer whose up never arrived is
+  cancelled before its next down; a hovering pen leaving the window ends the mouse hover; and a touch's end that
+  comes while GPUI is busy waits for it, so no touch stays open.
 - Windows touch checked with real input (Gate 3): CI's `windows-touch` job injects touch, pen and mouse into hello
   through a synthetic pointer device (dev-only `touch-inject`), records the Windows gesture traces the replay
   compares with Android, web and iOS, and runs runtime checks of patch 0021 (taps, drags, pinch, cancel, pen, pen
@@ -41,23 +42,32 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   output scale 1 and 2. They replay to the same taps, long press, pans, flings and pinch as Android, the web and
   iOS, a tap clicks once, and every touch keeps its own id in logical px. CI runs it (`linux-touch`)
   ([docs/traces-desktop.md](docs/traces-desktop.md#linux-weston-headless)).
-- Direct touch on macOS 27 (patch 0024): touchscreen Macs and iPads used as Sidecar displays send GPUI
+- Direct touch on macOS 27 (patches 0024–0026): touchscreen Macs and iPads used as Sidecar displays send GPUI
   `TouchEvent`s (ids, phases including `Cancelled`, device `Touch`, the event's own time stamp) through a gesture
   recognizer on GPUI's view, so taps, pans, flings, long presses and pinches go through GPUI's touch recognizers. No
   change before macOS 27. Add `NSIsTouchNative` (true) to your app bundle's Info.plist to turn off AppKit's
-  mouse/scroll emulation of touches ([docs/desktop-touch-macos.md](docs/desktop-touch-macos.md)). Not yet checked on
-  touch hardware.
+  mouse/scroll emulation of touches; without it the mouse, scroll and magnify copies AppKit marks as touch's are
+  dropped while touches are down, and a `mouseCancelled:` ends the press ([docs/desktop-touch-macos.md](docs/desktop-touch-macos.md)).
+  Not yet checked on touch hardware.
+
+### Fixed
+
+- iOS touches keep their own `TouchId` (patch 0027): gpui_ios took the id from the `UITouch` address, which UIKit
+  reuses, so a double tap's second touch had the first's id. Ids now count per touch, as Flutter's pointer
+  identifiers do.
+- Wayland and X11 windows blocked by a modal child still get a touch's end or cancel, so no touch stays open.
 
 ### Changed
 
 - Trace lines take an optional sixth field, the device (`Touch` or `Pen`); lines without it read as `Touch`. hello's
   trace pad logs it.
 - hello's desktop window is 400 × 700 logical px (was 400 × 400), so the recorded gestures fit on desktop.
-- `parallax-gpui-windows` and `parallax-gpui-macos` are `Apache-2.0 AND BSD-3-Clause` and ship `LICENSE-FLUTTER`
-  (patches 0021 and 0024 port from Flutter's Windows and macOS embedders). `parallax-gpui-windows` and
+- `parallax-gpui-windows`, `parallax-gpui-apple` and `parallax-gpui-macos` are `Apache-2.0 AND BSD-3-Clause` and
+  ship `LICENSE-FLUTTER` (patches 0021 and 0024 port from Flutter's Windows and Apple embedders). `parallax-gpui-windows` and
   `parallax-gpui-linux` credit winit in their READMEs (patches 0021–0023 port from it; the licence stays Apache-2.0).
-- macOS's behaviour row asks for a 36 pt touch target, Apple's macOS 27 touch guidance (was Cupertino's 44: Flutter has
-  no macOS touch value).
+- macOS's behaviour row asks for a 36 pt touch target (`APPLE_MACOS_MIN_TOUCH_TARGET`, Apple's macOS 27 touch
+  guidance; was Cupertino's 44: Flutter has no macOS touch value).
+- CI's `linux-touch` and `windows-touch` jobs run on pull requests, `main` and manual runs, like `android-smoke`.
 
 ## [0.1.7] - 2026-11-27 — Gate 2: pinch, overscroll, haptics
 
