@@ -6,7 +6,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased] (0.1.9)
 
-Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0035).
+Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0038).
 
 Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
 window; `android_main!` takes a required `open_window` next to `launch`.
@@ -31,8 +31,14 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   manager and its React Native spring).
 - iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
 - iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
-  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): 40 of 44 rows pass,
-  4 standard edit actions stay open for the edit-menu work.
+  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): all 46 rows pass.
+- iOS native text selection (patch 0038): a focused GPUI field gets UIKit's own selection UI through
+  `UITextInteraction`: caret, double tap for a word, highlight and draggable handles, the loupe, and UIKit's edit menu
+  ([docs/ios-text-selection.md](docs/ios-text-selection.md)).
+- iOS edit actions (patch 0036, from Flutter): Cut, Copy, Paste, Delete and Select All from the edit menu and the
+  hardware shortcuts; paste only offers text, copy and cut are off in secure fields.
+- iOS autofill (patch 0037): `TextInputConfiguration::autofill` becomes `textContentType` (Flutter's
+  `ToUITextContentType`), so iOS offers passwords, one-time codes and contact details; no hint turns autofill off.
 - Web app lifecycle (patch 0035): `App::on_app_lifecycle` now hears the page's focus, visibility, freeze and
   resume, the back/forward cache and unloading, as Chrome's Page Lifecycle states mapped to Flutter web's phases
   (docs/web-lifecycle.md).
