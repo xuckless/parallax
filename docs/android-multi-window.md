@@ -46,6 +46,11 @@ again per Activity, which GPUI tolerates. hello sets its own (`open_window`), so
 `onDestroy` closes the Activity's window: its view state goes with it, as a desktop window's does. Rotation and other
 handled configuration changes keep the Activity (manifest `configChanges`), so they keep the window.
 
+When the app closes its own window (`window.remove_window()`), GPUI drops it, which drops the renderer
+(`Open → Closed`), and the Activity finishes: the next framework calls carry Flutter's `SystemNavigator.pop`
+(`Closed → Finishing`), which the ported `PlatformPlugin.popSystemNavigator` plays as `Activity.finish()`. No empty
+Activity stays on screen; the other Activities and their windows keep running.
+
 ## Touch slop
 
 Each view reports its own density and touch slop. A moved slop calls the facade's `TouchSlopChanged` hook with that

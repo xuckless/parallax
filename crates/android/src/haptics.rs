@@ -27,14 +27,14 @@ pub(crate) fn flutter_argument(haptic: Haptic) -> Option<&'static str> {
 }
 
 /// `haptics` as Flutter's `flutter/platform` calls, in order, in the `{"method", "args"}` JSON the view reads
-/// (`args` null for `vibrate()`); `None` when there are none.
-pub(crate) fn platform_calls(haptics: &[Haptic]) -> Option<Value> {
-    (!haptics.is_empty()).then(|| {
-        haptics
-            .iter()
-            .map(|&haptic| json!({"method": "HapticFeedback.vibrate", "args": flutter_argument(haptic)}))
-            .collect()
-    })
+/// (`args` null for `vibrate()`).
+pub(crate) fn platform_calls(haptics: &[Haptic]) -> Vec<Value> {
+    haptics
+        .iter()
+        .map(
+            |&haptic| json!({"method": "HapticFeedback.vibrate", "args": flutter_argument(haptic)}),
+        )
+        .collect()
 }
 
 #[cfg(test)]
@@ -45,14 +45,14 @@ mod tests {
     fn platform_calls_table() {
         // (row name, haptics GPUI played, the calls Java gets)
         let rows = [
-            ("none: no calls", vec![], None),
+            ("none: no calls", vec![], vec![]),
             (
                 "in order; vibrate() sends a null argument",
                 vec![Haptic::HeavyImpact, Haptic::Vibrate],
-                Some(json!([
-                    {"method": "HapticFeedback.vibrate", "args": "HapticFeedbackType.heavyImpact"},
-                    {"method": "HapticFeedback.vibrate", "args": null},
-                ])),
+                vec![
+                    json!({"method": "HapticFeedback.vibrate", "args": "HapticFeedbackType.heavyImpact"}),
+                    json!({"method": "HapticFeedback.vibrate", "args": null}),
+                ],
             ),
         ];
         for (name, haptics, calls) in rows {

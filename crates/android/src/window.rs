@@ -26,6 +26,15 @@ pub(crate) struct AndroidWindow {
     pub(crate) atlas: Arc<dyn PlatformAtlas>,
 }
 
+/// GPUI drops a window it closed, and dropping a platform window closes the native one, as upstream's macOS and iOS
+/// windows do: here the Activity's window, so the Activity finishes rather than stay on screen empty
+/// ([`ActivityWindow::closed_by_app`]).
+impl Drop for AndroidWindow {
+    fn drop(&mut self) {
+        self.window.closed_by_app();
+    }
+}
+
 impl rwh::HasWindowHandle for AndroidWindow {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
         // Not yet on Android: the native window changes with every surface, so no stable handle is handed out.

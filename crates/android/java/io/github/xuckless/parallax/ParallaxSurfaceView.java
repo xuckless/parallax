@@ -75,7 +75,8 @@ final class ParallaxSurfaceView extends SurfaceView
   // GPUI's pending calls to the platform, or null when there are none: a JSON object of Flutter
   // channel name → that channel's calls, each {"method", "args"} in Flutter's encoding, in order.
   // "flutter/textinput" goes to TextInputChannel.handleFrameworkCalls; "flutter/platform" holds
-  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()). One pull for both.
+  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()) and SystemNavigator.pop
+  // (the app closed this Activity's GPUI window). One pull for both.
   private static native String nativeFrameworkCalls(int activity);
 
   // Also after a density change: ParallaxActivity.onConfigurationChanged re-applies the insets, and
@@ -326,21 +327,28 @@ final class ParallaxSurfaceView extends SurfaceView
   }
 
   // The `flutter/platform` calls GPUI makes, played as PlatformChannel's handler plays
-  // `HapticFeedback.vibrate` (an unknown type is logged, as its result.error).
+  // `HapticFeedback.vibrate` and `SystemNavigator.pop` (the app closed this Activity's window; an
+  // unknown call or haptic type is logged, as its result.error).
   private void runPlatformCalls(JSONArray calls) throws JSONException {
     for (int i = 0; i < calls.length(); i++) {
       JSONObject call = calls.getJSONObject(i);
       String method = call.getString("method");
-      if (!method.equals("HapticFeedback.vibrate")) {
-        Log.e(TAG, "unknown flutter/platform call " + method);
-        continue;
-      }
-      String feedbackType = call.isNull("args") ? null : call.getString("args");
-      try {
-        platformPlugin.vibrateHapticFeedback(
-            PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
-      } catch (NoSuchFieldException exception) {
-        Log.e(TAG, exception.getMessage());
+      switch (method) {
+        case "HapticFeedback.vibrate":
+          String feedbackType = call.isNull("args") ? null : call.getString("args");
+          try {
+            platformPlugin.vibrateHapticFeedback(
+                PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
+          } catch (NoSuchFieldException exception) {
+            Log.e(TAG, exception.getMessage());
+          }
+          break;
+        case "SystemNavigator.pop":
+          platformPlugin.popSystemNavigator();
+          break;
+        default:
+          Log.e(TAG, "unknown flutter/platform call " + method);
+          break;
       }
     }
   }

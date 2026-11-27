@@ -7,18 +7,21 @@
 // @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors.
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
-// Parallax changes: package. 2 of 30 cases: the two vibrateHapticFeedback cases (the port keeps
-// only the haptic part of PlatformPlugin). Dropped: the other 28 (clipboard, system chrome,
-// overlays, navigation, share, sounds) with their setup (ClipboardManager, PlatformPluginDelegate);
-// the PlatformChannel mock (the port's constructor takes the Activity alone);
-// mPlatformMessageHandler (vibrateHapticFeedback is called directly); io.flutter.Build.API_LEVELS
-// (-> Build.VERSION_CODES). Ledger: third_party/flutter/PORTED.md.
+// Parallax changes: package. 3 of 30 cases: the two vibrateHapticFeedback cases and
+// performsDefaultBehaviorWhenNoDelegateProvided (the port keeps only the haptic part of
+// PlatformPlugin and popSystemNavigator's no-delegate branch). Dropped: the other 27 (clipboard,
+// system chrome, overlays, delegate and fragment navigation, share, sounds) with their setup
+// (ClipboardManager, PlatformPluginDelegate); the PlatformChannel mock (the port's constructor
+// takes the Activity alone); mPlatformMessageHandler (vibrateHapticFeedback and
+// popSystemNavigator are called directly); io.flutter.Build.API_LEVELS (-> Build.VERSION_CODES).
+// Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
 
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -118,5 +121,15 @@ public class PlatformPluginTest {
     platformPlugin.vibrateHapticFeedback(PlatformChannel.HapticFeedbackType.ERROR_NOTIFICATION);
     verify(fakeDecorView).performHapticFeedback(HapticFeedbackConstants.REJECT);
     clearInvocations(fakeDecorView);
+  }
+
+  @Test
+  public void performsDefaultBehaviorWhenNoDelegateProvided() {
+    Activity mockActivity = mock(Activity.class);
+    PlatformPlugin platformPlugin = new PlatformPlugin(mockActivity);
+
+    platformPlugin.popSystemNavigator();
+
+    verify(mockActivity, times(1)).finish();
   }
 }

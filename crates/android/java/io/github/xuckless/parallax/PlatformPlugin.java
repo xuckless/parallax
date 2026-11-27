@@ -7,13 +7,15 @@
 // @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors.
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
-// Parallax changes: package. Only the haptic part is kept: the Activity and
-// vibrateHapticFeedback. The constructor takes the Activity alone (no PlatformChannel: GPUI's
-// haptics arrive through ParallaxSurfaceView.nativeFrameworkCalls). Dropped:
-// PlatformChannel, PlatformPluginDelegate and mPlatformMessageHandler; destroy; system sounds,
-// system chrome and overlays, orientation, app switcher description, clipboard, share, back
-// navigation; androidx annotations; io.flutter.Log; io.flutter.Build.API_LEVELS (→
-// Build.VERSION_CODES). The bridge: docs/haptics.md. Ledger: third_party/flutter/PORTED.md.
+// Parallax changes: package. Only the Activity, vibrateHapticFeedback and popSystemNavigator are
+// kept. The constructor takes the Activity alone (no PlatformChannel: GPUI's haptics and its
+// window closing arrive through ParallaxSurfaceView.nativeFrameworkCalls). popSystemNavigator
+// keeps only its no-delegate, plain-Activity branch (finish). Dropped: PlatformChannel,
+// PlatformPluginDelegate and mPlatformMessageHandler; destroy; system sounds, system chrome and
+// overlays, orientation, app switcher description, clipboard, share, the
+// OnBackPressedDispatcherOwner branch; androidx annotations; io.flutter.Log;
+// io.flutter.Build.API_LEVELS (→ Build.VERSION_CODES). The bridge: docs/haptics.md,
+// docs/android-multi-window.md. Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
 
@@ -64,5 +66,9 @@ public class PlatformPlugin {
         }
         break;
     }
+  }
+
+  /* package */ void popSystemNavigator() {
+    activity.finish();
   }
 }

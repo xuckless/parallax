@@ -76,7 +76,9 @@ pub(crate) enum FirstFrame {
     Drawn,
 }
 
-/// Where the Activity's GPUI window is. One per Activity; the renderer lives only in `Open`.
+/// Where the Activity's GPUI window is. One per Activity; the renderer lives only in `Open`. Transitions:
+/// `Waiting → Requested` (host.rs, the first surface), `Requested → Open` ([`ActivityWindow::open`]),
+/// `Open → Closed` ([`ActivityWindow::closed_by_app`]), `Closed → Finishing` ([`ActivityWindow::framework_calls`]).
 pub(crate) enum Gpui {
     /// No GPUI window yet: the Activity's first surface asks the app for one.
     Waiting,
@@ -89,6 +91,11 @@ pub(crate) enum Gpui {
         /// Boxed: a renderer is large, and the other states hold nothing.
         renderer: Box<WgpuRenderer>,
     },
+    /// The app closed its window (GPUI dropped it): the renderer is gone, and Java is to finish the Activity with
+    /// the next framework calls.
+    Closed,
+    /// Java was told to finish the Activity (Flutter's `SystemNavigator.pop`); its `onDestroy` follows.
+    Finishing,
 }
 
 /// One Activity's window. Main thread only.
@@ -137,7 +144,7 @@ impl ActivityWindow {
     pub(crate) fn gpui_handle(&self) -> Option<AnyWindowHandle> {
         match &*self.gpui.borrow() {
             Gpui::Open { handle, .. } => Some(*handle),
-            Gpui::Waiting | Gpui::Requested => None,
+            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => None,
         }
     }
 
@@ -145,7 +152,7 @@ impl ActivityWindow {
     pub(crate) fn with_renderer<R>(&self, call: impl FnOnce(&mut WgpuRenderer) -> R) -> Option<R> {
         match &mut *self.gpui.borrow_mut() {
             Gpui::Open { renderer, .. } => Some(call(renderer)),
-            Gpui::Waiting | Gpui::Requested => None,
+            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => None,
         }
     }
 
@@ -187,7 +194,7 @@ impl ActivityWindow {
     pub(crate) fn is_requested(&self) -> bool {
         match &*self.gpui.borrow() {
             Gpui::Requested => true,
-            Gpui::Waiting | Gpui::Open { .. } => false,
+            Gpui::Waiting | Gpui::Open { .. } | Gpui::Closed | Gpui::Finishing => false,
         }
     }
 
@@ -201,6 +208,17 @@ impl ActivityWindow {
             renderer: Box::new(renderer),
         };
         Ok(atlas)
+    }
+
+    /// The app closed this Activity's GPUI window (GPUI dropped it, [`crate::window`]): `Open → Closed`, dropping the
+    /// renderer; the Activity finishes with the next framework calls. A window the Activity's own destruction closed
+    /// is no longer the shell's, so nobody asks.
+    pub(crate) fn closed_by_app(&self) {
+        let mut gpui = self.gpui.borrow_mut();
+        match &*gpui {
+            Gpui::Open { .. } => *gpui = Gpui::Closed,
+            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => {}
+        }
     }
 
     /// The Activity was destroyed: GPUI closes its window (on its next turn) and drops the renderer with it.
@@ -460,13 +478,29 @@ impl ActivityWindow {
 
     /// GPUI's pending calls for Java, emptied: a JSON object of Flutter channel → its calls, with only the channels
     /// that have some (`flutter/textinput`: [`Self::text_input_calls`]; `flutter/platform`: the haptics,
-    /// [`haptics::platform_calls`]); `None` when none has.
+    /// [`haptics::platform_calls`], then `SystemNavigator.pop` once the app closed the window, `Closed → Finishing`);
+    /// `None` when none has.
     pub(crate) fn framework_calls(&self) -> Option<Value> {
+        let mut platform = haptics::platform_calls(&self.haptics.take());
+        let finishes = {
+            let mut gpui = self.gpui.borrow_mut();
+            match &*gpui {
+                Gpui::Closed => {
+                    *gpui = Gpui::Finishing;
+                    true
+                }
+                Gpui::Waiting | Gpui::Requested | Gpui::Open { .. } | Gpui::Finishing => false,
+            }
+        };
+        if finishes {
+            // Java's ported PlatformPlugin.popSystemNavigator finishes the Activity, as Flutter's does.
+            platform.push(serde_json::json!({"method": "SystemNavigator.pop", "args": null}));
+        }
         let channels = [
             ("flutter/textinput", self.text_input_calls()),
             (
                 "flutter/platform",
-                haptics::platform_calls(&self.haptics.take()),
+                (!platform.is_empty()).then_some(Value::Array(platform)),
             ),
         ];
         let calls: serde_json::Map<String, Value> = channels

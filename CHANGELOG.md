@@ -42,8 +42,9 @@ window.
   Activity). Two Activities in split screen both draw and take touch and text. The app's `launch` still runs once
   per process, as on desktop, and opens the first Activity's window; each later Activity's window comes from the new
   `parallax_android::on_activity_window` callback, which the facade's `android_main!` defaults to `launch` (apps
-  need no change; set your own to bind keys once). `onDestroy` closes the Activity's window. The app's lifecycle
-  phase follows its most foreground Activity (`parallax-android`, docs/android-multi-window.md).
+  need no change; set your own to bind keys once). `onDestroy` closes the Activity's window, and an app closing its
+  window finishes its Activity (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most
+  foreground Activity (`parallax-android`, docs/android-multi-window.md).
 - Breaking: `parallax_android::TouchSlopChanged` takes the reporting Activity's window
   (`fn(&mut App, Option<AnyWindowHandle>, Pixels)`), and the facade retunes that window instead of every window
   (`parallax`). Apps using `parallax::android_main!` need no change.
