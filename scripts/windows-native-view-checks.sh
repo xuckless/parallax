@@ -234,6 +234,8 @@ webview2_view() {
   sleep 0.5
   [[ $(lines 'cover: down') -eq 1 && $(lines 'page: down at') -eq $downs ]] \
     && pass "webview2: the cover takes its own click" || fail "webview2: the cover's click went wrong"
+  shot "$work/after-input.raw"
+  check_composition "$work/after-input.raw" "webview2 after input"
   # Off the page, so the hover's own frames are over before the three idle seconds.
   inject move 550 400
   sleep 1.5

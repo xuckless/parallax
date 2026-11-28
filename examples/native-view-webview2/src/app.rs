@@ -113,7 +113,7 @@ impl Example {
         // SAFETY: `raw` is a live IDCompositionVisual on GPUI's device; GPUI takes a reference of its own.
         let view = unsafe { NativeView::new(raw, window, cx) }?;
         view.set_background(rgb(GAP_COLOUR), cx);
-        let page = Page::start(hwnd, visual)?;
+        let page = Page::start(hwnd, device, visual)?;
         log::info!("native view: attached");
         let frames = Rc::new(Cell::new(0));
         let counted = frames.clone();

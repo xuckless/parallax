@@ -18,7 +18,7 @@ use webview2_com::{
 use windows::{
     Win32::{
         Foundation::{HWND, POINT, RECT},
-        Graphics::DirectComposition::IDCompositionVisual,
+        Graphics::DirectComposition::{IDCompositionDevice, IDCompositionVisual},
     },
     core::{Error, HSTRING, Interface, PCWSTR, PWSTR},
 };
@@ -40,8 +40,12 @@ enum State {
 pub struct Page(Rc<RefCell<State>>);
 
 impl Page {
-    /// Starts WebView2 for `window`, rendering into `visual` (made on GPUI's DirectComposition device).
-    pub fn start(window: HWND, visual: IDCompositionVisual) -> windows::core::Result<Self> {
+    /// Starts WebView2 for `window`, rendering into `visual`, made on GPUI's DirectComposition `device`.
+    pub fn start(
+        window: HWND,
+        device: IDCompositionDevice,
+        visual: IDCompositionVisual,
+    ) -> windows::core::Result<Self> {
         let page = Self(Rc::new(RefCell::new(State::Starting { size: [1, 1] })));
         let state = page.0.clone();
         let created = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
@@ -55,7 +59,7 @@ impl Page {
                         let composition = result
                             .and_then(|()| composition.ok_or_else(Error::empty))
                             .and_then(|composition| {
-                                show(&composition, &visual).map(|()| composition)
+                                show(&composition, &device, &visual).map(|()| composition)
                             })
                             .inspect_err(|error| log::error!("webview: no page: {error}"))?;
                         let controller: ICoreWebView2Controller = composition.cast()?;
@@ -136,9 +140,11 @@ impl Page {
     }
 }
 
-/// Renders the controller's page into `visual`, logs what it posts, and loads it.
+/// Renders the controller's page into `visual`, logs what it posts, and loads it. WebView2 adds its content under
+/// `visual`, a change to GPUI's tree that shows only once `device` commits; GPUI commits only for its own frames.
 fn show(
     composition: &ICoreWebView2CompositionController,
+    device: &IDCompositionDevice,
     visual: &IDCompositionVisual,
 ) -> windows::core::Result<()> {
     let controller: ICoreWebView2Controller = composition.cast()?;
@@ -156,6 +162,7 @@ fn show(
     // SAFETY: plain calls on a live controller and its webview; the visual is on the device of GPUI's tree.
     unsafe {
         composition.SetRootVisualTarget(visual)?;
+        device.Commit()?;
         controller.SetIsVisible(true)?;
         let webview = controller.CoreWebView2()?;
         webview.add_WebMessageReceived(&messages, &mut token)?;
