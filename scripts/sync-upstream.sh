@@ -22,7 +22,9 @@ if [[ ${1:-} == --zed ]]; then
     zed_ref="${2:?usage: scripts/sync-upstream.sh --zed REV [VERSION]}"
     shift 2
 fi
-latest="$(cargo search gpui-pre --limit 20 | sed -n 's/^gpui-pre = "\([^"]*\)".*/\1/p')"
+# --color never: CI sets CARGO_TERM_COLOR=always, and colour codes would hide the version from sed.
+latest="$(cargo search --color never gpui-pre --limit 20 | sed -n 's/^gpui-pre = "\([^"]*\)".*/\1/p')"
+[[ -n "$latest" || -n "${1:-}" ]] || die "could not find the latest gpui-pre on crates.io; pass VERSION"
 case $source in
     gpui-pre) version="${1:-$latest}" ;;
     zed)
@@ -33,7 +35,6 @@ case $source in
         version="${1:-$major.$minor.$((patch + 1))-zed.${zed_full:0:7}}"
         ;;
 esac
-[[ -n "$version" ]] || die "could not find the latest gpui-pre on crates.io; pass VERSION"
 echo "syncing upstream/ to $source $version"
 
 # Vendor roots: every gpui-pre-* crate a vendored manifest names, optional deps included, is reachable from these, so
