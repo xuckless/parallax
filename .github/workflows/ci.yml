@@ -458,6 +458,9 @@ jobs:
     env:
       PLAYWRIGHT_DIR: ${{ github.workspace }}/target/playwright
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright/browsers
+      # Playwright 1.56 knows no Ubuntu 26.04 (ubuntu-latest): it takes its 24.04 Firefox build and that build's
+      # system packages, which 26.04 still has.
+      PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
@@ -465,7 +468,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y binaryen
       - run: |
           mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR" && npm init -y >/dev/null
-          npm install playwright@1.56.1 && npx playwright install --with-deps firefox
+          npm install playwright@1.56.1
+          npx playwright install --with-deps firefox || npx playwright install firefox
       - run: scripts/apply-patches.sh
       - run: cargo install --locked --path crates/cli
       # wasm-bindgen-cli at exactly the wasm-bindgen version in Cargo.lock (cargo parallax checks it).
