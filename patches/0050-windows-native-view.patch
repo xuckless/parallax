@@ -5,7 +5,8 @@ composition swap chain the app presents to on its own device and thread) and ret
 it out again; `native_view_input` is 0048's `Window`, as a DirectComposition visual takes no input. The renderer's
 DirectComposition tree becomes, back to front under one root visual: a background visual, a container of one
 subtree per native view (a clip visual holding a content visual, after Chromium's `VisualSubtree`), and GPUI's own
-swap chain visual. Each frame, after `Present`, `DirectComposition::show` compares the scene's views
+swap chain visual. Each frame, after `Present`, `NativeViewTree::place_views` (named after macOS's
+`Layout::places_views`) compares the scene's views
 (`native_views.rs`: placement in whole device pixels, back-to-front order, background colour) with what the tree
 shows, restacks only when the views or their order change, places only the views that moved, and calls
 `Commit` only then, so the hole and the views' placement reach the same composition frame and a frame that moves
@@ -289,10 +290,10 @@ index 5ab9167..4a61785 100644
      }
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
 new file mode 100644
-index 0000000..f977261
+index 0000000..33a15bd
 --- /dev/null
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,383 @@
 +//! Native views in the renderer's DirectComposition tree (docs/native-view-windows.md in Parallax). Each view is the
 +//! app's content (a composition swap chain or anything `IDCompositionVisual::SetContent` takes) in a subtree under
 +//! GPUI's own swap chain visual, shown through a hole the renderer clears in paint order. What to show is decided on
@@ -463,8 +464,9 @@ index 0000000..f977261
 +    }
 +
 +    /// Changes the tree to show `frame`, after Chromium's `VisualTree::BuildTree`: restacks only when the views or
-+    /// their order change and places only the views that moved. Returns whether anything changed and needs a commit.
-+    fn show(&mut self, frame: Frame, devices: &DirectXRendererDevices) -> Result<bool> {
++    /// their order change and places only the views that moved. Returns whether the frame places views (moves,
++    /// resizes, shows, hides or restacks one, as macOS's `Layout::places_views`) and so needs a commit.
++    fn place_views(&mut self, frame: Frame, devices: &DirectXRendererDevices) -> Result<bool> {
 +        if frame == self.shown {
 +            return Ok(false);
 +        }
@@ -632,7 +634,7 @@ index 0000000..f977261
 +            return Ok(());
 +        };
 +        let devices = self.devices.as_ref().context("devices missing")?;
-+        if composition.view_tree.show(frame, devices)? || swapped {
++        if composition.view_tree.place_views(frame, devices)? || swapped {
 +            // SAFETY: plain call on a live device.
 +            unsafe { composition.comp_device.Commit() }?;
 +        }
