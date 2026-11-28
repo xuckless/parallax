@@ -22,12 +22,12 @@ it with `simctl spawn`.
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index 1d9ef66..453a173 100644
+index f599c77..bec5ac2 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
-@@ -184,6 +184,20 @@ features = [
-     "v5",
- ]
+@@ -186,6 +186,20 @@ features = [
+ [lints.cargo]
+ unused_dependencies = "allow"
  
 +[target.'cfg(target_os = "ios")'.dev-dependencies.gpui]
 +version = "=0.3.14"
@@ -47,7 +47,7 @@ index 1d9ef66..453a173 100644
  dbg_macro = "deny"
  declare_interior_mutable_const = "deny"
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index 604df9f..fe980c2 100644
+index 604df9f..8a1c3be 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -714,6 +714,11 @@ fn checked_offset(position: usize, offset: isize, document_length: usize) -> Opt
@@ -1082,10 +1082,10 @@ index 158f1e2..f380ebb 100644
      }
  }
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 414b657..d029ce2 100644
+index 130d9fe..0414256 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -2157,6 +2157,17 @@ impl PlatformInputHandler {
+@@ -2164,6 +2164,17 @@ impl PlatformInputHandler {
          }
      }
  

@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-pre-ios"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 build = false
 publish = true
 autolib = false
@@ -20,7 +20,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Zed's `gpui_ios` crate (gpui-pre snapshot of zed@f126950)"
+description = "Zed's `gpui_ios` crate (gpui-pre snapshot of zed@11e4141)"
 readme = false
 license = "Apache-2.0"
 repository = "https://github.com/zed-industries/zed"
@@ -29,7 +29,7 @@ resolver = "2"
 [package.metadata.gpui-pre]
 zed-crate = "gpui_ios"
 zed-version = "0.1.0"
-zed-rev = "f126950f9d3b62666f97437ae5d4ccac2272c4db"
+zed-rev = "11e4141daab052916566e2f617f128b15b5b7d1c"
 
 [features]
 runtime_shaders = ["gpui_apple/runtime_shaders"]
@@ -64,12 +64,12 @@ version = "0.6"
 version = "0.3.34"
 
 [target.'cfg(target_os = "ios")'.dependencies.gpui]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 default-features = false
 package = "gpui-pre"
 
 [target.'cfg(target_os = "ios")'.dependencies.gpui_apple]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 features = ["font-kit"]
 package = "gpui-pre-apple"
 
@@ -122,7 +122,6 @@ version = "0.3.2"
 features = [
     "std",
     "CALayer",
-    "CAMetalDisplayLink",
     "CAMetalLayer",
     "objc2-metal",
     "CADisplayLink",
@@ -179,6 +178,9 @@ features = [
     "serde",
     "v5",
 ]
+
+[lints.cargo]
+unused_dependencies = "allow"
 
 [lints.clippy]
 dbg_macro = "deny"

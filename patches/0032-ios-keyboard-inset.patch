@@ -36,18 +36,18 @@ Parallax crate nor an extension trait can change them. cfg: the crate's own (iOS
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index d570615..33ceef8 100644
+index 62b100f..447616d 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
-@@ -121,6 +121,8 @@ default-features = false
+@@ -122,6 +122,8 @@ default-features = false
  version = "0.3.2"
  features = [
      "std",
 +    "CAAnimation",
 +    "CABase",
      "CALayer",
-     "CAMetalDisplayLink",
      "CAMetalLayer",
+     "objc2-metal",
 @@ -141,6 +143,7 @@ features = [
      "UICommand",
      "UICornerConfiguration",
@@ -56,6 +56,20 @@ index d570615..33ceef8 100644
      "UIEvent",
      "UIFeedbackGenerator",
      "UIImpactFeedbackGenerator",
+diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
+index 7de9471..e3d1b02 100644
+--- a/gpui-pre-ios/src/ios.rs
++++ b/gpui-pre-ios/src/ios.rs
+@@ -4,7 +4,9 @@ mod application;
+ mod display;
+ mod events;
+ mod keyboard;
++mod keyboard_inset;
+ mod platform;
++mod spring_animation;
+ mod text_input;
+ mod window;
+ 
 diff --git a/gpui-pre-ios/src/ios/application.rs b/gpui-pre-ios/src/ios/application.rs
 index addd040..e557131 100644
 --- a/gpui-pre-ios/src/ios/application.rs
@@ -1020,7 +1034,7 @@ index 0000000..1fc1499
 +    }
 +}
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 3dbdc58..6542b73 100644
+index 3ab94f6..a672da5 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
 @@ -11,6 +11,10 @@
@@ -1055,7 +1069,7 @@ index 3dbdc58..6542b73 100644
  };
  use objc2_ui_kit::{
      UICornerConfiguration, UICornerRadius, UIEvent, UIGestureRecognizer,
-@@ -351,7 +359,13 @@ pub(crate) struct IosWindowState {
+@@ -352,7 +360,13 @@ pub(crate) struct IosWindowState {
      touch_ids: RefCell<TouchIds>,
      /// Where the back gesture an element claimed started, while it runs.
      back_gesture_start: Cell<Option<Point<Pixels>>>,
@@ -1069,7 +1083,7 @@ index 3dbdc58..6542b73 100644
      /// Current mouse position (from touch)
      mouse_position: Cell<Point<Pixels>>,
      /// Current modifiers
-@@ -485,6 +499,10 @@ impl IosWindow {
+@@ -488,6 +502,10 @@ impl IosWindow {
          text_input_view.setUserInteractionEnabled(true);
          view.addSubview(&text_input_view);
  
@@ -1080,7 +1094,7 @@ index 3dbdc58..6542b73 100644
          let state = IosWindowState {
              platform: Rc::downgrade(platform),
              keyboard_observers: RefCell::default(),
-@@ -515,6 +533,8 @@ impl IosWindow {
+@@ -518,6 +536,8 @@ impl IosWindow {
              touch_ids: RefCell::default(),
              back_gesture_start: Cell::new(None),
              keyboard_height: Cell::new(0.),
@@ -1089,7 +1103,7 @@ index 3dbdc58..6542b73 100644
              mouse_position: Cell::new(Point::default()),
              modifiers: Cell::new(Modifiers::default()),
              key_responder: RefCell::default(),
-@@ -548,50 +568,182 @@ impl IosWindowState {
+@@ -552,50 +572,182 @@ impl IosWindowState {
      }
  
      fn register_keyboard_observers(self: &Rc<Self>) {
@@ -1310,7 +1324,7 @@ index 3dbdc58..6542b73 100644
          }
      }
  
-@@ -750,7 +902,9 @@ impl IosWindowState {
+@@ -804,7 +956,9 @@ impl IosWindowState {
          }
      }
  
@@ -1321,7 +1335,7 @@ index 3dbdc58..6542b73 100644
          self.request_frame_callback.with(|callback| {
              let force_render = self.force_next_frame.replace(false);
              callback(RequestFrameOptions {
-@@ -908,6 +1062,16 @@ impl IosWindowState {
+@@ -967,6 +1121,16 @@ impl IosWindowState {
      }
  }
  
@@ -1338,17 +1352,3 @@ index 3dbdc58..6542b73 100644
  /// A `UIPress`'s phase as keyboard.rs's.
  fn press_phase(phase: UIPressPhase) -> PressPhase {
      match phase {
-diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
-index 7de9471..e3d1b02 100644
---- a/gpui-pre-ios/src/ios.rs
-+++ b/gpui-pre-ios/src/ios.rs
-@@ -4,7 +4,9 @@ mod application;
- mod display;
- mod events;
- mod keyboard;
-+mod keyboard_inset;
- mod platform;
-+mod spring_animation;
- mod text_input;
- mod window;
- 

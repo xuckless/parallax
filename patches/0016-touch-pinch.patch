@@ -51,10 +51,10 @@ two-finger tap, one finger left before the slop, two fingers on an element witho
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
-index a483f4a..c70243b 100644
+index 5fd2bd7..9b7ea37 100644
 --- a/gpui-pre-linux/src/linux/wayland/client.rs
 +++ b/gpui-pre-linux/src/linux/wayland/client.rs
-@@ -2750,12 +2750,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+@@ -2771,12 +2771,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
                  fingers: _,
              } => {
                  state.pinch_scale = 1.0;
@@ -73,7 +73,7 @@ index a483f4a..c70243b 100644
                  drop(state);
                  window.handle_input(input);
              }
-@@ -2765,12 +2765,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+@@ -2786,12 +2786,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
                  let zoom_delta = new_absolute_scale - previous_scale;
                  state.pinch_scale = new_absolute_scale;
  
@@ -92,7 +92,7 @@ index a483f4a..c70243b 100644
                  drop(state);
                  window.handle_input(input);
              }
-@@ -2780,12 +2780,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
+@@ -2801,12 +2801,12 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
                  cancelled: _,
              } => {
                  state.pinch_scale = 1.0;
@@ -112,10 +112,10 @@ index a483f4a..c70243b 100644
                  window.handle_input(input);
              }
 diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
-index e21f019..6667170 100644
+index 1a5fc8f..f4c36d9 100644
 --- a/gpui-pre-linux/src/linux/x11/client.rs
 +++ b/gpui-pre-linux/src/linux/x11/client.rs
-@@ -1456,12 +1456,12 @@ impl X11Client {
+@@ -1462,12 +1462,12 @@ impl X11Client {
                      px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
                  );
                  drop(state);
@@ -132,7 +132,7 @@ index e21f019..6667170 100644
              }
              Event::XinputGesturePinchUpdate(event) => {
                  let window = self.get_window(event.event)?;
-@@ -1478,12 +1478,12 @@ impl X11Client {
+@@ -1484,12 +1484,12 @@ impl X11Client {
                  let zoom_delta = new_absolute_scale - previous_scale;
                  state.pinch_scale = new_absolute_scale;
                  drop(state);
@@ -149,7 +149,7 @@ index e21f019..6667170 100644
              }
              Event::XinputGesturePinchEnd(event) => {
                  let window = self.get_window(event.event)?;
-@@ -1496,12 +1496,12 @@ impl X11Client {
+@@ -1502,12 +1502,12 @@ impl X11Client {
                      px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
                  );
                  drop(state);
@@ -412,7 +412,7 @@ index aa3dab0..17c4193 100644
              tuning,
 diff --git a/gpui-pre/src/gestures/pinch.rs b/gpui-pre/src/gestures/pinch.rs
 new file mode 100644
-index 0000000..b7bec92
+index 0000000..5dd0f9d
 --- /dev/null
 +++ b/gpui-pre/src/gestures/pinch.rs
 @@ -0,0 +1,417 @@
@@ -1360,11 +1360,11 @@ index ff33d63..f8323cb 100644
  
  impl Sealed for PinchEvent {}
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 735b861..1f457f4 100644
+index 1793b63..a1b2ab2 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -27,8 +27,12 @@ use crate::{
-     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+@@ -28,8 +28,12 @@ use crate::{
+     prelude::*, px, rems, size, transparent_black,
  };
  
 -use crate::gestures::{BackGestureSource, RecognizedTouchGesture, TouchGestureRecognizer};
@@ -1378,7 +1378,7 @@ index 735b861..1f457f4 100644
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
  use derive_more::{Deref, DerefMut};
-@@ -1307,6 +1311,8 @@ pub struct Window {
+@@ -1305,6 +1309,8 @@ pub struct Window {
      pointer_source: Option<PointerSource>,
      /// Where each touch in progress goes, decided when it started.
      touch_routes: FxHashMap<TouchId, TouchRoute>,
@@ -1387,7 +1387,7 @@ index 735b861..1f457f4 100644
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
-@@ -1652,8 +1658,12 @@ fn default_bounds(
+@@ -1650,8 +1656,12 @@ fn default_bounds(
  enum TouchRoute {
      /// Its started event is being dispatched and nobody has decided yet.
      Deciding,
@@ -1402,7 +1402,7 @@ index 735b861..1f457f4 100644
      /// The element that claimed it: every later phase goes to its touch
      /// listeners wherever it is drawn now, and no events are synthesized.
      Claimed(GlobalElementId),
-@@ -2544,6 +2554,7 @@ impl Window {
+@@ -2550,6 +2560,7 @@ impl Window {
              touch_prediction_enabled: true,
              pointer_source: None,
              touch_routes: FxHashMap::default(),
@@ -1410,7 +1410,7 @@ index 735b861..1f457f4 100644
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
-@@ -3861,7 +3872,7 @@ impl Window {
+@@ -3878,7 +3889,7 @@ impl Window {
      pub fn touch_owner(&self, touch: TouchId) -> Option<&GlobalElementId> {
          match self.touch_routes.get(&touch) {
              Some(TouchRoute::Claimed(owner)) => Some(owner),
@@ -1419,7 +1419,7 @@ index 735b861..1f457f4 100644
          }
      }
  
-@@ -3872,13 +3883,46 @@ impl Window {
+@@ -3889,13 +3900,46 @@ impl Window {
      /// it: an ancestor's `on_touch` then cannot take the touch, as for a div
      /// with `on_click` or `on_scroll` (which calls this for you).
      pub fn leave_touch_to_gestures(&mut self, touch: TouchId) {
@@ -1470,7 +1470,7 @@ index 735b861..1f457f4 100644
          }
      }
  
-@@ -6453,11 +6497,12 @@ impl Window {
+@@ -6563,11 +6607,12 @@ impl Window {
              let mouse_position = mem::replace(&mut self.mouse_position, event.position);
              self.dispatch_mouse_event(event, cx);
              self.mouse_position = mouse_position;
@@ -1487,7 +1487,7 @@ index 735b861..1f457f4 100644
          };
          if claimed && event.phase != TouchPhase::Started {
              self.dispatch_mouse_event(event, cx);
-@@ -6471,6 +6516,25 @@ impl Window {
+@@ -6581,6 +6626,25 @@ impl Window {
              }
              return;
          }
@@ -1513,7 +1513,7 @@ index 735b861..1f457f4 100644
          let mut event = event.clone();
          if !self.touch_prediction_enabled {
              event.predicted_position = None;
-@@ -6536,6 +6600,38 @@ impl Window {
+@@ -6646,6 +6710,38 @@ impl Window {
          }
      }
  
@@ -1552,7 +1552,7 @@ index 735b861..1f457f4 100644
      /// `device` is that of the touch the gesture was recognized from, so a pen
      /// and a finger down together each label their own gestures.
      fn dispatch_recognized_touch_gesture(
-@@ -6599,6 +6695,10 @@ impl Window {
+@@ -6709,6 +6805,10 @@ impl Window {
                  }
              }
          }

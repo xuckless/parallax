@@ -598,6 +598,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -822,7 +828,7 @@ name = "cargo-parallax"
 version = "0.1.9"
 dependencies = [
  "anyhow",
- "resvg",
+ "resvg 0.46.0",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1220,8 +1226,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73"
 dependencies = [
  "bitflags 2.13.2",
- "fontdb",
- "harfrust",
+ "fontdb 0.23.0",
+ "harfrust 0.5.2",
  "linebender_resource_handle",
  "log",
  "rangemap",
@@ -1829,6 +1835,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
+dependencies = [
+ "fontconfig-parser",
+ "log",
+ "memmap2",
+ "slotmap",
+ "tinyvec",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2132,6 +2151,18 @@ dependencies = [
  "bytemuck",
  "core_maths",
  "read-fonts 0.37.0",
+ "smallvec",
+]
+
+[[package]]
+name = "harfrust"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "read-fonts 0.41.0",
  "smallvec",
 ]
 
@@ -2467,6 +2498,12 @@ name = "imagesize"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
+
+[[package]]
+name = "imagesize"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
 name = "imgref"
@@ -3252,6 +3289,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "objc2-uniform-type-identifiers",
 ]
 
@@ -3637,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -3682,7 +3720,7 @@ dependencies = [
  "rand 0.9.5",
  "raw-window-handle",
  "regex",
- "resvg",
+ "resvg 0.49.0",
  "schemars",
  "seahash",
  "serde",
@@ -3693,11 +3731,11 @@ dependencies = [
  "strum",
  "taffy",
  "thiserror 2.0.21",
- "tiny-skia-path",
+ "tiny-skia-path 0.12.0",
  "ttf-parser",
  "unicode-segmentation",
  "url",
- "usvg",
+ "usvg 0.49.0",
  "uuid",
  "waker-fn",
  "web-time",
@@ -3707,7 +3745,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-apple"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "async-task",
@@ -3745,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-bench-metrics"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3755,7 +3793,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-collections"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "indexmap",
  "parallax-gpui-util",
@@ -3764,7 +3802,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-derive-refineable"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3773,7 +3811,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-http-client"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3790,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ios"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -3810,7 +3848,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-linux"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3853,7 +3891,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-macos"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3874,7 +3912,6 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
  "objc2-uniform-type-identifiers",
  "objc2-user-notifications",
  "parallax-gpui",
@@ -3893,7 +3930,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-macros"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -3904,7 +3941,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-platform"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3918,14 +3955,14 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-refineable"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "parallax-gpui-derive-refineable",
 ]
 
 [[package]]
 name = "parallax-gpui-scheduler"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "async-task",
  "backtrace",
@@ -3939,7 +3976,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-shared-string"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "schemars",
  "serde",
@@ -3948,7 +3985,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-sum-tree"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "heapless",
  "parallax-gpui-ztracing",
@@ -3958,7 +3995,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-util"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "log",
@@ -3967,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-web"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3994,7 +4031,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-wgpu"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4020,7 +4057,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-windows"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -4048,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ztracing"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 dependencies = [
  "parallax-gpui-ztracing-macro",
  "tracing",
@@ -4056,7 +4093,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ztracing-macro"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"
 
 [[package]]
 name = "parallax-platform"
@@ -4841,14 +4878,29 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b563218631706d614e23059436526d005b50ab5f2d506b55a17eb65c5eb83419"
 dependencies = [
+ "log",
+ "pico-args",
+ "rgb",
+ "svgtypes",
+ "tiny-skia 0.11.4",
+ "usvg 0.46.0",
+]
+
+[[package]]
+name = "resvg"
+version = "0.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1572844b6727a1bf842190e9947641a68ac44bed83f50afb4bd1407a2564bee8"
+dependencies = [
+ "bytemuck",
  "gif",
  "image-webp",
  "log",
  "pico-args",
  "rgb",
  "svgtypes",
- "tiny-skia",
- "usvg",
+ "tiny-skia 0.12.0",
+ "usvg 0.49.0",
  "zune-jpeg",
 ]
 
@@ -4932,24 +4984,6 @@ dependencies = [
  "quick-error 1.2.3",
  "tempfile",
  "wait-timeout",
-]
-
-[[package]]
-name = "rustybuzz"
-version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd3c7c96f8a08ee34eff8857b11b49b07d71d1c3f4e88f8a88d4c9e9f90b1702"
-dependencies = [
- "bitflags 2.13.2",
- "bytemuck",
- "core_maths",
- "log",
- "smallvec",
- "ttf-parser",
- "unicode-bidi-mirroring",
- "unicode-ccc",
- "unicode-properties",
- "unicode-script",
 ]
 
 [[package]]
@@ -5614,7 +5648,22 @@ dependencies = [
  "cfg-if",
  "log",
  "png 0.17.16",
- "tiny-skia-path",
+ "tiny-skia-path 0.11.4",
+]
+
+[[package]]
+name = "tiny-skia"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47ffee5eaaf5527f630fb0e356b90ebdec84d5d18d937c5e440350f88c5a91ea"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "bytemuck",
+ "cfg-if",
+ "log",
+ "png 0.18.1",
+ "tiny-skia-path 0.12.0",
 ]
 
 [[package]]
@@ -5622,6 +5671,17 @@ name = "tiny-skia-path"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "strict-num",
+]
+
+[[package]]
+name = "tiny-skia-path"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edca365c3faccca67d06593c5980fa6c57687de727a03131735bb85f01fdeeb9"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -5834,18 +5894,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
-name = "unicode-bidi-mirroring"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dfa6e8c60bb66d49db113e0125ee8711b7647b5579dc7f5f19c42357ed039fe"
-
-[[package]]
-name = "unicode-ccc"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce61d488bcdc9bc8b5d1772c404828b17fc481c0a582b5581e95fb233aef503e"
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5905,21 +5953,44 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e419dff010bb12512b0ae9e3d2f318dfbdf0167fde7eb05465134d4e8756076f"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "data-url",
  "flate2",
- "fontdb",
- "imagesize",
+ "imagesize 0.14.0",
  "kurbo",
  "log",
  "pico-args",
  "roxmltree 0.21.2",
- "rustybuzz",
  "simplecss",
  "siphasher",
  "strict-num",
  "svgtypes",
- "tiny-skia-path",
+ "tiny-skia-path 0.11.4",
+ "xmlwriter",
+]
+
+[[package]]
+name = "usvg"
+version = "0.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d09b73ee83641d390ad7ffd9000f347b16eb128e437675b6ff277ea5c7fcf22c"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "flate2",
+ "fontdb 0.24.0",
+ "harfrust 0.12.0",
+ "imagesize 0.15.0",
+ "kurbo",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.2",
+ "simplecss",
+ "siphasher",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes",
+ "tiny-skia-path 0.12.0",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",
@@ -7535,4 +7606,4 @@ dependencies = [
 
 [[patch.unused]]
 name = "parallax-gpui-zlog"
-version = "0.3.14-parallax.11"
+version = "0.3.15-zed.11e4141-parallax.1"

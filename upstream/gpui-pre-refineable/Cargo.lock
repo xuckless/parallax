@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "gpui-pre-derive-refineable"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf8fc665c9a323de64cc96e1137830c840599622de0aa261c5e1fbf527dc0e95"
+checksum = "ea5ab4ebf7c8b75bc8338b343cdffc2d98a94aa55a709b6b280285d2bb26b35b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-refineable"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 dependencies = [
  "gpui-pre-derive-refineable",
 ]

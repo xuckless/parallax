@@ -49,12 +49,12 @@ index f443131..b6d2ced 100644
                      0 => MouseButton::Left,
                      1 => MouseButton::Right,
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 48d9d71..7c0c918 100644
+index 8f8ec2d..0cbf64f 100644
 --- a/gpui-pre-macos/src/window.rs
 +++ b/gpui-pre-macos/src/window.rs
 @@ -1,6 +1,7 @@
  use crate::{
-     BoolExt, MacDisplay, MetalFrames, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
+     BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
 -    TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,
 +    TISGetInputSourceProperty, WindowFrameSource,
 +    events::{MOUSE_CANCELLED, platform_input_from_native},
@@ -100,16 +100,16 @@ index 48d9d71..7c0c918 100644
      activate_callback: Option<Box<dyn FnMut(bool)>>,
      visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
      // `None` until a callback is registered, so notifications during
-@@ -1181,6 +1193,8 @@ impl MacWindow {
-                 renderer,
-                 request_frame_callback: None,
-                 event_callback: None,
-+                touch_ids: touch::TouchIds::default(),
-+                touch_queue: touch::TouchQueue::default(),
-                 activate_callback: None,
-                 visibility_callback: None,
-                 last_visibility: None,
-@@ -1275,6 +1289,7 @@ impl MacWindow {
+@@ -1187,6 +1199,8 @@ impl MacWindow {
+                     renderer,
+                     request_frame_callback: None,
+                     event_callback: None,
++                    touch_ids: touch::TouchIds::default(),
++                    touch_queue: touch::TouchQueue::default(),
+                     activate_callback: None,
+                     visibility_callback: None,
+                     last_visibility: None,
+@@ -1282,6 +1296,7 @@ impl MacWindow {
              native_view,
              setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawPolicy::DuringViewResize
              ];
@@ -117,7 +117,7 @@ index 48d9d71..7c0c918 100644
  
              let native_view: *mut AnyObject = msg_send![native_view, autorelease];
              let _: () = msg_send![content_view, addSubview: native_view];
-@@ -3069,13 +3084,20 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
+@@ -3093,13 +3108,20 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
      let mut lock = window_state.as_ref().lock();
      let window_height = lock.content_size().height;
      let native_event_type: NSEventType = unsafe { msg_send![native_event, type] };
@@ -141,7 +141,7 @@ index 48d9d71..7c0c918 100644
          _ => {}
 diff --git a/gpui-pre-macos/src/window/touch_recognizer.rs b/gpui-pre-macos/src/window/touch_recognizer.rs
 new file mode 100644
-index 0000000..87a8e5a
+index 0000000..96ea145
 --- /dev/null
 +++ b/gpui-pre-macos/src/window/touch_recognizer.rs
 @@ -0,0 +1,208 @@

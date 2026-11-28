@@ -12,8 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-pre"
-version = "0.3.14"
-authors = ["Nathan Sobo <nathan@zed.dev>"]
+version = "0.3.15-zed.11e4141"
 build = "build.rs"
 publish = true
 autolib = false
@@ -21,7 +20,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Zed's GPU-accelerated UI framework (gpui-pre snapshot of zed@f126950)"
+description = "Zed's GPU-accelerated UI framework (gpui-pre snapshot of zed@11e4141)"
 homepage = "https://gpui.rs"
 readme = "README.md"
 keywords = [
@@ -48,7 +47,7 @@ ignored-paths = [
 [package.metadata.gpui-pre]
 zed-crate = "gpui"
 zed-version = "0.2.2"
-zed-rev = "f126950f9d3b62666f97437ae5d4ccac2272c4db"
+zed-rev = "11e4141daab052916566e2f617f128b15b5b7d1c"
 
 [features]
 bench = ["bench-support"]
@@ -287,6 +286,10 @@ path = "examples/window_shadow.rs"
 name = "action_macros"
 path = "tests/action_macros.rs"
 
+[[test]]
+name = "eq_hash"
+path = "tests/eq_hash.rs"
+
 [dependencies.accesskit]
 version = "0.24.0"
 features = ["enumn"]
@@ -301,7 +304,7 @@ version = "4.7"
 version = "0.3"
 
 [dependencies.bench_metrics]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 optional = true
 package = "gpui-pre-bench-metrics"
 
@@ -317,7 +320,7 @@ features = [
 default-features = true
 
 [dependencies.collections]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-collections"
 
 [dependencies.criterion]
@@ -349,15 +352,15 @@ version = "7.7.1"
 optional = true
 
 [dependencies.gpui_macros]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-macros"
 
 [dependencies.gpui_shared_string]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-shared-string"
 
 [dependencies.gpui_util]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-util"
 
 [dependencies.hdrhistogram]
@@ -369,7 +372,7 @@ default-features = false
 version = "0.9.2"
 
 [dependencies.http_client]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-http-client"
 
 [dependencies.icu_segmenter]
@@ -454,7 +457,7 @@ default-features = false
 version = "0.6"
 
 [dependencies.refineable]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-refineable"
 
 [dependencies.regex]
@@ -466,7 +469,7 @@ features = [
 default-features = true
 
 [dependencies.resvg]
-version = "0.46.0"
+version = "0.49"
 features = [
     "text",
     "system-fonts",
@@ -476,7 +479,7 @@ features = [
 default-features = false
 
 [dependencies.scheduler]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-scheduler"
 
 [dependencies.schemars]
@@ -533,7 +536,7 @@ version = "0.28"
 features = ["derive"]
 
 [dependencies.sum_tree]
-version = "=0.3.14"
+version = "=0.3.15-zed.11e4141"
 package = "gpui-pre-sum-tree"
 
 [dependencies.taffy]
@@ -553,7 +556,7 @@ default-features = false
 version = "2.0.12"
 
 [dependencies.tiny-skia-path]
-version = "0.11"
+version = "0.12"
 
 [dependencies.ttf-parser]
 version = "0.25"
@@ -565,7 +568,8 @@ version = "1.10"
 version = "2.2"
 
 [dependencies.usvg]
-version = "0.46.0"
+version = "0.49"
+features = ["svgz"]
 default-features = false
 
 [dependencies.uuid]
@@ -686,6 +690,9 @@ features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_WindowsProgramming",
 ]
+
+[lints.cargo]
+unused_dependencies = "allow"
 
 [lints.clippy]
 dbg_macro = "deny"

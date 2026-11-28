@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-collections"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b18fcff56173d6930f2dce25e5b1243865809a362f2e2b7e25095cd0f101f9a1"
+checksum = "ba82d86ee53b8bd5f03206217c5840f92ac134aba4bbffc4229e830e4c562812"
 dependencies = [
  "gpui-pre-util",
  "indexmap",
@@ -125,9 +125,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-util"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c41cd20c86d5bcc8e8c86efd075f1c3727b2b2f14c01e2d0f11d8bc11a5c0a"
+checksum = "cef1927e2dd4a196fe6014c70c7921de18c467f4268e85982bd89c062436a355"
 dependencies = [
  "anyhow",
  "log",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-zlog"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 dependencies = [
  "anyhow",
  "chrono",

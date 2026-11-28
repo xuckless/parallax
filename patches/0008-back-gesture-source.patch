@@ -105,11 +105,11 @@ index 82108f8..21db052 100644
  
  /// The phase of a [`BackGestureEvent`].
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 6e31dd7..ece537e 100644
+index 54c50b8..7d7009f 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -27,7 +27,9 @@ use crate::{
-     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+@@ -28,7 +28,9 @@ use crate::{
+     prelude::*, px, rems, size, transparent_black,
  };
  
 -use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
@@ -119,7 +119,7 @@ index 6e31dd7..ece537e 100644
  use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
-@@ -1660,9 +1662,9 @@ enum TouchRoute {
+@@ -1658,9 +1660,9 @@ enum TouchRoute {
  }
  
  /// The pointer behind each platform input: one arm per variant, so a new
@@ -132,7 +132,7 @@ index 6e31dd7..ece537e 100644
  fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
      let (device, synthesized) = match event {
          PlatformInput::KeyDown(_)
-@@ -1680,9 +1682,11 @@ fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
+@@ -1678,9 +1680,11 @@ fn pointer_source(event: &PlatformInput) -> Option<PointerSource> {
          | PlatformInput::FileDrop(_) => (PointerDevice::Mouse, false),
          PlatformInput::Touch(touch) => (touch.device, false),
          // The platform recognized these from touches it does not name.
@@ -147,7 +147,7 @@ index 6e31dd7..ece537e 100644
      };
      Some(PointerSource {
          device,
-@@ -8564,15 +8568,15 @@ mod tests {
+@@ -8674,15 +8678,15 @@ mod tests {
      };
  
      use crate::{
@@ -172,7 +172,7 @@ index 6e31dd7..ece537e 100644
      };
  
      #[gpui::test]
-@@ -10170,6 +10174,7 @@ mod tests {
+@@ -10358,6 +10362,7 @@ mod tests {
                                  phase: BackGesturePhase::Started,
                                  start_position: point(px(x), px(10.)),
                                  progress: 0.,
@@ -180,7 +180,7 @@ index 6e31dd7..ece537e 100644
                              }
                              .to_platform_input(),
                              cx,
-@@ -10228,6 +10233,7 @@ mod tests {
+@@ -10416,6 +10421,7 @@ mod tests {
                                  phase: BackGesturePhase::Started,
                                  start_position: point(px(x), px(10.)),
                                  progress: 0.,
@@ -188,7 +188,7 @@ index 6e31dd7..ece537e 100644
                              }
                              .to_platform_input(),
                              cx,
-@@ -10348,6 +10354,15 @@ mod tests {
+@@ -10536,6 +10542,15 @@ mod tests {
                  touch(TouchPhase::Ended, 10., device),
              ]
          };
@@ -204,7 +204,7 @@ index 6e31dd7..ece537e 100644
          let source = |device, synthesized| {
              Some(PointerSource {
                  device,
-@@ -10456,16 +10471,14 @@ mod tests {
+@@ -10644,16 +10659,14 @@ mod tests {
              ),
              (
                  "edge swipe back",

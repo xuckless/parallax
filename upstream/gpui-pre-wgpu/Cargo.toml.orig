@@ -1,16 +1,16 @@
 [package]
 name = "gpui-pre-wgpu"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 edition = { workspace = true }
 publish = true
 license = "Apache-2.0"
-description = "Zed's `gpui_wgpu` crate (gpui-pre snapshot of zed@f126950)"
+description = "Zed's `gpui_wgpu` crate (gpui-pre snapshot of zed@11e4141)"
 repository = "https://github.com/zed-industries/zed"
 
 [package.metadata.gpui-pre]
 zed-crate = "gpui_wgpu"
 zed-version = "0.1.0"
-zed-rev = "f126950f9d3b62666f97437ae5d4ccac2272c4db"
+zed-rev = "11e4141daab052916566e2f617f128b15b5b7d1c"
 
 [lib]
 path = "src/gpui_wgpu.rs"

@@ -185,9 +185,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-collections"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b18fcff56173d6930f2dce25e5b1243865809a362f2e2b7e25095cd0f101f9a1"
+checksum = "ba82d86ee53b8bd5f03206217c5840f92ac134aba4bbffc4229e830e4c562812"
 dependencies = [
  "gpui-pre-util",
  "indexmap",
@@ -196,9 +196,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-util"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c41cd20c86d5bcc8e8c86efd075f1c3727b2b2f14c01e2d0f11d8bc11a5c0a"
+checksum = "cef1927e2dd4a196fe6014c70c7921de18c467f4268e85982bd89c062436a355"
 dependencies = [
  "anyhow",
  "log",
@@ -207,9 +207,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-zlog"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "895aa6d03f791fd14416618d9af8f3ca63dc86906610dfd124976a2671bffa7c"
+checksum = "15c9a2625ae785e7dd126824c052860430aa841898e8a0100f6ff532fce61929"
 dependencies = [
  "anyhow",
  "chrono",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-ztracing"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 dependencies = [
  "async-channel",
  "gpui-pre-zlog",
@@ -235,9 +235,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-ztracing-macro"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0de0aaa67d6974e0983f6d4ded918b73547db6cb82b61ac2de88576a45b0e81"
+checksum = "2bdc1f70b593683edc17522ef85db7f7bd7a4d7d6f899ce14178dc2aea87647a"
 
 [[package]]
 name = "hashbrown"

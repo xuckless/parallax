@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-pre-ztracing-macro"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 build = false
 publish = true
 autolib = false
@@ -20,7 +20,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Zed's `ztracing_macro` crate (gpui-pre snapshot of zed@f126950)"
+description = "Zed's `ztracing_macro` crate (gpui-pre snapshot of zed@11e4141)"
 readme = false
 license = "Apache-2.0"
 repository = "https://github.com/zed-industries/zed"
@@ -29,7 +29,7 @@ resolver = "2"
 [package.metadata.gpui-pre]
 zed-crate = "ztracing_macro"
 zed-version = "0.1.0"
-zed-rev = "f126950f9d3b62666f97437ae5d4ccac2272c4db"
+zed-rev = "11e4141daab052916566e2f617f128b15b5b7d1c"
 
 [features]
 
@@ -39,6 +39,9 @@ path = "src/lib.rs"
 test = false
 doctest = false
 proc-macro = true
+
+[lints.cargo]
+unused_dependencies = "allow"
 
 [lints.clippy]
 dbg_macro = "deny"

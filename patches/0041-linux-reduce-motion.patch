@@ -21,7 +21,7 @@ private to gpui_linux, so a Parallax crate cannot listen on it.
 Upstream PR: not filed (filing paused, patch rule 14).
 
 diff --git a/gpui-pre-linux/src/linux/platform.rs b/gpui-pre-linux/src/linux/platform.rs
-index c9bbd2d..4c7f3c2 100644
+index ed77695..58d44c3 100644
 --- a/gpui-pre-linux/src/linux/platform.rs
 +++ b/gpui-pre-linux/src/linux/platform.rs
 @@ -36,11 +36,12 @@ use crate::linux::{
@@ -42,7 +42,7 @@ index c9bbd2d..4c7f3c2 100644
  };
  #[cfg(any(feature = "wayland", feature = "x11"))]
  use gpui::{Pixels, Point, px};
-@@ -73,6 +74,93 @@ pub(crate) struct PlatformHandlers {
+@@ -74,6 +75,93 @@ pub(crate) struct PlatformHandlers {
      pub(crate) system_wake: Option<Box<dyn FnMut()>>,
      pub(crate) power_mode_change: Option<Box<dyn FnMut()>>,
      pub(crate) displays_changed: Option<Box<dyn FnMut()>>,
@@ -136,7 +136,7 @@ index c9bbd2d..4c7f3c2 100644
  }
  
  /// A system power change, forwarded from D-Bus to the client's event loop.
-@@ -108,6 +196,8 @@ pub(crate) struct LinuxCommon {
+@@ -110,6 +198,8 @@ pub(crate) struct LinuxCommon {
      power_mode: PowerMode,
      #[cfg(any(feature = "wayland", feature = "x11"))]
      power_mode_listener: Option<Task<()>>,
@@ -145,7 +145,7 @@ index c9bbd2d..4c7f3c2 100644
      /// Runs after each foreground runnable registered by [`LinuxCommon::register_sources`].
      ///
      /// X11 uses this to handle events that a runnable's requests read into xcb's queue, where
-@@ -153,6 +243,7 @@ impl LinuxCommon {
+@@ -156,6 +246,7 @@ impl LinuxCommon {
              power_sender,
              power_listener_started: false,
              power_mode: PowerMode::Unknown,
@@ -153,7 +153,7 @@ index c9bbd2d..4c7f3c2 100644
              #[cfg(any(feature = "wayland", feature = "x11"))]
              power_mode_listener: None,
              after_runnable: None,
-@@ -223,6 +314,38 @@ impl LinuxCommon {
+@@ -226,6 +317,38 @@ impl LinuxCommon {
          Ok(())
      }
  
@@ -192,7 +192,7 @@ index c9bbd2d..4c7f3c2 100644
      /// Runs the app's power callback, without `common` borrowed, since the callback
      /// can call back into the platform.
      fn handle_system_power_event(common: &RefCell<Self>, event: SystemPowerEvent) {
-@@ -604,6 +727,17 @@ impl Platform for LinuxPlatform {
+@@ -607,6 +730,17 @@ impl Platform for LinuxPlatform {
          ThermalState::Nominal
      }
  
@@ -210,7 +210,7 @@ index c9bbd2d..4c7f3c2 100644
      fn power_mode(&self) -> PowerMode {
          self.with_common(|common| common.power_mode)
      }
-@@ -1795,6 +1929,93 @@ mod tests {
+@@ -1806,6 +1940,93 @@ mod tests {
          Ok(())
      }
  
@@ -305,11 +305,11 @@ index c9bbd2d..4c7f3c2 100644
      #[test]
      fn rejects_null_xkb_context() {
 diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
-index a2d9ed0..b221464 100644
+index 2ff149f..d372e4a 100644
 --- a/gpui-pre-linux/src/linux/wayland/client.rs
 +++ b/gpui-pre-linux/src/linux/wayland/client.rs
-@@ -1201,6 +1201,12 @@ impl WaylandConnection {
-                             client.cursor.set_size(size);
+@@ -1222,6 +1222,12 @@ impl WaylandConnection {
+                             }
                          }
                      }
 +                    XDPEvent::Motion(report) => {
@@ -322,12 +322,12 @@ index a2d9ed0..b221464 100644
              }),
              "failed to register desktop portal source",
 diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
-index dad4435..60a9cd5 100644
+index 9072ee3..d2a9fbb 100644
 --- a/gpui-pre-linux/src/linux/x11/client.rs
 +++ b/gpui-pre-linux/src/linux/x11/client.rs
-@@ -628,6 +628,10 @@ impl X11Client {
-                         XDPEvent::CursorTheme(_) | XDPEvent::CursorSize(_) => {
-                             // noop, X11 manages this for us.
+@@ -632,6 +632,10 @@ impl X11Client {
+                             // noop, the desktop already folds this into `Xft.dpi`, which
+                             // the scale factor comes from.
                          }
 +                        XDPEvent::Motion(report) => {
 +                            let common = client.0.borrow().common.clone();
@@ -337,7 +337,7 @@ index dad4435..60a9cd5 100644
                  }
              })
 diff --git a/gpui-pre-linux/src/linux/xdg_desktop_portal.rs b/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
-index 9b06836..16d48a2 100644
+index f0ab207..417709e 100644
 --- a/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
 +++ b/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
 @@ -10,6 +10,8 @@ use smol::stream::StreamExt;
@@ -349,16 +349,16 @@ index 9b06836..16d48a2 100644
  pub enum Event {
      WindowAppearance(WindowAppearance),
      #[cfg_attr(feature = "x11", allow(dead_code))]
-@@ -17,6 +19,7 @@ pub enum Event {
-     #[cfg_attr(feature = "x11", allow(dead_code))]
-     CursorSize(u32),
+@@ -19,6 +21,7 @@ pub enum Event {
      ButtonLayout(String),
+     #[cfg_attr(feature = "x11", allow(dead_code))]
+     TextScaleFactor(f32),
 +    Motion(MotionReport),
  }
  
  /// Forwards desktop settings from the portal to the event loop.
-@@ -73,6 +76,22 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
-         sender.send(Event::ButtonLayout(initial_layout))?;
+@@ -84,6 +87,22 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
+         }
      }
  
 +    // Both motion keys in one startup report, sent even when the portal has neither.
@@ -380,7 +380,7 @@ index 9b06836..16d48a2 100644
      // Each listener runs until its stream or the channel closes. They're joined rather than
      // spawned, so that cancelling this future cancels them all.
      let mut listeners: Vec<BoxFuture<'_, anyhow::Result<()>>> = Vec::new();
-@@ -116,6 +135,39 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
+@@ -145,6 +164,39 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
          }));
      }
  

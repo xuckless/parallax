@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-sum-tree"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 dependencies = [
  "gpui-pre-ztracing",
  "heapless",
@@ -214,9 +214,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-ztracing"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa2a81eaf17ae3c81b118d45ce173e25cd621062c111561b1957660d678d4d4c"
+checksum = "37f30a52cdd2be786d7b5358e0006bf4ca6215679788d711a5609e30ccb4b5bd"
 dependencies = [
  "gpui-pre-ztracing-macro",
  "tracing",
@@ -224,9 +224,9 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-ztracing-macro"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0de0aaa67d6974e0983f6d4ded918b73547db6cb82b61ac2de88576a45b0e81"
+checksum = "2bdc1f70b593683edc17522ef85db7f7bd7a4d7d6f899ce14178dc2aea87647a"
 
 [[package]]
 name = "hash32"

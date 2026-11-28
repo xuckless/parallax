@@ -10,7 +10,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "gpui-pre-util"
-version = "0.3.14"
+version = "0.3.15-zed.11e4141"
 dependencies = [
  "anyhow",
  "log",

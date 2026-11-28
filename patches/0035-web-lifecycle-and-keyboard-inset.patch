@@ -693,7 +693,7 @@ index b496aa4..ab7419e 100644
      let Some(document) = browser_window.document() else {
          return;
 diff --git a/gpui-pre-web/src/viewport.rs b/gpui-pre-web/src/viewport.rs
-index e8a75c8..537775c 100644
+index fad0e2c..aeb435f 100644
 --- a/gpui-pre-web/src/viewport.rs
 +++ b/gpui-pre-web/src/viewport.rs
 @@ -7,6 +7,8 @@
@@ -705,7 +705,7 @@ index e8a75c8..537775c 100644
  pub(crate) struct WebViewport {
      safe_area_probes: [web_sys::HtmlElement; 4],
      pub(crate) visible_bounds: Bounds<Pixels>,
-@@ -40,10 +42,13 @@ impl WebViewport {
+@@ -69,10 +71,13 @@ impl WebViewport {
          }
      }
  
@@ -717,19 +717,19 @@ index e8a75c8..537775c 100644
 +        ios: bool,
 +        is_editing_on_mobile: bool,
      ) -> anyhow::Result<bool> {
-         let canvas_bounds = canvas.get_bounding_client_rect();
          let document = window
-@@ -54,7 +59,8 @@ impl WebViewport {
-             .ok_or_else(|| anyhow::anyhow!("Missing root"))?;
-         let layout_width = root.client_width() as f64;
-         let layout_height = root.client_height() as f64;
+             .document()
+@@ -101,7 +106,8 @@ impl WebViewport {
+             }
+         }
+         let canvas_bounds = canvas.get_bounding_client_rect();
 -        let (left, top, width, height) = match window.visual_viewport() {
 +        let visual_viewport = window.visual_viewport();
 +        let (left, top, width, height) = match &visual_viewport {
              Some(viewport) => (
                  viewport.offset_left(),
                  viewport.offset_top(),
-@@ -85,8 +91,22 @@ impl WebViewport {
+@@ -132,8 +138,22 @@ impl WebViewport {
              bottom: px((canvas_bounds.bottom() - layout_height + bottom).max(0.) as f32),
              left: px((left - canvas_bounds.left()).max(0.) as f32),
          };
@@ -753,7 +753,7 @@ index e8a75c8..537775c 100644
          };
          let changed = self.visible_bounds != visible_bounds || self.insets != insets;
 diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 1131916..3fe95b9 100644
+index 44b7082..e2cad01 100644
 --- a/gpui-pre-web/src/window.rs
 +++ b/gpui-pre-web/src/window.rs
 @@ -28,6 +28,7 @@ pub(crate) struct WebWindowCallbacks {
@@ -853,7 +853,7 @@ index 1131916..3fe95b9 100644
      let is_visible = browser_window
          .document()
          .and_then(|document| js_sys::Reflect::get(&document, &"visibilityState".into()).ok())
-@@ -890,6 +915,10 @@ impl PlatformWindow for WebWindow {
+@@ -891,6 +916,10 @@ impl PlatformWindow for WebWindow {
          self.inner.viewport.borrow().insets.clone()
      }
  

@@ -6,7 +6,7 @@ What (needs 0039):
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (Personalization > Colors > Transparency
   effects) reduces transparency; an unreadable or missing value reduces neither. platform.rs reads both at startup
   (windows-registry, already a dependency) and again on `WM_SETTINGCHANGE`, which the platform's hidden top-level
-  window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_USER + 11`) first, as for display
+  window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_USER + 12`) first, as for display
   changes, and calls the app back only when the settings moved. Table test runs on the host through
   scripts/patch-test.sh's `windows-pure` crate.
 
@@ -17,6 +17,7 @@ Upstream PR: not filed (filing paused, patch rule 14).
 
 diff --git a/gpui-pre-windows/src/accessibility_display.rs b/gpui-pre-windows/src/accessibility_display.rs
 new file mode 100644
+index 0000000..04f7fef
 --- /dev/null
 +++ b/gpui-pre-windows/src/accessibility_display.rs
 @@ -0,0 +1,49 @@
@@ -70,17 +71,19 @@ new file mode 100644
 +    }
 +}
 diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
+index 31b53aa..cc4f71b 100644
 --- a/gpui-pre-windows/src/events.rs
 +++ b/gpui-pre-windows/src/events.rs
-@@ -64,6 +64,7 @@
- pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
+@@ -65,6 +65,7 @@ pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
  pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
  pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
-+pub(crate) const WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED: u32 = WM_USER + 11;
+ pub(crate) const WM_GPUI_PRESENTABILITY_CHANGED: u32 = WM_USER + 11;
++pub(crate) const WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED: u32 = WM_USER + 12;
  
  const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
  
 diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
+index 8c9b847..bff01be 100644
 --- a/gpui-pre-windows/src/gpui_windows.rs
 +++ b/gpui-pre-windows/src/gpui_windows.rs
 @@ -1,5 +1,6 @@
@@ -91,9 +94,10 @@ diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_wi
  mod destination_list;
  mod dialog;
 diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
+index 8145ae9..4bdcac1 100644
 --- a/gpui-pre-windows/src/platform.rs
 +++ b/gpui-pre-windows/src/platform.rs
-@@ -99,6 +99,8 @@
+@@ -102,6 +102,8 @@ pub(crate) struct WindowsPlatformState {
      pub(crate) draw_coordinator: Rc<DrawCoordinator>,
      directx_devices: RefCell<Option<DirectXDevices>>,
      low_power_mode_enabled: Cell<bool>,
@@ -102,7 +106,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
  }
  
  #[derive(Default)]
-@@ -114,6 +116,7 @@
+@@ -117,6 +119,7 @@ struct PlatformCallbacks {
      system_wake: Cell<Option<Box<dyn FnMut()>>>,
      low_power_mode_change: Cell<Option<Box<dyn FnMut()>>>,
      displays_changed: Cell<Option<Box<dyn FnMut()>>>,
@@ -110,7 +114,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
  }
  
  impl WindowsPlatformState {
-@@ -130,6 +133,7 @@
+@@ -133,6 +136,7 @@ impl WindowsPlatformState {
              draw_coordinator: Rc::new(DrawCoordinator::new()),
              directx_devices: RefCell::new(directx_devices),
              low_power_mode_enabled: Cell::new(false),
@@ -118,7 +122,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
              menus: RefCell::new(Vec::new()),
          }
      }
-@@ -876,6 +880,21 @@
+@@ -891,6 +895,21 @@ impl Platform for WindowsPlatform {
          }
      }
  
@@ -140,7 +144,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
      fn on_power_mode_change(&self, callback: Box<dyn FnMut()>) {
          self.inner
              .state
-@@ -1216,8 +1235,10 @@
+@@ -1231,8 +1250,10 @@ impl WindowsPlatformInner {
              | WM_GPUI_DOCK_MENU_ACTION
              | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
              | WM_GPUI_DISPLAYS_CHANGED
@@ -151,7 +155,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
              WM_DISPLAYCHANGE => self.handle_display_change(handle),
              WM_QUERYENDSESSION => Some(1),
              WM_ENDSESSION if wparam.0 != 0 => self.handle_end_session(),
-@@ -1244,6 +1265,7 @@
+@@ -1259,6 +1280,7 @@ impl WindowsPlatformInner {
              WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
              WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
              WM_GPUI_DISPLAYS_CHANGED => self.handle_displays_changed(),
@@ -159,7 +163,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
              WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
              _ => unreachable!(),
          }
-@@ -1264,6 +1286,33 @@
+@@ -1279,6 +1301,33 @@ impl WindowsPlatformInner {
          Some(0)
      }
  
@@ -193,7 +197,7 @@ diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
      fn handle_displays_changed(&self) -> Option<isize> {
          self.with_callback(
              |callbacks| &callbacks.displays_changed,
-@@ -1629,6 +1678,26 @@
+@@ -1644,6 +1693,26 @@ fn file_open_dialog(
      Ok(Some(paths))
  }
  

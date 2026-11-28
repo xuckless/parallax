@@ -25,7 +25,7 @@ opening the keyboard. No cfg: the override is core and the same on every platfor
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
-index 2116396..b1a18a6 100644
+index ab56b28..d03b07b 100644
 --- a/gpui-pre-web/src/events.rs
 +++ b/gpui-pre-web/src/events.rs
 @@ -1,8 +1,8 @@
@@ -39,7 +39,7 @@ index 2116396..b1a18a6 100644
      MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
      Pixels, PlatformInput, Point, PointerDevice, ScrollDelta, ScrollEvent, ScrollSource,
      TouchEvent, TouchId, TouchPhase, point, px,
-@@ -580,8 +580,7 @@ impl WebWindowInner {
+@@ -589,8 +589,7 @@ impl WebWindowInner {
                  // pointerup handler.
                  if let Some((pointer_id, start_position)) = this.touch_tap_candidate.get()
                      && pointer_id == event.pointer_id()
@@ -50,7 +50,7 @@ index 2116396..b1a18a6 100644
                      this.touch_tap_candidate.set(None);
                  }
 diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 1a8a3bd..2463a70 100644
+index 9ccc7ff..34bca7d 100644
 --- a/gpui-pre-web/src/window.rs
 +++ b/gpui-pre-web/src/window.rs
 @@ -84,6 +84,10 @@ pub(crate) struct WebWindowInner {
@@ -82,7 +82,7 @@ index 1a8a3bd..2463a70 100644
              pending_physical_size: Cell::new(None),
              raf_id: Cell::new(None),
 diff --git a/gpui-pre/src/app.rs b/gpui-pre/src/app.rs
-index 9e64eae..e143547 100644
+index e017195..2cd1ee1 100644
 --- a/gpui-pre/src/app.rs
 +++ b/gpui-pre/src/app.rs
 @@ -49,14 +49,14 @@ use crate::{
@@ -108,7 +108,7 @@ index 9e64eae..e143547 100644
      colors::{Colors, GlobalColors},
      hash, init_app_menus,
  };
-@@ -975,6 +975,8 @@ pub struct App {
+@@ -976,6 +976,8 @@ pub struct App {
      pub(crate) mode: GpuiMode,
      pub(crate) cursor_hide_mode: CursorHideMode,
      pub(crate) reduce_motion: bool,
@@ -117,7 +117,7 @@ index 9e64eae..e143547 100644
      /// Origin of the shared clock that phase-locks synced repeating animations.
      pub(crate) synced_animation_epoch: Instant,
      power_mode: PowerMode,
-@@ -1093,6 +1095,7 @@ impl App {
+@@ -1095,6 +1097,7 @@ impl App {
                  quitting: false,
                  cursor_hide_mode: CursorHideMode::default(),
                  reduce_motion: false,
@@ -125,7 +125,7 @@ index 9e64eae..e143547 100644
                  synced_animation_epoch,
                  power_mode,
                  accessibility_force_disabled: false,
-@@ -1412,6 +1415,23 @@ impl App {
+@@ -1437,6 +1440,23 @@ impl App {
          self.reduce_motion
      }
  
@@ -234,7 +234,7 @@ index f165502..80748c7 100644
      fn slow_release_does_not_start_momentum() {
          let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index dbd0298..9f9d978 100644
+index 1017fe9..9816595 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
 @@ -39,11 +39,11 @@ pub(crate) type PlatformScreenCaptureFrame =
@@ -254,7 +254,7 @@ index dbd0298..9f9d978 100644
  };
  #[cfg(any(target_os = "linux", target_os = "freebsd"))]
  use anyhow::bail;
-@@ -2922,6 +2922,10 @@ pub struct WindowParams {
+@@ -2929,6 +2929,10 @@ pub struct WindowParams {
  
      #[cfg(target_os = "macos")]
      pub use_display_p3: bool,
@@ -266,11 +266,11 @@ index dbd0298..9f9d978 100644
  
  /// Represents the status of how a window should be opened.
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index f43d430..735b861 100644
+index b6ad55d..1793b63 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -27,9 +27,7 @@ use crate::{
-     WindowTextSystem, WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+@@ -28,9 +28,7 @@ use crate::{
+     prelude::*, px, rems, size, transparent_black,
  };
  
 -use crate::gestures::{
@@ -280,7 +280,7 @@ index f43d430..735b861 100644
  use crate::interactive::{PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase};
  use anyhow::{Context as _, Result, anyhow};
  use collections::{FxHashMap, FxHashSet};
-@@ -1752,6 +1750,7 @@ impl Window {
+@@ -1750,6 +1748,7 @@ impl Window {
              .map(|(_, bounds)| bounds);
          let window_bounds = window_bounds
              .unwrap_or_else(|| default_bounds(active_window_bounds, display.as_deref()));
@@ -288,7 +288,7 @@ index f43d430..735b861 100644
          let mut platform_window = cx.platform.open_window(
              handle,
              WindowParams {
-@@ -1772,6 +1771,7 @@ impl Window {
+@@ -1770,6 +1769,7 @@ impl Window {
                  tabbing_identifier,
                  #[cfg(target_os = "macos")]
                  use_display_p3,
@@ -296,7 +296,7 @@ index f43d430..735b861 100644
              },
          )?;
  
-@@ -2540,11 +2540,7 @@ impl Window {
+@@ -2546,11 +2546,7 @@ impl Window {
              #[cfg(feature = "profiler")]
              window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
              last_input_modality: InputModality::Mouse,
@@ -309,7 +309,7 @@ index f43d430..735b861 100644
              touch_prediction_enabled: true,
              pointer_source: None,
              touch_routes: FxHashMap::default(),
-@@ -3903,7 +3899,7 @@ impl Window {
+@@ -3920,7 +3916,7 @@ impl Window {
      /// Restarts touch recognition with the tuning a test passes, in place of
      /// the platform's.
      #[cfg(test)]
@@ -318,7 +318,7 @@ index f43d430..735b861 100644
          self.touch_gestures = TouchGestureRecognizer::new(tuning);
      }
  
-@@ -8614,12 +8610,13 @@ mod tests {
+@@ -8724,12 +8720,13 @@ mod tests {
          AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, BackGestureSource,
          Bounds, ContentMask, Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty,
          ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
@@ -338,7 +338,7 @@ index f43d430..735b861 100644
      };
  
      #[gpui::test]
-@@ -10545,6 +10542,50 @@ mod tests {
+@@ -10733,6 +10730,50 @@ mod tests {
          }
      }
  

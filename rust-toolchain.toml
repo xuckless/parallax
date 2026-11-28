@@ -1,6 +1,6 @@
 # Matches upstream GPUI's toolchain. Bump only when upstream bumps (see AGENTS.md).
 [toolchain]
-channel = "1.98.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy", "rust-src"]
 targets = [

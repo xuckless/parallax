@@ -1,4 +1,4 @@
-// Modified for gpui-pre (snapshot of zed@f126950): adapt device queues and sRGB detection to wgpu 30.0.1.
+// Modified for gpui-pre (snapshot of zed@11e4141): adapt device queues and sRGB detection to wgpu 30.0.1.
 use anyhow::{Context as _, Result};
 use etagere::{BucketedAtlasAllocator, size2};
 use gpui::{
