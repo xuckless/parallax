@@ -118,6 +118,16 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   move() { eval_js "globalThis.w15.notify_absolute_motion($now, $1, $2); true" >/dev/null; sleep 0.4; }
   click() { eval_js "globalThis.w15.notify_button($now, 1, 1); globalThis.w15.notify_button($now, 1, 0); true" \
     >/dev/null; sleep 0.4; }
+  # Whether the last `view pointer <kind>` in $log is within 2 pixels of (x, y).
+  log=$work/still.log
+  near() { grep "view pointer $1 at" "$log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
+    | awk -v x="$2" -v y="$3" '{ found = ($1 - x)^2 <= 4 && ($2 - y)^2 <= 4 } END { exit !found }'; }
+  # A click on the view that should log a press at (x, y) in it. Now and then (seen twice in ten runs at 1.25) no
+  # press is logged for the first click on the view after focusing; it is clicked once more, and the note says so.
+  click_view() {
+    click
+    near down "$1" "$2" || { echo "note [$scale]: no press logged for a click on the view, clicking again"; click; }
+  }
   # mutter keeps the first click on an unfocused window from it (the headless seat has no keyboard to focus it
   # otherwise), so the first click lands on the window's own background, left of the view; a second one there in
   # case the focus took longer than a click (seen with the Shell on llvmpipe).
@@ -127,14 +137,10 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   click
   move "$vx" "$vy"
   move "$vx" "$vy"
-  click
+  click_view 400 250
   eval_js "globalThis.w15.notify_discrete_scroll($now, imports.gi.Clutter.ScrollDirection.DOWN,
     imports.gi.Clutter.ScrollSource.WHEEL); true" >/dev/null
   sleep 0.4
-  # Whether the last `view pointer <kind>` in $log is within 2 pixels of (x, y).
-  log=$work/still.log
-  near() { grep "view pointer $1 at" "$log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
-    | awk -v x="$2" -v y="$3" '{ found = ($1 - x)^2 <= 4 && ($2 - y)^2 <= 4 } END { exit !found }'; }
   for kind in move down scroll; do
     near "$kind" 400 250 && pass "a $kind over the view arrives at 400 250 in the view" \
       || fail "no $kind at 400 250 in the view: $(grep "view pointer $kind" "$work/still.log" | tail -1)"
@@ -196,7 +202,7 @@ print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f
     || fail "clipped: the clipped-away part took the pointer"
   move "$vx" "$vy"
   move "$vx" "$vy"
-  click
+  click_view 400 300
   near down 400 300 && pass "clipped: a click in the visible part arrives at 400 300 in the whole view" \
     || fail "clipped: no click at 400 300 in the view: $(grep 'view pointer down' "$log" | tail -1)"
   kill $app 2>/dev/null || true
