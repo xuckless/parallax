@@ -8,9 +8,10 @@
 //   its browsers come from PLAYWRIGHT_BROWSERS_PATH). Checks needing what Playwright can't drive print "skip".
 // Usage: node scripts/web-checks.mjs <hello url> desktop|mobile <chromium debugging port | firefox | webkit>
 // With a fourth argument `native-view` and native-view-web's url, it checks patch 0054's native views instead
-// (docs/native-view-web.md): input into the views' elements and the divs over them, 0 GPUI frames while only the
-// elements change, the alpha mode, no gap colour (still and animating) at the page's scale, and, on Chromium, the
-// toggle's and the views' costs (on a phone profile in mobile mode). A fifth argument is the page's scale (default
+// (docs/native-view-web-checks.md): input into the views' elements and the divs over them, focus between them and
+// GPUI's field, page content around an offset canvas, 0 GPUI frames while only the elements change, the alpha mode,
+// each screenshot's content (holes cut, views, divs and GPUI drew, no gap; still and animating) at the page's scale,
+// and, on Chromium, the toggle's and the views' costs (on a phone profile in mobile mode). A fifth argument is the page's scale (default
 // 1), emulated: Emulation.setDeviceMetricsOverride on Chromium, the context's deviceScaleFactor in Playwright.
 // Prints each check; exits 1 if any fails.
 import { execFileSync } from "node:child_process";
