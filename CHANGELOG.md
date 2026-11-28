@@ -6,7 +6,30 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
-### Added (0.1.10)
+## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
+
+Wave 15 (Phase: NativeView, issue #1), fork `parallax-gpui*` 0.3.14-parallax.12 (patches 0047–0072). The NativeView
+gate passed on every target the machines can run (docs/native-view-gate.md): with only a native view updating, GPUI
+draws 0 frames/s on Wayland (NVIDIA and Mesa), Windows, iOS, Android and the web.
+
+### Breaking changes
+
+- `gpui::HitboxBehavior` has a new variant, `BlockMouseExceptAncestors` (set by native views whose input reaches the
+  window). Migration: a `match` on `HitboxBehavior` needs an arm for it; treat it like `BlockMouse` unless the code
+  walks hitbox ancestors.
+- Wayland native views: the app commits every buffer of its view's `wl_surface` through
+  `gpui_linux::NativeViewBuffers`, never with a bare `wl_surface.commit` (that let a crop not fit its buffer, and the
+  compositor ended the connection). Migration: take `let buffers = NativeViewBuffers::of(&view)` once (`None` off
+  Wayland), then replace `surface.attach(..); surface.damage(..); surface.commit()` with
+  `buffers.commit_buffer(&surface, &buffer, size)` from any thread; its `Committed` result says whether the buffer
+  went up (`NotShown` while the view is hidden).
+- Licences: `parallax-gpui-linux` is now `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-CHROMIUM`, and
+  `parallax-gpui-windows` ships `LICENSE-CHROMIUM` too (code adapted from Chromium). Migration: apps that list their
+  dependencies' licences add Chromium's BSD-3-Clause notice.
+- The per-platform native-view examples named below became one example, `examples/native-view`
+  (`--view webview2` on Windows). Migration: run `cargo run -p native-view` (docs/examples-native-view.md).
+
+### Added
 
 - Native views on Linux (Wayland): `NativeView::new` takes a `wl_surface` the app made on GPUI's connection and shows
   it as a subsurface under the window, in step with GPUI's frames, with no GPUI frame for the view's own
@@ -67,7 +90,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   (iOS simulator, macOS recordings), and content, focus, page-content and offset-canvas rows in web-checks.mjs'
   native-view suite.
 
-### Fixed (0.1.10)
+### Fixed
 
 - Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
   scale 1 and drew at the square of the scale (fork patch 0070).
@@ -94,7 +117,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Web: when the WebGPU canvas probe reads blank and WebGL2 fails, WebGL2 is tried once more after the next animation
   frame before the window stays on WebGPU (fork patch 0072).
 
-### Changed (0.1.10)
+### Changed
 
 - The NativeView fork patches are split by concern and renumbered 0047–0072 (docs/patch-list.md); the patched GPUI
   they build is byte-identical to before the split.

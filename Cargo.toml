@@ -5,7 +5,7 @@ exclude = ["upstream", "build"]
 
 [workspace.package]
 authors = ["Syed Ali (xuckless)"]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/xuckless/parallax"
@@ -21,9 +21,9 @@ gpui_wgpu = { package = "parallax-gpui-wgpu", version = "=0.3.14-parallax.12" }
 gpui_linux = { package = "parallax-gpui-linux", version = "=0.3.14-parallax.12" }
 # Windows only: GPUI's DirectComposition device for hosted visuals (examples/native-view, `--view webview2`).
 gpui_windows = { package = "parallax-gpui-windows", version = "=0.3.14-parallax.12" }
-parallax-android = { path = "crates/android", version = "0.1.9" }
-parallax-ext = { path = "crates/ext", version = "0.1.9" }
-parallax-platform = { path = "crates/platform", version = "0.1.9" }
+parallax-android = { path = "crates/android", version = "0.1.10" }
+parallax-ext = { path = "crates/ext", version = "0.1.10" }
+parallax-platform = { path = "crates/platform", version = "0.1.10" }
 thiserror = "2"
 
 [workspace.lints.clippy]
