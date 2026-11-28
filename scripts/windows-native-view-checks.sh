@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Runtime checks of NativeView on Windows (patches 0048, 0050 and 0056, docs/native-view-windows.md): runs
-# examples/native-view-windows (a composition swap chain) and examples/native-view-webview2 (a WebView2 page) on the
+# examples/native-view (a composition swap chain, and with `--view webview2` a WebView2 page) on the
 # desktop, reads the composed screen back through crates/touch-inject, injects mouse and key input, and asserts on
-# pixels and on what the examples logged. Each scale relaunches each example; logs and screenshots land in
+# pixels and on what the example logged. Each scale relaunches each variant; logs and screenshots land in
 # target/native-view-windows/<percent>/ and target/native-view-windows/<percent>/webview2/.
 #
 # Usage: scripts/windows-native-view-checks.sh [percent…]     (default: 100 125, the display scales checked)
 # Needs: Git Bash on Windows 10 1809+ with a desktop session, python3 (as CI's windows runners have), and for the
-# WebView2 example the WebView2 runtime (CI installs it when the image lacks it, docs/ci.md).
+# WebView2 variant the WebView2 runtime (CI installs it when the image lacks it, docs/ci.md).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -17,8 +17,12 @@ percents=("${@:-100}")
 [[ $# -gt 0 ]] || percents=(100 125)
 # Windows offers 125 % only from a larger resolution than the runner's 1024 × 768.
 scaled_display="1920 1080"
-# The examples' colours (src/app.rs): window, cover, gap; the view is green with little red (the swap chain example's
-# src/content.rs, the WebView2 example's src/page.html; the swap chain's blue changes every frame).
+# The example's once-a-second line and the renderers' alpha lines: the same two regexes in every native-view check
+# script (docs/examples-native-view.md).
+frames_line='native-view: gpui frames/s ([0-9]+), view frames/s ([0-9]+)'
+alpha_line='alpha mode [A-Z][A-Za-z]+|alpha mode, only [A-Za-z]+|premultiplied alpha \(|metal layer alpha: [a-z]+'
+# The example's colours (src/windows.rs): window, cover, gap; the view is green with little red (the swap chain's
+# src/windows/content.rs, the WebView2 page's src/windows/page.html; the swap chain's blue changes every frame).
 window_colour="48 48 48"
 cover_colour="255 128 0"
 gap_colour=ff00ff
@@ -43,10 +47,10 @@ pixel() { python3 -I "$repo/scripts/pixels.py" "$1" at "$2" "$3"; }
 count() { python3 -I "$repo/scripts/pixels.py" "$1" count "$2"; }
 lines() { grep -c -- "$1" "$work/example.log" || true; }
 
-# Starts example $1 with its log in $work, the mouse off its window and the window on top.
+# Starts the example with arguments $@, its log in $work, the mouse off its window and the window on top.
 launch() {
   "$bin/touch-inject.exe" park
-  "$bin/touch-inject.exe" launch "$(cygpath -w "$bin/$1.exe")" "$(cygpath -w "$work/example.log")" >"$work/pid"
+  "$bin/touch-inject.exe" launch "$(cygpath -w "$bin/native-view.exe")" "$(cygpath -w "$work/example.log")" "$@" >"$work/pid"
   pid=$(<"$work/pid")
   inject raise
 }
@@ -110,31 +114,32 @@ check_input() {
   inject move $x $y
   sleep 0.5
   # Within a pixel of 200 150: the cursor lands on a whole physical pixel.
-  grep 'view input: move at' "$work/example.log" | tail -1 | awk '{ x = $(NF-1) - 200; y = $NF - 150;
-    exit !(x * x <= 1.6 && y * y <= 1.6) }' && pass "a move over the view arrives at 200 150 in the view" \
+  grep 'view pointer move at' "$work/example.log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
+    | awk '{ x = $1 - 200; y = $2 - 150; exit !(x * x <= 1.6 && y * y <= 1.6) }' \
+    && pass "a move over the view arrives at 200 150 in the view" \
     || fail "no move at 200 150 in the view"
   inject scroll $x $y -1
   sleep 0.5
-  [[ $(lines 'view input: scroll at') -ge 1 ]] && pass "scroll over the view reaches its element" || fail "no scroll"
+  [[ $(lines 'view pointer scroll at') -ge 1 ]] && pass "scroll over the view reaches its element" || fail "no scroll"
   inject click $x $y
   sleep 0.5
-  [[ $(lines 'view input: down at') -eq 1 ]] && pass "a click on the view reaches its element" || fail "no click"
-  before=$(lines 'view input: down at')
+  [[ $(lines 'view pointer down at') -eq 1 ]] && pass "a click on the view reaches its element" || fail "no click"
+  before=$(lines 'view pointer down at')
   inject click 61 61
   sleep 0.5
-  [[ $(lines 'cover: down') -eq 1 && $(lines 'view input: down at') -eq $before ]] \
+  [[ $(lines 'div over view: down') -eq 1 && $(lines 'view pointer down at') -eq $before ]] \
     && pass "the cover takes its own click" || fail "the cover's click went wrong"
 }
 
 # 0 GPUI frames, so 0 copies, while only the view (or page) draws: the last three per-second lines of a still
-# window, and no surface copy over those three seconds. $1 matches the view's own per-second count.
+# window, the view drawing in them, and no surface copy over those three seconds.
 check_idle() {
   local idle copies_before
   copies_before=$(lines "$copied")
   sleep 3
-  idle=$(grep 'per second:' "$work/example.log" | tail -3)
+  idle=$(grep -oE "$frames_line" "$work/example.log" | tail -3)
   echo "$idle"
-  if grep -q 'gpui frames [1-9]' <<<"$idle" || ! grep -q "$1" "$work/example.log"; then
+  if [[ -z $idle ]] || grep -q 'gpui frames/s [1-9]' <<<"$idle" || ! grep -q 'view frames/s [1-9][0-9]' <<<"$idle"; then
     fail "GPUI drew while only the view drew"
   elif (($(lines "$copied") != copies_before)); then
     fail "GPUI copied its frame while still"
@@ -151,7 +156,7 @@ check_moving() {
   inject shots "$moving_shots" "$(cygpath -w "$work/move-")"
   grep -q 'motion: end' "$work/example.log" && fail "the view stopped before the last of $moving_shots shots"
   wait_for 'motion: end' 30 || fail "the move never ended"
-  # The view's visible part in device px: its size, less the cover over its corner (src/app.rs).
+  # The view's visible part in device px: its size, less the cover over its corner (src/windows.rs).
   local scale view_area gaps views covers
   scale=$(inject scale)
   view_area=$(python3 -c "s = $scale; print(round((322 * 242 - 100 * 60) * s * s))")
@@ -179,12 +184,12 @@ check_moving() {
 }
 
 swap_chain_view() {
-  launch native-view-windows
+  launch
   sleep 6
   echo "scale $(inject scale)"
-  grep -q 'alpha mode Premultiplied' "$work/example.log" \
+  grep -oE "$alpha_line" "$work/example.log" | grep -q 'alpha mode Premultiplied' \
     && pass "alpha mode logged: GPUI's surface Premultiplied while the view shows" || fail "no alpha mode logged"
-  check_idle 'view presents [1-9][0-9]'
+  check_idle
   shot "$work/still.raw"
   check_composition "$work/still.raw" "still"
   check_input
@@ -194,7 +199,7 @@ swap_chain_view() {
   sleep 1.5
   shot "$work/resized.raw"
   check_composition "$work/resized.raw" "resized"
-  check_idle 'view presents [1-9][0-9]'
+  check_idle
   stop
   pid=
 }
@@ -204,7 +209,7 @@ swap_chain_view() {
 webview2_view() {
   work=$work/webview2
   mkdir -p "$work"
-  launch native-view-webview2
+  launch --view webview2
   if ! wait_for 'page: loaded' 60; then
     fail "webview2: the page never loaded"
     grep 'webview' "$work/example.log" || true
@@ -240,20 +245,20 @@ webview2_view() {
   downs=$(lines 'page: down at')
   inject click 61 61
   sleep 0.5
-  [[ $(lines 'cover: down') -eq 1 && $(lines 'page: down at') -eq $downs ]] \
+  [[ $(lines 'div over view: down') -eq 1 && $(lines 'page: down at') -eq $downs ]] \
     && pass "webview2: the cover takes its own click" || fail "webview2: the cover's click went wrong"
   shot "$work/after-input.raw"
   check_composition "$work/after-input.raw" "webview2 after input"
   # Off the page, so the hover's own frames are over before the three idle seconds.
   inject move 550 400
   sleep 1.5
-  check_idle 'page: frames per second [1-9][0-9]'
-  grep 'page: frames per second' "$work/example.log" | tail -1
+  check_idle
+  grep -oE "$frames_line" "$work/example.log" | tail -1
   stop
   pid=
 }
 
-cargo build -p native-view-windows -p native-view-webview2 -p touch-inject
+cargo build -p native-view -p touch-inject
 for percent in "${percents[@]}"; do
   work=$out/$percent
   rm -rf "$work"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The owner's fractional-scale look at examples/native-view-wayland on the real GNOME desktop
-(examples/native-view-wayland/CHECK.md, docs/native-view-wayland.md).
+"""The owner's fractional-scale look at examples/native-view on the real GNOME desktop
+(examples/native-view/CHECK.md, docs/native-view-wayland.md).
 
 Builds the example, then for the length of the check: turns on mutter's `scale-monitor-framebuffer` experimental
 feature, sets every monitor to the supported scale nearest 125 % (org.gnome.Mutter.DisplayConfig, a temporary
@@ -110,7 +110,7 @@ def run_example(name, args, look, seconds):
     log = os.path.join(LOGS, f"{name}.log")
     print(f"\n{name} ({seconds} s): look at {look}")
     with open(log, "w") as out:
-        subprocess.run([os.path.join(REPO, "target", "debug", "native-view-wayland"), *args,
+        subprocess.run([os.path.join(REPO, "target", "debug", "native-view"), *args,
                         "--seconds", str(seconds)], stdout=out, stderr=subprocess.STDOUT, check=False)
     lines = open(log).read().splitlines()
     alpha = next((line for line in lines if "alpha mode" in line), "no alpha mode logged")
@@ -127,7 +127,7 @@ def main():
         sys.exit(f"{SAVED} exists: an earlier run did not restore. Run with --restore first.")
     if not os.environ.get("WAYLAND_DISPLAY"):
         sys.exit("run this in the GNOME Wayland session (no WAYLAND_DISPLAY)")
-    subprocess.run(["cargo", "build", "-p", "native-view-wayland"], cwd=REPO, check=True)
+    subprocess.run(["cargo", "build", "-p", "native-view"], cwd=REPO, check=True)
 
     settings = Gio.Settings.new("org.gnome.mutter")
     user_value = settings.get_user_value("experimental-features")

@@ -7,7 +7,7 @@
 // - firefox, webkit: Playwright's builds, loaded from PLAYWRIGHT_DIR (a directory whose node_modules holds playwright;
 //   its browsers come from PLAYWRIGHT_BROWSERS_PATH). Checks needing what Playwright can't drive print "skip".
 // Usage: node scripts/web-checks.mjs <hello url> desktop|mobile <chromium debugging port | firefox | webkit>
-// With a fourth argument `native-view` and native-view-web's url, it checks patch 0054's native views instead
+// With a fourth argument `native-view` and examples/native-view's url, it checks patch 0054's native views instead
 // (docs/native-view-web-checks.md): input into the views' elements and the divs over them, focus between them and
 // GPUI's field, page content around an offset canvas, 0 GPUI frames while only the elements change, the alpha mode,
 // each screenshot's content (holes cut, views, divs and GPUI drew, no gap; still and animating) at the page's scale,
@@ -24,6 +24,10 @@ if (!["desktop", "mobile"].includes(mode)) throw new Error("web-checks: mode is 
 // An Android phone: touch input, and the user agent that makes gpui_web treat the browser as mobile.
 const ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The native-view example's once-a-second line and the renderers' alpha lines: the same two regexes in every
+// native-view check script (docs/examples-native-view.md).
+const FRAMES_LINE = /native-view: gpui frames\/s ([0-9]+), view frames\/s ([0-9]+)/;
+const ALPHA_LINE = /alpha mode [A-Z][A-Za-z]+|alpha mode, only [A-Za-z]+|premultiplied alpha \(|metal layer alpha: [a-z]+/;
 const logs = [];
 
 // The page, over the DevTools Protocol. Optional steps (compose, hide, show, freeze, resume) exist only here.
@@ -296,7 +300,7 @@ check("unloading", await phases(3), ["Inactive", "Background", "Disconnected"]);
 await driver.close();
 process.exit(failed ? 1 : 0);
 
-// native-view-web (examples/native-view-web, src/lib.rs's VIEWS), in CSS px of a 900 x 700 page: each view is
+// examples/native-view on the web (src/web.rs's places), in CSS px of a 900 x 700 page: each view is
 // 400 x 260 at its corner of the canvas, with a GPUI div at +20..+180, +20..+80 over it. `?offset` puts the canvas
 // at (8, 48), under a header of page content.
 async function nativeViewChecks() {
@@ -307,7 +311,7 @@ async function nativeViewChecks() {
   const at = (name, [x, y]) => [origin[0] + views[name][0] + x, origin[1] + views[name][1] + y];
   const uncovered = (name) => at(name, [280, 190]);
   const covered = (name) => at(name, [80, 50]);
-  const shots = mkdtempSync(`${process.env.SHOTS_DIR ?? tmpdir()}/native-view-web-`);
+  const shots = mkdtempSync(`${process.env.SHOTS_DIR ?? tmpdir()}/native-view-`);
   const pixels = (...args) => execFileSync("python3", ["-I", new URL("pixels.py", import.meta.url).pathname, ...args]).toString().trim();
   const count = (path, colour) => Number(pixels(path, "count", colour));
   const s = Number(scale);
@@ -376,18 +380,24 @@ async function nativeViewChecks() {
       await press(...covered(name));
       await sleep(500);
       check(`${label}the div over ${name} takes its own press`,
-        [saidSince(mark, `GPUI div over ${name}: down`), (await events(name, "click")).length], [true, 0]);
+        [saidSince(mark, `div over ${name}: down`), (await events(name, "click")).length], [true, 0]);
     }
   };
 
   await open("");
   check(`page scale ${scale}`, await js("devicePixelRatio"), Number(scale));
-  check("alpha mode logged", said(/native views: (window surface alpha mode PreMultiplied|WebGL2 canvas, premultiplied)/), true);
+  const alpha = logs.map((line) => line.match(ALPHA_LINE)?.[0]).filter(Boolean);
+  console.log(`measure alpha: ${alpha.at(-1)}`);
+  check("alpha mode logged", alpha.some((line) => /premultiplied/i.test(line)), true);
   const [gpui0, element0] = await js("[window.gpuiFrames, window.elementFrames]");
   await sleep(2000);
   const [gpui1, element1] = await js("[window.gpuiFrames, window.elementFrames]");
-  check("GPUI frames while only the elements change", gpui1 - gpui0, 0);
-  check("the canvas element drew frames meanwhile", element1 - element0 > 30, true);
+  // The example's own once-a-second count over the same two seconds: GPUI's frames, the canvas element's.
+  const seconds = logs.map((line) => line.match(FRAMES_LINE)).filter(Boolean).slice(-2);
+  const [gpuiLogged, viewLogged] = [1, 2].map((at) => seconds.reduce((sum, second) => sum + Number(second[at]), 0));
+  console.log(`measure frames/s: ${seconds.map((second) => second[0]).join("; ")}`);
+  check("GPUI frames while only the elements change", [gpui1 - gpui0, seconds.length, gpuiLogged], [0, 2, 0]);
+  check("the canvas element drew frames meanwhile", element1 - element0 > 30 && viewLogged > 30, true);
   check("still: holes cut, views, divs and GPUI drew, no gap", await content("still"), drew());
 
   await pressChecks("");
@@ -407,7 +417,7 @@ async function nativeViewChecks() {
     const mark = logs.length;
     await driver.wheel(...covered("same"), 200);
     await sleep(600);
-    check("a wheel over the div is GPUI's", [saidSince(mark, "GPUI div over same: scroll"),
+    check("a wheel over the div is GPUI's", [saidSince(mark, "div over same: scroll"),
       (await events("same", "wheel")).length], [true, 0]);
     await js("window.frameEvents.length = 0");
     await driver.drag([views.cross[0] + 5, views.cross[1] + 130], [views.cross[0] + 390, views.cross[1] + 130]);
@@ -496,7 +506,7 @@ async function nativeViewChecks() {
     return times.reduce((sum, time) => sum + time, 0) / times.length;
   };
   const withViews = await perMove("");
-  const without = await perMove("?noview");
+  const without = await perMove("?no-view");
   console.log(`measure pointer move handling: ${withViews.toFixed(3)} ms with views, ${without.toFixed(3)} ms without`);
   const perFrame = async (query) => {
     await open(query);
@@ -506,7 +516,7 @@ async function nativeViewChecks() {
     return [(frames1 - frames0) / 3, ((task1 - task0) * 1000) / (frames1 - frames0)];
   };
   const [fpsViews, taskViews] = await perFrame("?animate");
-  const [fpsNone, taskNone] = await perFrame("?animate&noview");
+  const [fpsNone, taskNone] = await perFrame("?animate&no-view");
   console.log(`measure animating: ${fpsViews.toFixed(1)} GPUI frames/s, ${taskViews.toFixed(2)} ms main-thread task per frame with views; ` +
     `${fpsNone.toFixed(1)} frames/s, ${taskNone.toFixed(2)} ms without`);
   await driver.throttle(1);
