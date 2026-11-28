@@ -1,10 +1,11 @@
 [package]
 name = "cargo-parallax"
-description = "cargo parallax: build and run GPUI apps on Android from parallax.toml (iOS and web later)."
+description = "cargo parallax: build and run GPUI apps on Android and iOS from parallax.toml."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
+# templates/ port Flutter's app templates (BSD-3-Clause, LICENSE-FLUTTER).
+license = "Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 readme = "README.md"
 keywords = ["gpui", "android", "cargo", "cli", "mobile"]
