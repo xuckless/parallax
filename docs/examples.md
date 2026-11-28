@@ -43,3 +43,9 @@ point per target, all through the `parallax` facade.
 | iOS | none yet | |
 
 How to build and run it on each target: [examples-run.md](examples-run.md).
+
+## native-view-apple
+
+[examples/native-view-apple](../examples/native-view-apple/): a native view (`NSView` on macOS, `UIView` on iOS)
+that recolours itself every frame under a GPUI div, with a GPUI frame counter; macOS and iOS only (other targets
+print a line and exit). What it shows and how to run it: [native-view-apple.md](native-view-apple.md#the-example).

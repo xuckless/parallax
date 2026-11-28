@@ -1,0 +1,21 @@
+[package]
+name = "native-view-apple"
+description = "Parallax example: a native view (NSView on macOS, UIView on iOS) that changes colour every frame under a GPUI window, with a div over part of it and a GPUI frame counter."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+# Examples are never published.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+log = "0.4"
+parallax = { path = "../../crates/parallax" }
+
+# The native view is made and coloured through the Objective-C runtime (src/apple.rs).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+env_logger = "0.11"
+objc2 = "0.6"
