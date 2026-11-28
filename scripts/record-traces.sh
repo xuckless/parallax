@@ -15,6 +15,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# The Rust channel builds on the Mac use: the workspace's (rust-toolchain.toml), installed in the gap audit's rustup.
+channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/rust-toolchain.toml")
 # shellcheck source=hello-android.sh
 source "$repo/scripts/hello-android.sh"
 platform=${1:?usage: record-traces.sh <android|web|ios|wayland|x11|windows> [gesture…]}
@@ -173,11 +175,11 @@ ios_setup() {
   on_mac "bash -s" <<EOF
 set -euo pipefail
 cd $mac_dir/parallax
-# The gap audit's toolchain (1.98.1 with the iOS simulator target), used read-only; builds stay under $mac_dir.
+# The gap audit's rustup ($channel with the iOS simulator target), used read-only; builds stay under $mac_dir.
 export RUSTUP_HOME=/Users/Shared/parallax/gap-audit/rustup CARGO_HOME=$mac_dir/cargo CARGO_TARGET_DIR=$mac_dir/target
 export TMPDIR=$mac_dir/tmp IPHONEOS_DEPLOYMENT_TARGET=17.0
 mkdir -p \$TMPDIR $mac_dir/Hello.app
-bin=\$RUSTUP_HOME/toolchains/1.98.1-aarch64-apple-darwin/bin
+bin=\$RUSTUP_HOME/toolchains/$channel-aarch64-apple-darwin/bin
 PATH=\$bin:\$PATH RUSTC=\$bin/rustc \$bin/cargo build --quiet -p hello --bin hello --target aarch64-apple-ios-sim
 cp \$CARGO_TARGET_DIR/aarch64-apple-ios-sim/debug/hello $mac_dir/Hello.app/hello
 # Upstream's example plist, renamed: the scene delegate gpui_ios registers.

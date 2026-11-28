@@ -6,7 +6,8 @@
 # Usage: scripts/ios-text-oracle.sh [row filter]   e.g. scripts/ios-text-oracle.sh testDeletingBackward
 # On macOS it runs here (CI's macOS runner); elsewhere it copies build/parallax-gpui/ to $MAC (default pixl-mac) over ssh
 # and runs there, in $MAC_DIR. Env: IOS_SIMULATOR (device name, default "iPhone 17e"), MAC, MAC_DIR, RUST_TOOLCHAIN_DIR
-# (a rustup home with 1.98.1 and the aarch64-apple-ios-sim target; default: the Mac's shared one, or rustup's).
+# (a rustup home with rust-toolchain.toml's channel and the aarch64-apple-ios-sim target; default: the Mac's shared
+# one, or rustup's).
 # Run scripts/apply-patches.sh first.
 set -euo pipefail
 
@@ -15,13 +16,13 @@ filter=${1:-}
 [[ -d $repo/build/parallax-gpui ]] || { echo "ios-text-oracle: no build/parallax-gpui; run scripts/apply-patches.sh" >&2; exit 1; }
 
 # The Mac half: build, boot the simulator if it is not booted, run, shut down only a simulator this run booted.
-# Arguments: fork crate dir, work dir, simulator name, row filter.
+# Arguments: fork crate dir, work dir, simulator name, row filter, toolchain channel.
 mac_run=$(cat <<'EOF'
 set -euo pipefail
-fork=$1 work=$2 simulator=$3 filter=$4
+fork=$1 work=$2 simulator=$3 filter=$4 channel=$5
 if [[ -n ${RUST_TOOLCHAIN_DIR:-} ]]; then
   export RUSTUP_HOME=$RUST_TOOLCHAIN_DIR
-  bin=$RUSTUP_HOME/toolchains/1.98.1-aarch64-apple-darwin/bin
+  bin=$RUSTUP_HOME/toolchains/$channel-aarch64-apple-darwin/bin
   export PATH=$bin:$PATH RUSTC=$bin/rustc
 fi
 export CARGO_TARGET_DIR=$work/target TMPDIR=$work/tmp IPHONEOS_DEPLOYMENT_TARGET=17.0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
@@ -47,8 +48,9 @@ EOF
 )
 
 simulator=${IOS_SIMULATOR:-iPhone 17e}
+channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/rust-toolchain.toml")
 if [[ $(uname) == Darwin ]]; then
-  bash -c "$mac_run" mac-run "$repo/build/parallax-gpui" "$repo/target/ios-text-oracle" "$simulator" "$filter"
+  bash -c "$mac_run" mac-run "$repo/build/parallax-gpui" "$repo/target/ios-text-oracle" "$simulator" "$filter" "$channel"
 else
   mac=${MAC:-pixl-mac}
   mac_dir=${MAC_DIR:-/Users/Shared/parallax/ios-text-oracle}
@@ -56,5 +58,5 @@ else
   ssh "$mac" "mkdir -p '$mac_dir'"
   rsync -az --delete "$repo/build/parallax-gpui/" "$mac:$mac_dir/fork/"
   # shellcheck disable=SC2029 # the arguments are expanded here on purpose
-  ssh "$mac" "RUST_TOOLCHAIN_DIR='$toolchain' CARGO_HOME='$mac_dir/cargo' bash -s -- '$mac_dir/fork' '$mac_dir' '$simulator' '$filter'" <<<"$mac_run"
+  ssh "$mac" "RUST_TOOLCHAIN_DIR='$toolchain' CARGO_HOME='$mac_dir/cargo' bash -s -- '$mac_dir/fork' '$mac_dir' '$simulator' '$filter' '$channel'" <<<"$mac_run"
 fi
