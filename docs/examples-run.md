@@ -9,6 +9,9 @@ How to build and run [hello](examples.md#hello) on each target, from the repo ro
 cargo run -p hello
 ```
 
+or, as one entry point for every target, `cd examples/hello && cargo parallax run` (the host's desktop: a signed
+`Hello.app` on macOS, `cargo run` on Linux and Windows; [cli-desktop.md](cli-desktop.md)).
+
 Linux needs the `LINUX_PACKAGES` of [ci.yml](../.github/workflows/ci.yml) (on Fedora: `libxkbcommon-x11-devel`,
 `wayland-devel`, `fontconfig-devel`, `freetype-devel`). Desktop logs to stderr through [env_logger](https://docs.rs/env_logger):
 warnings, plus `info` from hello; `RUST_LOG` overrides it (e.g. `RUST_LOG=debug`).

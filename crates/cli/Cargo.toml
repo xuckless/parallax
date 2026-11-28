@@ -1,21 +1,24 @@
 [package]
 name = "cargo-parallax"
-description = "cargo parallax: build, run and sign GPUI apps for Android from parallax.toml (iOS and web later)."
+description = "cargo parallax: build, run and sign GPUI apps for Android, iOS, the web, macOS, Linux and Windows from parallax.toml."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+# templates/ and parts of src/ port Flutter (BSD-3-Clause: LICENSE-FLUTTER, LICENSE-FLUTTER-WEBSITE).
 license = "Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 readme = "README.md"
-keywords = ["gpui", "android", "cargo", "cli", "mobile"]
+keywords = ["gpui", "android", "ios", "wasm", "cargo"]
 categories = ["development-tools::cargo-plugins", "command-line-utilities"]
-# templates/ (Gradle project and wrapper jar) are compiled in with include_str!/include_bytes!, so they ship too.
+# templates/ (Gradle project and wrapper jar, Xcode project, web host page, macOS Info.plist) are compiled in with include_str!/include_bytes!, so they ship too.
 
 [lints]
 workspace = true
 
 [dependencies]
 anyhow = "1"
+# AppIcon.icns for the macOS bundle (MIT); PNG elements only.
+icns = { version = "0.5.0", default-features = false, features = ["pngio"] }
 # Same version GPUI uses; tiny-skia's default `png-format` encodes the launcher PNGs.
 resvg = { version = "0.46.0", default-features = false }
 # Reads the keystore password from the terminal without echoing it (release builds, docs/cli-android-release.md).

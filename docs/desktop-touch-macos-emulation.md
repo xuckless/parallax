@@ -11,8 +11,9 @@ pinch / rotate → magnify / rotate, hold and move → drag. An app with its own
 <key>NSIsTouchNative</key><true/>
 ```
 
-in `Contents/Info.plist` of its `.app` (cargo-parallax does not bundle macOS apps yet; add the key to your bundler's
-plist, e.g. cargo-bundle's `osx_info_plist_exts`). Then touches arrive only as `TouchEvent`s and GPUI's touch →
+in `Contents/Info.plist` of its `.app`: `cargo parallax run macos` writes it from `[macos] touch_native = true` in
+`parallax.toml` ([cli-desktop.md](cli-desktop.md); another bundler: its plist extension, e.g. cargo-bundle's
+`osx_info_plist_exts`). Then touches arrive only as `TouchEvent`s and GPUI's touch →
 mouse ([pointer-source.md](pointer-source.md)) makes the clicks. Without the key, the owner's Sidecar check (Wave
 13, macOS 27.3) saw one `touch click` per tap and no double scroll in both bundles. Its two `pinch end` lines 9 ms
 apart were not AppKit's magnify (a trackpad pinch has no `TouchPinch`) but Flutter's scale: a lift ends it, the
