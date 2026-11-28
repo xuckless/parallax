@@ -19,6 +19,10 @@ Test: `scripts/windows-native-view-checks.sh` runs examples/native-view-webview2
 them back through `WebMessageReceived`), and GPUI draws 0 frames per second while only the page animates
 (docs/native-view-windows.md).
 
+Also, doc only: `NativeView`'s comment states patch 0048's key order for `NativeViewInput::Window` (the element's key
+listeners before key bindings). It lives here, after patch 0054's edits of the same comment, until the NativeView
+patches are split.
+
 Upstream: not filed (patch rule 14).
 
 diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
@@ -153,10 +157,24 @@ index 5688de9..522d766 100644
          &self,
          id: NativeViewId,
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index 66b55fb..4270974 100644
+index c240a44..ed5f04a 100644
 --- a/gpui-pre/src/window/native_view.rs
 +++ b/gpui-pre/src/window/native_view.rs
-@@ -106,7 +106,9 @@ impl NativeView {
+@@ -52,8 +52,11 @@ impl NativeViewId {
+ /// and its ancestors hear it, elements painted before the view hear nothing
+ /// over it, elements painted after the view take theirs, and
+ /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
+-/// the view's [`FocusHandle`] is focused are dispatched from that element like
+-/// any other key press, so the app forwards the ones it wants to the view.
++/// the view's [`FocusHandle`] is focused reach that element's key listeners
++/// before key bindings, as they reach the view itself on macOS, so the app
++/// forwards the ones it wants to the view and stops their propagation; key
++/// bindings get the rest. Bindings for reserved actions and the rest of a
++/// pending binding apply first, as described below.
+ /// The rest of this comment describes macOS and the web
+ /// ([`crate::NativeViewInput::View`]), where the browser gives pointer input
+ /// over an uncovered view to its element.
+@@ -120,7 +123,9 @@ impl NativeView {
      /// embeds, which is an `NSView` on macOS, and that view must not be in
      /// another view hierarchy. On iOS it is a `UIView`. On Windows it is a
      /// COM object (`IUnknown`) that `IDCompositionVisual::SetContent` takes,

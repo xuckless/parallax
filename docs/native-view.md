@@ -56,8 +56,9 @@ every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract
 `view.bounds(window)`'s origin for view-relative positions. The hit test skips every hitbox behind the view whose
 element is not on the view's dispatch path (`Occlusion` in gpui's `window/native_view_input.rs`). Keys while the
-view's `FocusHandle` is focused dispatch from that element like any key, `reserve_action` bindings first, so the app
-forwards the rest to the view.
+view's `FocusHandle` is focused follow macOS's rule for its views: `reserve_action` bindings and the rest of a pending
+binding first, then the view's element's key listeners (forward the key to the view and stop its propagation), then
+key bindings with what the element leaves.
 
 ## Placement in step
 
