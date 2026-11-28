@@ -3,7 +3,10 @@
 # the fork revision to 1 on a new version (fork-version.sh, which repins Cargo.toml), check every patch
 # (listing all that no longer apply), rebuild build/ with apply-patches.sh, regenerate the [patch.crates-io] rows from
 # the fork crates it built, then `cargo check --workspace`.
-# Usage: scripts/sync-upstream.sh [VERSION]    (default: latest gpui-pre on crates.io)
+# Usage: scripts/sync-upstream.sh [VERSION]              (default: latest gpui-pre on crates.io)
+#        scripts/sync-upstream.sh --zed REV [VERSION]    fallback when gpui-pre stops: vendor Zed's crates at REV
+#                                                        with vendor-zed.py (default VERSION: next patch of the
+#                                                        current one + -zed.<short REV>, e.g. 0.3.15-zed.11e4141)
 # Needs network (crates.io, github.com), curl and jq. Replaces upstream/ wholesale; review the result with git diff.
 set -euo pipefail
 
@@ -12,9 +15,26 @@ cd "$root"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-version="${1:-$(cargo search gpui-pre --limit 20 | sed -n 's/^gpui-pre = "\([^"]*\)".*/\1/p')}"
+# Source → how upstream/ is vendored: crates.io's gpui-pre, or Zed's tree through vendor-zed.py.
+source=gpui-pre
+if [[ ${1:-} == --zed ]]; then
+    source=zed
+    zed_ref="${2:?usage: scripts/sync-upstream.sh --zed REV [VERSION]}"
+    shift 2
+fi
+latest="$(cargo search gpui-pre --limit 20 | sed -n 's/^gpui-pre = "\([^"]*\)".*/\1/p')"
+case $source in
+    gpui-pre) version="${1:-$latest}" ;;
+    zed)
+        zed_full="$(curl -fsS "https://api.github.com/repos/zed-industries/zed/commits/$zed_ref" | jq -r .sha)" \
+            || die "could not resolve zed $zed_ref on github.com"
+        # After the last gpui-pre release, before the next: a rerun on the same commit gets the same version.
+        IFS=. read -r major minor patch <<< "$latest"
+        version="${1:-$major.$minor.$((patch + 1))-zed.${zed_full:0:7}}"
+        ;;
+esac
 [[ -n "$version" ]] || die "could not find the latest gpui-pre on crates.io; pass VERSION"
-echo "syncing upstream/ to gpui-pre $version"
+echo "syncing upstream/ to $source $version"
 
 # Vendor roots: every gpui-pre-* crate a vendored manifest names, optional deps included, is reachable from these, so
 # the fork crates are complete (fork-crates.sh fails on a missing one). bench-metrics and zlog are optional deps
@@ -41,8 +61,28 @@ touch "$scratch/crate/src/lib.rs"
     printf '%s\n' "${roots[@]//VERSION/$version}"
 } > "$scratch/crate/Cargo.toml"
 
-echo "vendoring (all targets)"
-(cd "$scratch/crate" && cargo vendor --quiet vendor > /dev/null) || die "cargo vendor failed for gpui-pre $version"
+case $source in
+    gpui-pre)
+        echo "vendoring (all targets)"
+        (cd "$scratch/crate" && cargo vendor --quiet vendor > /dev/null) || die "cargo vendor failed for gpui-pre $version"
+        how="\`cargo vendor\` of a scratch crate depending on gpui-pre, gpui-pre-platform (feature gpui_wgpu),
+gpui-pre-wgpu, gpui-pre-ios, gpui-pre-web, gpui-pre-bench-metrics and gpui-pre-zlog, all =$version, for all
+targets. Only the gpui-pre-* directories were copied here, unmodified (.cargo-checksum.json kept as a pristine
+check). Third-party deps resolve from crates.io."
+        ;;
+    zed)
+        # A full shallow checkout: vendor-zed.py reads Zed's workspace manifest and lock. Kept in build/ for reuse.
+        zed_dir="build/zed-vendor"
+        [[ -d $zed_dir/.git ]] || { git init -q "$zed_dir" && git -C "$zed_dir" remote add origin "https://github.com/zed-industries/zed.git"; }
+        git -C "$zed_dir" fetch -q --depth 1 --no-tags origin "$zed_full" || die "cannot fetch zed $zed_full"
+        git -C "$zed_dir" checkout -q --detach --force FETCH_HEAD
+        scripts/vendor-zed.py "$zed_dir" "$version" "$scratch/crate/vendor" || die "vendor-zed.py failed for zed $zed_full"
+        how="scripts/vendor-zed.py on zed-industries/zed at the commit above (the gpui-pre fallback): Zed's crates
+renamed and packaged as gpui-pre-* $version with \`cargo package\`, gpui-pre's adaptations reapplied (each file
+marked \`// Modified for gpui-pre\`), .cargo-checksum.json generated as a pristine check. Third-party deps resolve
+from crates.io."
+        ;;
+esac
 
 # Copy only the gpui-pre-* crates, unmodified. A versioned dir (name-x.y.z) means two versions of one crate: refuse.
 zed_revs=()
@@ -53,7 +93,7 @@ for dir in "$scratch"/crate/vendor/gpui-pre*/; do
     crate_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$manifest" | head -n1)"
     [[ "$crate_version" == "$version" ]] || die "$crate is version '$crate_version', expected $version"
     zed_revs+=("$(sed -n 's/^zed-rev = "\(.*\)"$/\1/p' "$manifest")")
-    crate_rows+=("$(printf '  %-29s%-8s%s' "$crate" "$crate_version" "$(sed -n 's/^zed-crate = "\(.*\)"$/\1/p' "$manifest")")")
+    crate_rows+=("$(printf '  %-29s%s  %s' "$crate" "$crate_version" "$(sed -n 's/^zed-crate = "\(.*\)"$/\1/p' "$manifest")")")
     cp -a "$dir" "$scratch/upstream/$crate"
 done
 [[ ${#crate_rows[@]} -gt 0 ]] || die "no gpui-pre-* crates vendored"
@@ -84,10 +124,7 @@ Zed commit:       $zed_rev (zed-industries/zed, ${zed_date%%T*})
 Zed toolchain:    $zed_toolchain (rust-toolchain.toml at that commit)
 Vendored on:      $(date +%F)
 
-How: \`cargo vendor\` of a scratch crate depending on gpui-pre, gpui-pre-platform (feature gpui_wgpu),
-gpui-pre-wgpu, gpui-pre-ios, gpui-pre-web, gpui-pre-bench-metrics and gpui-pre-zlog, all =$version, for all
-targets. Only the gpui-pre-* directories were copied here, unmodified (.cargo-checksum.json kept as a pristine
-check). Third-party deps resolve from crates.io.
+How: $how
 
 Crates (crates.io name, version, Zed crate):
 $(printf '%s\n' "${crate_rows[@]}")
