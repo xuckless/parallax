@@ -38,7 +38,7 @@ versions are `app.version` (else the crate's) through Flutter's build-name / bui
    window is Xcode's own app (Simulator; DeviceHub in Xcode 27), which you open; the app runs without it.
    Device: `devicectl device install app`, `devicectl device process launch --console`. The app's stdout and stderr
    (env_logger) stream until it exits; Ctrl-C stops it. Env for the app: `SIMCTL_CHILD_RUST_LOG=debug` (simulator),
-   `DEVICECTL_CHILD_RUST_LOG=debug` (device).
+   `DEVICECTL_CHILD_RUST_LOG=debug` (device). App arguments after `--` follow the bundle id on the launch line.
 
 `--release` builds Rust with `--release` and Xcode's Release configuration. `build ios` prints the `.app` path,
 `build/<Configuration>-iphoneos/Runner.app`.

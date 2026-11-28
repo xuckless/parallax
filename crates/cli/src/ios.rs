@@ -147,11 +147,23 @@ struct Candidate {
     ready: bool,
 }
 
-pub fn run(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
-    ios(app_dir, config, Action::Run, &parse_run(args)?)
+/// `run ios … [-- <app args>]`: the app's arguments go to its process, as `simctl launch` / `devicectl … launch`
+/// arguments after the bundle id.
+pub fn run(
+    app_dir: &Path,
+    config: &Config,
+    args: &[String],
+    app: &[String],
+) -> Result<(), CliError> {
+    ios(app_dir, config, Action::Run, &parse_run(args)?, app)
 }
 
-pub fn build(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
+pub fn build(
+    app_dir: &Path,
+    config: &Config,
+    args: &[String],
+    _: &[String],
+) -> Result<(), CliError> {
     ios(
         app_dir,
         config,
@@ -162,6 +174,7 @@ pub fn build(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), Cli
             destination: Destination::Device,
             pick: None,
         },
+        &[],
     )
 }
 
@@ -200,7 +213,13 @@ fn parse_run(args: &[String]) -> Result<IosArgs, CliError> {
     Ok(parsed)
 }
 
-fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Result<(), CliError> {
+fn ios(
+    app_dir: &Path,
+    config: &Config,
+    action: Action,
+    args: &IosArgs,
+    app_args: &[String],
+) -> Result<(), CliError> {
     if !is_bundle_id(&config.id) {
         return Err(CliError::BadBundleId(config.id.clone()));
     }
@@ -306,15 +325,20 @@ fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Resul
         return Ok(());
     };
     match args.destination {
-        Destination::Simulator => launch_simulator(&target, &app, &config.id),
-        Destination::Device => launch_device(&target, &app, &config.id),
+        Destination::Simulator => launch_simulator(&target, &app, &config.id, app_args),
+        Destination::Device => launch_device(&target, &app, &config.id, app_args),
     }
 }
 
 /// Boots the simulator if needed (and waits for it), installs the app and runs it with its stdout and stderr on
 /// the terminal until it exits (Ctrl-C stops it). The simulator's window is Xcode's app (Simulator, DeviceHub in
 /// Xcode 27), which the user opens; the app runs without it.
-fn launch_simulator(sim: &Candidate, app: &Path, bundle_id: &str) -> Result<(), CliError> {
+fn launch_simulator(
+    sim: &Candidate,
+    app: &Path,
+    bundle_id: &str,
+    app_args: &[String],
+) -> Result<(), CliError> {
     let simctl = |args: &[&str]| {
         let mut cmd = Command::new("xcrun");
         cmd.arg("simctl").args(args);
@@ -337,13 +361,14 @@ fn launch_simulator(sim: &Candidate, app: &Path, bundle_id: &str) -> Result<(), 
         sim.name, sim.udid
     );
     step(
-        &mut simctl(&[
+        simctl(&[
             "launch",
             "--console-pty",
             "--terminate-running-process",
             &sim.udid,
             bundle_id,
-        ]),
+        ])
+        .args(app_args),
         XCODE_FIX,
         "xcrun simctl launch",
         String::new(),
@@ -351,7 +376,12 @@ fn launch_simulator(sim: &Candidate, app: &Path, bundle_id: &str) -> Result<(), 
 }
 
 /// Installs the app on the device and runs it with its stdout and stderr on the terminal until it exits.
-fn launch_device(device: &Candidate, app: &Path, bundle_id: &str) -> Result<(), CliError> {
+fn launch_device(
+    device: &Candidate,
+    app: &Path,
+    bundle_id: &str,
+    app_args: &[String],
+) -> Result<(), CliError> {
     step(
         Command::new("xcrun")
             .args(["devicectl", "device", "install", "app", "--device", &device.id])
@@ -366,17 +396,19 @@ fn launch_device(device: &Candidate, app: &Path, bundle_id: &str) -> Result<(), 
         device.name
     );
     step(
-        Command::new("xcrun").args([
-            "devicectl",
-            "device",
-            "process",
-            "launch",
-            "--console",
-            "--terminate-existing",
-            "--device",
-            &device.id,
-            bundle_id,
-        ]),
+        Command::new("xcrun")
+            .args([
+                "devicectl",
+                "device",
+                "process",
+                "launch",
+                "--console",
+                "--terminate-existing",
+                "--device",
+                &device.id,
+                bundle_id,
+            ])
+            .args(app_args),
         XCODE_FIX,
         "xcrun devicectl device process launch",
         "Unlock the device and run again".into(),

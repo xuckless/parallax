@@ -36,16 +36,27 @@ const MIN_MACOS: &str = "12.0";
 
 const INFO_PLIST: &str = include_str!("../templates/macos/Info.plist");
 
-pub fn build(app_dir: &Path, config: &Config, flags: &[String]) -> Result<(), CliError> {
+pub fn build(
+    app_dir: &Path,
+    config: &Config,
+    flags: &[String],
+    _: &[String],
+) -> Result<(), CliError> {
     bundle(app_dir, config, Profile::from_flags(flags)?).map(|_| ())
 }
 
-pub fn run(app_dir: &Path, config: &Config, flags: &[String]) -> Result<(), CliError> {
+/// `run macos [--release] [-- <app args>]`: the app's arguments go to the bundle's executable.
+pub fn run(
+    app_dir: &Path,
+    config: &Config,
+    flags: &[String],
+    app: &[String],
+) -> Result<(), CliError> {
     let executable = bundle(app_dir, config, Profile::from_flags(flags)?)?;
     // Run from inside the bundle (not `open`), so the logs stream here and Ctrl-C stops the app.
     println!("cargo parallax: running {}", executable.display());
     step(
-        &mut Command::new(&executable),
+        Command::new(&executable).args(app),
         "Run cargo parallax build macos and check the bundle",
         "the app",
         String::new(),

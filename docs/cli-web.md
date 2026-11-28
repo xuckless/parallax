@@ -53,7 +53,8 @@ connection) serves the site at `http://127.0.0.1:8080/` and prints the URL and e
 (`OPENERS`: `xdg-open`, `open`, `cmd /C start`). Rules: `/` and `…/` are `index.html`, the query is ignored, `..`,
 `.`, empty segments and backslashes are refused (404), only `GET` and `HEAD`; types come from `MIME_TYPES`;
 `Cache-Control: no-cache`, so a rebuild shows on reload. It is a development server: no TLS, no compression. Ctrl-C
-stops it.
+stops it. App arguments after `--` become the page URL's query (`run web -- offset` serves `/?offset`); the app reads
+`location.search`.
 
 ## Checks
 

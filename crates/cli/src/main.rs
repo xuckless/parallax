@@ -78,9 +78,9 @@ const TARGETS: [TargetRow; 6] = [
     },
 ];
 
-/// A command's work: the app directory, its parsed `parallax.toml`, the flags after `<verb> <target>`. Each handler
-/// parses its own flags.
-type Handler = fn(&Path, &Config, &[String]) -> Result<(), CliError>;
+/// A command's work: the app directory, its parsed `parallax.toml`, the flags after `<verb> <target>` and the app's
+/// own arguments (after `--`, `run` only). Each handler parses its own flags.
+type Handler = fn(&Path, &Config, &[String], &[String]) -> Result<(), CliError>;
 
 /// One `cargo parallax <verb> <target>` command: verb, target, handler.
 type Command = (&'static str, Target, Handler);
@@ -103,22 +103,22 @@ const COMMANDS: [Command; 12] = [
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let ((_, _, handler), flags) = command(&args, std::env::consts::OS)?;
+    let ((_, _, handler), flags, app_args) = command(&args, std::env::consts::OS)?;
     let app_dir = std::env::current_dir()?;
     let path = app_dir.join("parallax.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|source| CliError::ConfigMissing { path, source })?;
     let config = Config::parse(&text)?;
-    handler(&app_dir, &config, flags)?;
+    handler(&app_dir, &config, flags, app_args)?;
     Ok(())
 }
 
-/// `[parallax] <verb> [<target>] <flags…>` on host OS `host`; cargo passes the leading `parallax` when run as
-/// `cargo parallax`. No target (nothing, or a flag, after the verb): this machine's desktop.
-fn command<'a>(
-    args: &'a [String],
-    host: &str,
-) -> Result<(&'static Command, &'a [String]), CliError> {
+/// The arguments of a command: its flags, then the app's own arguments after `--`.
+type Parsed<'a> = (&'static Command, &'a [String], &'a [String]);
+
+/// `[parallax] <verb> [<target>] <flags…> [-- <app args…>]` on host OS `host`; cargo passes the leading `parallax`
+/// when run as `cargo parallax`. No target (nothing, or a flag, after the verb): this machine's desktop.
+fn command<'a>(args: &'a [String], host: &str) -> Result<Parsed<'a>, CliError> {
     let args = match args.first().map(String::as_str) {
         Some("parallax") => &args[1..],
         _ => args,
@@ -153,7 +153,16 @@ fn command<'a>(
             host: host.to_string(),
         });
     }
-    Ok((command, flags))
+    let (flags, app_args) = match flags.iter().position(|a| a == "--") {
+        Some(at) => (&flags[..at], &flags[at + 1..]),
+        None => (flags, &flags[flags.len()..]),
+    };
+    if *verb != "run" && !app_args.is_empty() {
+        return Err(CliError::Usage(
+            "app arguments after `--` go with `run` only".into(),
+        ));
+    }
+    Ok((command, flags, app_args))
 }
 
 #[cfg(test)]
@@ -162,14 +171,15 @@ mod tests {
 
     #[test]
     fn command_table() {
-        // (row name, argv after the binary, host OS, expected (verb, target, flags) or the error variant)
+        // (row name, argv after the binary, host OS, expected (verb, target, flags, then `--` and the app's
+        // arguments when there are any) or the error variant)
         type Case<'a> = (
             &'a str,
             &'a [&'a str],
             &'a str,
             Result<(&'a str, Target, &'a [&'a str]), &'a str>,
         );
-        let cases: [Case; 22] = [
+        let cases: [Case; 26] = [
             (
                 "as cargo subcommand",
                 &["parallax", "run", "android"],
@@ -282,11 +292,45 @@ mod tests {
             ("unknown target", &["run", "symbian"], "linux", Err("Usage")),
             ("no command", &["parallax"], "linux", Err("Usage")),
             ("nothing", &[], "linux", Err("Usage")),
+            (
+                "app arguments after --",
+                &["run", "windows", "--release", "--", "--view", "webview2"],
+                "windows",
+                Ok((
+                    "run",
+                    Target::Windows,
+                    &["--release", "--", "--view", "webview2"],
+                )),
+            ),
+            (
+                "app arguments, no target",
+                &["run", "--", "--view", "webview2"],
+                "linux",
+                Ok(("run", Target::Linux, &["--", "--view", "webview2"])),
+            ),
+            (
+                "bare -- is no app argument",
+                &["run", "android", "--"],
+                "linux",
+                Ok(("run", Target::Android, &[])),
+            ),
+            (
+                "app arguments with build",
+                &["build", "macos", "--", "x"],
+                "macos",
+                Err("Usage"),
+            ),
         ];
         for (name, args, host, want) in cases {
             let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
             let got = command(&args, host)
-                .map(|((verb, target, _), flags)| (*verb, *target, flags.to_vec()))
+                .map(|((verb, target, _), flags, app)| {
+                    let app = match app {
+                        [] => Vec::new(),
+                        app => [&["--".to_string()], app].concat(),
+                    };
+                    (*verb, *target, [flags, app.as_slice()].concat())
+                })
                 .map_err(|e| e.variant());
             let want = want
                 .map(|(verb, target, flags)| {

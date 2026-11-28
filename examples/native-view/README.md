@@ -25,7 +25,7 @@ change) and each pointer event over a view as `native-view: <view> pointer <kind
 cd examples/native-view
 cargo parallax run              # this machine's desktop: Wayland, Windows or macOS
 cargo parallax run android      # or ios, web
-cargo run -p native-view -- --view webview2   # Windows, with an option (cargo parallax passes none yet)
+cargo parallax run windows -- --view webview2   # Windows: everything after -- goes to the app
 ```
 
 `--view webview2` needs the WebView2 Runtime (part of Windows 10 and 11). How it works and how CI checks it:

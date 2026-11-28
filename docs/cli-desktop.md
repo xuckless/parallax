@@ -53,7 +53,8 @@ Needs the Xcode command line tools (`xcrun metal` for GPUI's shaders, `lipo`, `c
 [--release]` for the host target: no bundle, no extra features, no `--target`. The workspace's `gpui_platform`
 features decide the backends: Linux builds both `wayland` and `x11` and picks Wayland when `WAYLAND_DISPLAY` is set;
 Windows has one backend (DirectX 11, gpui_windows). The app crate needs exactly one bin (cargo's own error
-otherwise). Linux system packages: [examples-run.md](examples-run.md).
+otherwise). Linux system packages: [examples-run.md](examples-run.md). App arguments after `--` go to `cargo run -- …`;
+on macOS to the bundle's executable (`cargo parallax run windows -- --view webview2`).
 
 ## Checks
 

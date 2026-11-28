@@ -102,15 +102,26 @@ struct WebArgs {
     open: bool,
 }
 
-/// `run web [--release] [--port <n>] [--host <address>] [--open]`.
-pub fn run(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
+/// `run web [--release] [--port <n>] [--host <address>] [--open] [-- <app args>]`: a page has no argv, so the app's
+/// arguments become the URL's query (`-- offset view=x` → `?offset&view=x`), which the app reads from `location`.
+pub fn run(
+    app_dir: &Path,
+    config: &Config,
+    args: &[String],
+    app: &[String],
+) -> Result<(), CliError> {
     let args = parse_args(args, true)?;
     let dist = build_dist(app_dir, config, args.profile)?;
-    serve(&dist, args.addr, args.open)
+    serve(&dist, &page_url(args.addr, app), args.addr, args.open)
 }
 
 /// `build web [--release]`.
-pub fn build(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
+pub fn build(
+    app_dir: &Path,
+    config: &Config,
+    args: &[String],
+    _: &[String],
+) -> Result<(), CliError> {
     let args = parse_args(args, false)?;
     build_dist(app_dir, config, args.profile).map(|_| ())
 }
@@ -356,15 +367,14 @@ fn site_vars(web: &Web, lib: &str, icon: bool) -> Vec<(&'static str, String)> {
 }
 
 /// Serves `dist` until the process is stopped, one thread per connection.
-fn serve(dist: &Path, addr: SocketAddr, open: bool) -> Result<(), CliError> {
+fn serve(dist: &Path, url: &str, addr: SocketAddr, open: bool) -> Result<(), CliError> {
     let listener = TcpListener::bind(addr).map_err(|source| CliError::Bind { addr, source })?;
-    let url = page_url(addr);
     println!(
         "cargo parallax: serving {} at {url} (Ctrl-C stops)",
         dist.display()
     );
     if open {
-        open_browser(&url);
+        open_browser(url);
     }
     for stream in listener.incoming().flatten() {
         let dist = dist.to_path_buf();
@@ -374,13 +384,17 @@ fn serve(dist: &Path, addr: SocketAddr, open: bool) -> Result<(), CliError> {
 }
 
 /// The URL to print and open: an unspecified address (0.0.0.0, ::) is reached through loopback on this machine.
-fn page_url(addr: SocketAddr) -> String {
+fn page_url(addr: SocketAddr, app: &[String]) -> String {
     let ip = match addr.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
         ip => ip,
     };
-    format!("http://{}/", SocketAddr::new(ip, addr.port()))
+    let query = match app {
+        [] => String::new(),
+        app => format!("?{}", app.join("&")),
+    };
+    format!("http://{}/{query}", SocketAddr::new(ip, addr.port()))
 }
 
 /// Opens `url` in the default browser; a failure only prints, the server keeps running.
@@ -692,15 +706,27 @@ mod tests {
 
     #[test]
     fn page_url_table() {
-        let cases = [
-            ("127.0.0.1:8080", "http://127.0.0.1:8080/"),
-            ("0.0.0.0:9000", "http://127.0.0.1:9000/"),
-            ("[::]:80", "http://[::1]:80/"),
-            ("192.168.1.2:8080", "http://192.168.1.2:8080/"),
+        // (address, app arguments after `--`, page URL)
+        let cases: [(&str, &[&str], &str); 6] = [
+            ("127.0.0.1:8080", &[], "http://127.0.0.1:8080/"),
+            ("0.0.0.0:9000", &[], "http://127.0.0.1:9000/"),
+            ("[::]:80", &[], "http://[::1]:80/"),
+            ("192.168.1.2:8080", &[], "http://192.168.1.2:8080/"),
+            (
+                "127.0.0.1:8080",
+                &["offset"],
+                "http://127.0.0.1:8080/?offset",
+            ),
+            (
+                "127.0.0.1:8080",
+                &["offset", "view=x"],
+                "http://127.0.0.1:8080/?offset&view=x",
+            ),
         ];
-        for (addr, want) in cases {
+        for (addr, app, want) in cases {
             let addr: SocketAddr = addr.parse().expect("test address");
-            assert_eq!(page_url(addr), want, "{addr}");
+            let app: Vec<String> = app.iter().map(|s| s.to_string()).collect();
+            assert_eq!(page_url(addr, &app), want, "{addr} {app:?}");
         }
     }
 

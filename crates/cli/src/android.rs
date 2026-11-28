@@ -387,7 +387,16 @@ impl Sdk {
 }
 
 /// `cargo parallax run android`: build, install, launch.
-pub fn run(app_dir: &Path, config: &Config, flags: &[String]) -> Result<(), CliError> {
+pub fn run(
+    app_dir: &Path,
+    config: &Config,
+    flags: &[String],
+    app: &[String],
+) -> Result<(), CliError> {
+    if !app.is_empty() {
+        // `am start` could pass them as Intent extras, but ParallaxActivity hands the app no arguments.
+        return Err(CliError::AppArgsUnsupported("android"));
+    }
     let args = parse_args(Verb::Run, flags)?;
     let sdk = Sdk::find()?;
     let adb = existing(
@@ -442,7 +451,12 @@ pub fn run(app_dir: &Path, config: &Config, flags: &[String]) -> Result<(), CliE
 }
 
 /// `cargo parallax build android`: build only, and say where the package is.
-pub fn build(app_dir: &Path, config: &Config, flags: &[String]) -> Result<(), CliError> {
+pub fn build(
+    app_dir: &Path,
+    config: &Config,
+    flags: &[String],
+    _: &[String],
+) -> Result<(), CliError> {
     let args = parse_args(Verb::Build, flags)?;
     let sdk = Sdk::find()?;
     let out = package(app_dir, config, &args, &sdk)?;

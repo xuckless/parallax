@@ -13,7 +13,8 @@ const USAGE: &str = "  cargo parallax run android [--release] [--device <serial>
   cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]
   cargo parallax build web [--release]
   cargo parallax run|build macos|linux|windows [--release]
-  cargo parallax run|build [--release]   (no target: this machine's desktop)";
+  cargo parallax run|build [--release]   (no target: this machine's desktop)
+  cargo parallax run <target> … -- <app args>   (the app's own arguments; not on android)";
 
 /// How to make an upload key; the command from Flutter's Android deployment guide.
 const KEYTOOL_GENKEY: &str = "keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload";
@@ -32,6 +33,10 @@ pub enum CliError {
     },
     #[error("no desktop target for host OS {0:?}; name a target: cargo parallax run android")]
     NoHostDesktop(String),
+    #[error(
+        "cargo parallax cannot pass app arguments (after --) on {0}: ParallaxActivity hands the app no launch arguments yet. Drop them, or read settings another way"
+    )]
+    AppArgsUnsupported(&'static str),
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
     )]

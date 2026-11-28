@@ -35,7 +35,8 @@ works: [desktop-touch-windows.md](desktop-touch-windows.md).
 `--view webview2` a WebView2 page (the runtime ships with Windows 10 and 11):
 
 ```sh
-cargo run -p native-view -- --view webview2   # cargo parallax passes no app arguments yet
+cd examples/native-view
+cargo parallax run windows -- --view webview2   # everything after -- goes to the app
 ```
 
 ## Common errors
