@@ -43,6 +43,8 @@ its axes while the touch's `Started` is dispatched (`Window::scroll_container_un
 So in a vertical list a horizontal drag wins sideways moves, and a `Pan` drag (a desktop field) wins a mostly
 horizontal one past 36 px; outside a one-axis container a `Pan` drag only wins a move that crosses both slops at once.
 `list()` reports no axes. To add a kind: one arm in each of `TouchDragKind`'s two methods.
+A touch the pan has not taken yet is no tap or long press once it strays past `touch_slop` from where it went down
+(`PressSlop`, Flutter's `preAcceptSlopTolerance`): a sideways swipe in a vertical list never clicks its row.
 
 ## Who uses it
 
@@ -54,7 +56,7 @@ engine as a touch press at the start and its moves ([text-selection.md](text-sel
 ## Tests
 
 `gestures::recognizer_tests::flutter_recognizer_tests_pass`: 6 rows from `tap_and_drag_test.dart` (their
-`VerticalDragGestureRecognizer` as a vertical container), 2 rows for monodrag.dart's one-axis acceptance and 5 GPUI rows
+`VerticalDragGestureRecognizer` as a vertical container), 2 rows for monodrag.dart's one-axis acceptance, 3 press-slop rows and 5 GPUI rows
 (a text field's pair: a claimed long press plus a competing drag, one in a vertical list); `pan_axes_join_…` tables
 how containers combine. Run `scripts/patch-test.sh recognizer`.
 hello's `touch_selects_by_the_android_row` drives the field with touches through GPUI's test platform.
