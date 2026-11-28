@@ -5,7 +5,9 @@ paints. The view's own frames reach the screen through the OS compositor and dra
 ([ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview), issue #1). Upstream GPUI has it on macOS only; this
 page is what every target shares. Per target: [native-view-wayland.md](native-view-wayland.md),
 [native-view-windows.md](native-view-windows.md) (and [WebView2](native-view-webview2.md)), [native-view-apple.md](native-view-apple.md),
-[native-view-android.md](native-view-android.md), [native-view-web.md](native-view-web.md).
+[native-view-android.md](native-view-android.md), [native-view-web.md](native-view-web.md). Runtime checks per target:
+[Wayland](native-view-wayland-checks.md), [Apple](native-view-apple-checks.md), [Android](native-view-android-checks.md),
+[web](native-view-web-checks.md); Windows' are in [native-view-windows.md](native-view-windows.md).
 
 ## One API
 
@@ -16,7 +18,8 @@ on the web. The handle is an element: paint it
 where the view goes, and elements painted after it cover it. `NativeView::bounds(window)` gives where it showed in the
 last frame: the whole view, so pointer positions stay view-relative when a clip cuts it. A view its element's clip
 cuts (scrolled partly out of a container) shows only the part the clip leaves, at its full size and position, on
-every target (a clipping container on Apple, a clip visual on Windows, a crop on Wayland); clipped away entirely, it
+every target (a clipping container on Apple, a clip visual on Windows, a crop on Wayland, `setClipBounds` or a
+`SurfaceControl` crop on Android, API 33+ for the crop; the slot's clip on the web); clipped away entirely, it
 hides. On Wayland the app commits every buffer through `gpui_linux::NativeViewBuffers`, which sets that crop for
 each buffer's size ([native-view-wayland.md](native-view-wayland.md#clipped-views)).
 
@@ -78,5 +81,6 @@ GPUI.
   the headless renderer (outside, under a quad painted after, erased opaque and translucent quads, the clip, the inset).
 - `window::native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element` (patch 0048): one
   row per input, with an element painted under the view that must hear none of it; `window::native_view_input::tests`:
-  the hitbox behaviour per mode.
+  the hitbox behaviour per mode. A focused native view that is dropped hands focus back (0048's
+  `focused_native_view_sent`); iOS also hands the keyboard back itself when the view goes (0052).
 - Both run in [scripts/patch-test.sh](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)).

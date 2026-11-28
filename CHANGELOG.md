@@ -57,6 +57,13 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   any `View` (WebView, SurfaceView; laid out under GPUI's translucent surface), with no GPUI frame for the view's own;
   `parallax_android::with_activity` builds views, `forward_touches` sends gestures that start on a view to it too
   (React Native's `JSTouchDispatcher`, ported). Example: `examples/native-view-android` (docs/native-view-android.md).
+- Android: `parallax_android::in_surface` is an opt-in `SurfaceControlViewHost` hosting (API 34+) that moves a View in
+  step with GPUI's frame, for views without text input (docs/native-view-android-hosting.md);
+  `TouchForwarding::Exclusive` gives a gesture to the View alone, and mouse wheel turns go to forwarded views.
+- Checks that assert native views' content, not only the absence of a gap: `scripts/android-native-view-checks.sh`
+  (emulator), `scripts/apple-native-view-checks.sh` with the per-frame counter `scripts/apple-native-view-frames.py`
+  (iOS simulator, macOS recordings), and content, focus, page-content and offset-canvas rows in web-checks.mjs'
+  native-view suite.
 
 ### Fixed (0.1.10)
 
@@ -65,6 +72,20 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - Web: where a browser's WebGPU canvases show nothing (Chromium 158 with its Vulkan feature on NVIDIA's Linux driver
   drew GPUI's window all black), GPUI detects it with a test clear read back at startup and draws with WebGL2,
   logging why (fork patch 0057, docs/web-webgpu.md).
+
+- iOS: dropping the focused native view hands the keyboard back to GPUI, so a GPUI field focused next gets it; the
+  native-view rotation and host-view code moved out of upstream's window.rs, and a restack-only frame presents in
+  step (fork patch 0052).
+- Web native views leave the rest of the page's pointer events alone, follow a canvas that isn't at the page's
+  origin, and give their layer, listeners and canvas styles back when the last view goes. GPUI's fields get keys
+  back after focus was in an iframe or in a view that was dropped, and GPUI focusing a view no longer moves focus out
+  of an `<input>` inside it. They are placed from the core's `native_view_placement` (fork patch 0054).
+- Web: when the WebGPU canvas probe reads blank and WebGL2 fails too, the window still opens on WebGPU, logging both
+  failures (fork patch 0057).
+- Android native views: Android focus follows GPUI's focused native view and Back reaches GPUI first (a tapped
+  WebView no longer swallows it); views stack in GPUI's paint order and are clipped by GPUI's content mask
+  (`SurfaceControl` crop on API 33+); on GL (API 30+) the renderer moves to Vulkan when a native view first shows, so
+  holes are no longer black; a `NativeView` kept past its Activity no longer keeps the Activity alive.
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

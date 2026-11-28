@@ -51,7 +51,7 @@ its lib tests, in the backend's own edition (read from its fork manifest). Today
 `native_views.rs` ([native-view-windows.md](native-view-windows.md)); gpui_web's `text_editing.rs`
 ([web-text-input.md](web-text-input.md)), `page_lifecycle.rs` and `keyboard_inset.rs`
 ([web-lifecycle.md](web-lifecycle.md)), `native_view_layout.rs` ([native-view-web.md](native-view-web.md)); gpui_ios's `ios/keyboard.rs`, `ios/keyboard_inset.rs` and `ios/spring_animation.rs`
-([ios-keyboard.md](ios-keyboard.md)); gpui_apple's `native_view_placement.rs` ([native-view-apple.md](native-view-apple.md)). A listed module must use only `gpui` and `std`.
+([ios-keyboard.md](ios-keyboard.md)) and `ios/native_view_state.rs` ([native-view-apple.md](native-view-apple.md)); gpui_apple's `native_view_placement.rs` ([native-view-apple.md](native-view-apple.md)). A listed module must use only `gpui` and `std`.
 
 ## CI
 

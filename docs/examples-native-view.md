@@ -24,12 +24,14 @@ yellow band across its top half shows whether a clipped view is cropped or squee
 
 ## native-view-web
 
-[examples/native-view-web](../examples/native-view-web/) (web only): three DOM elements under GPUI's canvas as native
+[examples/native-view-web](../examples/native-view-web/) (web only): four DOM elements under GPUI's canvas as native
 views, made by [index.html](../examples/native-view-web/index.html): a same-origin iframe, a cross-origin one (the
-other loopback name, the next port) and a canvas redrawn every animation frame, each with a GPUI div over part of it.
+other loopback name, the next port) a canvas redrawn every animation frame and a form (a box with an `<input>`), each with a GPUI div over part of it.
 The iframes ([frame.html](../examples/native-view-web/frame.html)) post the clicks, wheels, scrolls and selections they
 get to the page. `window.gpuiFrames` counts GPUI's frames. `?animate` moves and resizes the views every GPUI frame;
-`?noview` is the same window without them. How to run it and the checks: [native-view-web.md](native-view-web.md).
+`?noview` is the same window without them. A focusable GPUI field logs its keys; `window.nativeViewCommand("field")`
+focuses it and `("drop <name>")` drops a view. `?offset` puts the canvas at (8, 48) under page content. How to run
+it: [native-view-web.md](native-view-web.md); the checks: [native-view-web-checks.md](native-view-web-checks.md).
 
 ## native-view-windows
 
@@ -49,7 +51,8 @@ and keys over it go to the page, which posts its events and frame rate back to t
 ## native-view-apple
 
 [examples/native-view-apple](../examples/native-view-apple/): a native view (`NSView` on macOS, `UIView` on iOS)
-that recolours itself every frame under a GPUI div, with a GPUI frame counter; macOS and iOS only (other targets
+that recolours itself every frame under an orange GPUI div, with a GPUI frame counter; "Drop views" drops every
+native view handle (on iOS it checks that a GPUI field gets the keyboard back); macOS and iOS only (other targets
 print a line and exit). What it shows and how to run it: [native-view-apple.md](native-view-apple.md#the-example).
 
 ## native-view-android
