@@ -74,5 +74,6 @@ The sync leaves `upstream/` and `Cargo.toml` on the new version and lists the fa
 
 Patches that apply can still drift: [`scripts/patch-drift.sh`](../scripts/patch-drift.sh) lists, per patch, the files
 Zed changed under it; read those diffs. Rerun `scripts/sync-upstream.sh <version>` until it ends with `synced to gpui-pre
-<version>`. Lessons from a rehearsal: [upstream-rehearsal.md](upstream-rehearsal.md). Upstream behaviour that
-surprised you goes under "Upstream notes" in [ROADMAP.md](../ROADMAP.md) with the Zed commit.
+<version>`. Lessons from a rehearsal: [upstream-rehearsal.md](upstream-rehearsal.md); a weekly CI job runs these
+against Zed main ([upstream-drift.md](upstream-drift.md)). Upstream behaviour that surprised you goes under
+"Upstream notes" in [ROADMAP.md](../ROADMAP.md) with the Zed commit.

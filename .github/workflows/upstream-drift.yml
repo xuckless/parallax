@@ -1,0 +1,83 @@
+# Weekly upstream drift report (docs/upstream-drift.md): vendor Zed main through the gpui-pre fallback,
+# rebase every patch onto it, build the Zed fork branch without pushing, and list the files Zed changed under each
+# patch. Report only: it pushes, publishes and commits nothing. It fails when a patch stops applying to Zed main.
+name: Upstream drift
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      zed_ref:
+        description: Zed commit or branch to check against
+        default: main
+
+# Its own group: never cancels, or is cancelled by, the ci-${ref} runs.
+concurrency:
+  group: upstream-drift-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ZED_REF: ${{ inputs.zed_ref || 'main' }}
+  REPORT: ${{ github.workspace }}/drift-report
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  drift:
+    name: drift vs zed ${{ inputs.zed_ref || 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - run: mkdir -p "$REPORT"
+      # Fails only when vendoring fails. Patches that no longer apply are the next steps' report; sync-upstream.sh's
+      # own exit status (it stops at its patch check) is recorded, not enforced.
+      - name: vendor zed
+        run: |
+          old="$(sed -n 's/^Zed commit: *\([0-9a-f]\{40\}\).*/\1/p' upstream/UPSTREAM)"
+          echo "OLD_ZED=$old" >> "$GITHUB_ENV"
+          status=0
+          scripts/sync-upstream.sh --zed "$ZED_REF" > "$REPORT/sync-upstream.txt" 2>&1 || status=$?
+          cat "$REPORT/sync-upstream.txt"
+          echo "sync-upstream.sh exit status: $status" >> "$REPORT/sync-upstream.txt"
+          grep -q '^replaced upstream/' "$REPORT/sync-upstream.txt" || { echo "::error::vendoring Zed $ZED_REF failed"; exit 1; }
+          echo "NEW_ZED=$(sed -n 's/^Zed commit: *\([0-9a-f]\{40\}\).*/\1/p' upstream/UPSTREAM)" >> "$GITHUB_ENV"
+      - name: rebase patches
+        id: rebase
+        run: scripts/rebase-patches.sh report 2>&1 | tee "$REPORT/rebase-patches.txt"
+      # Uses the patches rebase-patches.sh regenerated (fuzz); stops at the first that does not apply.
+      - name: zed fork branch (no push)
+        if: ${{ !cancelled() && env.NEW_ZED != '' }}
+        run: scripts/sync-fork.sh --no-push 2>&1 | tee "$REPORT/sync-fork.txt"
+      - name: patch drift
+        if: ${{ !cancelled() && env.NEW_ZED != '' }}
+        run: |
+          scripts/patch-drift.sh "$OLD_ZED" "$NEW_ZED" --diff > "$REPORT/patch-drift-full.txt"
+          sed '/^diff --git /,$d' "$REPORT/patch-drift-full.txt" | tee "$REPORT/patch-drift.txt"
+          cp -a patches "$REPORT/patches-rebased"
+      - name: summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## Upstream drift: Zed \`${OLD_ZED:0:7}\` → \`${NEW_ZED:0:7}\` ($ZED_REF)"
+            for part in rebase-patches sync-fork patch-drift sync-upstream; do
+              [[ -f $REPORT/$part.txt ]] || continue
+              echo "### $part"
+              echo '```'
+              tail -n 80 "$REPORT/$part.txt"
+              echo '```'
+            done
+            echo "Full logs, Zed's diff of every listed file and the rebased patches: the drift-report artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: drift-report
+          path: drift-report

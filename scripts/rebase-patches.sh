@@ -5,6 +5,8 @@
 #   header kept) / conflict (stops: GNU patch's .rej files are left in the tree to fix by hand).
 # After fixing a conflict in build/rebase/ (delete the .rej files): `rebase-patches.sh regen NNNN`, then `resume`.
 # Usage: scripts/rebase-patches.sh            start over from upstream/
+#        scripts/rebase-patches.sh report     start over, but skip conflicts and go on (weekly drift job): lists every
+#                                             conflict and exits 1 if there was one
 #        scripts/rebase-patches.sh resume     continue after the last patch committed in the tree
 #        scripts/rebase-patches.sh regen NNNN regenerate patches/NNNN-*.patch from the tree's uncommitted change
 # A regenerated patch must keep its intent: compare its +/- lines with git diff, and read upstream's diff of every
@@ -28,8 +30,11 @@ regen() {
     t commit -qm "$(basename "$patch")"
 }
 
+# What a conflict does: stop for a hand fix, or (report) drop the half-applied patch, note it and go on.
+on_conflict=stop
 case "${1:-}" in
-    "")
+    ""|report)
+        [[ ${1:-} == report ]] && on_conflict=skip
         rm -rf "$tree"
         mkdir -p "$tree"
         cp -a upstream/. "$tree/"
@@ -48,6 +53,7 @@ case "${1:-}" in
 esac
 
 done="$(t log --format=%s)"
+conflicts=()
 shopt -s nullglob
 for patch in patches/*.patch; do
     name="$(basename "$patch")"
@@ -62,10 +68,22 @@ for patch in patches/*.patch; do
         regen "$patch"
         echo "${name:0:4} fuzz (regenerated)"
     else
-        (cd "$tree" && patch -p1 --no-backup-if-mismatch < "$root/$patch" > /dev/null || true)
-        echo "${name:0:4} conflict: fix the .rej hunks in $tree, then: scripts/rebase-patches.sh regen ${name:0:4}"
         grep -E '^error' <<< "$out" | head -10 >&2
-        exit 1
+        case $on_conflict in
+            stop)
+                (cd "$tree" && patch -p1 --no-backup-if-mismatch < "$root/$patch" > /dev/null || true)
+                echo "${name:0:4} conflict: fix the .rej hunks in $tree, then: scripts/rebase-patches.sh regen ${name:0:4}"
+                exit 1
+                ;;
+            skip)
+                echo "${name:0:4} conflict (skipped; later patches that need it may fail too)"
+                conflicts+=("${name:0:4}")
+                ;;
+        esac
     fi
 done
+if [[ ${#conflicts[@]} -gt 0 ]]; then
+    echo "conflicts: ${conflicts[*]}"
+    exit 1
+fi
 echo "every patch applies; rerun scripts/sync-upstream.sh"

@@ -45,6 +45,11 @@ Linux runs `scripts/publish-fork.sh --dry-run` (the fork crates package), and ro
 `PUBLISHED_LIBS` once their fork version is on crates.io; `cargo-parallax` is packaged on Linux every run. What
 each check proves and the publish-first order: [gpui-fork-crates.md](gpui-fork-crates.md#ci).
 
+## Weekly drift report
+
+[upstream-drift.yml](../.github/workflows/upstream-drift.yml), a separate workflow, applies every patch to Zed main
+weekly and reports; it builds no target: [upstream-drift.md](upstream-drift.md).
+
 ## Run the same checks locally
 
 The commands, the Android NDK setup and the desktop touch runs: [ci-local.md](ci-local.md).
