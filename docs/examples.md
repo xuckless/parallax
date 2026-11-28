@@ -53,6 +53,8 @@ own thread; a blue GPUI div covers part of it. Once a second it logs `gpui frame
 0 while only the page changes), and it logs the alpha mode GPUI chose and every pointer event over the view with its
 view-relative position. Flags: `--fps N` (page rate), `--animate` (the view moves and resizes every GPUI frame),
 `--clipped` (the view half scrolled out of a container, in a see-through window: only its lower half may show),
+`--resize` (the page switches its buffer size every 45 frames, each switch trailed by two old-size frames, committed
+through `NativeViewBuffers` from its thread),
 `--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds). The page's
 yellow band across its top half shows whether a clipped view is cropped or squeezed.
 

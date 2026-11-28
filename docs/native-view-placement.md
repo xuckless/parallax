@@ -15,6 +15,6 @@ never rounds them again; only a coarser grid does.
 | `background(views)` | the last painted shown view's `set_background` colour, `None` when none asks | every backend |
 
 What shows under the views when `background` is `None`: black in an opaque window on macOS and Windows, the desktop
-through a transparent window on every target, the desktop on Wayland
-([native-view-wayland.md](native-view-wayland.md)), the canvas's page behind it on the web, transparent on iOS and
+through a transparent window on every target, the desktop on Wayland (with a
+colour, GPUI's underlay subsurface fills an opaque window's holes: [native-view-wayland.md](native-view-wayland.md)), the canvas's page behind it on the web, transparent on iOS and
 Android.
