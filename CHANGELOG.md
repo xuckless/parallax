@@ -12,8 +12,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   it as a subsurface under the window, in step with GPUI's frames, with no GPUI frame for the view's own
   (docs/native-view-wayland.md, fork patches 0047–0049). The wgpu renderer cuts native views' holes for every wgpu
   target. Example: `examples/native-view-wayland`.
-- `NativeView::bounds` and `NativeViewInput`: where the window gets input over a view, its element's listeners hear
-  it (docs/native-view.md).
+- `NativeView::bounds` and `NativeViewInput`: where the window gets input over a view (Wayland, Windows, iOS), its
+  element's listeners and its ancestors' hear it, and the view occludes elements painted behind it like a solid
+  element (`HitboxBehavior::BlockMouseExceptAncestors`, fork patch 0048, docs/native-view.md).
 - Windows: `NativeView` shows an app's composition swap chain (or any DirectComposition content) under GPUI's
   content, with no child window and no GPUI frame for the view's own presents; input over it reaches the view's
   element (patch 0050, docs/native-view-windows.md, examples/native-view-windows).

@@ -1,28 +1,32 @@
-Native views whose input reaches the window: who takes pointer input over a view, the view's bounds, and a
-test-platform mode. Shared by every NativeView backend.
+Native views whose input reaches the window: who takes pointer input over a view, occlusion that spares the view's
+ancestors, the view's bounds, and a test-platform mode. Shared by every NativeView backend.
 
 What:
 - `NativeViewInput { View, Window }` and `PlatformWindow::native_view_input()` (default `View`, macOS's routing), in
   new file `window/native_view_input.rs`. macOS keeps `View`: AppKit hit-tests the `NSView`, and the view's element
-  blocks the mouse (`HitboxBehavior::BlockMouse`). Wayland (0049), Windows (0050) and iOS (0052) return `Window`:
-  the view's element is hit-tested like any element (`HitboxBehavior::Normal`), so listeners added to it
-  (`view.into_element().on_mouse_move(..)`) and its ancestors hear pointer and scroll input over the view, and
-  elements painted after the view take theirs. Keys while the view's `FocusHandle` is focused dispatch from that
-  element like any other key, reserved bindings first.
+  blocks the mouse (`HitboxBehavior::BlockMouse`). Wayland (0049), Windows (0050) and iOS (0052) return `Window`.
+- With `Window` the view's element occludes like a solid element, except for its own ancestors: a new
+  `HitboxBehavior::BlockMouseExceptAncestors`. The hit test (`Occlusion`, in the new file) skips every hitbox behind
+  it whose element is not on the view's dispatch path, so listeners on the view's element
+  (`view.into_element().on_mouse_move(..)`) and its ancestors hear pointer and scroll input over the view, elements
+  painted before it hear nothing there, and elements painted after it keep their own. A hitbox records its
+  element's dispatch node (`Hitbox::dispatch_node`, remapped when a cached view's prepaint is reused). Keys while
+  the view's `FocusHandle` is focused dispatch from that element like any other key, reserved bindings first.
 - `NativeView::bounds(window)`: where the view showed in the last drawn frame, so a listener turns positions into
   view-relative ones. `TestWindow::set_native_view_input`: the mode for views attached after.
 - `NativeView`'s doc comment names every platform that shows native views (macOS, iOS, Windows, Wayland).
 
 Test: `native_view_input::tests` (the behaviour per mode, a table) and
 `native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element`, one row per input (a key
-and a reserved key while focused; press, move and scroll over the uncovered view; a press on the element painted
-over it), with view-relative positions. The existing native view tests run unchanged in `View` mode, now with
-listeners on the view's element that must stay silent there. New file `window/native_view/tests/window_input.rs`.
+and a reserved key while focused; press, move and scroll over the uncovered view, with an element painted under the
+view that must hear none of them; a press on the element painted over it), with view-relative positions. The
+existing native view tests run unchanged in `View` mode, now with listeners on the view's element that must stay
+silent there. New file `window/native_view/tests/window_input.rs`.
 
 Why: on Wayland, Windows and iOS the native view takes no input (an empty input region, a DirectComposition visual,
 a view under GPUI's), so every pointer event arrives at GPUI, and the view's `BlockMouse` hitbox kept it from every
-element, the view's own included (xuckless/parallax#1 §3). The hitbox and the element are GPUI's own types, so this
-is a core patch (rule 12).
+element, the view's own included (xuckless/parallax#1 §3); `Normal` instead let elements behind the view hear input
+over it. The hitbox and the element are GPUI's own types, so this is a core patch (rule 12).
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
@@ -100,7 +104,7 @@ diff --git a/gpui-pre/src/window/native_view/tests/window_input.rs b/gpui-pre/sr
 new file mode 100644
 --- /dev/null
 +++ b/gpui-pre/src/window/native_view/tests/window_input.rs
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,114 @@
 +//! Native views whose input reaches the window ([`NativeViewInput::Window`]: iOS, Windows, Wayland).
 +
 +use super::*;
@@ -124,7 +128,10 @@ new file mode 100644
 +
 +/// Where the window gets a native view's input, as on Wayland, the view's
 +/// own element hears it with view-relative positions, and so do its ancestors (the
-+/// container, "behind view"), as any element's input. The container is at (0, 10).
++/// container, "behind view"), as any element's input. The view occludes like a
++/// solid element: the element painted before it under it ("under view") hears
++/// nothing over it, the element painted after it over it (the cover) keeps its
++/// own input. The container is at (0, 10).
 +#[gpui::test]
 +fn window_input_over_a_native_view_reaches_its_element(cx: &mut TestAppContext) {
 +    cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-r", Reserved, None)]));
@@ -135,6 +142,7 @@ new file mode 100644
 +        .update(cx, |view, window, cx| {
 +            view.native_view = new_native_view(window, cx);
 +            view.native_view.reserve_action::<Reserved>();
++            view.paints_under_view = true;
 +            window.focus(&view.native_view.focus_handle(cx), cx);
 +        })
 +        .unwrap();
@@ -215,10 +223,12 @@ diff --git a/gpui-pre/src/window/native_view_input.rs b/gpui-pre/src/window/nati
 new file mode 100644
 --- /dev/null
 +++ b/gpui-pre/src/window/native_view_input.rs
-@@ -0,0 +1,66 @@
-+//! Who gets pointer input over a native view, per platform (`PlatformWindow::native_view_input`).
+@@ -0,0 +1,105 @@
++//! Who gets pointer input over a native view, per platform (`PlatformWindow::native_view_input`),
++//! and how a view whose input reaches the window occludes what is behind it.
 +
-+use crate::HitboxBehavior;
++use crate::{DispatchNodeId, DispatchTree, Hitbox, HitboxBehavior};
++use smallvec::SmallVec;
 +
 +/// Who a platform gives pointer input over a shown native view to.
 +#[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -226,20 +236,57 @@ new file mode 100644
 +    /// The view itself, as on macOS, where AppKit hit-tests the `NSView`.
 +    /// The view's element blocks the mouse from everything behind it.
 +    View,
-+    /// The window's own content, as on iOS (GPUI's view stays on top and
-+    /// takes every touch), Windows and Wayland (the view takes no input). The view's element is hit-tested like any
-+    /// other, so its ancestors' listeners hear the input; the view hears
-+    /// nothing unless the app forwards it.
++    /// The window's own content, as on iOS, Windows and Wayland, where the view
++    /// takes no input of its own. The view's element occludes like a solid
++    /// element: it and its ancestors hear the input, elements painted behind it
++    /// don't, elements painted after it keep theirs. The view hears nothing
++    /// unless the app forwards it.
 +    Window,
 +}
 +
 +impl NativeViewInput {
-+    /// The hitbox behavior of a native view's element, which blocks the mouse
-+    /// only where the platform gives the input to the view instead of GPUI.
++    /// The hitbox behavior of a native view's element. Only the occurrence that
++    /// shows the view occludes; a later one paints nothing.
 +    pub(super) fn hitbox_behavior(self, shows_view: bool) -> HitboxBehavior {
 +        match (self, shows_view) {
 +            (NativeViewInput::View, true) => HitboxBehavior::BlockMouse,
-+            (NativeViewInput::View, false) | (NativeViewInput::Window, _) => HitboxBehavior::Normal,
++            (NativeViewInput::Window, true) => HitboxBehavior::BlockMouseExceptAncestors,
++            (NativeViewInput::View | NativeViewInput::Window, false) => HitboxBehavior::Normal,
++        }
++    }
++}
++
++/// How far a hit test has got, front to back: past a
++/// [`HitboxBehavior::BlockMouseExceptAncestors`] hitbox, only the dispatch
++/// nodes on its path (its element's ancestors) are still hit.
++pub(super) enum Occlusion {
++    None,
++    ExceptAncestors(SmallVec<[DispatchNodeId; 32]>),
++}
++
++impl Occlusion {
++    /// Whether `hitbox`, behind every hitbox seen so far, is hidden.
++    pub(super) fn hides(&self, hitbox: &Hitbox) -> bool {
++        match self {
++            Occlusion::None => false,
++            Occlusion::ExceptAncestors(path) => !hitbox
++                .dispatch_node
++                .is_some_and(|node| path.contains(&node)),
++        }
++    }
++
++    /// The occlusion for the hitboxes behind `hitbox`, a hit one.
++    pub(super) fn behind(self, hitbox: &Hitbox, tree: &DispatchTree) -> Occlusion {
++        match (self, hitbox.behavior) {
++            (Occlusion::None, HitboxBehavior::BlockMouseExceptAncestors) => {
++                Occlusion::ExceptAncestors(
++                    hitbox
++                        .dispatch_node
++                        .map(|node| tree.dispatch_path(node))
++                        .unwrap_or_default(),
++                )
++            }
++            (occlusion, _) => occlusion,
 +        }
 +    }
 +}
@@ -249,7 +296,7 @@ new file mode 100644
 +    use super::*;
 +
 +    #[test]
-+    fn a_native_view_blocks_the_mouse_only_where_the_view_takes_the_input() {
++    fn a_native_view_occludes_only_where_it_shows() {
 +        // (name, input, shows view, behavior)
 +        let cases = [
 +            (
@@ -265,13 +312,13 @@ new file mode 100644
 +                HitboxBehavior::Normal,
 +            ),
 +            (
-+                "iOS, shown",
++                "iOS, Windows, Wayland, shown",
 +                NativeViewInput::Window,
 +                true,
-+                HitboxBehavior::Normal,
++                HitboxBehavior::BlockMouseExceptAncestors,
 +            ),
 +            (
-+                "iOS, shown elsewhere",
++                "iOS, Windows, Wayland, shown elsewhere",
 +                NativeViewInput::Window,
 +                false,
 +                HitboxBehavior::Normal,
@@ -297,7 +344,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
  };
  use anyhow::{Context as _, Result};
  use collections::HashSet;
-@@ -29,8 +28,20 @@
+@@ -29,8 +28,21 @@
  
  /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
  ///
@@ -310,9 +357,10 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
 +///
 +/// On a platform whose native views take no input of their own
 +/// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland), pointer input
-+/// over the view is hit-tested like any element's: listeners added to the
-+/// element this handle becomes (`view.into_element().on_mouse_move(…)`) and
-+/// its ancestors hear it, elements painted after the view take theirs, and
++/// over the view is hit-tested like any solid element's: listeners added to
++/// the element this handle becomes (`view.into_element().on_mouse_move(…)`)
++/// and its ancestors hear it, elements painted before the view hear nothing
++/// over it, elements painted after the view take theirs, and
 +/// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
 +/// the view's [`FocusHandle`] is focused are dispatched from that element like
 +/// any other key press, so the app forwards the ones it wants to the view.
@@ -320,7 +368,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
  ///
  /// The view is composited beneath the window's GPUI content and shows through
  /// wherever this handle is used as an element, so elements painted after it
-@@ -92,7 +103,13 @@
+@@ -92,7 +104,13 @@
      ///
      /// `view` must point to a live view of the kind the window's platform
      /// embeds, which is an `NSView` on macOS, and that view must not be in
@@ -335,7 +383,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
      ///
      /// GPUI retains the view and puts it inside a view of its own, until the
      /// last clone of the returned handle is dropped. Until then GPUI decides the
-@@ -139,6 +156,22 @@
+@@ -139,6 +157,22 @@
          });
      }
  
@@ -358,7 +406,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
      /// Makes key bindings for `A` apply before the view sees the key.
      ///
      /// The view otherwise sees every key first and can keep any of them, so
-@@ -225,11 +258,10 @@
+@@ -225,11 +259,10 @@
                  .any(|hitbox| hitbox.id == shown)
          });
          let shows_view = is_visible && !is_shown_elsewhere;
@@ -374,7 +422,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
          let hitbox = window.insert_hitbox(bounds, behavior);
          if shows_view {
              state.shown_hitbox.set(Some(hitbox.id));
-@@ -399,11 +431,13 @@
+@@ -399,11 +432,13 @@
      use super::*;
      use crate::{
          Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
@@ -390,15 +438,17 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
      #[gpui::test]
      fn focusing_a_native_view_gives_it_keyboard_input(cx: &mut TestAppContext) {
          let window = open_window(cx);
-@@ -689,6 +723,7 @@
+@@ -689,7 +724,9 @@
              actions: Vec::new(),
              keys: Vec::new(),
              presses: Vec::new(),
 +            view_events: Vec::new(),
              paints_native_view_twice: false,
++            paints_under_view: false,
              unmark_count: 0,
          });
-@@ -734,6 +769,9 @@
+         cx.run_until_parked();
+@@ -734,7 +771,13 @@
          /// The key presses dispatched to the window's content.
          keys: Vec<String>,
          presses: Vec<&'static str>,
@@ -406,9 +456,32 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
 +        /// relative to the view.
 +        view_events: Vec<String>,
          paints_native_view_twice: bool,
++        /// Paints an element before the view's container, under the view,
++        /// which a view that occludes keeps from the input over it.
++        paints_under_view: bool,
          /// How many times the input handler of the "cover" element was told to
          /// end its composition.
-@@ -752,7 +790,7 @@
+         unmark_count: usize,
+@@ -749,10 +792,26 @@
+                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
+                     this.keys.push(event.keystroke.key.clone())
+                 }))
++                .when(self.paints_under_view, |this| {
++                    this.child(
++                        div()
++                            .absolute()
++                            .top(px(10.))
++                            .left_0()
++                            .size(px(100.))
++                            .on_mouse_down(
++                                MouseButton::Left,
++                                cx.listener(|this, _, _, _| this.presses.push("under view")),
++                            )
++                            .on_scroll(
++                                cx.listener(|this, _, _, _| this.presses.push("scroll under view")),
++                            ),
++                    )
++                })
                  .child(
                      div()
                          .absolute()
@@ -417,7 +490,7 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
                          .left_0()
                          .size(px(100.))
                          .bg(rgb(0xff0000))
-@@ -760,7 +798,29 @@
+@@ -760,7 +819,29 @@
                              MouseButton::Left,
                              cx.listener(|this, _, _, _| this.presses.push("behind view")),
                          )
@@ -448,23 +521,101 @@ diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_vie
                  )
                  .when(self.paints_native_view_twice, |this| {
                      this.child(
-@@ -884,6 +944,7 @@
+@@ -884,7 +965,9 @@
              actions: Vec::new(),
              keys: Vec::new(),
              presses: Vec::new(),
 +            view_events: Vec::new(),
              paints_native_view_twice: false,
++            paints_under_view: false,
              unmark_count: 0,
          })
+     }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -79,6 +79,8 @@
+@@ -79,6 +79,9 @@
  pub use a11y::A11ySubtreeBuilder;
  use native_view::NativeViewState;
  pub use native_view::{NativeView, NativeViewId};
 +mod native_view_input;
++use native_view_input::Occlusion;
 +pub use native_view_input::NativeViewInput;
  
  use self::a11y::A11y;
  #[cfg(not(target_family = "wasm"))]
+@@ -858,6 +861,9 @@
+     pub content_mask: ContentMask<Pixels>,
+     /// Flags that specify hitbox behavior.
+     pub behavior: HitboxBehavior,
++    /// The dispatch node of the element that inserted the hitbox, which tells
++    /// a [`HitboxBehavior::BlockMouseExceptAncestors`] hitbox its ancestors.
++    pub(crate) dispatch_node: Option<DispatchNodeId>,
+ }
+ 
+ impl Hitbox {
+@@ -960,6 +966,13 @@
+     /// inconsistent UI where clicks and moves interact with elements that are not considered to
+     /// be hovered.
+     BlockMouseExceptScroll,
++
++    /// Like [`HitboxBehavior::BlockMouse`], except that the hitboxes of the
++    /// element's ancestors still hear the mouse: everything painted behind the
++    /// element that does not contain it is ignored. A native view whose input
++    /// reaches the window sets this (`NativeViewInput::Window`), so it occludes
++    /// like a solid element while its element's listeners hear the input.
++    BlockMouseExceptAncestors,
+ }
+ 
+ /// An identifier for a tooltip.
+@@ -1186,9 +1199,11 @@
+     pub(crate) fn hit_test(&self, position: Point<Pixels>) -> HitTest {
+         let mut set_hover_hitbox_count = false;
+         let mut hit_test = HitTest::default();
++        let mut occlusion = Occlusion::None;
+         for hitbox in self.hitboxes.iter().rev() {
+             let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+-            if bounds.contains(&position) {
++            if bounds.contains(&position) && !occlusion.hides(hitbox) {
++                occlusion = occlusion.behind(hitbox, &self.dispatch_tree);
+                 hit_test.ids.push(hitbox.id);
+                 if !set_hover_hitbox_count
+                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
+@@ -4665,11 +4680,6 @@
+     }
+ 
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+-        self.next_frame.hitboxes.extend(
+-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+-                .iter()
+-                .cloned(),
+-        );
+         self.next_frame.tooltip_requests.extend(
+             self.rendered_frame.tooltip_requests
+                 [range.start.tooltips_index..range.end.tooltips_index]
+@@ -4690,6 +4700,17 @@
+             &mut self.rendered_frame.dispatch_tree,
+             self.focus,
+         );
++        // After the dispatch subtree, whose new node ids the hitboxes take.
++        self.next_frame.hitboxes.extend(
++            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
++                .iter()
++                .map(|hitbox| Hitbox {
++                    dispatch_node: hitbox
++                        .dispatch_node
++                        .map(|node| reused_subtree.refresh_node_id(node)),
++                    ..hitbox.clone()
++                }),
++        );
+ 
+         if reused_subtree.contains_focus() {
+             self.next_frame.focus = self.focus;
+@@ -6041,6 +6062,7 @@
+             bounds,
+             content_mask,
+             behavior,
++            dispatch_node: self.next_frame.dispatch_tree.active_node_id(),
+         };
+         self.next_frame.hitboxes.push(hitbox.clone());
+         hitbox

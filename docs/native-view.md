@@ -40,12 +40,13 @@ every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
 | `NativeViewInput` | Targets | Pointer input over the view |
 |---|---|---|
 | `View` | macOS | the view (AppKit hit-tests it); the view's element blocks the mouse from everything behind |
-| `Window` | Wayland, Windows, iOS | GPUI: the view's element is hit-tested like any other, so its listeners and its ancestors' hear it |
+| `Window` | Wayland, Windows, iOS | GPUI: the view's element occludes like a solid element (`HitboxBehavior::BlockMouseExceptAncestors`), so it and its ancestors hear the input, elements painted before it don't, elements painted after it keep theirs |
 
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract
-`view.bounds(window)`'s origin for view-relative positions; elements painted over the view take their own input.
-Keys while the view's `FocusHandle` is focused dispatch from that element like any key, `reserve_action` bindings
-first, so the app forwards the rest to the view.
+`view.bounds(window)`'s origin for view-relative positions. The hit test skips every hitbox behind the view whose
+element is not on the view's dispatch path (`Occlusion` in gpui's `window/native_view_input.rs`). Keys while the
+view's `FocusHandle` is focused dispatch from that element like any key, `reserve_action` bindings first, so the app
+forwards the rest to the view.
 
 ## Placement in step
 
@@ -58,5 +59,7 @@ GPUI.
 
 - `wgpu_renderer::tests::native_view_hole::native_view_hole_is_cut_in_paint_order` (patch 0047): a table of pixels on
   the headless renderer (outside, under a quad painted after, erased opaque and translucent quads, the clip, the inset).
-- `window::native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element` (patch 0048).
+- `window::native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element` (patch 0048): one
+  row per input, with an element painted under the view that must hear none of it; `window::native_view_input::tests`:
+  the hitbox behaviour per mode.
 - Both run in [scripts/patch-test.sh](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)).
