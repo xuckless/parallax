@@ -11,16 +11,17 @@ mode (premultiplied where offered; `wanted_alpha_mode`, the one rule), whatever 
 pipeline exists; once the last view is dropped both go. So showing and hiding a view (a tab switch) rebuilds nothing,
 and a window that never attaches a view never builds the hole pipeline nor writes its bind group (built lazily,
 `update_pipelines` compares the mode and the views with what the pipelines were built for). The mode is logged when
-the first view is attached. `WgpuRenderer::native_view_support()` fails with the typed `NativeViewsUnsupported` on a
-surface that offers no blending mode (NVIDIA's Vulkan WSI being the known risk; a WebGL2 canvas blends by its
-context's default whatever wgpu reports), so a platform can fail `NativeView::new` and the app fall back.
+the first view is attached. `WgpuRenderer::native_view_support()` says what blends the window (`NativeViewSupport`: the
+surface's mode, or a WebGL2 canvas's premultiplied context whatever mode wgpu reports, which the log names) or fails
+with the typed `NativeViewsUnsupported` on a surface that offers no blending mode (NVIDIA's Vulkan WSI being the
+known risk), so a platform can fail `NativeView::new` and the app fall back.
 `set_native_view_hole_inset` (kept only on the renderer's core) cuts holes inside the views' bounds, for a platform
 that rounds views to whole logical pixels (Wayland, patch 0049).
 
 New files: `shaders_native_view.wgsl` (concatenated after each transport), `wgpu_renderer/native_view_hole.rs` (the
 hole quads, the pipeline's colour target, the alpha-mode log), `wgpu_renderer/tests/native_view_hole.rs` (table test
 `native_view_hole_is_cut_in_paint_order` and `hole_pipeline_exists_only_while_native_views_are_attached`, on the
-headless renderer). `wgpu_renderer.rs` holds only the hooks; `scene.rs` and `window.rs` the attached flag.
+headless renderer; `native_view_support_names_what_blends_the_window`, pure). `wgpu_renderer.rs` holds only the hooks; `scene.rs` and `window.rs` the attached flag.
 
 Why: the wgpu renderer ignored `PrimitiveBatch::NativeViews`, so no wgpu target could show a native view
 (xuckless/parallax#1). The renderer is private to gpui_wgpu, so this can't live in a Parallax crate.
@@ -28,15 +29,17 @@ Why: the wgpu renderer ignored `PrimitiveBatch::NativeViews`, so no wgpu target 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-wgpu/src/gpui_wgpu.rs b/gpui-pre-wgpu/src/gpui_wgpu.rs
-index 29a79af..1004813 100644
+index 29a79af..04196ee 100644
 --- a/gpui-pre-wgpu/src/gpui_wgpu.rs
 +++ b/gpui-pre-wgpu/src/gpui_wgpu.rs
-@@ -12,4 +12,4 @@ pub use wgpu_context::*;
+@@ -12,4 +12,6 @@ pub use wgpu_context::*;
      any(test, feature = "bench-support", feature = "test-support")
  ))]
  pub use wgpu_renderer::WgpuHeadlessRenderer;
 -pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
-+pub use wgpu_renderer::{GpuContext, NativeViewsUnsupported, WgpuRenderer, WgpuSurfaceConfig};
++pub use wgpu_renderer::{
++    GpuContext, NativeViewSupport, NativeViewsUnsupported, WgpuRenderer, WgpuSurfaceConfig,
++};
 diff --git a/gpui-pre-wgpu/src/shaders_native_view.wgsl b/gpui-pre-wgpu/src/shaders_native_view.wgsl
 new file mode 100644
 index 0000000..8367052
@@ -64,7 +67,7 @@ index 0000000..8367052
 +    return vec4<f32>(0.0);
 +}
 diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
-index 41be0d3..f4a0534 100644
+index 41be0d3..fd1ff67 100644
 --- a/gpui-pre-wgpu/src/wgpu_renderer.rs
 +++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
 @@ -17,6 +17,9 @@ use std::ops::Range;
@@ -72,7 +75,7 @@ index 41be0d3..f4a0534 100644
  use std::sync::Arc;
  
 +mod native_view_hole;
-+pub use native_view_hole::NativeViewsUnsupported;
++pub use native_view_hole::{NativeViewSupport, NativeViewsUnsupported};
 +
  const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
  
@@ -188,7 +191,7 @@ index 41be0d3..f4a0534 100644
          }
      }
  }
-@@ -1032,22 +1074,51 @@ impl WgpuRenderer {
+@@ -1032,22 +1074,52 @@ impl WgpuRenderer {
      }
  
      pub fn update_transparency(&mut self, transparent: bool) {
@@ -223,10 +226,11 @@ index 41be0d3..f4a0534 100644
 +    /// Whether this surface can show native views: they show through their holes only where
 +    /// the compositor blends the window. A platform fails `NativeView::new` on `Err`, so the
 +    /// app can fall back.
-+    pub fn native_view_support(&self) -> Result<(), native_view_hole::NativeViewsUnsupported> {
++    pub fn native_view_support(&self) -> Result<NativeViewSupport, NativeViewsUnsupported> {
++        let backend = self.core().map(|core| core.adapter_info.backend);
 +        native_view_hole::support(
 +            self.transparent_alpha_mode,
-+            self.core().map(|core| core.adapter_info.backend),
++            cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl),
 +        )
 +    }
 +
@@ -253,7 +257,7 @@ index 41be0d3..f4a0534 100644
          if let RendererState::Ready { surface, core } = &self.state {
              surface.configure(&core.resources.device, &self.surface_config);
          }
-@@ -1101,6 +1172,20 @@ impl WgpuRenderer {
+@@ -1101,6 +1173,17 @@ impl WgpuRenderer {
          // Android background/rotation transitions).  Attempting to acquire
          // a texture from an unconfigured surface can block indefinitely on
          // some drivers (Adreno).
@@ -263,10 +267,7 @@ index 41be0d3..f4a0534 100644
 +        if scene.native_views_attached != self.native_views_attached {
 +            self.native_views_attached = scene.native_views_attached;
 +            if self.native_views_attached {
-+                native_view_hole::log_alpha_mode(
-+                    self.transparent_alpha_mode,
-+                    self.native_view_support(),
-+                );
++                native_view_hole::log_alpha_mode(self.native_view_support());
 +            }
 +        }
 +        self.apply_alpha_mode();
@@ -274,7 +275,7 @@ index 41be0d3..f4a0534 100644
          let RendererState::Ready { surface, core } = &mut self.state else {
              return false;
          };
-@@ -1189,6 +1274,7 @@ impl WgpuRendererCore {
+@@ -1189,6 +1272,7 @@ impl WgpuRendererCore {
              alpha_mode,
              dual_source_blending,
              uses_webgl_instance_data,
@@ -282,7 +283,7 @@ index 41be0d3..f4a0534 100644
          );
          let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
              label: Some("atlas_sampler"),
-@@ -1293,6 +1379,7 @@ impl WgpuRendererCore {
+@@ -1293,6 +1377,7 @@ impl WgpuRendererCore {
              transient_attachments: context.supports_transient_attachments(),
              adapter_info: context.adapter.get_info(),
              depth_texture: None,
@@ -290,7 +291,7 @@ index 41be0d3..f4a0534 100644
              #[cfg(all(
                  not(target_family = "wasm"),
                  any(test, feature = "bench-support", feature = "test-support")
-@@ -1306,11 +1393,20 @@ impl WgpuRendererCore {
+@@ -1306,11 +1391,20 @@ impl WgpuRendererCore {
          &self.resources
      }
  
@@ -312,7 +313,7 @@ index 41be0d3..f4a0534 100644
          self.resources.pipelines = Self::create_pipelines(
              &self.resources.device,
              &self.resources.bind_group_layouts,
-@@ -1318,6 +1414,7 @@ impl WgpuRendererCore {
+@@ -1318,6 +1412,7 @@ impl WgpuRendererCore {
              alpha_mode,
              self.dual_source_blending,
              self.uses_webgl_instance_data,
@@ -320,7 +321,7 @@ index 41be0d3..f4a0534 100644
          );
      }
  
-@@ -1544,8 +1641,16 @@ impl WgpuRendererCore {
+@@ -1544,8 +1639,16 @@ impl WgpuRendererCore {
                      // Surfaces are macOS-only for video playback and are not
                      // implemented by the WGPU renderer.
                      PrimitiveBatch::Surfaces(_surfaces) => {}
@@ -339,7 +340,7 @@ index 41be0d3..f4a0534 100644
                  }
              }
          }
-@@ -1629,6 +1734,15 @@ impl WgpuRendererCore {
+@@ -1629,6 +1732,15 @@ impl WgpuRendererCore {
                  instance_offset,
                  &scene.polychrome_sprites,
              )?,
@@ -355,7 +356,7 @@ index 41be0d3..f4a0534 100644
          })
      }
  
-@@ -2109,12 +2223,8 @@ impl WgpuRenderer {
+@@ -2109,12 +2221,8 @@ impl WgpuRenderer {
          let width = (config.size.width.0 as u32).max(1);
          let height = (config.size.height.0 as u32).max(1);
  
@@ -370,7 +371,7 @@ index 41be0d3..f4a0534 100644
  
          self.surface_config.width = width;
          self.surface_config.height = height;
-@@ -2136,9 +2246,11 @@ impl WgpuRenderer {
+@@ -2136,9 +2244,11 @@ impl WgpuRenderer {
                  anyhow::bail!("Cannot replace the surface: GPU resources have been released")
              }
          };
@@ -385,7 +386,7 @@ index 41be0d3..f4a0534 100644
          surface.configure(&core.resources.device, &self.surface_config);
          self.state = RendererState::Ready { surface, core };
  
-@@ -2367,6 +2479,12 @@ impl WgpuHeadlessRenderer {
+@@ -2367,6 +2477,12 @@ impl WgpuHeadlessRenderer {
      fn render(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
          self.check_gpu_errors()?;
          self.ensure_render_target(size)?;
@@ -398,7 +399,7 @@ index 41be0d3..f4a0534 100644
          let view = self
              .render_target
              .as_ref()
-@@ -2573,6 +2691,8 @@ impl RenderingParameters {
+@@ -2573,6 +2689,8 @@ impl RenderingParameters {
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -407,12 +408,12 @@ index 41be0d3..f4a0534 100644
      use gpui::{
          BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite, PathCurve,
          PathPaint, PathTile, Point, PolychromeSprite, Quad, Shadow, Size, SubpixelSprite,
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+diff --git a/home/xuckl/Dev/parallax/.claude/worktrees/agent-a485a30bc14a932fe/build/gpui-patched/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
 new file mode 100644
-index 0000000..b5eeb3f
+index 0000000..ad6219f
 --- /dev/null
 +++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,94 @@
 +//! Native views: the hole the renderer cuts where one shows. The platform composites the view
 +//! beneath the window (a Wayland subsurface, an Android SurfaceView, a DOM element under the
 +//! canvas); every wgpu target shares this hole.
@@ -463,42 +464,56 @@ index 0000000..b5eeb3f
 +
 +impl std::error::Error for NativeViewsUnsupported {}
 +
++/// Why a surface can show native views: what blends the window.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeViewSupport {
++    /// The compositor blends the surface by this premultiplied alpha mode.
++    Surface(wgpu::CompositeAlphaMode),
++    /// A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to
++    /// true and wgpu leaves alone, whatever surface mode wgpu reports (only `Opaque`).
++    WebGl2Premultiplied,
++}
++
 +/// Native views need a compositor that blends the window. NVIDIA's Vulkan WSI has been
 +/// known to offer only `Opaque` on Wayland, where every hole would show black.
++/// `webgl2_canvas`: the surface is a browser's WebGL2 canvas (wasm on wgpu's GL backend).
 +pub(super) fn support(
 +    alpha_mode: wgpu::CompositeAlphaMode,
-+    backend: Option<wgpu::Backend>,
-+) -> Result<(), NativeViewsUnsupported> {
-+    // A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to true and wgpu
-+    // leaves alone, whatever surface mode wgpu reports (only `Opaque`).
-+    if cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl) {
-+        return Ok(());
-+    }
-+    // alpha mode → whether the compositor blends the window.
-+    match alpha_mode {
-+        wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => Ok(()),
-+        wgpu::CompositeAlphaMode::Auto
-+        | wgpu::CompositeAlphaMode::Opaque
-+        | wgpu::CompositeAlphaMode::PostMultiplied => Err(NativeViewsUnsupported { alpha_mode }),
++    webgl2_canvas: bool,
++) -> Result<NativeViewSupport, NativeViewsUnsupported> {
++    // (WebGL2 canvas, alpha mode) → what blends the window. Add a row per new mode.
++    match (webgl2_canvas, alpha_mode) {
++        (true, _) => Ok(NativeViewSupport::WebGl2Premultiplied),
++        (false, wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit) => {
++            Ok(NativeViewSupport::Surface(alpha_mode))
++        }
++        (
++            false,
++            wgpu::CompositeAlphaMode::Auto
++            | wgpu::CompositeAlphaMode::Opaque
++            | wgpu::CompositeAlphaMode::PostMultiplied,
++        ) => Err(NativeViewsUnsupported { alpha_mode }),
 +    }
 +}
 +
 +/// Logged once when a window's first native view is attached.
-+pub(super) fn log_alpha_mode(
-+    alpha_mode: wgpu::CompositeAlphaMode,
-+    support: Result<(), NativeViewsUnsupported>,
-+) {
++pub(super) fn log_alpha_mode(support: Result<NativeViewSupport, NativeViewsUnsupported>) {
 +    match support {
-+        Ok(()) => log::info!("native views: window surface alpha mode {alpha_mode:?}"),
++        Ok(NativeViewSupport::Surface(alpha_mode)) => {
++            log::info!("native views: window surface alpha mode {alpha_mode:?}")
++        }
++        Ok(NativeViewSupport::WebGl2Premultiplied) => {
++            log::info!("native views: WebGL2 canvas, premultiplied alpha (the context's default)")
++        }
 +        Err(unsupported) => log::warn!("native views: {unsupported}"),
 +    }
 +}
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
+diff --git a/home/xuckl/Dev/parallax/.claude/worktrees/agent-a485a30bc14a932fe/build/gpui-patched/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
 new file mode 100644
-index 0000000..2d09be8
+index 0000000..d8720ea
 --- /dev/null
 +++ b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,158 @@
 +use super::*;
 +use gpui::{PlatformHeadlessRenderer, Scene};
 +
@@ -598,12 +613,64 @@ index 0000000..2d09be8
 +        scene.finish();
 +        renderer.render_scene(&scene, device_size(8, 8))?;
 +        assert_eq!(
-+            renderer.core.resources.pipelines.native_view_holes.is_some(),
++            renderer
++                .core
++                .resources
++                .pipelines
++                .native_view_holes
++                .is_some(),
 +            expected,
 +            "{name}"
 +        );
 +    }
 +    Ok(())
++}
++
++/// Native views show only where something blends the window; the alpha log names what.
++#[test]
++fn native_view_support_names_what_blends_the_window() {
++    use crate::wgpu_renderer::native_view_hole::{
++        NativeViewSupport, NativeViewsUnsupported, support,
++    };
++    use wgpu::CompositeAlphaMode::{Inherit, Opaque, PostMultiplied, PreMultiplied};
++    // (row name, WebGL2 canvas, surface alpha mode, expected). Add a row per rule.
++    let rows = [
++        (
++            "premultiplied surface blends",
++            false,
++            PreMultiplied,
++            Ok(NativeViewSupport::Surface(PreMultiplied)),
++        ),
++        (
++            "inherit surface blends",
++            false,
++            Inherit,
++            Ok(NativeViewSupport::Surface(Inherit)),
++        ),
++        (
++            "opaque surface can't show views",
++            false,
++            Opaque,
++            Err(NativeViewsUnsupported { alpha_mode: Opaque }),
++        ),
++        (
++            "postmultiplied surface can't show views",
++            false,
++            PostMultiplied,
++            Err(NativeViewsUnsupported {
++                alpha_mode: PostMultiplied,
++            }),
++        ),
++        (
++            "WebGL2 canvas reporting opaque is premultiplied",
++            true,
++            Opaque,
++            Ok(NativeViewSupport::WebGl2Premultiplied),
++        ),
++    ];
++    for (name, webgl2_canvas, alpha_mode, expected) in rows {
++        assert_eq!(support(alpha_mode, webgl2_canvas), expected, "{name}");
++    }
 +}
 diff --git a/gpui-pre/src/scene.rs b/gpui-pre/src/scene.rs
 index cccc924..6f773a8 100644

@@ -44,7 +44,8 @@ Metal's `native_view_fragment`).
   surface uses its premultiplied alpha mode and has its hole pipeline; once the last view is dropped both go, so a
   window without views keeps its opaque fast path and never builds the pipeline, and hiding and showing a view
   rebuilds nothing. The mode is logged when the first view is attached: `native views: window surface alpha mode
-  PreMultiplied`, or a warning. A surface that can't blend fails `WgpuRenderer::native_view_support()`
+  PreMultiplied` (on a WebGL2 canvas, which wgpu reports as `Opaque`: `native views: WebGL2 canvas, premultiplied
+  alpha (the context's default)`, `NativeViewSupport::WebGl2Premultiplied`), or a warning. A surface that can't blend fails `WgpuRenderer::native_view_support()`
   (`NativeViewsUnsupported`), so Wayland's `NativeView::new` fails and the app can fall back.
 - **Hole inset:** `WgpuRenderer::set_native_view_hole_inset` cuts holes inside the views' bounds, for a platform that
   rounds views to whole logical pixels (Wayland at a fractional scale).
