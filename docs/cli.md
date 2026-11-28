@@ -5,6 +5,8 @@ in a generated Gradle project, installs the APK and launches it. Source: [main.r
 [config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (the run),
 [icon.rs](../crates/cli/src/icon.rs) (launcher icon), [error.rs](../crates/cli/src/error.rs) (every failure and its fix),
 [templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
+Commands are rows of `COMMANDS` in [main.rs](../crates/cli/src/main.rs) (verb, target → handler). iOS
+(`run ios`, `build ios`, the `[ios]` table): [cli-ios.md](cli-ios.md).
 
 ## parallax.toml
 

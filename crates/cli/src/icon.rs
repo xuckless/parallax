@@ -1,4 +1,4 @@
-//! `app.icon`: the app's SVG rendered to Android's launcher icon, legacy PNGs plus an adaptive icon. docs/cli.md.
+//! `app.icon`: the app's SVG rendered to Android's launcher icon (legacy PNGs plus an adaptive icon) and to iOS's AppIcon set. docs/cli.md, docs/cli-ios.md.
 
 use std::path::Path;
 
@@ -60,26 +60,40 @@ const ADAPTIVE_ICON: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 /// Background colour when the SVG's top-left pixel is not opaque (no full-bleed tile).
 const NO_TILE_BACKGROUND: [u8; 3] = [0xFF, 0xFF, 0xFF];
 
-/// Reads and renders `app.icon`: (path under the Gradle project, file bytes) for every launcher icon file.
-pub fn launcher_icon(svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
-    let svg = std::fs::read(svg_path).map_err(|source| CliError::IconRead {
-        path: svg_path.to_path_buf(),
-        source,
-    })?;
-    render_icon(&svg, svg_path)
+/// A parsed `app.icon`, rendered to square PNGs.
+struct Icon<'a> {
+    tree: usvg::Tree,
+    path: &'a Path,
 }
 
-fn render_icon(svg: &[u8], svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
-    let invalid = |reason: String| CliError::IconInvalid {
-        path: svg_path.to_path_buf(),
-        reason,
-    };
-    let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
-        .map_err(|e| invalid(e.to_string()))?;
-    let render = |canvas_px: u32, share: f32| -> Result<tiny_skia::Pixmap, CliError> {
+impl<'a> Icon<'a> {
+    fn read(path: &'a Path) -> Result<Icon<'a>, CliError> {
+        let svg = std::fs::read(path).map_err(|source| CliError::IconRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Icon::parse(&svg, path)
+    }
+
+    fn parse(svg: &[u8], path: &'a Path) -> Result<Icon<'a>, CliError> {
+        let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
+            .map_err(|e| invalid(path, e.to_string()))?;
+        Ok(Icon { tree, path })
+    }
+
+    /// The SVG scaled to `share` of a `canvas_px` square, centred, over `background` (transparent if `None`).
+    fn render(
+        &self,
+        canvas_px: u32,
+        share: f32,
+        background: Option<[u8; 3]>,
+    ) -> Result<tiny_skia::Pixmap, CliError> {
         let mut pixmap = tiny_skia::Pixmap::new(canvas_px, canvas_px)
-            .ok_or_else(|| invalid(format!("cannot make a {canvas_px}px canvas")))?;
-        let size = tree.size();
+            .ok_or_else(|| invalid(self.path, format!("cannot make a {canvas_px}px canvas")))?;
+        if let Some([r, g, b]) = background {
+            pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+        }
+        let size = self.tree.size();
         let scale = canvas_px as f32 * share / size.width().max(size.height());
         let offset = |side: f32| (canvas_px as f32 - side * scale) / 2.0;
         let transform = tiny_skia::Transform::from_row(
@@ -90,27 +104,77 @@ fn render_icon(svg: &[u8], svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, Cl
             offset(size.width()),
             offset(size.height()),
         );
-        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        resvg::render(&self.tree, transform, &mut pixmap.as_mut());
         Ok(pixmap)
-    };
-    let png = |pixmap: tiny_skia::Pixmap| pixmap.encode_png().map_err(|e| invalid(e.to_string()));
+    }
 
-    let background = match render(DENSITIES[0].legacy_px, 1.0)?
-        .pixel(0, 0)
-        .map(|p| p.demultiply())
-    {
-        Some(corner) if corner.alpha() == 255 => [corner.red(), corner.green(), corner.blue()],
-        _ => NO_TILE_BACKGROUND,
-    };
+    fn png(&self, pixmap: tiny_skia::Pixmap) -> Result<Vec<u8>, CliError> {
+        pixmap
+            .encode_png()
+            .map_err(|e| invalid(self.path, e.to_string()))
+    }
+
+    /// The SVG's top-left pixel when opaque (a full-bleed tile), else `NO_TILE_BACKGROUND`.
+    fn tile_colour(&self) -> Result<[u8; 3], CliError> {
+        let corner = self
+            .render(DENSITIES[0].legacy_px, 1.0, None)?
+            .pixel(0, 0)
+            .map(|p| p.demultiply());
+        Ok(match corner {
+            Some(corner) if corner.alpha() == 255 => [corner.red(), corner.green(), corner.blue()],
+            _ => NO_TILE_BACKGROUND,
+        })
+    }
+}
+
+fn invalid(path: &Path, reason: String) -> CliError {
+    CliError::IconInvalid {
+        path: path.to_path_buf(),
+        reason,
+    }
+}
+
+/// iOS app icons: (file name, PNG) for each (file name, pixel size). Opaque, as the App Store requires: the SVG is
+/// drawn over its tile colour.
+pub fn app_icon_set(
+    svg_path: &Path,
+    sizes: &[(String, u32)],
+) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    render_app_icons(&Icon::read(svg_path)?, sizes)
+}
+
+fn render_app_icons(
+    icon: &Icon,
+    sizes: &[(String, u32)],
+) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    let background = icon.tile_colour()?;
+    sizes
+        .iter()
+        .map(|(name, px)| {
+            Ok((
+                name.clone(),
+                icon.png(icon.render(*px, 1.0, Some(background))?)?,
+            ))
+        })
+        .collect()
+}
+
+/// Reads and renders `app.icon`: (path under the Gradle project, file bytes) for every launcher icon file.
+pub fn launcher_icon(svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    render_icon(&Icon::read(svg_path)?)
+}
+
+fn render_icon(icon: &Icon) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    let background = icon.tile_colour()?;
     let mut files = Vec::new();
     for density in &DENSITIES {
-        let legacy = render(density.legacy_px, 1.0)?;
+        let legacy = icon.render(density.legacy_px, 1.0, None)?;
         let dir = format!("src/main/res/mipmap-{}", density.name);
-        files.push((format!("{dir}/ic_launcher.png"), png(legacy)?));
-        let foreground = render(density.adaptive_px(), FOREGROUND_SHARE)?;
+        files.push((format!("{dir}/ic_launcher.png"), icon.png(legacy)?));
+        let foreground = icon.render(density.adaptive_px(), FOREGROUND_SHARE, None)?;
         files.push((
             format!("{dir}/ic_launcher_foreground.png"),
-            png(foreground)?,
+            icon.png(foreground)?,
         ));
     }
     files.push((
@@ -167,7 +231,7 @@ mod tests {
             ("no tile falls back to white", untiled, "#FFFFFF"),
         ];
         for (name, svg, colour) in cases {
-            let files = render_icon(svg, Path::new("icon.svg"))?;
+            let files = render_icon(&Icon::parse(svg, Path::new("icon.svg"))?)?;
             let file = |path: &str| {
                 files
                     .iter()
@@ -205,6 +269,37 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_table() -> Result<(), CliError> {
+        let tiled = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#123456"/></svg>"##;
+        let untiled = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3"/></svg>"##;
+        let sizes = [("a@2x.png".to_string(), 40), ("b.png".to_string(), 167)];
+        // (row name, SVG, expected top-left pixel): every icon is opaque, its corner the tile colour or white.
+        let cases: [(&str, &[u8], [u8; 4]); 2] = [
+            ("tile colour shows", tiled, [0x12, 0x34, 0x56, 255]),
+            ("no tile is drawn over white", untiled, [255, 255, 255, 255]),
+        ];
+        for (name, svg, corner) in cases {
+            let files = render_app_icons(&Icon::parse(svg, Path::new("icon.svg"))?, &sizes)?;
+            let got: Vec<_> = files
+                .iter()
+                .map(|(file, png)| {
+                    let pixel = tiny_skia::Pixmap::decode_png(png)
+                        .ok()
+                        .and_then(|p| p.pixel(0, 0))
+                        .map(|p| [p.red(), p.green(), p.blue(), p.alpha()]);
+                    (file.as_str(), png_size(png), pixel)
+                })
+                .collect();
+            let want = vec![
+                ("a@2x.png", (40, 40), Some(corner)),
+                ("b.png", (167, 167), Some(corner)),
+            ];
+            assert_eq!(got, want, "{name}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn error_table() {
         // (row name, path, SVG bytes or None to read the path, expected variant). Every message names the path.
         let cases: [(&str, &str, Option<&[u8]>, &str); 3] = [
@@ -214,7 +309,7 @@ mod tests {
         ];
         for (name, path, svg, want) in cases {
             let got = match svg {
-                Some(svg) => render_icon(svg, Path::new(path)),
+                Some(svg) => Icon::parse(svg, Path::new(path)).and_then(|icon| render_icon(&icon)),
                 None => launcher_icon(Path::new(path)),
             }
             .map(|_| ())

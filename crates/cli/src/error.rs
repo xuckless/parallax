@@ -6,7 +6,9 @@ use crate::android::{ABIS, HOSTS};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("usage: cargo parallax run android [--release] [--device <serial>]\n{0}")]
+    #[error(
+        "usage:\n  cargo parallax run android [--release] [--device <serial>]\n  cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]\n  cargo parallax build ios [--release]\n{0}"
+    )]
     Usage(String),
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
@@ -91,6 +93,56 @@ pub enum CliError {
     SeveralDevices(Vec<String>),
     #[error("device {serial:?} is not online; online: {online:?}")]
     DeviceNotFound { serial: String, online: Vec<String> },
+    #[error(
+        "parallax.toml: ios.min_ios {min_ios:?} is below {lowest}, the lowest iOS Parallax supports"
+    )]
+    MinIosTooLow { min_ios: String, lowest: u32 },
+    #[error("parallax.toml: ios.min_ios {0:?} is not an iOS version such as \"17.0\"")]
+    BadMinIos(String),
+    #[error(
+        "parallax.toml: ios.team {0:?} is not an Apple team id (ten upper-case letters and digits, shown under Membership details on developer.apple.com)"
+    )]
+    BadTeam(String),
+    #[error(
+        "app.id {0:?} is not an iOS bundle id (letters, digits, - and . only; no _). Pick an id that suits both Android and iOS"
+    )]
+    BadBundleId(String),
+    #[error(
+        "cargo parallax builds iOS apps on macOS only (this is {0:?}): Xcode is needed. Run it on a Mac"
+    )]
+    IosNeedsMacos(&'static str),
+    #[error("cargo parallax has no iOS Rust target for a {0:?} Mac (RUST_TARGETS in ios.rs)")]
+    UnsupportedIosHost(&'static str),
+    #[error(
+        "running on a device needs an Apple team id: add to parallax.toml\n[ios]\nteam = \"<your team id>\"\nXcode signs with the account signed in under Xcode → Settings → Accounts"
+    )]
+    TeamMissing,
+    #[error(
+        "package {0} has no bin target. iOS runs the app's binary: add src/main.rs (or a [[bin]]) that calls parallax::run"
+    )]
+    NoBin(String),
+    #[error("package {package} has several bin targets {bins:?} and none named {package}")]
+    SeveralBins { package: String, bins: Vec<String> },
+    #[error("no {what}. {fix}; available: {available:?}")]
+    NoIosTarget {
+        what: &'static str,
+        fix: &'static str,
+        available: Vec<String>,
+    },
+    #[error("several {what}s: {names:?}. Pick one with {flag} <name|udid>")]
+    SeveralIosTargets {
+        what: &'static str,
+        flag: &'static str,
+        names: Vec<String>,
+    },
+    #[error("no {what} named or with udid {requested:?}; available: {available:?}")]
+    IosTargetNotFound {
+        what: &'static str,
+        requested: String,
+        available: Vec<String>,
+    },
+    #[error("{tool} output did not parse: {reason}")]
+    ToolOutput { tool: &'static str, reason: String },
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,

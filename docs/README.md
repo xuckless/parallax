@@ -62,6 +62,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [audits/oracle-inventory-a11y.md](audits/oracle-inventory-a11y.md) | Oracle inventory part: Flutter's accessibility tests for Phase 6 |
 | [android-spike.md](android-spike.md) | Phase 1 emulator spike: ALooper dispatcher, minimum Platform/PlatformWindow surface, wgpu Vulkan vs GL on the emulator, tap→click, upstream Android status, emulator setup |
 | [cli.md](cli.md) | cargo-parallax: parallax.toml keys and defaults, what run android does step by step, the generated Gradle project, SDK/NDK/JDK requirements and env vars |
+| [cli-ios.md](cli-ios.md) | `cargo parallax run ios` / `build ios`: `[ios]` keys (team, min_ios), simulator and device picking, the Xcode project ported from Flutter's Runner template, signing, log streaming, requirements |
 | [android.md](android.md) | The Android backend: Activity → JNI → Platform, Looper dispatcher, surface state machine, renderer table, the android_main! entry point, running on the emulator |
 | [android-stubs.md](android-stubs.md) | What GPUI asks of a platform that Android does not do yet, and what happens instead |
 | [android-touch.md](android-touch.md) | Android touch: ported AndroidTouchProcessor → JNI pointer packet → Rust decoder → TouchEvent per device route, what is not yet wired, following Flutter packet changes |

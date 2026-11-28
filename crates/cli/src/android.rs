@@ -126,7 +126,7 @@ pub enum Profile {
 }
 
 impl Profile {
-    fn cargo_args(self) -> &'static [&'static str] {
+    pub(crate) fn cargo_args(self) -> &'static [&'static str] {
         match self {
             Profile::Debug => &[],
             Profile::Release => &["--release"],
@@ -155,22 +155,23 @@ struct AppCrate {
 }
 
 #[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<MetaPackage>,
-    target_directory: PathBuf,
+pub(crate) struct Metadata {
+    pub(crate) packages: Vec<MetaPackage>,
+    pub(crate) target_directory: PathBuf,
 }
 
 #[derive(Deserialize)]
-struct MetaPackage {
-    name: String,
-    manifest_path: PathBuf,
-    targets: Vec<MetaTarget>,
+pub(crate) struct MetaPackage {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) targets: Vec<MetaTarget>,
 }
 
 #[derive(Deserialize)]
-struct MetaTarget {
-    name: String,
-    crate_types: Vec<String>,
+pub(crate) struct MetaTarget {
+    pub(crate) name: String,
+    pub(crate) crate_types: Vec<String>,
 }
 
 pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliError> {
@@ -338,7 +339,7 @@ pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliErr
 }
 
 const ADB_FIX: &str = "Install the SDK platform-tools: sdkmanager \"platform-tools\"";
-const CARGO_FIX: &str = "Install Rust from https://rustup.rs";
+pub(crate) const CARGO_FIX: &str = "Install Rust from https://rustup.rs";
 const JAVA_FIX: &str = "Install a JDK or JRE 17 or newer and put java on PATH, or set JAVA_HOME";
 
 /// `$ANDROID_NDK_HOME`, else the only NDK under `$ANDROID_HOME/ndk/`. Several there is an error, not a guess.
@@ -428,7 +429,8 @@ fn pick_device(online: &[String], requested: Option<&str>) -> Result<String, Cli
     }
 }
 
-fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
+/// `cargo metadata` output and the app's package in it (the one whose manifest is `manifest`).
+pub(crate) fn app_package(metadata: &[u8], manifest: &Path) -> Result<(Metadata, usize), CliError> {
     let metadata: Metadata =
         serde_json::from_slice(metadata).map_err(|e| CliError::Metadata(e.to_string()))?;
     // cargo metadata reports canonical manifest paths.
@@ -436,11 +438,17 @@ fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
         path: manifest.to_path_buf(),
         source,
     })?;
-    let package = metadata
+    let index = metadata
         .packages
         .iter()
-        .find(|p| p.manifest_path == manifest)
-        .ok_or_else(|| CliError::NoAppPackage(manifest.clone()))?;
+        .position(|p| p.manifest_path == manifest)
+        .ok_or(CliError::NoAppPackage(manifest))?;
+    Ok((metadata, index))
+}
+
+fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
+    let (metadata, index) = app_package(metadata, manifest)?;
+    let package = &metadata.packages[index];
     let lib = package
         .targets
         .iter()
@@ -493,7 +501,7 @@ fn project_vars(
     ]
 }
 
-fn xml_escape(text: &str) -> String {
+pub(crate) fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -501,14 +509,14 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn render(template: &str, vars: &[(&str, String)]) -> String {
+pub(crate) fn render(template: &str, vars: &[(&str, String)]) -> String {
     vars.iter()
         .fold(template.to_string(), |text, (key, value)| {
             text.replace(&format!("{{{{{key}}}}}"), value)
         })
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     let io = |source| CliError::Io {
         path: path.to_path_buf(),
         source,
@@ -528,7 +536,11 @@ fn spawn_error(cmd: &Command, fix: &'static str, source: std::io::Error) -> CliE
 }
 
 /// Runs `cmd`, returning stdout; stderr goes to the terminal.
-fn capture(cmd: &mut Command, step: &'static str, fix: &'static str) -> Result<Vec<u8>, CliError> {
+pub(crate) fn capture(
+    cmd: &mut Command,
+    step: &'static str,
+    fix: &'static str,
+) -> Result<Vec<u8>, CliError> {
     let out = cmd
         .stderr(Stdio::inherit())
         .output()
@@ -544,7 +556,7 @@ fn capture(cmd: &mut Command, step: &'static str, fix: &'static str) -> Result<V
 }
 
 /// Runs `cmd` with its output on the terminal.
-fn step(
+pub(crate) fn step(
     cmd: &mut Command,
     fix: &'static str,
     step: &'static str,
@@ -710,6 +722,10 @@ mod tests {
                 min_sdk: 28,
                 target_sdk: 35,
                 abis: vec![&ABIS[3]],
+            },
+            ios: crate::config::Ios {
+                min_ios: "17.0".into(),
+                team: None,
             },
         };
         let app = AppCrate {

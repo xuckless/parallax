@@ -6,6 +6,15 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Unreleased (0.1.11)
+
+- `cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]` and `cargo parallax build
+  ios [--release]`: build the app's binary, generate an Xcode project from Flutter's iOS Runner template (iPhone and
+  iPad natively, `app.icon` rendered to the AppIcon set), `xcodebuild`, then install and launch with `simctl` or
+  `devicectl`, the app's log streamed to the terminal. New `[ios]` keys: `team` (Apple team id, for device runs;
+  Xcode signs with its signed-in account) and `min_ios` (default 17.0). macOS only (docs/cli-ios.md).
+- cargo-parallax is now `Apache-2.0 AND BSD-3-Clause` (Flutter's app templates) and ships `LICENSE-FLUTTER`.
+
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 
 Wave 15 (Phase: NativeView, issue #1), fork `parallax-gpui*` 0.3.14-parallax.12 (patches 0047–0072). The NativeView
