@@ -71,6 +71,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-multi-window.md](android-multi-window.md) | Android multi-window: one GPUI window per Activity, routing by Activity id, `launch` once per process and `open_window` per Activity, an app-closed window finishing its Activity at once |
 | [android-multi-window-check.md](android-multi-window-check.md) | Checking Android multi-window on an emulator: split screen, rotation, Back |
 | [gate-1.md](gate-1.md) | Gate 1 on the Android emulator (API 28, 33, 35, Gboard): the results matrix, the failures found, and how to rerun it |
+| [gate-4.md](gate-4.md) | Gate 4: the ported Flutter text-input tables per target with pass counts, the selection checks, and the owner's device checks still owed |
 | [traces-desktop.md](traces-desktop.md) | Gate 3's desktop trace fixtures: the folders the replay reads, what a Windows, Wayland, X11 or macOS harness must write, the device column, the Weston headless harness for Wayland and X11, checking a harness |
 | [traces.md](traces.md) | Touch traces for Gate 2: hello's trace pad recorder, record-traces.sh on the Android emulator, headless Chromium (CDP) and the iOS simulator (idb), the replay test and its tolerance |
 | [scroll-physics.md](scroll-physics.md) | Patch 0012: GPUI's one `ScrollPhysics` (Flutter's bouncing and clamping physics) for flings, overscroll and the table, Flutter's physics module on GPUI's springs, what is not ported yet, the ported test tables |
