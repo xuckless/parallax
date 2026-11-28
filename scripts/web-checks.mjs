@@ -7,10 +7,18 @@
 // - firefox, webkit: Playwright's builds, loaded from PLAYWRIGHT_DIR (a directory whose node_modules holds playwright;
 //   its browsers come from PLAYWRIGHT_BROWSERS_PATH). Checks needing what Playwright can't drive print "skip".
 // Usage: node scripts/web-checks.mjs <hello url> desktop|mobile <chromium debugging port | firefox | webkit>
+// With a fourth argument `native-view` and native-view-web's url, it checks patch 0057's native views instead
+// (docs/native-view-web.md): input into the views' elements and the divs over them, 0 GPUI frames while only the
+// elements change, the alpha mode, no gap colour (still and animating) at the page's scale, and, on Chromium, the
+// toggle's and the views' costs (on a phone profile in mobile mode). A fifth argument is the page's scale (default
+// 1), emulated: Emulation.setDeviceMetricsOverride on Chromium, the context's deviceScaleFactor in Playwright.
 // Prints each check; exits 1 if any fails.
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
-const [url, mode, browser] = process.argv.slice(2);
+const [url, mode, browser, suite, scale = "1"] = process.argv.slice(2);
 if (!["desktop", "mobile"].includes(mode)) throw new Error("web-checks: mode is desktop or mobile");
 // An Android phone: touch input, and the user agent that makes gpui_web treat the browser as mobile.
 const ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36";
@@ -58,6 +66,38 @@ const chromium = async (port) => {
         }
       }
     },
+    move: (x, y) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }),
+    click: async (x, y) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+      }
+    },
+    drag: async ([x0, y0], [x1, y1]) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0 });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", clickCount: 1 });
+      for (let step = 1; step <= 10; step++) {
+        const at = { x: x0 + ((x1 - x0) * step) / 10, y: y0 + ((y1 - y0) * step) / 10 };
+        await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at, button: "left", buttons: 1 });
+      }
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", clickCount: 1 });
+    },
+    wheel: async (x, y, deltaY) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      await send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
+    },
+    screenshot: async (path) => {
+      const { data } = await send("Page.captureScreenshot", { format: "png" });
+      (await import("node:fs")).writeFileSync(path, Buffer.from(data, "base64"));
+    },
+    // Takes effect on the next navigation's first layout too; `mobile` also turns on the mobile viewport.
+    viewport: (width, height) =>
+      send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: Number(scale), mobile: mode === "mobile" }),
+    throttle: (rate) => send("Emulation.setCPUThrottlingRate", { rate }),
+    taskSeconds: async () => {
+      await send("Performance.enable");
+      return (await send("Performance.getMetrics")).metrics.find((m) => m.name === "TaskDuration").value;
+    },
     insertText: (text) => send("Input.insertText", { text }),
     pressEnter: async () => {
       for (const type of ["keyDown", "keyUp"]) {
@@ -87,13 +127,33 @@ const playwright = async (engine) => {
   const launcher = createRequire(`${process.env.PLAYWRIGHT_DIR}/`)("playwright")[engine];
   const instance = await launcher.launch();
   const touch = mode === "mobile" ? { hasTouch: true, userAgent: ANDROID } : {};
-  const context = await instance.newContext({ viewport: { width: 412, height: 915 }, deviceScaleFactor: 1, ...touch });
-  const page = await context.newPage();
-  page.on("console", (message) => logs.push(message.text()));
+  let page;
+  // A new page in a new context: Playwright sets the scale per context.
+  const open = async (width, height, deviceScaleFactor) => {
+    await page?.context().close();
+    const context = await instance.newContext({ viewport: { width, height }, deviceScaleFactor, ...touch });
+    page = await context.newPage();
+    page.on("console", (message) => logs.push(message.text()));
+  };
+  await open(412, 915, Number(scale));
   return {
     navigate: (url) => page.goto(url),
     js: (expression) => page.evaluate(expression),
     tap: (x, y) => (mode === "mobile" ? page.touchscreen.tap(x, y) : page.mouse.click(x, y)),
+    move: (x, y) => page.mouse.move(x, y),
+    click: (x, y) => page.mouse.click(x, y),
+    drag: async ([x0, y0], [x1, y1]) => {
+      await page.mouse.move(x0, y0);
+      await page.mouse.down();
+      await page.mouse.move(x1, y1, { steps: 10 });
+      await page.mouse.up();
+    },
+    wheel: async (x, y, deltaY) => {
+      await page.mouse.move(x, y);
+      await page.mouse.wheel(0, deltaY);
+    },
+    screenshot: (path) => page.screenshot({ path }),
+    viewport: (width, height) => open(width, height, Number(scale)),
     insertText: (text) => page.keyboard.insertText(text),
     pressEnter: () => page.keyboard.press("Enter"),
     close: () => instance.close(),
@@ -125,6 +185,12 @@ const tap = async (x, y) => {
   await driver.tap(x, y);
   await sleep(500);
 };
+
+if (suite === "native-view") {
+  await nativeViewChecks();
+  await driver.close();
+  process.exit(failed ? 1 : 0);
+}
 
 await driver.navigate(url);
 for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
@@ -228,3 +294,112 @@ check("unloading", await phases(3), ["Inactive", "Background", "Disconnected"]);
 
 await driver.close();
 process.exit(failed ? 1 : 0);
+
+// native-view-web (examples/native-view-web, src/lib.rs's VIEWS), in CSS px of a 900 x 700 page: each view is
+// 400 x 260 at its corner, with a GPUI div at +20..+180, +20..+80 over it.
+async function nativeViewChecks() {
+  const views = { same: [20, 60], cross: [460, 60], canvas: [20, 360] };
+  const uncovered = (name) => [views[name][0] + 280, views[name][1] + 190];
+  const covered = (name) => [views[name][0] + 80, views[name][1] + 50];
+  const shots = mkdtempSync(`${process.env.SHOTS_DIR ?? tmpdir()}/native-view-web-`);
+  const pixels = (...args) => execFileSync("python3", ["-I", new URL("pixels.py", import.meta.url).pathname, ...args]).toString().trim();
+  // Green is the page's background: it shows only where a hole has no element under it.
+  const gap = async (name) => {
+    const path = `${shots}/${name}.png`;
+    await driver.screenshot(path);
+    return Number(pixels(path, "count", "00ff00"));
+  };
+  const open = async (query) => {
+    await driver.viewport(900, 700);
+    logs.length = 0;
+    await driver.navigate(`${url}${query}`);
+    for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
+    await sleep(2500);
+  };
+  const press = (x, y) => (mode === "mobile" ? driver.tap(x, y) : driver.click(x, y));
+  const events = async (frame, kind) =>
+    (await js("window.frameEvents.splice(0)")).filter((e) => e.frame === frame && e.kind === kind);
+  const said = (pattern) => logs.some((line) => pattern.test(line));
+
+  await open("");
+  check(`page scale ${scale}`, await js("devicePixelRatio"), Number(scale));
+  check("alpha mode logged", said(/native views: (window surface alpha mode PreMultiplied|WebGL2 canvas, premultiplied)/), true);
+  const [gpui0, element0] = await js("[window.gpuiFrames, window.elementFrames]");
+  await sleep(2000);
+  const [gpui1, element1] = await js("[window.gpuiFrames, window.elementFrames]");
+  check("GPUI frames while only the elements change", gpui1 - gpui0, 0);
+  check("the canvas element drew frames meanwhile", element1 - element0 > 30, true);
+  check("no gap", await gap("still"), 0);
+
+  for (const name of ["same", "cross", "canvas"]) {
+    await js("window.frameEvents.length = 0");
+    await press(...uncovered(name));
+    await sleep(500);
+    check(`${name} element takes a real ${mode === "mobile" ? "tap" : "click"} at view-relative (280, 190)`,
+      (await events(name, "click")).map(({ x, y, trusted }) => [Math.round(x), Math.round(y), trusted]), [[280, 190, true]]);
+    const mark = logs.length;
+    await press(...covered(name));
+    await sleep(500);
+    check(`the div over ${name} takes its own press`,
+      [logs.slice(mark).some((line) => line.includes(`GPUI div over ${name}: down`)), (await events(name, "click")).length], [true, 0]);
+  }
+
+  if (mode === "desktop") {
+    await driver.wheel(...uncovered("same"), 200);
+    await sleep(600);
+    check("the same-origin iframe scrolls by a real wheel", (await events("same", "scroll")).some((e) => e.top > 0), true);
+    const mark = logs.length;
+    await driver.wheel(...covered("same"), 200);
+    await sleep(600);
+    check("a wheel over the div is GPUI's", [logs.slice(mark).some((line) => line.includes("GPUI div over same: scroll")),
+      (await events("same", "wheel")).length], [true, 0]);
+    await js("window.frameEvents.length = 0");
+    await driver.drag([views.cross[0] + 5, views.cross[1] + 130], [views.cross[0] + 390, views.cross[1] + 130]);
+    await sleep(500);
+    check("text selects in the cross-origin iframe", (await events("cross", "selection")).some((e) => e.text.startsWith("A page")), true);
+    const pointerEvents = () => js("document.body.querySelector(':scope > canvas').style.pointerEvents");
+    await driver.move(...uncovered("canvas"));
+    await sleep(100);
+    const overView = await pointerEvents();
+    await driver.move(880, 680);
+    await sleep(100);
+    check("the canvas lets the pointer through only over a view", [overView, await pointerEvents()], ["none", "auto"]);
+  }
+
+  await open("?animate");
+  const moving = [];
+  for (let i = 0; i < 8; i++) moving.push(await gap(`animate-${i}`));
+  check("no gap while moving and resizing", moving, Array(8).fill(0));
+
+  if (!driver.throttle) {
+    skip("the toggle's and the views' costs");
+    return;
+  }
+  // On a phone profile (mobile, scale 2.625) the CPU runs 4x slower. Moves cross
+  // the views and GPUI's content; the cost is the time from the page's first capture listener to its last bubbling
+  // one, with views and without.
+  await driver.throttle(mode === "mobile" ? 4 : 1);
+  const path = Array.from({ length: 200 }, (_, i) => [20 + ((i * 37) % 840), 60 + ((i * 53) % 560)]);
+  const perMove = async (query) => {
+    await open(query);
+    await js("window.moveTimes.length = 0");
+    for (const [x, y] of path) await driver.move(x, y);
+    const times = await js("window.moveTimes");
+    return times.reduce((sum, time) => sum + time, 0) / times.length;
+  };
+  const withViews = await perMove("");
+  const without = await perMove("?noview");
+  console.log(`measure pointer move handling: ${withViews.toFixed(3)} ms with views, ${without.toFixed(3)} ms without`);
+  const perFrame = async (query) => {
+    await open(query);
+    const [frames0, task0] = [await js("window.gpuiFrames"), await driver.taskSeconds()];
+    await sleep(3000);
+    const [frames1, task1] = [await js("window.gpuiFrames"), await driver.taskSeconds()];
+    return [(frames1 - frames0) / 3, ((task1 - task0) * 1000) / (frames1 - frames0)];
+  };
+  const [fpsViews, taskViews] = await perFrame("?animate");
+  const [fpsNone, taskNone] = await perFrame("?animate&noview");
+  console.log(`measure animating: ${fpsViews.toFixed(1)} GPUI frames/s, ${taskViews.toFixed(2)} ms main-thread task per frame with views; ` +
+    `${fpsNone.toFixed(1)} frames/s, ${taskNone.toFixed(2)} ms without`);
+  await driver.throttle(1);
+}
