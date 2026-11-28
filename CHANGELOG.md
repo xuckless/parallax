@@ -6,6 +6,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.10)
+
+- iOS: `gpui::NativeView` shows an app's `UIView` under GPUI's content; touches over it reach the element's listeners
+  (patch 0053, [docs/native-view-apple.md](docs/native-view-apple.md)).
+- macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
+  no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0052).
+- `native-view-apple` example.
+
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 
 Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0046).
