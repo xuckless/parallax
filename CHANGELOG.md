@@ -23,6 +23,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
   no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0051).
 - `native-view-apple` example.
+- macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
+  (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
+  (docs/native-view-wayland-checks.md).
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 
