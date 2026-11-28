@@ -3,12 +3,14 @@
 # examples/native-view-wayland in a private headless GNOME Shell (mutter as a compositor, its own D-Bus session,
 # runtime dir and settings, so nothing of a desktop session is touched), injects pointer input through the Shell's
 # Eval, reads its screenshots back with scripts/pixels.py, and asserts on pixels and on what the example logged.
-# The app renders with Mesa lavapipe (CLIENT_ICD=host keeps the host's Vulkan driver). Each scale gets its own
+# The app renders with Mesa lavapipe (CLIENT_ICD=host keeps the host's Vulkan driver). The Shell composites with
+# whatever GL the host has (on a GPU-less CI runner, Mesa llvmpipe); --mesa-compositor makes it Mesa llvmpipe on any
+# host, the Shell in a bubblewrap sandbox without /dev/dri and with only Mesa's EGL vendor. Each scale gets its own
 # session; logs and screenshots land in target/native-view-wayland/<scale>/.
 #
-# Usage: scripts/wayland-native-view-checks.sh [scale...]     (default: 1 1.25, the scales checked)
-# Needs: gnome-shell (with --headless), dbus-run-session, gdbus, python3. Without them it prints why and exits 0
-# (skipped), so a CI runner that can't run the Shell skips it visibly.
+# Usage: scripts/wayland-native-view-checks.sh [--mesa-compositor] [scale...]   (default: 1 1.25, the scales checked)
+# Needs: gnome-shell (with --headless), dbus-run-session, gdbus, python3; bwrap for --mesa-compositor. Without them
+# it prints why and exits 0 (skipped), so a CI runner that can't run the Shell skips it visibly.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,7 +40,12 @@ if [[ ${1:-} == --session ]]; then
   # A plain black desktop, so no wallpaper pixel passes for the page.
   gsettings set org.gnome.desktop.background picture-options none 2>/dev/null || true
   gsettings set org.gnome.desktop.background primary-color '#000000' 2>/dev/null || true
-  gnome-shell --headless --unsafe-mode --wayland --no-x11 --virtual-monitor 1280x800 >"$work/shell.log" 2>&1 &
+  # --mesa-compositor: no DRM device and only Mesa's EGL vendor, so mutter falls back to llvmpipe.
+  wrap=()
+  [[ ${COMPOSITOR_GL:-host} == mesa ]] && wrap=(env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+    LIBGL_ALWAYS_SOFTWARE=1 bwrap --dev-bind / / --tmpfs /dev/dri --die-with-parent --)
+  "${wrap[@]}" gnome-shell --headless --unsafe-mode --wayland --no-x11 --virtual-monitor 1280x800 \
+    >"$work/shell.log" 2>&1 &
   shell=$!
   trap 'kill $shell 2>/dev/null || true' EXIT
   for _ in $(seq 150); do [[ -S $XDG_RUNTIME_DIR/wayland-0 ]] && break; sleep 0.1; done
@@ -46,6 +53,15 @@ if [[ ${1:-} == --session ]]; then
     tail -5 "$work/shell.log"; exit 0; }
   export WAYLAND_DISPLAY=wayland-0
   sleep 2
+  # Which GL the compositor composites with: the GL driver libraries mapped into gnome-shell.
+  shell_pid=$(pgrep -x -P "$shell" gnome-shell || echo "$shell")
+  gl=$(grep -oE '/[^ ]*(libgallium|libnvidia-(eglcore|glcore)|_dri)[^ /]*\.so[^ ]*' "/proc/$shell_pid/maps" \
+    | xargs -rn1 basename | sort -u | tr '\n' ' ')
+  echo "compositor GL: ${gl:-unknown}"
+  if [[ ${COMPOSITOR_GL:-host} == mesa ]]; then
+    [[ $gl == *libgallium* && $gl != *nvidia* ]] && pass "the compositor runs on Mesa ($gl)" \
+      || fail "the compositor is not on Mesa: $gl"
+  fi
   if [[ $scale != 1 ]]; then
     dc() { gdbus call --session --dest org.gnome.Mutter.DisplayConfig --object-path /org/gnome/Mutter/DisplayConfig \
       --method "org.gnome.Mutter.DisplayConfig.$1" "${@:2}"; }
@@ -149,7 +165,13 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
 fi
 
 # ---- Outside: build, then one private session per scale. ----
-for tool in gnome-shell dbus-run-session gdbus python3; do
+tools=(gnome-shell dbus-run-session gdbus python3)
+if [[ ${1:-} == --mesa-compositor ]]; then
+  export COMPOSITOR_GL=mesa
+  tools+=(bwrap)
+  shift
+fi
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || { echo "skip: no $tool; the Wayland native view checks need a headless GNOME Shell"; exit 0; }
 done
 scales=("${@:-1}")

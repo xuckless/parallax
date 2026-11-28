@@ -9,6 +9,7 @@ list of [ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview) for patc
 ```sh
 scripts/wayland-native-view-checks.sh            # scales 1 and 1.25
 scripts/wayland-native-view-checks.sh 1.25       # one scale
+scripts/wayland-native-view-checks.sh --mesa-compositor   # the Shell on Mesa llvmpipe too, whatever the host's GPU
 CLIENT_ICD=host scripts/wayland-native-view-checks.sh   # the app on the host's Vulkan driver, not Mesa lavapipe
 ```
 
@@ -19,6 +20,11 @@ CLIENT_ICD=host scripts/wayland-native-view-checks.sh   # the app on the host's 
   (`--session`). `gnome-shell --headless --unsafe-mode --virtual-monitor 1280x800` is the compositor (mutter), on a
   plain black desktop; a scale other than 1 is applied through `org.gnome.Mutter.DisplayConfig`.
 - The app renders with Mesa lavapipe (`VK_ICD_FILENAMES`), so the check is the same on a GPU-less CI runner.
+- The Shell composites with the host's GL: the NVIDIA driver on the owner's machine, Mesa llvmpipe on a GPU-less
+  runner. `--mesa-compositor` runs it on Mesa anywhere: in a `bwrap` sandbox with an empty `/dev/dri` and only Mesa's
+  EGL vendor (`__EGL_VENDOR_LIBRARY_FILENAMES`, `LIBGL_ALWAYS_SOFTWARE=1`), so mutter falls back to llvmpipe. Every
+  run prints `compositor GL:` (the GL libraries mapped into `gnome-shell`); with the flag it also checks they are
+  Mesa's (`libgallium`) and not NVIDIA's.
 - Screenshots come from `org.gnome.Shell.Screenshot`; [pixels.py](../scripts/pixels.py) reads them (PNG).
   Pointer input is a Clutter virtual pointer driven through `org.gnome.Shell.Eval` (why `--unsafe-mode`).
 - mutter keeps the first click on an unfocused window from the app, and the headless seat has no keyboard to focus
@@ -43,5 +49,6 @@ Logs and screenshots: `target/native-view-wayland/<scale>/` (`still.log`, `still
 ## CI
 
 CI's `linux-touch` job installs `gnome-shell` and runs the script ([ci.md](ci.md)); the directory above is uploaded
-with its artifact. Without `gnome-shell`, `dbus-run-session`, `gdbus` or `python3`, or when the Shell does not start,
+with its artifact. Its runner has no GPU, so there the Shell already composites on Mesa llvmpipe without the flag:
+CI is the Mesa-compositor run, the flag repeats it on a machine with a GPU. Without `gnome-shell`, `dbus-run-session`, `gdbus` or `python3`, or when the Shell does not start,
 the script prints `skip: …` and exits 0, so a runner that can't run it says so instead of failing.
