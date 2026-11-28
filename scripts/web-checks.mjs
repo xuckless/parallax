@@ -1,4 +1,4 @@
-// Checks patches 0034 and 0035 in a browser: hello's IME mirror (attributes, placement, the password element), its
+// Checks patches 0034, 0035 and 0043 in a browser: hello's IME mirror (attributes, placement, the password element), its
 // lifecycle phases and its keyboard inset (docs/web-text-input.md, docs/web-lifecycle.md). Needs hello served
 // (docs/examples-run.md). Two drivers:
 // - chromium: a Chromium started as record-traces.sh's web_setup does (--headless=new --remote-debugging-port=<port>
@@ -145,6 +145,8 @@ check("email field attributes", await mirror(attributes), {
 });
 if (mode === "desktop") {
   check("mirror on the email caret", await mirror(["left", "top"]), { left: "32px", top: "104px" });
+  // The mirror sits over the canvas there; `pointer-events: none` (patch 0043) leaves the pixel's clicks to the canvas.
+  check("the caret's pixel is the canvas's", await js(`document.elementFromPoint(32, 104).localName`), "canvas");
   if (driver.compose) {
     await driver.compose("ni");
     await sleep(300);
@@ -182,6 +184,7 @@ const element = () => js(`(() => { const t = document.querySelector('textarea, i
   return [t.localName, t.getAttribute('type'), t.getAttribute('autocomplete'), t === document.activeElement]; })()`);
 await tap(200, 176);
 check("password field element", await element(), ["input", "password", "current-password", true]);
+check("the password element lets clicks through", await mirror(["pointerEvents"]), { pointerEvents: "none" });
 await driver.insertText("hunter2");
 await driver.pressEnter();
 await sleep(400);
