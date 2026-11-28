@@ -13,11 +13,13 @@
 //!   raise                  keep the window above all others (the CI runner's own console can cover it)
 //!   scale                  the window's scale factor (its DPI / 96)
 //!   screenshot <file>      the client area as a raw RGBA image (scripts/locate-colour.py reads it)
+//!   shots <count> <prefix> that many screenshots as fast as they come, to <prefix>1.raw, <prefix>2.raw, …
 //!   window-rect            the window's frame on screen, physical px: left top right bottom
 //!   touch <frame>…         inject touch frames (frames.rs has the syntax); pen <frame>… a pen's
 //!   click <x> <y>          a left mouse click there
 //!   move <x> <y>           the mouse cursor moved there
 //!   scroll <x> <y> <notches>  the mouse wheel turned there, positive away from the user
+//!   key <code>             press and release a virtual-key code (decimal), into the focused window
 
 #[cfg_attr(
     not(target_os = "windows"),
@@ -73,8 +75,9 @@ mod windows_tool {
             },
             Input::{
                 KeyboardAndMouse::{
-                    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-                    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+                    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+                    KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_WHEEL,
+                    MOUSEINPUT, SendInput, VIRTUAL_KEY,
                 },
                 Pointer::{
                     InjectSyntheticPointerInput, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT,
@@ -185,6 +188,16 @@ mod windows_tool {
             }
             ("scale", []) => println!("{scale}"),
             ("screenshot", [file]) => std::fs::write(file, screenshot(origin, width, height)?)?,
+            ("shots", [count, prefix]) => {
+                // Taken first, written after, so they sample the screen as often as BitBlt allows.
+                let shots = (0..count.parse::<u32>()?)
+                    .map(|_| screenshot(origin, width, height))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (n, shot) in shots.iter().enumerate() {
+                    std::fs::write(format!("{prefix}{}.raw", n + 1), shot)?;
+                }
+            }
+            ("key", [code]) => key(code.parse()?)?,
             ("window-rect", []) => {
                 let mut rect = RECT::default();
                 // SAFETY: `window` is live and `rect` outlives the call.
@@ -568,12 +581,7 @@ mod windows_tool {
                 },
             },
         }];
-        // SAFETY: `wheel` is a valid slice of INPUTs of the size passed.
-        let sent = unsafe { SendInput(&wheel, size_of::<INPUT>() as i32) };
-        if sent as usize != wheel.len() {
-            return Err("touch-inject: SendInput was blocked".into());
-        }
-        Ok(())
+        send(&wheel)
     }
 
     fn click((x, y): (i32, i32)) -> Result<(), Box<dyn Error>> {
@@ -588,9 +596,27 @@ mod windows_tool {
                 },
             },
         };
-        let inputs = [button(MOUSEEVENTF_LEFTDOWN), button(MOUSEEVENTF_LEFTUP)];
+        send(&[button(MOUSEEVENTF_LEFTDOWN), button(MOUSEEVENTF_LEFTUP)])
+    }
+
+    /// A press and release of virtual-key `code`, to whatever window has the keyboard focus.
+    fn key(code: u16) -> Result<(), Box<dyn Error>> {
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(code),
+                    dwFlags: flags,
+                    ..Default::default()
+                },
+            },
+        };
+        send(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)])
+    }
+
+    fn send(inputs: &[INPUT]) -> Result<(), Box<dyn Error>> {
         // SAFETY: `inputs` is a valid slice of INPUTs of the size passed.
-        let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
             return Err("touch-inject: SendInput was blocked".into());
         }

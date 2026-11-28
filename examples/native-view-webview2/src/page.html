@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Green with little red, like examples/native-view-windows' content, so the checks find the page in the hole. */
+  html, body { margin: 0; height: 100%; background: #10c060; overflow: hidden; }
+  /* Animates every frame, away from where the checks look; GPUI draws nothing for it. */
+  #spinner { position: absolute; right: 24px; bottom: 24px; width: 40px; height: 40px; background: #1060c0;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="spinner"></div>
+<script>
+  // Every line posted shows up in the app's log as "page: <line>".
+  const post = (line) => window.chrome.webview.postMessage(line);
+  addEventListener("mousemove", (e) => post(`move at ${e.clientX} ${e.clientY}`));
+  addEventListener("mousedown", (e) => post(`down at ${e.clientX} ${e.clientY}`));
+  addEventListener("wheel", (e) => post(`wheel ${Math.sign(e.deltaY)}`));
+  addEventListener("keydown", (e) => post(`key ${e.key}`));
+  let frames = 0;
+  const tick = () => { frames += 1; requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  setInterval(() => { post(`frames per second ${frames}`); frames = 0; }, 1000);
+  post("loaded");
+</script>
+</body>
+</html>

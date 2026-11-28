@@ -1,0 +1,35 @@
+[package]
+name = "native-view-webview2"
+description = "Parallax example: a WebView2 page as a NativeView on Windows, rendered into a visual on GPUI's own DirectComposition device, with the mouse, wheel and keys over it sent to the page."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+# Examples are never published.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+parallax = { path = "../../crates/parallax" }
+
+[target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# `composition_device`: the DirectComposition device the page's visual must be made on (patch 0058).
+gpui_windows.workspace = true
+raw-window-handle = { version = "0.6", features = ["std"] }
+# Microsoft's WebView2 COM API and its loader (MIT, as tauri's wry uses it), on the windows crate gpui_windows uses.
+webview2-com = "0.39"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectComposition",
+    "Win32_UI_Input_KeyboardAndMouse",
+]
