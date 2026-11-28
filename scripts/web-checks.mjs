@@ -464,8 +464,11 @@ async function nativeViewChecks() {
     await sleep(400);
     return saidSince(mark, "field key enter");
   };
-  await press(...uncovered("same"));
-  await sleep(500);
+  // The press may land before the reloaded iframe can take focus (seen on CI's Chromium): press again, a few times.
+  for (let i = 0; i < 4 && (i === 0 || (await active()) !== "iframe"); i++) {
+    await press(...uncovered("same"));
+    await sleep(500);
+  }
   const inFrame = await active();
   await command("field");
   // GPUI learns that focus went into an iframe from the window's `blur`. Headless Firefox (Playwright's builds 1471
