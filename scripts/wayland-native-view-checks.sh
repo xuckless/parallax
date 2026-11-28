@@ -54,7 +54,12 @@ if [[ ${1:-} == --session ]]; then
       >/dev/null || fail "mutter refused scale $scale"
     sleep 1
   fi
-  [[ ${CLIENT_ICD:-lvp} == host ]] || export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  # Mesa names lavapipe's ICD lvp_icd.x86_64.json (Fedora) or lvp_icd.json (Ubuntu).
+  if [[ ${CLIENT_ICD:-lvp} != host ]]; then
+    lvp=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | grep -v i686 | head -1 || true)
+    [[ -n $lvp ]] || { echo "FAIL [$scale]: no Mesa lavapipe ICD in /usr/share/vulkan/icd.d"; exit 1; }
+    export VK_ICD_FILENAMES=$lvp
+  fi
 
   # Still: the view shows the page under the div; GPUI draws nothing while only the page changes.
   "$bin" --seconds 60 >"$work/still.log" 2>&1 &

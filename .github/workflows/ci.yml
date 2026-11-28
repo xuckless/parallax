@@ -140,7 +140,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: patch-tests
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core
+      # Mesa lavapipe: parallax-gpui-wgpu's headless renderer tests (patch 0047's hole among them) need a Vulkan device.
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core mesa-vulkan-drivers
       - run: scripts/apply-patches.sh
       - run: scripts/patch-test.sh
 
