@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::{
     Error,
-    backend::Device,
+    backend::{self, Device},
     gpui_window::{Gpui, GpuiEffect, GpuiEvent},
     haptics, keys,
     lifecycle::ActivityId,
@@ -111,6 +111,14 @@ pub(crate) enum FirstFrame {
     Drawn,
 }
 
+/// Whether the renderer's backend was checked for native views since it was made ([`backend::for_native_views`]):
+/// once per window, again after device recovery (which picks the device's backends again).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ViewsBackend {
+    Unchecked,
+    Checked,
+}
+
 /// GPUI's window for an Activity, while it is open ([`Gpui::Open`]).
 pub(crate) struct OpenWindow {
     handle: AnyWindowHandle,
@@ -145,6 +153,7 @@ pub(crate) struct ActivityWindow {
     pub(crate) platform_plugin: GlobalRef,
     /// The app's native views under GPUI's surface (docs/native-view-android.md).
     pub(crate) native_views: NativeViews,
+    views_backend: Cell<ViewsBackend>,
 }
 
 impl ActivityWindow {
@@ -170,6 +179,7 @@ impl ActivityWindow {
             haptics: RefCell::new(Vec::new()),
             first_frame: Cell::new(FirstFrame::Pending),
             native_views: NativeViews::default(),
+            views_backend: Cell::new(ViewsBackend::Unchecked),
         }
     }
 
@@ -359,14 +369,21 @@ impl ActivityWindow {
                 let window = self.current_window();
                 let recovered = self
                     .with_renderer(|renderer| match window {
-                        Some(window) => {
-                            renderer::recover(&self.gpu, self.device, renderer, &window, size)
-                        }
+                        Some(window) => renderer::recover(
+                            &self.gpu,
+                            self.device.backends(),
+                            renderer,
+                            &window,
+                            size,
+                        ),
                         None => Err(Error::NoSurface),
                     })
                     .unwrap_or(Err(Error::NoSurface));
                 match recovered {
-                    Ok(()) => self.handle(SurfaceEvent::Recovered),
+                    Ok(()) => {
+                        self.views_backend.set(ViewsBackend::Unchecked);
+                        self.handle(SurfaceEvent::Recovered)
+                    }
                     Err(error) => {
                         // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
                         // this line: keep its wording.
@@ -445,6 +462,33 @@ impl ActivityWindow {
             self.callbacks.input.with(|callback| {
                 callback(event);
             });
+        }
+    }
+
+    /// A frame is about to show native views: on a backend whose surface has no alpha, the renderer is rebuilt on one
+    /// that has ([`backend::for_native_views`]), keeping its atlas, before the frame draws. Checked once per renderer.
+    pub(crate) fn native_views_shown(&self) {
+        if self.views_backend.replace(ViewsBackend::Checked) == ViewsBackend::Checked {
+            return;
+        }
+        let Some(backends) = renderer::backend(&self.gpu)
+            .and_then(|current| backend::for_native_views(current, renderer::api_level()))
+        else {
+            return;
+        };
+        let (Some(window), size) = (self.current_window(), self.metrics.get().size) else {
+            return;
+        };
+        log::info!("parallax: native views need a surface with alpha: rebuilding on {backends:?}");
+        let rebuilt = self
+            .with_renderer(|renderer| {
+                renderer::recover(&self.gpu, backends, renderer, &window, size)
+            })
+            .unwrap_or(Err(Error::NoSurface));
+        if let Err(error) = rebuilt {
+            // The renderer let go of its surface: device recovery builds it again, on the device's backends.
+            log::error!("parallax: cannot rebuild the renderer for native views: {error}");
+            self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
         }
     }
 

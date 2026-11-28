@@ -290,6 +290,9 @@ impl PlatformWindow for AndroidWindow {
     fn draw(&self, scene: &Scene) {
         // Placed before the frame that cuts their holes is drawn, so both reach the screen with this vsync.
         self.window.native_views.place(scene);
+        if !scene.native_views.is_empty() {
+            self.window.native_views_shown();
+        }
         // `false` means no surface or a lost device; the shell handles both on the next surface event or frame.
         let drawn = self
             .window
