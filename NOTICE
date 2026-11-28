@@ -53,6 +53,11 @@ parallax-gpui-web and parallax-gpui-windows packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.
 
+scripts/vendor-zed.py ports the staging step of GPUI Kit's script/bump-gpui.ts
+(https://github.com/longbridge/gpui-kit, commit 85c05bf), the script that publishes the gpui-pre crates, licensed
+under the Apache License 2.0. Copyright the GPUI Kit authors (Longbridge). It is a repository script; no published
+crate contains it.
+
 cargo-parallax includes the Gradle Wrapper 9.8.2 (https://github.com/gradle/gradle),
 crates/cli/templates/android/gradle/wrapper/gradle-wrapper.jar, licensed under the
 Apache License 2.0 (license text inside the jar, META-INF/LICENSE). Copyright Gradle, Inc.
