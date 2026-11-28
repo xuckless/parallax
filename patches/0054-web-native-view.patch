@@ -4,11 +4,12 @@ What:
 - gpui_web: `NativeView::new` takes a `web_sys::HtmlElement`. GPUI moves it into a slot of its own, in a layer before
   the canvas (the canvas is raised above it, `position: relative; z-index: 1`, while views exist; the layer follows
   the canvas's fractional box wherever the page puts it): `<gpui-native-views>` holds a
-  `<gpui-native-view-slot>` per view (the view's bounds clipped to its content mask, `overflow: hidden`, its
-  `set_background` colour) around a `<gpui-native-view>` (the view's bounds) around the element. Each frame, before
-  the renderer draws, a view whose placement changed gets CSS `transform: translate(..)`, width and height, both
-  boxes rounded outwards to whole device pixels (no seam at fractional scales); unchanged views are not touched, so a
-  frame that places nothing writes no style. A view not painted is `display: none` (an iframe keeps its page).
+  `<gpui-native-view-slot>` per view (`gpui::native_view_placement::visible`, `overflow: hidden`, coloured by
+  `native_view_placement::background`) around a `<gpui-native-view>` (the view's bounds) around the element. Each
+  frame, before the renderer draws, a view whose placement changed gets CSS `transform: translate(..)`, width and
+  height: the bounds are whole device pixels already, so both boxes sit on the hole's pixels at any scale; unchanged
+  views are not touched, so a frame that places nothing writes no style. A view not painted, or clipped away
+  entirely, is `display: none` (an iframe keeps its page).
   Dropping the last handle removes the slot with the element in it (DOM focus inside it goes to GPUI's IME mirror);
   the last view takes the layer and the document listeners with it and gives the canvas its own styles back.
 - Input (`NativeViewInput::View`, as macOS): a capture listener on the document decides, before any element sees a
@@ -161,16 +162,16 @@ index 82157d4..351d342 100644
  mod platform;
 diff --git a/gpui-pre-web/src/native_view_layout.rs b/gpui-pre-web/src/native_view_layout.rs
 new file mode 100644
-index 0000000..62703ab
+index 0000000..84ffc76
 --- /dev/null
 +++ b/gpui-pre-web/src/native_view_layout.rs
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,250 @@
 +//! Native views on the web, the decisions: where a view's DOM element goes under the canvas, and whether the canvas
 +//! or the element under it takes the pointer. Pure, so it is tested on any host; `native_views.rs` is the DOM shell.
 +
-+use gpui::{Bounds, PaintNativeView, Pixels, ScaledPixels, point, px, size};
++use gpui::{Bounds, PaintNativeView, Pixels, ScaledPixels, native_view_placement, point, px, size};
 +
-+/// Where a shown view's elements go, in CSS pixels: its slot (the view's bounds clipped to its content mask, from the
++/// Where a shown view's elements go, in CSS pixels: its slot (the part of the view its content mask leaves, from the
 +/// canvas's top left) and the view's own box inside the slot.
 +#[derive(Clone, Copy, Debug, PartialEq)]
 +pub(crate) struct Placement {
@@ -178,33 +179,26 @@ index 0000000..62703ab
 +    pub(crate) view: Bounds<Pixels>,
 +}
 +
-+/// Both boxes are rounded outwards to whole device pixels: the renderer's hole covers exactly the device pixels whose
-+/// centres are inside the view, so an element covering every pixel the bounds touch leaves no seam at a fractional
-+/// scale (the canvas hides the overhang).
-+pub(crate) fn placement(native_view: &PaintNativeView, scale_factor: f32) -> Placement {
-+    let outwards = |bounds: Bounds<ScaledPixels>| {
-+        let left = bounds.origin.x.0.floor();
-+        let top = bounds.origin.y.0.floor();
-+        let right = (bounds.origin.x.0 + bounds.size.width.0).ceil();
-+        let bottom = (bounds.origin.y.0 + bounds.size.height.0).ceil();
++/// `None` when the content mask leaves none of the view (it hides). The bounds are whole device pixels already
++/// (`native_view_placement`), so both boxes land on the device pixels of the renderer's hole at any scale.
++pub(crate) fn placement(native_view: &PaintNativeView, scale_factor: f32) -> Option<Placement> {
++    let slot = native_view_placement::visible(native_view)?;
++    let css = |origin: gpui::Point<ScaledPixels>, extent: gpui::Size<ScaledPixels>| {
 +        Bounds::new(
-+            point(px(left / scale_factor), px(top / scale_factor)),
++            point(px(origin.x.0 / scale_factor), px(origin.y.0 / scale_factor)),
 +            size(
-+                px((right - left).max(0.) / scale_factor),
-+                px((bottom - top).max(0.) / scale_factor),
++                px(extent.width.0 / scale_factor),
++                px(extent.height.0 / scale_factor),
 +            ),
 +        )
 +    };
-+    let slot = outwards(
-+        native_view
-+            .bounds
-+            .intersect(&native_view.content_mask.bounds),
-+    );
-+    let view = outwards(native_view.bounds);
-+    Placement {
-+        slot,
-+        view: Bounds::new(view.origin - slot.origin, view.size),
-+    }
++    Some(Placement {
++        slot: css(slot.origin, slot.size),
++        view: css(
++            native_view.bounds.origin - slot.origin,
++            native_view.bounds.size,
++        ),
++    })
 +}
 +
 +/// Who the browser hit-tests the pointer to while a view shows: GPUI's canvas, or what is under it (the canvas's
@@ -349,64 +343,24 @@ index 0000000..62703ab
 +    #[test]
 +    fn placement_of_a_view() {
 +        let everything = [0., 0., 10_000., 10_000.];
-+        // (row name, view bounds and content mask in device pixels, scale, slot and view in CSS pixels). Add a row
-+        // per rule.
-+        let rows: [(&str, [f32; 4], [f32; 4], f32, [f32; 4], [f32; 4]); 4] = [
-+            (
-+                "whole pixels at 1",
-+                [10., 20., 300., 200.],
-+                everything,
-+                1.,
-+                [10., 20., 300., 200.],
-+                [0., 0., 300., 200.],
-+            ),
-+            (
-+                "whole device pixels at 1.25",
-+                [125., 250., 375., 250.],
-+                everything,
-+                1.25,
-+                [100., 200., 300., 200.],
-+                [0., 0., 300., 200.],
-+            ),
-+            (
-+                "fractional device pixels round outwards",
-+                [12.5, 20.4, 100., 50.],
-+                everything,
-+                1.25,
-+                [9.6, 16., 80.8, 40.8],
-+                [0., 0., 80.8, 40.8],
-+            ),
-+            (
-+                "the content mask clips the slot, the view keeps its size",
-+                [0., 0., 200., 100.],
-+                [50., 0., 100., 100.],
-+                1.,
-+                [50., 0., 100., 100.],
-+                [-50., 0., 200., 100.],
-+            ),
++        // (row name, view bounds and content mask in device pixels, scale, slot and view in CSS pixels or hidden).
++        // The core's `visible` decides what shows; these rows are the web's CSS boxes. Add a row per rule.
++        #[rustfmt::skip]
++        let rows: [(&str, [f32; 4], [f32; 4], f32, Option<([f32; 4], [f32; 4])>); 4] = [
++            ("whole pixels at 1", [10., 20., 300., 200.], everything, 1.,
++                Some(([10., 20., 300., 200.], [0., 0., 300., 200.]))),
++            ("device pixels at 1.25", [125., 250., 375., 250.], everything, 1.25,
++                Some(([100., 200., 300., 200.], [0., 0., 300., 200.]))),
++            ("the content mask clips the slot, the view keeps its size", [0., 0., 200., 100.], [50., 0., 100., 100.], 1.,
++                Some(([50., 0., 100., 100.], [-50., 0., 200., 100.]))),
++            ("clipped away entirely hides", [0., 0., 200., 100.], [300., 0., 100., 100.], 1., None),
 +        ];
-+        for (name, bounds, mask, scale, slot, view_box) in rows {
-+            let placement = placement(&view(bounds, mask), scale);
-+            let close = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
-+                [
-+                    (a.origin.x, b.origin.x),
-+                    (a.origin.y, b.origin.y),
-+                    (a.size.width, b.size.width),
-+                    (a.size.height, b.size.height),
-+                ]
-+                .iter()
-+                .all(|(a, b)| (f32::from(*a) - f32::from(*b)).abs() < 1e-4)
-+            };
-+            assert!(
-+                close(placement.slot, css(slot)),
-+                "{name}: slot {:?}",
-+                placement.slot
-+            );
-+            assert!(
-+                close(placement.view, css(view_box)),
-+                "{name}: view {:?}",
-+                placement.view
-+            );
++        for (name, bounds, mask, scale, expected) in rows {
++            let expected = expected.map(|(slot, view)| Placement {
++                slot: css(slot),
++                view: css(view),
++            });
++            assert_eq!(placement(&view(bounds, mask), scale), expected, "{name}");
 +        }
 +    }
 +
@@ -464,10 +418,10 @@ index 0000000..62703ab
 +}
 diff --git a/gpui-pre-web/src/native_views.rs b/gpui-pre-web/src/native_views.rs
 new file mode 100644
-index 0000000..e202251
+index 0000000..eae5944
 --- /dev/null
 +++ b/gpui-pre-web/src/native_views.rs
-@@ -0,0 +1,767 @@
+@@ -0,0 +1,769 @@
 +// `render_content`, `ensure_content_correctly_sized`, `create_slot`, `reset_anchor` and `detach_native_view` are
 +// ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_views/content_manager.dart,
 +// slots.dart and embedder.dart (`_resetAnchor`, `disposeView`) @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
@@ -496,7 +450,9 @@ index 0000000..e202251
 +use crate::events::{EventListenerHandle, Phase};
 +use crate::native_view_layout::{self, Hit, Over, Placement, PointerKind, PointerTarget, Send};
 +use crate::window::WebWindowInner;
-+use gpui::{Bounds, Hsla, NativeViewId, Pixels, Point, Rgba, Scene, point, px, size};
++use gpui::{
++    Bounds, NativeViewId, Pixels, Point, Rgba, Scene, native_view_placement, point, px, size,
++};
 +use std::{
 +    any::Any,
 +    cell::{Cell, RefCell},
@@ -581,8 +537,8 @@ index 0000000..e202251
 +    slot: web_sys::HtmlElement,
 +    wrapper: web_sys::HtmlElement,
 +    content: web_sys::HtmlElement,
-+    /// Where it was last placed, its rank in paint order and its background; `None` while hidden.
-+    placed: Option<(Placement, usize, Hsla)>,
++    /// Where it was last placed, its rank in paint order and the CSS colour under it; `None` while hidden.
++    placed: Option<(Placement, usize, String)>,
 +    _focus: EventListenerHandle,
 +}
 +
@@ -1007,6 +963,13 @@ index 0000000..e202251
 +            layer.root_box = root_box;
 +        }
 +        let scale_factor = self.state.borrow().scale_factor;
++        // `NativeView::set_background`: shows where an element has not caught up with its slot, as a cross-origin
++        // iframe's own process does for a frame after a resize. `None`: the page behind the canvas shows there.
++        let background = native_view_placement::background(&scene.native_views)
++            .map(|Rgba { r, g, b, a }| {
++                format!("rgba({}, {}, {}, {a})", r * 255., g * 255., b * 255.)
++            })
++            .unwrap_or_default();
 +        let showed = layer.slots.iter().any(|slot| slot.placed.is_some());
 +        for slot in layer.slots.iter_mut() {
 +            let shown = scene
@@ -1014,30 +977,23 @@ index 0000000..e202251
 +                .iter()
 +                .enumerate()
 +                .find(|(_, native_view)| native_view.id == slot.id)
-+                .map(|(rank, native_view)| {
-+                    (
-+                        native_view_layout::placement(native_view, scale_factor),
-+                        rank,
-+                        native_view.background,
-+                    )
++                .and_then(|(rank, native_view)| {
++                    native_view_layout::placement(native_view, scale_factor)
++                        .map(|placement| (placement, rank, background.clone()))
 +                });
 +            if shown == slot.placed {
 +                continue;
 +            }
-+            match shown {
++            match &shown {
 +                Some((placement, rank, background)) => {
 +                    place(&slot.slot, placement.slot);
 +                    place(&slot.wrapper, placement.view);
-+                    // `NativeView::set_background`: shows where the element has not caught up with its slot,
-+                    // as a cross-origin iframe's own process does for a frame after a resize.
-+                    let Rgba { r, g, b, a } = background.into();
-+                    let background = format!("rgba({}, {}, {}, {a})", r * 255., g * 255., b * 255.);
 +                    set_styles(
 +                        &slot.slot,
 +                        &[
 +                            ("display", ""),
 +                            ("z-index", &rank.to_string()),
-+                            ("background-color", &background),
++                            ("background-color", background),
 +                        ],
 +                    );
 +                }
@@ -1356,10 +1312,10 @@ index aebde2c..1468650 100644
          wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
              log::info!("native views: window surface alpha mode {alpha_mode:?}")
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 0fba390..7510a58 100644
+index 6e1bced..db93288 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -1445,6 +1445,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1435,6 +1435,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
          _callback: Box<dyn FnMut(Point<Pixels>) -> Option<crate::NativeViewId>>,
      ) {
      }
@@ -1422,10 +1378,10 @@ index 0b7b157..af08002 100644
          self.0.lock().native_view_focused_callback = Some(callback);
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 98dac26..249add8 100644
+index 44412c9..b38e226 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
-@@ -2415,6 +2415,14 @@ impl Window {
+@@ -2427,6 +2427,14 @@ impl Window {
                      .flatten()
              })
          });
@@ -1441,10 +1397,10 @@ index 98dac26..249add8 100644
              let mut cx = cx.to_async();
              Box::new(move |event| {
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index 3eee104..924b8ef 100644
+index d3f0be2..be65081 100644
 --- a/gpui-pre/src/window/native_view.rs
 +++ b/gpui-pre/src/window/native_view.rs
-@@ -29,9 +29,9 @@ impl NativeViewId {
+@@ -41,9 +41,9 @@ impl NativeViewId {
  /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
  ///
  /// macOS shows an `NSView`, iOS a `UIView`, Windows DirectComposition
@@ -1457,7 +1413,7 @@ index 3eee104..924b8ef 100644
  ///
  /// On a platform whose native views take no input of their own
  /// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland), pointer input
-@@ -42,7 +42,9 @@ impl NativeViewId {
+@@ -54,7 +54,9 @@ impl NativeViewId {
  /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
  /// the view's [`FocusHandle`] is focused are dispatched from that element like
  /// any other key press, so the app forwards the ones it wants to the view.
@@ -1468,7 +1424,7 @@ index 3eee104..924b8ef 100644
  ///
  /// The view is composited beneath the window's GPUI content and shows through
  /// wherever this handle is used as an element, so elements painted after it
-@@ -110,7 +112,9 @@ impl NativeView {
+@@ -122,7 +124,9 @@ impl NativeView {
      /// On Wayland it is a `wl_proxy` of a `wl_surface`
      /// made on the window's own `wl_display`, with no role, no `wp_viewport`
      /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
@@ -1479,7 +1435,7 @@ index 3eee104..924b8ef 100644
      ///
      /// GPUI retains the view and puts it inside a view of its own, until the
      /// last clone of the returned handle is dropped. Until then GPUI decides the
-@@ -363,6 +367,33 @@ impl Window {
+@@ -362,6 +366,33 @@ impl Window {
              .map(|view| view.id)
      }
  
@@ -1513,7 +1469,7 @@ index 3eee104..924b8ef 100644
      /// The native view that a mouse event at this position reaches, if no
      /// GPUI hitbox is above it there.
      pub(super) fn hit_test_native_view(&self, position: Point<Pixels>) -> Option<NativeViewId> {
-@@ -455,7 +486,7 @@ mod tests {
+@@ -467,7 +498,7 @@ mod tests {
      use crate::{
          Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
          MouseDownEvent, MouseMoveEvent, Render, ScaledPixels, ScrollEvent, TestAppContext,
@@ -1522,7 +1478,7 @@ index 3eee104..924b8ef 100644
      };
      use std::ops::Range;
  
-@@ -604,6 +635,19 @@ mod tests {
+@@ -672,6 +703,19 @@ mod tests {
          assert_eq!(platform_window.hit_test_native_view(outside), None);
      }
  
