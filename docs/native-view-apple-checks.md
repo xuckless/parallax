@@ -40,19 +40,17 @@ finds exactly the 38 of 617 gap frames of the rotation before the rigid turn.
 
 ## Results (2026-11-28)
 
-iOS 26.5 simulator, `examples/native-view`: iPhone 17 (3x) five runs, iPad Air 11-inch M4 (2x) one. Idle at 0 GPUI
-and 63 view frames/s (`metal layer alpha: premultiplied`); still, moving and rotating 0 failing frames of about 215,
-445 and 385 (iPad 219, 441, 421); input (`view pointer down at (44.0, 190.0)`, a scroll, the div's press alone);
-keyboard to GPUI's field after the drop. Every row passed in four iPhone runs and the iPad's; the fifth iPhone run
-failed `rotating` on one frame.
+iOS 26.5 simulator, `examples/native-view`, after patch [0063](../patches/0063-ios-native-view-rotation.patch)'s
+turn fix: iPhone 17 (3x) five runs, iPad Air 11-inch M4 (2x) one, every row passing in all six. Idle at 0 GPUI and
+63 view frames/s (`metal layer alpha: premultiplied`); still, moving and rotating 0 failing frames and 0 gap pixels of
+220–227, 442–450 and 384–390 (iPad 218, 450, 404); input (`view pointer down at (44.0, 190.0)`, a scroll, the div's
+press alone); keyboard to GPUI's field after the drop.
 
-**The rotation's pixel.** In 1 of 5 runs, and 3 of 12 rotations recorded back to back, one frame at the turn's start
-(75–77 of about 385) has a single gap-colour pixel (2×2 device pixels at full size, about (250, 100, 250)). It sits
-where the turning window's antialiased edge crosses a native view's edge (the view, or the iOS `UITextField`), between
-the view's or field's own colour and the black around the screen. It is not H.264's 4:2:0 chroma: no neighbour (the
-view's cyan, the field's white, black, the edge's grey) has magenta chroma, and the div's orange is far away. It is
-the views' clipping container's background showing through at that edge for one frame: owed to the iOS patches, not
-the example ([apple-native-view-frames.py](../scripts/apple-native-view-frames.py) keeps failing it).
+**The rotation's pixel** (before that fix: 1 run in 5, 3 of 12 back-to-back rotations). One frame at the turn's start
+had a single gap-colour pixel (2×2 device pixels, about (250, 100, 250)) where the turning window's antialiased edge
+crossed a native view's edge. Not H.264's 4:2:0 chroma: no neighbour has magenta chroma. Core Animation antialiases
+the turning edge layer by layer, so the host's `set_background` colour under the view fringed it. The host now shows
+no colour while the window turns (`Rotation::shows_background`); the rigid turn leaves no gap for it to cover.
 
 macOS needs a window server, which `ssh` doesn't have: the owner records the example (`screencapture -v`, moving and
 resizing the window) and runs the frame check on it, steps in `/Users/Shared/parallax/w15-fix-mobile-ios-macos/CHECK.md`

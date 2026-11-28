@@ -20,7 +20,7 @@ It needs GNU sed (`sed -i`; on macOS, `gsed` as `sed`).
 `cargo test -p parallax-gpui --features test-support --lib` there, compiled into `target/patch-tests/`, then the
 lib tests of each backend crate in its `host_backends` list (on Linux, `parallax-gpui-linux`: patches 0022, 0023 and
 0053–0055's tables, [desktop-touch-linux.md](desktop-touch-linux.md#tests), [native-view-wayland.md](native-view-wayland.md#tests);
-`parallax-gpui-wgpu`: patch 0047's hole, drawn by its headless renderer on the host's Vulkan, [native-view.md](native-view.md#tests)). It never
+`parallax-gpui-wgpu`: patch 0047's hole, drawn by its headless renderer on the host's Vulkan, [native-view-hole.md](native-view-hole.md#tests)). It never
 changes `build/parallax-gpui/`, so what it tests is what [`publish-fork.sh`](../scripts/publish-fork.sh) packages,
 plus the test-only changes the crates need because they can't run their own tests as shipped:
 
