@@ -4,9 +4,14 @@ use std::path::PathBuf;
 
 use crate::android::{ABIS, HOSTS};
 
+/// How to make an upload key; the command from Flutter's Android deployment guide.
+const KEYTOOL_GENKEY: &str = "keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload";
+
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("usage: cargo parallax run android [--release] [--device <serial>]\n{0}")]
+    #[error(
+        "usage: cargo parallax run android [--release] [--device <serial>]\n       cargo parallax build android [--release] [--apk|--aab]\n{0}"
+    )]
     Usage(String),
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
@@ -31,6 +36,40 @@ pub enum CliError {
     NoAbis,
     #[error("parallax.toml: unknown ABI {0:?}; supported: {supported}", supported = ABIS.map(|a| a.name).join(", "))]
     UnknownAbi(String),
+    #[error("parallax.toml: app.version is empty; set it, e.g. version = \"1.0.0\"")]
+    EmptyVersion,
+    #[error(
+        "parallax.toml: android.version_code {version_code} is outside 1..={highest}, the range Google Play accepts"
+    )]
+    VersionCodeOutOfRange { version_code: u32, highest: u32 },
+    #[error(
+        "parallax.toml: [android.release] has no {0}. It needs both keystore (path relative to parallax.toml) and key_alias"
+    )]
+    ReleaseKeyIncomplete(&'static str),
+    #[error(
+        "release builds are signed with the app's own key, and parallax.toml has no [android.release]. Create a key with\n  {genkey}\nthen add\n  [android.release]\n  keystore = \"upload-keystore.jks\"\n  key_alias = \"upload\"\nKeep the keystore out of version control. Debug builds need no key: drop --release", genkey = KEYTOOL_GENKEY
+    )]
+    ReleaseNotConfigured,
+    #[error(
+        "keystore {0} not found. android.release.keystore is relative to parallax.toml; to create one:\n  {genkey}", genkey = KEYTOOL_GENKEY
+    )]
+    KeystoreMissing(PathBuf),
+    #[error(
+        "no keystore password: set PARALLAX_KEYSTORE_PASSWORD (and PARALLAX_KEY_PASSWORD if the key's password differs), or run in a terminal to be asked"
+    )]
+    NoPassword,
+    #[error("the keystore password is empty")]
+    EmptyPassword,
+    #[error(
+        "keystore {0}: the password is wrong. Check PARALLAX_KEYSTORE_PASSWORD, or unset it to be asked"
+    )]
+    WrongKeystorePassword(PathBuf),
+    #[error(
+        "keystore {keystore} has no key {alias:?}. Fix android.release.key_alias; list the aliases with: keytool -list -keystore {keystore}"
+    )]
+    AliasNotInKeystore { alias: String, keystore: PathBuf },
+    #[error("keytool cannot read keystore {keystore}: {message}")]
+    KeystoreUnreadable { keystore: PathBuf, message: String },
     #[error("cannot read app.icon {path}: {source}. app.icon is relative to parallax.toml")]
     IconRead {
         path: PathBuf,

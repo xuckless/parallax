@@ -1,10 +1,10 @@
 [package]
 name = "cargo-parallax"
-description = "cargo parallax: build and run GPUI apps on Android from parallax.toml (iOS and web later)."
+description = "cargo parallax: build, run and sign GPUI apps for Android from parallax.toml (iOS and web later)."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 readme = "README.md"
 keywords = ["gpui", "android", "cargo", "cli", "mobile"]
@@ -18,6 +18,8 @@ workspace = true
 anyhow = "1"
 # Same version GPUI uses; tiny-skia's default `png-format` encodes the launcher PNGs.
 resvg = { version = "0.46.0", default-features = false }
+# Reads the keystore password from the terminal without echoing it (release builds, docs/cli-android-release.md).
+rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true

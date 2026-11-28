@@ -5,50 +5,72 @@ mod config;
 mod error;
 mod icon;
 
-use android::{Profile, RunArgs};
+use std::path::Path;
+
 use config::Config;
 use error::CliError;
 
+/// A platform `cargo parallax` builds for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    Android,
+}
+
+/// Target name on the command line → target. To add a target: add its variant and a row.
+const TARGETS: [(&str, Target); 1] = [("android", Target::Android)];
+
+/// One `cargo parallax <verb> <target>` command; the handler parses the flags after the target.
+struct Command {
+    verb: &'static str,
+    target: Target,
+    handler: fn(&Path, &Config, &[String]) -> Result<(), CliError>,
+}
+
+/// (verb, target) → handler. To add a command: add a row.
+const COMMANDS: [Command; 2] = [
+    Command {
+        verb: "run",
+        target: Target::Android,
+        handler: android::run,
+    },
+    Command {
+        verb: "build",
+        target: Target::Android,
+        handler: android::build,
+    },
+];
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let run_args = parse_args(&args)?;
+    let (command, flags) = parse_command(&args)?;
     let app_dir = std::env::current_dir()?;
     let path = app_dir.join("parallax.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|source| CliError::ConfigMissing { path, source })?;
     let config = Config::parse(&text)?;
-    android::run(&app_dir, &config, &run_args)?;
+    (command.handler)(&app_dir, &config, flags)?;
     Ok(())
 }
 
-/// `[parallax] run android [--release] [--device <serial>]`; cargo passes the leading `parallax` when run as
-/// `cargo parallax`.
-fn parse_args(args: &[String]) -> Result<RunArgs, CliError> {
+/// `[parallax] <verb> <target> <flags…>`; cargo passes the leading `parallax` when run as `cargo parallax`.
+fn parse_command(args: &[String]) -> Result<(&'static Command, &[String]), CliError> {
     let args = match args.first().map(String::as_str) {
         Some("parallax") => &args[1..],
         _ => args,
     };
-    let mut rest = match args {
-        [run, target, rest @ ..] if run == "run" && target == "android" => rest.iter(),
-        _ => return Err(CliError::Usage("expected `run android`".into())),
+    let [verb, target, flags @ ..] = args else {
+        return Err(CliError::Usage("expected a command and a target".into()));
     };
-    let mut run_args = RunArgs {
-        profile: Profile::Debug,
-        device: None,
-    };
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--release" => run_args.profile = Profile::Release,
-            "--device" => {
-                let serial = rest
-                    .next()
-                    .ok_or_else(|| CliError::Usage("--device needs a serial".into()))?;
-                run_args.device = Some(serial.clone());
-            }
-            other => return Err(CliError::Usage(format!("unknown argument {other:?}"))),
-        }
-    }
-    Ok(run_args)
+    let target = TARGETS
+        .iter()
+        .find(|(name, _)| name == target)
+        .map(|(_, t)| *t)
+        .ok_or_else(|| CliError::Usage(format!("unknown target {target:?}")))?;
+    let command = COMMANDS
+        .iter()
+        .find(|c| c.verb == verb && c.target == target)
+        .ok_or_else(|| CliError::Usage(format!("unknown command {verb:?}")))?;
+    Ok((command, flags))
 }
 
 #[cfg(test)]
@@ -56,46 +78,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_args_table() {
-        // (row name, argv after the binary, expected (profile dir, --device) or a usage error)
+    fn parse_command_table() {
+        // (row name, argv after the binary, expected (verb, target, flags) or a usage error)
         type Case<'a> = (
             &'a str,
             &'a [&'a str],
-            Result<(&'a str, Option<&'a str>), ()>,
+            Result<(&'a str, Target, &'a [&'a str]), ()>,
         );
         let cases: [Case; 8] = [
             (
                 "as cargo subcommand",
                 &["parallax", "run", "android"],
-                Ok(("debug", None)),
-            ),
-            ("as binary", &["run", "android"], Ok(("debug", None))),
-            (
-                "release",
-                &["parallax", "run", "android", "--release"],
-                Ok(("release", None)),
+                Ok(("run", Target::Android, &[])),
             ),
             (
-                "device",
-                &["run", "android", "--device", "emulator-5556"],
-                Ok(("debug", Some("emulator-5556"))),
+                "as binary",
+                &["run", "android"],
+                Ok(("run", Target::Android, &[])),
             ),
             (
-                "device without serial",
-                &["run", "android", "--device"],
-                Err(()),
+                "flags go to the handler",
+                &["parallax", "build", "android", "--release", "--apk"],
+                Ok(("build", Target::Android, &["--release", "--apk"])),
             ),
-            ("unknown flag", &["run", "android", "--fast"], Err(())),
-            ("unknown target", &["run", "ios"], Err(())),
+            (
+                "build",
+                &["build", "android"],
+                Ok(("build", Target::Android, &[])),
+            ),
+            ("unknown verb", &["install", "android"], Err(())),
+            ("unknown target", &["run", "symbian"], Err(())),
+            ("no target", &["parallax", "run"], Err(())),
             ("no command", &["parallax"], Err(())),
         ];
         for (name, args, want) in cases {
             let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            let got = parse_args(&args)
-                .map(|a| (a.profile.dir(), a.device))
+            let got = parse_command(&args)
+                .map(|(c, flags)| (c.verb, c.target, flags.to_vec()))
                 .map_err(|e| e.variant());
             let want = want
-                .map(|(profile, device)| (profile, device.map(String::from)))
+                .map(|(verb, target, flags)| {
+                    (verb, target, flags.iter().map(|s| s.to_string()).collect())
+                })
                 .map_err(|()| "Usage".to_string());
             assert_eq!(got, want, "{name}");
         }

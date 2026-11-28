@@ -6,6 +6,22 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Unreleased (0.1.11)
+
+- Breaking: `cargo parallax run android --release` now installs a release-signed, R8-shrunk APK and needs an upload key
+  in `[android.release]` (before, it put a release Rust library in a debug-signed APK). Migration: add the key
+  (docs/cli-android-release.md), or drop `--release`.
+- Breaking: `cargo-parallax` is now `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` and
+  `LICENSE-FLUTTER-WEBSITE` (its generated Gradle project ports Flutter's release settings). Migration: apps that list
+  their tools' licences add Flutter's BSD-3-Clause notices.
+- `cargo parallax build android [--release] [--apk|--aab]`: builds without installing; `--release` makes a signed App
+  Bundle for Google Play (`--apk`: a signed universal APK). The key is `parallax.toml`'s `[android.release]`
+  (`keystore`, `key_alias`); passwords come from `PARALLAX_KEYSTORE_PASSWORD` / `PARALLAX_KEY_PASSWORD` or a prompt,
+  never a file, and are checked with keytool before the build (docs/cli-android-release.md).
+- `parallax.toml`: `app.version` (`versionName`) and `android.version_code` (`versionCode`).
+- `parallax-android` ships `proguard-rules.pro`, keeping the Java that Rust calls over JNI through R8.
+- `cargo parallax run android` uninstalls and reinstalls when an install fails over a build signed with another key.
+
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 
 Wave 15 (Phase: NativeView, issue #1), fork `parallax-gpui*` 0.3.14-parallax.12 (patches 0047–0072). The NativeView

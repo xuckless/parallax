@@ -17,6 +17,9 @@ const ANDROID_DEFAULTS: AndroidDefaults = AndroidDefaults {
     abis: &["arm64-v8a", "x86_64"],
     // No app.icon → Android's default launcher icon.
     icon: None,
+    // Flutter's Gradle plugin's fallbacks when the app sets no version (flutter_tools FlutterPlugin.kt @ 3.50.1).
+    version: "1.0",
+    version_code: 1,
 };
 
 struct AndroidDefaults {
@@ -24,7 +27,12 @@ struct AndroidDefaults {
     target_sdk: u32,
     abis: &'static [&'static str],
     icon: Option<&'static str>,
+    version: &'static str,
+    version_code: u32,
 }
+
+/// Highest `versionCode` Google Play accepts.
+const HIGHEST_VERSION_CODE: u32 = 2_100_000_000;
 
 /// `parallax.toml` as written; `None` means "take the default".
 #[derive(Deserialize)]
@@ -41,6 +49,7 @@ struct AppToml {
     name: String,
     id: String,
     icon: Option<String>,
+    version: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -49,6 +58,16 @@ struct AndroidToml {
     min_sdk: Option<u32>,
     target_sdk: Option<u32>,
     abis: Option<Vec<String>>,
+    version_code: Option<u32>,
+    release: Option<ReleaseToml>,
+}
+
+/// `[android.release]`: the upload key. Passwords never go here (docs/cli-android-release.md).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseToml {
+    keystore: Option<String>,
+    key_alias: Option<String>,
 }
 
 /// `parallax.toml` with defaults filled in and every value checked.
@@ -60,6 +79,8 @@ pub struct Config {
     pub id: String,
     /// Launcher icon SVG, relative to `parallax.toml`.
     pub icon: Option<PathBuf>,
+    /// User-visible version (Android `versionName`).
+    pub version: String,
     pub android: Android,
 }
 
@@ -69,6 +90,16 @@ pub struct Android {
     /// Also the `compileSdk`.
     pub target_sdk: u32,
     pub abis: Vec<&'static Abi>,
+    pub version_code: u32,
+    /// The key release builds are signed with; `None` until `[android.release]` is set.
+    pub release: Option<ReleaseKey>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ReleaseKey {
+    /// Keystore file, relative to `parallax.toml`.
+    pub keystore: PathBuf,
+    pub key_alias: String,
 }
 
 impl Config {
@@ -113,6 +144,36 @@ impl Config {
                     .ok_or_else(|| CliError::UnknownAbi(n.clone()))
             })
             .collect::<Result<_, _>>()?;
+        let version = raw
+            .app
+            .version
+            .unwrap_or_else(|| ANDROID_DEFAULTS.version.to_string());
+        if version.is_empty() {
+            return Err(CliError::EmptyVersion);
+        }
+        let version_code = raw
+            .android
+            .version_code
+            .unwrap_or(ANDROID_DEFAULTS.version_code);
+        if !(1..=HIGHEST_VERSION_CODE).contains(&version_code) {
+            return Err(CliError::VersionCodeOutOfRange {
+                version_code,
+                highest: HIGHEST_VERSION_CODE,
+            });
+        }
+        let release = match raw.android.release {
+            None => None,
+            Some(release) => Some(ReleaseKey {
+                keystore: PathBuf::from(
+                    release
+                        .keystore
+                        .ok_or(CliError::ReleaseKeyIncomplete("keystore"))?,
+                ),
+                key_alias: release
+                    .key_alias
+                    .ok_or(CliError::ReleaseKeyIncomplete("key_alias"))?,
+            }),
+        };
         Ok(Config {
             name: raw.app.name,
             id: raw.app.id,
@@ -122,10 +183,13 @@ impl Config {
                 .as_deref()
                 .or(ANDROID_DEFAULTS.icon)
                 .map(PathBuf::from),
+            version,
             android: Android {
                 min_sdk,
                 target_sdk,
                 abis,
+                version_code,
+                release,
             },
         })
     }
@@ -155,10 +219,13 @@ mod tests {
             name: "Hello".into(),
             id: "io.github.xuckless.parallax.hello".into(),
             icon: None,
+            version: "1.0".into(),
             android: Android {
                 min_sdk,
                 target_sdk,
                 abis: abis.to_vec(),
+                version_code: 1,
+                release: None,
             },
         }
     }
@@ -257,6 +324,66 @@ mod tests {
                 "empty abis",
                 format!("{APP}[android]\nabis = []\n"),
                 Err("NoAbis"),
+            ),
+            (
+                "version and version_code",
+                format!("{APP}version = \"2.3.1\"\n[android]\nversion_code = 42\n"),
+                Ok(Config {
+                    version: "2.3.1".into(),
+                    android: Android {
+                        version_code: 42,
+                        ..config(28, 35, &[ARM64, X86_64]).android
+                    },
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "empty version",
+                format!("{APP}version = \"\"\n"),
+                Err("EmptyVersion"),
+            ),
+            (
+                "version_code 0",
+                format!("{APP}[android]\nversion_code = 0\n"),
+                Err("VersionCodeOutOfRange"),
+            ),
+            (
+                "version_code above Play's limit",
+                format!("{APP}[android]\nversion_code = 2100000001\n"),
+                Err("VersionCodeOutOfRange"),
+            ),
+            (
+                "release key",
+                format!(
+                    "{APP}[android.release]\nkeystore = \"keys/upload.jks\"\nkey_alias = \"upload\"\n"
+                ),
+                Ok(Config {
+                    android: Android {
+                        release: Some(ReleaseKey {
+                            keystore: "keys/upload.jks".into(),
+                            key_alias: "upload".into(),
+                        }),
+                        ..config(28, 35, &[ARM64, X86_64]).android
+                    },
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "release key without alias",
+                format!("{APP}[android.release]\nkeystore = \"upload.jks\"\n"),
+                Err("ReleaseKeyIncomplete"),
+            ),
+            (
+                "release key without keystore",
+                format!("{APP}[android.release]\nkey_alias = \"upload\"\n"),
+                Err("ReleaseKeyIncomplete"),
+            ),
+            (
+                "password in parallax.toml is rejected",
+                format!(
+                    "{APP}[android.release]\nkeystore = \"k.jks\"\nkey_alias = \"u\"\npassword = \"x\"\n"
+                ),
+                Err("ConfigSyntax"),
             ),
             (
                 "unknown abi",

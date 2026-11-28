@@ -62,9 +62,15 @@ wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the wi
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER
 in the parallax-android, parallax-platform, parallax-ext, parallax-gpui, parallax-gpui-ios, parallax-gpui-macos,
-parallax-gpui-web and parallax-gpui-windows packages).
+parallax-gpui-web, parallax-gpui-windows and cargo-parallax packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.
+
+cargo-parallax's generated Android build.gradle adapts the release signing sample of Flutter's Android
+deployment guide (https://github.com/flutter/website, sites/docs/src/content/deployment/android.md @ 7c32e59),
+whose code samples are licensed under the BSD 3-Clause License. See third_party/flutter-website/LICENSE
+(LICENSE-FLUTTER-WEBSITE in the cargo-parallax package) and third_party/flutter-website/PORTED.md.
+Copyright 2012, the project authors.
 
 scripts/vendor-zed.py ports the staging step of GPUI Kit's script/bump-gpui.ts
 (https://github.com/longbridge/gpui-kit, commit 85c05bf), the script that publishes the gpui-pre crates, licensed
