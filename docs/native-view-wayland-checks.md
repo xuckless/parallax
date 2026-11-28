@@ -37,13 +37,14 @@ CLIENT_ICD=host scripts/wayland-native-view-checks.sh   # the app on the host's 
 | Alpha mode logged | `window surface alpha mode` in the example's log |
 | The view shows at its element's size | the container's and page's pixels span 640×400 logical |
 | No gap or seam | no container (gap colour) pixel inside the view, past a one-device-pixel ring at a fractional scale |
+| The page shows, not just no gap | the page's colour fills at least 80 % of 640×400 logical (a blank view, black or the desktop, fails every content check) |
 | The div covers the view | its colour where it is painted over the view |
 | 0 GPUI frames/s while only the page changes | seconds 6–9 of `gpui frames/s: 0, page frames/s: 60` |
 | Pointer input reaches the view's element | a move, a click and a scroll at (400, 250) in the view log `view pointer … at (400.0, 250.0)` |
 | The div over the view keeps its own input | its click logs `GPUI div over the view: down` and no view press |
-| In step while moving | `--animate`: 8 screenshots with no gap pixel inside the view |
+| In step while moving | `--animate`: 8 screenshots, each with no gap pixel inside the view, the view 400 logical high and 400–640 wide, at least 70 % of it the page's colour |
 | A clipped view shows only its visible part | `--clipped` (top half scrolled out, see-through window): the view's pixels span 640×200, none past the clip |
-| …cropped, not squeezed | no yellow at 50 logical pixels down the visible part, where the page's top-half band would land squeezed |
+| …cropped, not squeezed | the page's colour at 50 logical pixels down the visible part (at x 400 or 200, as the white bar may cross one), where the page's top-half band would land squeezed; the page's colour fills at least 80 % of 640×200 |
 | Input over the clipped view | the pointer over the clipped-away part logs no view move; a click in the visible part logs `view pointer down at (400.0, 300.0)`, relative to the whole view |
 
 | A resize while clipped never costs the connection | `--clipped --animate --resize` for 8 s (the page switches buffer size every 45 frames from its thread, two stale old-size frames after each switch, GPUI re-crops every frame): exits 0, no protocol error, page and GPUI frames in each of the last seconds |

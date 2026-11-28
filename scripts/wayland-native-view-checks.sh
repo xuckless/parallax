@@ -30,6 +30,10 @@ if [[ ${1:-} == --session ]]; then
   fail() { echo "FAIL [$scale]: $*"; failures=$((failures + 1)); }
   pass() { echo "pass [$scale]: $*"; }
   px() { python3 -I "$repo/scripts/pixels.py" "$@"; }
+  # Whether the pixel at x y is the page's background (its green and blue; its red drifts), as pixels.py matches.
+  is_page() { read -r pr pg pb <<<"$(px "$1" at "$2" "$3")"; ((pg >= 40 && pg <= 88 && pb >= 104 && pb <= 152)); }
+  # Whether count $1 is at least share $2 of a w x h area $3 x $4 (device pixels).
+  at_least() { python3 -c "import sys; sys.exit(not $1 >= $2 * $3 * $4)"; }
   eval_js() { gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
     --method org.gnome.Shell.Eval "$1"; }
   shot() { gdbus call --session --dest org.gnome.Shell.Screenshot --object-path /org/gnome/Shell/Screenshot \
@@ -99,6 +103,10 @@ if [[ ${1:-} == --session ]]; then
   ring=$([[ $scale == 1 ]] && echo 0 || echo 1)
   inner=$(px "$work/still.png" inside "$gap" "$ring" "$edge")
   ((inner == 0)) && pass "no gap or seam inside the view (edge ring $ring)" || fail "$inner gap pixels inside the view"
+  # The view's content, not just no gap: the page's colour fills most of it (all but the div, its bar and edges).
+  shown=$(px "$work/still.png" count "$page")
+  at_least "$shown" 0.8 "$(python3 -c "print(640 * $factor)")" "$(python3 -c "print(400 * $factor)")" \
+    && pass "the page fills the view ($shown device pixels)" || fail "the page shows only $shown device pixels"
   read -r ox oy <<<"$(python3 -c "print(round($l + 124 * $factor), round($t + 80 * $factor))")"
   [[ $(px "$work/still.png" count "$over") -gt 1000 ]] && read -r cr cg cb <<<"$(px "$work/still.png" at "$ox" "$oy")" \
     && ((cb > 180 && cr < 80)) && pass "the div covers the view" || fail "no div over the view at $ox $oy"
@@ -166,8 +174,15 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   for i in $(seq 1 $shots); do
     inner=$(px "$work/move-$i.png" inside "$gap" "$((ring + 1))" "$edge")
     ((inner == 0)) || { echo "moving, shot $i: $inner gap pixels inside the view"; out_of_step=$((out_of_step + 1)); }
+    # The view shows its content at its element's size: 400 high, 400 to 640 wide as it resizes (logical), most of
+    # it the page's colour. An empty shot has no bbox and fails here, not passes for having no gap.
+    read -r ml mt mr mb <<<"$(px "$work/move-$i.png" bbox "$gap" "$page" "$edge" || echo "0 0 0 0")"
+    shown=$(px "$work/move-$i.png" count "$page")
+    python3 -c "import sys; f=$factor; w=$mr-$ml; h=$mb-$mt
+sys.exit(not (abs(h - 400 * f) <= 3 and 400 * f - 3 <= w <= 640 * f + 3 and $shown >= 0.7 * w * h))" \
+      || { echo "moving, shot $i: the page shows $shown pixels in $ml $mt $mr $mb"; out_of_step=$((out_of_step + 1)); }
   done
-  ((out_of_step == 0)) && pass "moving: no gap in $shots shots" \
+  ((out_of_step == 0)) && pass "moving: the page and no gap in all $shots shots" \
     || fail "moving: hole and view out of step in $out_of_step of $shots shots"
   wait $app || true
 
@@ -184,11 +199,16 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
     && pass "clipped: only the visible part shows, at $l $t $r $b (640x200 at $factor), nothing past the clip" \
     || fail "clipped: the view shows at $l $t $r $b, not 640x200 at $factor"
   # The page's yellow band crosses its top half, 100 pixels down: squeezed into the visible part, it would show
-  # 50 pixels down.
-  read -r cr cg cb <<<"$(px "$work/clipped.png" at "$(python3 -c "print(round($l + 400 * $factor))")" \
-    "$(python3 -c "print(round($t + 50 * $factor))")")"
-  ((cr > 200 && cg > 200 && cb < 80)) && fail "clipped: the whole page is squeezed into the visible part" \
-    || pass "clipped: the visible part shows the page's lower half"
+  # 50 pixels down. Cropped, the page's background is there (two columns, as the white bar may cross one).
+  at_y=$(python3 -c "print(round($t + 50 * $factor))")
+  is_page "$work/clipped.png" "$(python3 -c "print(round($l + 400 * $factor))")" "$at_y" \
+    || is_page "$work/clipped.png" "$(python3 -c "print(round($l + 200 * $factor))")" "$at_y" \
+    && pass "clipped: the visible part shows the page's lower half" \
+    || fail "clipped: no page at 50 pixels down the visible part (squeezed, or nothing shows)"
+  shown=$(px "$work/clipped.png" count "$page")
+  at_least "$shown" 0.8 "$(python3 -c "print(640 * $factor)")" "$(python3 -c "print(200 * $factor)")" \
+    && pass "clipped: the page fills the visible part ($shown device pixels)" \
+    || fail "clipped: the page shows only $shown device pixels"
   log=$work/clipped.log
   read -r vx vy ax ay bx by <<<"$(python3 -c "f=$factor
 print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f + 100)")"

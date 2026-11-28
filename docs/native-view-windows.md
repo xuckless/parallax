@@ -56,7 +56,8 @@ composed screen back (`BitBlt` with `CAPTUREBLT`, which includes DComp; [pixels.
 injects mouse moves, wheel and clicks. Per scale: alpha mode logged; 0 GPUI frames and 0 copies per second over 3 s
 while the view presents (the example counts paints and presents per second); the hole shows the view and the cover
 div over it shows (GPUI's visual is above the view's); one device pixel past each edge is GPUI's (no seam); no gap
-colour in any of 100 screenshots (`touch-inject shots`) taken while the view slides, nor after a resize; one copy per
+colour in any of 100 screenshots (`touch-inject shots`) taken while the view slides, and in each the view's colour
+over at least 80 % of its uncovered area and the cover's colour present, so a blank view fails; none after a resize; one copy per
 GPUI frame while it slides; a move, wheel and click over the view reach its element at 200 150 in the view; a click
 on the cover stays the cover's. Then the same for the WebView2 page ([native-view-webview2.md](native-view-webview2.md)).
 Logs and the screenshots with a gap: the `windows-touch` artifact, `target/native-view-windows/`.

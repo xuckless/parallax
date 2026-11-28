@@ -18,10 +18,12 @@ percents=("${@:-100}")
 # Windows offers 125 % only from a larger resolution than the runner's 1024 × 768.
 scaled_display="1920 1080"
 # The examples' colours (src/app.rs): window, cover, gap; the view is green with little red (the swap chain example's
-# src/content.rs, the WebView2 example's src/page.html).
+# src/content.rs, the WebView2 example's src/page.html; the swap chain's blue changes every frame).
 window_colour="48 48 48"
 cover_colour="255 128 0"
 gap_colour=ff00ff
+view_colour=10c0**
+cover_hex=ff8000
 # Screenshots while the view slides: the owner's bar for "hole and view in step" (2026-11-27).
 moving_shots=100
 # The surface's line per GPUI frame copied (gpui_windows' native_view_surface.rs).
@@ -149,16 +151,22 @@ check_moving() {
   inject shots "$moving_shots" "$(cygpath -w "$work/move-")"
   grep -q 'motion: end' "$work/example.log" && fail "the view stopped before the last of $moving_shots shots"
   wait_for 'motion: end' 30 || fail "the move never ended"
+  # The view's visible part in device px: its size, less the cover over its corner (src/app.rs).
+  local scale view_area gaps views covers
+  scale=$(inject scale)
+  view_area=$(python3 -c "s = $scale; print(round((322 * 242 - 100 * 60) * s * s))")
   for i in $(seq 1 "$moving_shots"); do
-    gaps=$(count "$work/move-$i.raw" "$gap_colour")
-    if ((gaps == 0)); then
+    # One read per shot: no gap, and the view's content and the cover there, so a blank shot can't pass.
+    read -r gaps views covers <<<"$(python3 -I "$repo/scripts/pixels.py" "$work/move-$i.raw" counts "$gap_colour" \
+      "$view_colour" "$cover_hex")"
+    if ((gaps == 0 && views * 10 >= view_area * 8 && covers > 0)); then
       rm "$work/move-$i.raw"
     else
-      echo "moving, shot $i: $gaps gap pixels (kept)"
+      echo "moving, shot $i: $gaps gap, $views view (of $view_area), $covers cover pixels (kept)"
       out_of_step=$((out_of_step + 1))
     fi
   done
-  ((out_of_step == 0)) && pass "moved: no gap in $moving_shots shots" \
+  ((out_of_step == 0)) && pass "moved: the view, the cover and no gap in $moving_shots shots" \
     || fail "moving: hole and view out of step in $out_of_step of $moving_shots shots"
   # GPUI frames (one placement line each) and copies between the motion's start and end.
   read -r frames copies < <(awk -v copied="$copied" '/motion: start/ { on = 1 } /motion: end/ { on = 0 }
