@@ -52,7 +52,9 @@ owns a `wl_surface` on GPUI's connection and commits a new 640×400 shm buffer t
 own thread; a blue GPUI div covers part of it. Once a second it logs `gpui frames/s: N, page frames/s: M` (GPUI's is
 0 while only the page changes), and it logs the alpha mode GPUI chose and every pointer event over the view with its
 view-relative position. Flags: `--fps N` (page rate), `--animate` (the view moves and resizes every GPUI frame),
-`--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds).
+`--clipped` (the view half scrolled out of a container, in a see-through window: only its lower half may show),
+`--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds). The page's
+yellow band across its top half shows whether a clipped view is cropped or squeezed.
 
 ## native-view-windows
 

@@ -12,7 +12,11 @@ page is what every target shares. Per target: [native-view-wayland.md](native-vi
 `NSView`: a `UIView` on iOS, DirectComposition content on Windows, the app's `wl_surface` on Wayland (owner
 decision, 2026-11-27). The handle is an element: paint it
 where the view goes, and elements painted after it cover it. `NativeView::bounds(window)` gives where it showed in the
-last frame.
+last frame: the whole view, so pointer positions stay view-relative when a clip cuts it. A view its element's clip
+cuts (scrolled partly out of a container) shows only the part the clip leaves, at its full size and position, on
+every target (a clipping container on Apple, a clip visual on Windows, a crop on Wayland); clipped away entirely, it
+hides. `NativeView::set_buffer_size(size, window)` tells the size of the app's buffers, which only Wayland needs, for
+that crop ([native-view-wayland.md](native-view-wayland.md#clipped-views)); elsewhere it does nothing.
 
 ## The hole
 

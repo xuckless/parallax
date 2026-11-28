@@ -26,6 +26,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
+- Wayland: a native view its element's clip cuts (scrolled partly out of a container) shows only its visible part,
+  cropped from the app's buffer, as on the other platforms; the new `NativeView::set_buffer_size` tells GPUI the
+  buffer size the crop needs (does nothing elsewhere; fork patch 0049, docs/native-view-wayland.md#clipped-views).
+  `scripts/wayland-native-view-checks.sh --mesa-compositor` runs the checks with the compositor on Mesa too.
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

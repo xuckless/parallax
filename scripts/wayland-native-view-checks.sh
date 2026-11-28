@@ -3,12 +3,14 @@
 # examples/native-view-wayland in a private headless GNOME Shell (mutter as a compositor, its own D-Bus session,
 # runtime dir and settings, so nothing of a desktop session is touched), injects pointer input through the Shell's
 # Eval, reads its screenshots back with scripts/pixels.py, and asserts on pixels and on what the example logged.
-# The app renders with Mesa lavapipe (CLIENT_ICD=host keeps the host's Vulkan driver). Each scale gets its own
+# The app renders with Mesa lavapipe (CLIENT_ICD=host keeps the host's Vulkan driver). The Shell composites with
+# whatever GL the host has (on a GPU-less CI runner, Mesa llvmpipe); --mesa-compositor makes it Mesa llvmpipe on any
+# host, the Shell in a bubblewrap sandbox without /dev/dri and with only Mesa's EGL vendor. Each scale gets its own
 # session; logs and screenshots land in target/native-view-wayland/<scale>/.
 #
-# Usage: scripts/wayland-native-view-checks.sh [scale...]     (default: 1 1.25, the scales checked)
-# Needs: gnome-shell (with --headless), dbus-run-session, gdbus, python3. Without them it prints why and exits 0
-# (skipped), so a CI runner that can't run the Shell skips it visibly.
+# Usage: scripts/wayland-native-view-checks.sh [--mesa-compositor] [scale...]   (default: 1 1.25, the scales checked)
+# Needs: gnome-shell (with --headless), dbus-run-session, gdbus, python3; bwrap for --mesa-compositor. Without them
+# it prints why and exits 0 (skipped), so a CI runner that can't run the Shell skips it visibly.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,7 +40,12 @@ if [[ ${1:-} == --session ]]; then
   # A plain black desktop, so no wallpaper pixel passes for the page.
   gsettings set org.gnome.desktop.background picture-options none 2>/dev/null || true
   gsettings set org.gnome.desktop.background primary-color '#000000' 2>/dev/null || true
-  gnome-shell --headless --unsafe-mode --wayland --no-x11 --virtual-monitor 1280x800 >"$work/shell.log" 2>&1 &
+  # --mesa-compositor: no DRM device and only Mesa's EGL vendor, so mutter falls back to llvmpipe.
+  wrap=()
+  [[ ${COMPOSITOR_GL:-host} == mesa ]] && wrap=(env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+    LIBGL_ALWAYS_SOFTWARE=1 bwrap --dev-bind / / --tmpfs /dev/dri --die-with-parent --)
+  "${wrap[@]}" gnome-shell --headless --unsafe-mode --wayland --no-x11 --virtual-monitor 1280x800 \
+    >"$work/shell.log" 2>&1 &
   shell=$!
   trap 'kill $shell 2>/dev/null || true' EXIT
   for _ in $(seq 150); do [[ -S $XDG_RUNTIME_DIR/wayland-0 ]] && break; sleep 0.1; done
@@ -46,6 +53,15 @@ if [[ ${1:-} == --session ]]; then
     tail -5 "$work/shell.log"; exit 0; }
   export WAYLAND_DISPLAY=wayland-0
   sleep 2
+  # Which GL the compositor composites with: the GL driver libraries mapped into gnome-shell.
+  shell_pid=$(pgrep -x -P "$shell" gnome-shell || echo "$shell")
+  gl=$(grep -oE '/[^ ]*(libgallium|libnvidia-(eglcore|glcore)|_dri)[^ /]*\.so[^ ]*' "/proc/$shell_pid/maps" \
+    | xargs -rn1 basename | sort -u | tr '\n' ' ')
+  echo "compositor GL: ${gl:-unknown}"
+  if [[ ${COMPOSITOR_GL:-host} == mesa ]]; then
+    [[ $gl == *libgallium* && $gl != *nvidia* ]] && pass "the compositor runs on Mesa ($gl)" \
+      || fail "the compositor is not on Mesa: $gl"
+  fi
   if [[ $scale != 1 ]]; then
     dc() { gdbus call --session --dest org.gnome.Mutter.DisplayConfig --object-path /org/gnome/Mutter/DisplayConfig \
       --method "org.gnome.Mutter.DisplayConfig.$1" "${@:2}"; }
@@ -102,19 +118,29 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   move() { eval_js "globalThis.w15.notify_absolute_motion($now, $1, $2); true" >/dev/null; sleep 0.4; }
   click() { eval_js "globalThis.w15.notify_button($now, 1, 1); globalThis.w15.notify_button($now, 1, 0); true" \
     >/dev/null; sleep 0.4; }
+  # Whether the last `view pointer <kind>` in $log is within 2 pixels of (x, y).
+  log=$work/still.log
+  near() { grep "view pointer $1 at" "$log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
+    | awk -v x="$2" -v y="$3" '{ found = ($1 - x)^2 <= 4 && ($2 - y)^2 <= 4 } END { exit !found }'; }
+  # A click on the view that should log a press at (x, y) in it. Now and then (seen twice in ten runs at 1.25) no
+  # press is logged for the first click on the view after focusing; it is clicked once more, and the note says so.
+  click_view() {
+    click
+    near down "$1" "$2" || { echo "note [$scale]: no press logged for a click on the view, clicking again"; click; }
+  }
   # mutter keeps the first click on an unfocused window from it (the headless seat has no keyboard to focus it
-  # otherwise), so the first click lands on the window's own background, left of the view.
+  # otherwise), so the first click lands on the window's own background, left of the view; a second one there in
+  # case the focus took longer than a click (seen with the Shell on llvmpipe).
   move "$bx" "$by"
   move "$bx" "$by"
   click
-  move "$vx" "$vy"
-  move "$vx" "$vy"
   click
+  move "$vx" "$vy"
+  move "$vx" "$vy"
+  click_view 400 250
   eval_js "globalThis.w15.notify_discrete_scroll($now, imports.gi.Clutter.ScrollDirection.DOWN,
     imports.gi.Clutter.ScrollSource.WHEEL); true" >/dev/null
   sleep 0.4
-  near() { grep "view pointer $1 at" "$work/still.log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
-    | awk -v x="$2" -v y="$3" '{ exit !(($1 - x)^2 <= 4 && ($2 - y)^2 <= 4) }'; }
   for kind in move down scroll; do
     near "$kind" 400 250 && pass "a $kind over the view arrives at 400 250 in the view" \
       || fail "no $kind at 400 250 in the view: $(grep "view pointer $kind" "$work/still.log" | tail -1)"
@@ -144,12 +170,55 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   ((out_of_step == 0)) && pass "moving: no gap in $shots shots" \
     || fail "moving: hole and view out of step in $out_of_step of $shots shots"
   wait $app || true
+
+  # Clipped: the view's top half is scrolled out of its container (and past the window's top edge). Only the lower
+  # half shows, cropped from the page's buffer, and input is still relative to the whole view.
+  "$bin" --clipped --seconds 30 >"$work/clipped.log" 2>&1 &
+  app=$!
+  sleep 4
+  eval_js "Main.overview.hide()" >/dev/null
+  sleep 1
+  shot "$work/clipped.png"
+  read -r l t r b <<<"$(px "$work/clipped.png" bbox "$gap" "$page" "$edge" || echo "0 0 0 0")"
+  python3 -c "import sys; f=$factor; sys.exit(not (abs($r - $l - 640 * f) <= 2 and abs($b - $t - 200 * f) <= 2))" \
+    && pass "clipped: only the visible part shows, at $l $t $r $b (640x200 at $factor), nothing past the clip" \
+    || fail "clipped: the view shows at $l $t $r $b, not 640x200 at $factor"
+  # The page's yellow band crosses its top half, 100 pixels down: squeezed into the visible part, it would show
+  # 50 pixels down.
+  read -r cr cg cb <<<"$(px "$work/clipped.png" at "$(python3 -c "print(round($l + 400 * $factor))")" \
+    "$(python3 -c "print(round($t + 50 * $factor))")")"
+  ((cr > 200 && cg > 200 && cb < 80)) && fail "clipped: the whole page is squeezed into the visible part" \
+    || pass "clipped: the visible part shows the page's lower half"
+  log=$work/clipped.log
+  read -r vx vy ax ay bx by <<<"$(python3 -c "f=$factor
+print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f + 100)")"
+  move "$bx" "$by"
+  move "$bx" "$by"
+  click
+  click
+  move "$ax" "$ay"
+  move "$ax" "$ay"
+  ! near move 400 160 && pass "clipped: the pointer over the clipped-away part doesn't reach the view" \
+    || fail "clipped: the clipped-away part took the pointer"
+  move "$vx" "$vy"
+  move "$vx" "$vy"
+  click_view 400 300
+  near down 400 300 && pass "clipped: a click in the visible part arrives at 400 300 in the whole view" \
+    || fail "clipped: no click at 400 300 in the view: $(grep 'view pointer down' "$log" | tail -1)"
+  kill $app 2>/dev/null || true
+  wait $app 2>/dev/null || true
   echo "$failures failure(s) at scale $scale"
   exit $((failures > 0))
 fi
 
 # ---- Outside: build, then one private session per scale. ----
-for tool in gnome-shell dbus-run-session gdbus python3; do
+tools=(gnome-shell dbus-run-session gdbus python3)
+if [[ ${1:-} == --mesa-compositor ]]; then
+  export COMPOSITOR_GL=mesa
+  tools+=(bwrap)
+  shift
+fi
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || { echo "skip: no $tool; the Wayland native view checks need a headless GNOME Shell"; exit 0; }
 done
 scales=("${@:-1}")

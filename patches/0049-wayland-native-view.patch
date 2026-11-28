@@ -12,13 +12,20 @@ longer painted gets a null buffer, in step with the window's commit, and keeps i
 mutter may never release a buffer whose surface lost its role); painted again, it gets a fresh subsurface, as
 Chromium's `Show` does. At a fractional scale the hole is cut one physical pixel inside the view (patch 0047's
 `set_native_view_hole_inset`), so the window covers the rounded edges. An opaque window's opaque region leaves out the
-shown views. Dropping the last `NativeView` handle destroys the subsurface and viewport. `wl_subcompositor` is bound
-when offered; without it or `wp_viewporter`, `NativeView::new` fails as before.
+shown views. A view its element's clip cuts (scrolled partly out of a container) shows only the part the clip leaves,
+at its full size and position, as on macOS, iOS and Windows: the subsurface covers that part, and
+`wp_viewport.set_source` crops the app's buffer to match, which takes the buffer's size: the new
+`NativeView::set_buffer_size` (`PlatformWindow::set_native_view_buffer_size`, a no-op elsewhere) tells it, and sends a
+cropped view's new source at once, so it lands with the app's next commit. Without it a clipped view shows whole. A
+view clipped away entirely hides. Dropping the last `NativeView` handle destroys the subsurface and viewport.
+`wl_subcompositor` is bound when offered; without it or `wp_viewporter`, `NativeView::new` fails as before.
 
 New file `wayland/window/native_view.rs`, ported from chromium/chromium ui/ozone/platform/wayland/host/
 wayland_subsurface.cc and wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2 (BSD-3-Clause,
 Copyright 2020 The Chromium Authors; LICENSE-CHROMIUM, NOTICE, third_party/chromium/PORTED.md, which lists what was
-dropped). Table tests: `steps` (placement × frame → step) and `subsurface_bounds_round_outwards`. `window.rs` holds
+dropped). Table tests: `steps` (placement × frame → step), `subsurface_bounds_round_outwards`,
+`clipped_views_show_their_visible_part` and `sources_stay_inside_the_buffer` (the crop is new code: Chromium gets its
+crop rects from its own compositor). `window.rs` holds
 only the hooks; `client.rs` binds `wl_subcompositor`. A port, so one patch whatever its size (patch rule 4).
 
 Why: `NativeView::new` failed on every platform but macOS, so a browser shell (wubble) had no zero-overhead page
@@ -66,7 +73,7 @@ index b221464..4461a34 100644
  impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
      fn event(
 diff --git a/gpui-pre-linux/src/linux/wayland/window.rs b/gpui-pre-linux/src/linux/wayland/window.rs
-index 7ee7a11..d9f2f51 100644
+index 7ee7a11..05a3404 100644
 --- a/gpui-pre-linux/src/linux/wayland/window.rs
 +++ b/gpui-pre-linux/src/linux/wayland/window.rs
 @@ -33,6 +33,8 @@ use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
@@ -94,7 +101,7 @@ index 7ee7a11..d9f2f51 100644
          })
      }
  
-@@ -2048,7 +2052,23 @@ impl PlatformWindow for WaylandWindow {
+@@ -2048,7 +2052,31 @@ impl PlatformWindow for WaylandWindow {
          self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
      }
  
@@ -111,6 +118,14 @@ index 7ee7a11..d9f2f51 100644
 +        gpui::NativeViewInput::Window
 +    }
 +
++    fn set_native_view_buffer_size(
++        &self,
++        id: gpui::NativeViewId,
++        size: Size<DevicePixels>,
++    ) -> bool {
++        native_view::set_buffer_size(&self.borrow(), id, size)
++    }
++
      fn draw(&self, scene: &Scene) {
 +        if native_view::place_views(&mut self.borrow_mut(), scene) {
 +            update_window(self.borrow_mut());
@@ -118,7 +133,7 @@ index 7ee7a11..d9f2f51 100644
          let mut state = self.borrow_mut();
          let state = &mut *state;
          let Some(renderer) = &mut state.renderer else {
-@@ -2086,6 +2106,7 @@ impl PlatformWindow for WaylandWindow {
+@@ -2086,6 +2114,7 @@ impl PlatformWindow for WaylandWindow {
          if renderer.draw(scene) {
              state.presentation = PresentationState::Presented;
              self.0.frame_loop.set(FrameLoop::AwaitingCallback);
@@ -126,7 +141,7 @@ index 7ee7a11..d9f2f51 100644
          } else {
              state.presentation = state.presentation.failed();
              self.0.frame_loop.set(FrameLoop::PresentationFailed);
-@@ -2494,6 +2515,7 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
+@@ -2494,6 +2523,7 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
              area.size.width,
              area.size.height,
          );
@@ -136,10 +151,10 @@ index 7ee7a11..d9f2f51 100644
          // contains no transparent pixels. This allows the compositor to skip
 diff --git a/gpui-pre-linux/src/linux/wayland/window/native_view.rs b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
 new file mode 100644
-index 0000000..c71dee5
+index 0000000..92891a2
 --- /dev/null
 +++ b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,744 @@
 +// Ported from chromium/chromium ui/ozone/platform/wayland/host/wayland_subsurface.cc and
 +// ui/ozone/platform/wayland/host/wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2.
 +// Copyright 2020 The Chromium Authors. BSD-3-Clause, see LICENSE-CHROMIUM.
@@ -159,7 +174,7 @@ index 0000000..c71dee5
 +    rc::{Rc, Weak},
 +};
 +
-+use gpui::{Bounds, NativeViewId, ScaledPixels, Scene, point, size};
++use gpui::{Bounds, DevicePixels, NativeViewId, ScaledPixels, Scene, Size, point, size};
 +use wayland_client::{
 +    Proxy, QueueHandle,
 +    protocol::{wl_compositor, wl_region, wl_subcompositor, wl_subsurface, wl_surface},
@@ -215,14 +230,40 @@ index 0000000..c71dee5
 +    let mut places_views = false;
 +    for view in state.native_views.iter().filter_map(Weak::upgrade) {
 +        let mut view = view.borrow_mut();
++        let crops = view.buffer_size.is_some();
 +        let shown_at = scene
 +            .native_views
 +            .iter()
 +            .find(|painted| painted.id == view.id)
-+            .map(|painted| subsurface_bounds(painted.bounds, state.scale));
++            .and_then(|painted| {
++                shown(
++                    painted.bounds,
++                    painted.content_mask.bounds,
++                    state.scale,
++                    crops,
++                )
++            });
 +        places_views |= view.configure(shown_at, &parent);
 +    }
 +    places_views
++}
++
++/// `NativeView::set_buffer_size` on Wayland. Returns whether the window must draw again to place
++/// the view.
++pub(crate) fn set_buffer_size(
++    state: &WaylandWindowState,
++    id: NativeViewId,
++    buffer_size: Size<DevicePixels>,
++) -> bool {
++    state
++        .native_views
++        .iter()
++        .filter_map(Weak::upgrade)
++        .find(|view| view.borrow().id == id)
++        .is_some_and(|view| {
++            view.borrow_mut()
++                .set_buffer_size(size(buffer_size.width.0, buffer_size.height.0))
++        })
 +}
 +
 +/// Called once the window has committed a frame.
@@ -248,26 +289,43 @@ index 0000000..c71dee5
 +}
 +
 +/// Where a native view's subsurface is, in the window surface's logical pixels.
-+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++#[derive(Copy, Clone, Debug, PartialEq)]
 +enum Placement {
 +    /// Never shown, so the surface has no role yet.
 +    Unmapped,
-+    Shown(Bounds<i32>),
++    Shown(Shown),
 +    /// Shown before; its subsurface stays, with no buffer, until it shows again.
 +    Hidden,
 +}
 +
++/// A shown view's subsurface: where it is, and which part of the app's buffer it shows.
++#[derive(Copy, Clone, Debug, PartialEq)]
++struct Shown {
++    bounds: Bounds<i32>,
++    crop: Crop,
++}
++
++/// The part of the app's buffer a shown view's subsurface shows (`wp_viewport.set_source`).
++#[derive(Copy, Clone, Debug, PartialEq)]
++enum Crop {
++    /// All of it: the clip leaves the whole view, or the app hasn't told its buffer size.
++    Whole,
++    /// The part the clip leaves, as fractions of the view's width and height, so it fits any buffer
++    /// size the app reports.
++    Part(Bounds<f32>),
++}
++
 +/// What a frame does to a view's subsurface.
-+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++#[derive(Copy, Clone, Debug, PartialEq)]
 +enum Step {
 +    Keep,
-+    Show(Bounds<i32>),
-+    Move(Bounds<i32>),
++    Show(Shown),
++    Move(Shown),
 +    Hide,
 +}
 +
 +/// `placement × where the frame shows the view → step`. The one place placement changes are decided.
-+fn step(placement: Placement, shown_at: Option<Bounds<i32>>) -> Step {
++fn step(placement: Placement, shown_at: Option<Shown>) -> Step {
 +    match (placement, shown_at) {
 +        (Placement::Unmapped | Placement::Hidden, None) => Step::Keep,
 +        (Placement::Unmapped | Placement::Hidden, Some(bounds)) => Step::Show(bounds),
@@ -291,6 +349,64 @@ index 0000000..c71dee5
 +    Bounds {
 +        origin: point(left, top),
 +        size: size(right - left, bottom - top),
++    }
++}
++
++/// Where a view painted at `bounds` and clipped to `clip` (both physical pixels) shows, the way
++/// macOS, iOS and Windows show it: only the part the clip leaves, with the view at its full size and
++/// position. A subsurface can't be clipped, so it covers just that part, and `crops` (the app told
++/// its buffer size) makes it show the matching part of the buffer; without, the whole view shows.
++/// `None` when the clip leaves none of the view.
++fn shown(
++    bounds: Bounds<ScaledPixels>,
++    clip: Bounds<ScaledPixels>,
++    scale: f32,
++    crops: bool,
++) -> Option<Shown> {
++    let visible = bounds.intersect(&clip);
++    if visible.is_empty() {
++        return None;
++    }
++    if !crops || visible == bounds {
++        return Some(Shown {
++            bounds: subsurface_bounds(bounds, scale),
++            crop: Crop::Whole,
++        });
++    }
++    let rounded = subsurface_bounds(visible, scale);
++    // The rounded part's edges as fractions of the view, from its top left.
++    let fraction = |edge: i32, origin: ScaledPixels, length: ScaledPixels| {
++        ((edge as f32 * scale - origin.0) / length.0).clamp(0., 1.)
++    };
++    let (x, y) = (bounds.origin.x, bounds.origin.y);
++    let (width, height) = (bounds.size.width, bounds.size.height);
++    let left = fraction(rounded.origin.x, x, width);
++    let top = fraction(rounded.origin.y, y, height);
++    let right = fraction(rounded.origin.x + rounded.size.width, x, width);
++    let bottom = fraction(rounded.origin.y + rounded.size.height, y, height);
++    Some(Shown {
++        bounds: rounded,
++        crop: Crop::Part(Bounds {
++            origin: point(left, top),
++            size: size(right - left, bottom - top),
++        }),
++    })
++}
++
++/// The `wp_viewport` source for `part` of a `buffer`-sized buffer: whole buffer pixels, rounded
++/// outwards, at least one pixel and never past the buffer's edge, which would be a protocol error.
++fn source(part: Bounds<f32>, buffer: Size<i32>) -> Bounds<i32> {
++    let span = |start: f32, length: f32, total: i32| {
++        let total = total.max(1);
++        let first = ((start * total as f32).floor() as i32).clamp(0, total - 1);
++        let end = (((start + length) * total as f32).ceil() as i32).clamp(first + 1, total);
++        (first, end - first)
++    };
++    let (x, width) = span(part.origin.x, part.size.width, buffer.width);
++    let (y, height) = span(part.origin.y, part.size.height, buffer.height);
++    Bounds {
++        origin: point(x, y),
++        size: size(width, height),
 +    }
 +}
 +
@@ -323,6 +439,8 @@ index 0000000..c71dee5
 +    subsurface: Option<wl_subsurface::WlSubsurface>,
 +    placement: Placement,
 +    mode: Mode,
++    /// The size of the app's buffers, once it has told it (`NativeView::set_buffer_size`).
++    buffer_size: Option<Size<i32>>,
 +}
 +
 +impl WaylandSubsurface {
@@ -338,19 +456,20 @@ index 0000000..c71dee5
 +            subsurface: None,
 +            placement: Placement::Unmapped,
 +            mode: Mode::Synchronized,
++            buffer_size: None,
 +        }
 +    }
 +
 +    /// Places the view where this frame shows it, before the window commits the frame, so the
 +    /// placement lands in that same commit. Returns whether the placement changed.
-+    fn configure(&mut self, shown_at: Option<Bounds<i32>>, parent: &Parent<'_>) -> bool {
++    fn configure(&mut self, shown_at: Option<Shown>, parent: &Parent<'_>) -> bool {
 +        match step(self.placement, shown_at) {
 +            Step::Keep => return false,
-+            Step::Show(bounds) => {
++            Step::Show(shown) => {
 +                self.show(parent);
-+                self.configure_and_show_surface(bounds);
++                self.configure_and_show_surface(shown);
 +            }
-+            Step::Move(bounds) => self.configure_and_show_surface(bounds),
++            Step::Move(shown) => self.configure_and_show_surface(shown),
 +            Step::Hide => self.hide(),
 +        }
 +        true
@@ -369,9 +488,49 @@ index 0000000..c71dee5
 +
 +    /// The window region the view covers, if it shows.
 +    fn shown_bounds(&self) -> Option<Bounds<i32>> {
++        self.shown().map(|shown| shown.bounds)
++    }
++
++    fn shown(&self) -> Option<Shown> {
 +        match self.placement {
-+            Placement::Shown(bounds) => Some(bounds),
++            Placement::Shown(shown) => Some(shown),
 +            Placement::Unmapped | Placement::Hidden => None,
++        }
++    }
++
++    /// Records the size of the app's buffers. A cropped view gets the crop for the new size at once,
++    /// pending until the app's next commit, which carries the buffer of that size. Returns whether
++    /// the size changed, so the view needs placing again.
++    fn set_buffer_size(&mut self, buffer_size: Size<i32>) -> bool {
++        if self.buffer_size == Some(buffer_size) {
++            return false;
++        }
++        self.buffer_size = Some(buffer_size);
++        if let Some(Shown {
++            crop: crop @ Crop::Part(_),
++            ..
++        }) = self.shown()
++        {
++            self.set_source(crop);
++        }
++        true
++    }
++
++    fn set_source(&self, crop: Crop) {
++        match (crop, self.buffer_size) {
++            (Crop::Part(part), Some(buffer)) => {
++                let source = source(part, buffer);
++                self.viewport.set_source(
++                    source.origin.x.into(),
++                    source.origin.y.into(),
++                    source.size.width.into(),
++                    source.size.height.into(),
++                );
++            }
++            // All -1 unsets the source: the whole buffer.
++            (Crop::Whole, _) | (Crop::Part(_), None) => {
++                self.viewport.set_source(-1., -1., -1., -1.)
++            }
 +        }
 +    }
 +
@@ -424,22 +583,27 @@ index 0000000..c71dee5
 +    }
 +
 +    // WaylandSubsurface::ConfigureAndShowSurface()
-+    fn configure_and_show_surface(&mut self, bounds: Bounds<i32>) {
++    fn configure_and_show_surface(&mut self, shown: Shown) {
 +        self.set_sync();
 +        let Some(subsurface) = &self.subsurface else {
 +            return;
 +        };
-+        let previous = self.shown_bounds();
-+        if previous.map(|previous| previous.origin) != Some(bounds.origin) {
++        let bounds = shown.bounds;
++        let previous = self.shown();
++        if previous.map(|previous| previous.bounds.origin) != Some(bounds.origin) {
 +            subsurface.set_position(bounds.origin.x, bounds.origin.y);
 +        }
-+        if previous.map(|previous| previous.size) != Some(bounds.size) {
++        if previous.map(|previous| previous.bounds.size) != Some(bounds.size) {
 +            self.viewport
 +                .set_destination(bounds.size.width.max(1), bounds.size.height.max(1));
 +        }
++        // A view shown again may still have the source it had when it hid.
++        if previous.map(|previous| previous.crop) != Some(shown.crop) {
++            self.set_source(shown.crop);
++        }
 +        // Synchronized, so the commit is cached until the window's.
 +        self.wayland_surface.commit();
-+        self.placement = Placement::Shown(bounds);
++        self.placement = Placement::Shown(shown);
 +    }
 +
 +    fn set_sync(&mut self) {
@@ -497,10 +661,35 @@ index 0000000..c71dee5
 +        }
 +    }
 +
++    fn whole(bounds: Bounds<i32>) -> Shown {
++        Shown {
++            bounds,
++            crop: Crop::Whole,
++        }
++    }
++
++    fn fractions(x: f32, y: f32, width: f32, height: f32) -> Bounds<f32> {
++        Bounds {
++            origin: point(x, y),
++            size: size(width, height),
++        }
++    }
++
++    fn physical(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
++        Bounds {
++            origin: point(ScaledPixels(x), ScaledPixels(y)),
++            size: size(ScaledPixels(width), ScaledPixels(height)),
++        }
++    }
++
 +    #[test]
 +    fn steps() {
-+        let a = rect(0, 0, 10, 10);
-+        let b = rect(5, 0, 10, 10);
++        let a = whole(rect(0, 0, 10, 10));
++        let b = whole(rect(5, 0, 10, 10));
++        let cropped = Shown {
++            bounds: rect(0, 5, 10, 5),
++            crop: Crop::Part(fractions(0., 0.5, 1., 0.5)),
++        };
 +        // (row name, placement, where the frame shows the view, step)
 +        let rows = [
 +            (
@@ -535,6 +724,12 @@ index 0000000..c71dee5
 +                Some(b),
 +                Step::Show(b),
 +            ),
++            (
++                "a new crop moves",
++                Placement::Shown(a),
++                Some(cropped),
++                Step::Move(cropped),
++            ),
 +        ];
 +        for (name, placement, shown_at, expected) in rows {
 +            assert_eq!(step(placement, shown_at), expected, "{name}");
@@ -543,10 +738,6 @@ index 0000000..c71dee5
 +
 +    #[test]
 +    fn subsurface_bounds_round_outwards() {
-+        let physical = |x: f32, y: f32, width: f32, height: f32| Bounds {
-+            origin: point(ScaledPixels(x), ScaledPixels(y)),
-+            size: size(ScaledPixels(width), ScaledPixels(height)),
-+        };
 +        // (row name, physical bounds, scale, logical bounds, hole inset)
 +        let rows = [
 +            (
@@ -590,4 +781,175 @@ index 0000000..c71dee5
 +            assert_eq!(hole_inset(scale), ScaledPixels(inset), "{name}: hole inset");
 +        }
 +    }
++
++    #[test]
++    fn clipped_views_show_their_visible_part() {
++        // The example's `--clipped` view: 640x400 logical at (100, -120), half scrolled out of its
++        // container, whose clip is 640x200 at (100, 80).
++        let view = |scale: f32| physical(100. * scale, -120. * scale, 640. * scale, 400. * scale);
++        let clip = |scale: f32| physical(100. * scale, 80. * scale, 640. * scale, 200. * scale);
++        let lower_half = Shown {
++            bounds: rect(100, 80, 640, 200),
++            crop: Crop::Part(fractions(0., 0.5, 1., 0.5)),
++        };
++        // (row name, view bounds, clip, scale, buffer size told, what shows)
++        let rows = [
++            (
++                "unclipped shows whole",
++                view(1.),
++                physical(0., -200., 1000., 1000.),
++                1.0,
++                true,
++                Some(whole(rect(100, -120, 640, 400))),
++            ),
++            (
++                "half scrolled out shows the lower half",
++                view(1.),
++                clip(1.),
++                1.0,
++                true,
++                Some(lower_half),
++            ),
++            (
++                "half scrolled out at 1.25",
++                view(1.25),
++                clip(1.25),
++                1.25,
++                true,
++                Some(lower_half),
++            ),
++            (
++                "a clip partway through a logical pixel rounds outwards",
++                view(1.25),
++                physical(125., 101., 800., 249.),
++                1.25,
++                true,
++                Some(lower_half),
++            ),
++            (
++                "clipped on the left at 2",
++                physical(0., 0., 400., 200.),
++                physical(100., 0., 400., 200.),
++                2.0,
++                true,
++                Some(Shown {
++                    bounds: rect(50, 0, 150, 100),
++                    crop: Crop::Part(fractions(0.25, 0., 0.75, 1.)),
++                }),
++            ),
++            (
++                "no buffer size told shows whole",
++                view(1.),
++                clip(1.),
++                1.0,
++                false,
++                Some(whole(rect(100, -120, 640, 400))),
++            ),
++            (
++                "scrolled out of the clip shows nothing",
++                view(1.),
++                physical(100., 400., 640., 200.),
++                1.0,
++                true,
++                None,
++            ),
++        ];
++        for (name, bounds, clip, scale, crops, expected) in rows {
++            assert_eq!(shown(bounds, clip, scale, crops), expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn sources_stay_inside_the_buffer() {
++        // (row name, part of the view, buffer size, source in buffer pixels)
++        let rows = [
++            (
++                "the lower half",
++                fractions(0., 0.5, 1., 0.5),
++                size(640, 400),
++                rect(0, 200, 640, 200),
++            ),
++            (
++                "the same part of a bigger buffer",
++                fractions(0., 0.5, 1., 0.5),
++                size(1280, 800),
++                rect(0, 400, 1280, 400),
++            ),
++            (
++                "partial pixels round outwards",
++                fractions(0.125, 0.25, 0.5, 0.5),
++                size(20, 10),
++                rect(2, 2, 11, 6),
++            ),
++            (
++                "a sliver is one pixel",
++                fractions(0.5, 0.999, 0.0001, 0.001),
++                size(100, 100),
++                rect(50, 99, 1, 1),
++            ),
++            (
++                "an empty buffer is one pixel",
++                fractions(0., 0.5, 1., 0.5),
++                size(0, 0),
++                rect(0, 0, 1, 1),
++            ),
++        ];
++        for (name, part, buffer, expected) in rows {
++            assert_eq!(source(part, buffer), expected, "{name}");
++        }
++    }
 +}
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 6e1bced..0fba390 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1425,6 +1425,16 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn native_view_input(&self) -> crate::NativeViewInput {
+         crate::NativeViewInput::View
+     }
++    /// Tells the platform the size of the buffers the app commits to a native
++    /// view, which Wayland needs to crop a clipped view's buffer. Returns
++    /// whether the window must draw again to place the view.
++    fn set_native_view_buffer_size(
++        &self,
++        _id: crate::NativeViewId,
++        _size: Size<DevicePixels>,
++    ) -> bool {
++        false
++    }
+     /// Gives keyboard input to the native view, or back to the window's own
+     /// content for `None`.
+     fn set_focused_native_view(&self, _id: Option<crate::NativeViewId>) {}
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 66b55fb..3eee104 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -173,6 +173,28 @@ impl NativeView {
+             .map(|hitbox| hitbox.bounds)
+     }
+ 
++    /// Tells GPUI the size, in pixels, of the buffers the app commits to the
++    /// view. Only Wayland uses it, and needs it there to show a view its
++    /// element's clip cuts (a view scrolled partly out of its container): every
++    /// platform shows only the part of the view the clip leaves, at the view's
++    /// full size and position, and on Wayland GPUI does that by cropping the
++    /// app's buffer, which takes knowing its size. Without it, a clipped view
++    /// shows whole on Wayland.
++    ///
++    /// Call it from the main thread when the size changes, before committing
++    /// the first buffer of the new size, and commit none of the old size after
++    /// it: the crop for the new size goes to the view at once, so it shows
++    /// with that buffer.
++    pub fn set_buffer_size(&self, size: crate::Size<crate::DevicePixels>, window: &mut Window) {
++        if self.0.window == window.handle
++            && window
++                .platform_window
++                .set_native_view_buffer_size(self.0.id, size)
++        {
++            window.refresh();
++        }
++    }
++
+     /// Makes key bindings for `A` apply before the view sees the key.
+     ///
+     /// The view otherwise sees every key first and can keep any of them, so
