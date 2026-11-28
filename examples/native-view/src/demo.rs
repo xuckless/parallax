@@ -577,7 +577,8 @@ impl Demo {
             .w(length(width))
             .h(length(height))
             .when_some(look.fill, |this, fill| this.bg(rgb(fill)))
-            // The view's element: it hears the pointer over the view where the window gets it (`NativeViewInput::Window`).
+            // The view's element: it hears the pointer over the view where the window gets it
+            // (`NativeViewInput::Window`).
             .children(shown.map(|shown| {
                 let name = shown.name;
                 let mut element = shown

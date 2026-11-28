@@ -7,7 +7,7 @@
 //! | Wayland | `wayland` | the app's `wl_surface`, a new shm buffer about 60 times a second from its own thread |
 //! | Windows | `swap-chain`, `webview2` | a composition swap chain presented every vsync; a WebView2 page |
 //! | macOS, iOS | `apple` | an `NSView` / `UIView` recoloured on a 60 Hz timer (iOS: and a `UITextField`) |
-//! | Android | `control`, `view`, `hosted` | a `SurfaceControl`, `SurfaceView` or `in_surface` one, filled from its own thread, and a WebView (or, `stack`, two tiles) |
+//! | Android | `control`, `view`, `hosted` | a surface filled from its own thread, and a WebView (`stack`: two tiles) |
 //! | Web | `dom` | two iframes, an animated canvas and a form, made by index.html |
 //!
 //! Once a second it logs `native-view: gpui frames/s N, view frames/s M` (N is 0 while only the views change), and
