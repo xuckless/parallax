@@ -151,10 +151,10 @@ index 7ee7a11..05a3404 100644
          // contains no transparent pixels. This allows the compositor to skip
 diff --git a/gpui-pre-linux/src/linux/wayland/window/native_view.rs b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
 new file mode 100644
-index 0000000..92891a2
+index 0000000..74f887c
 --- /dev/null
 +++ b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
-@@ -0,0 +1,744 @@
+@@ -0,0 +1,671 @@
 +// Ported from chromium/chromium ui/ozone/platform/wayland/host/wayland_subsurface.cc and
 +// ui/ozone/platform/wayland/host/wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2.
 +// Copyright 2020 The Chromium Authors. BSD-3-Clause, see LICENSE-CHROMIUM.
@@ -174,7 +174,11 @@ index 0000000..92891a2
 +    rc::{Rc, Weak},
 +};
 +
-+use gpui::{Bounds, DevicePixels, NativeViewId, ScaledPixels, Scene, Size, point, size};
++use gpui::{
++    Bounds, DevicePixels, NativeViewId, PaintNativeView, ScaledPixels, Scene, Size,
++    native_view_placement::{hole_inset, round_outwards, visible},
++    point, size,
++};
 +use wayland_client::{
 +    Proxy, QueueHandle,
 +    protocol::{wl_compositor, wl_region, wl_subcompositor, wl_subsurface, wl_surface},
@@ -216,7 +220,7 @@ index 0000000..92891a2
 +pub(crate) fn place_views(state: &mut WaylandWindowState, scene: &Scene) -> bool {
 +    state.native_views.retain(|view| view.strong_count() > 0);
 +    if let Some(renderer) = &mut state.renderer {
-+        renderer.set_native_view_hole_inset(hole_inset(state.scale));
++        renderer.set_native_view_hole_inset(hole_inset(state.scale.fract() != 0.));
 +    }
 +    let Some(subcompositor) = &state.globals.subcompositor else {
 +        return false;
@@ -235,14 +239,7 @@ index 0000000..92891a2
 +            .native_views
 +            .iter()
 +            .find(|painted| painted.id == view.id)
-+            .and_then(|painted| {
-+                shown(
-+                    painted.bounds,
-+                    painted.content_mask.bounds,
-+                    state.scale,
-+                    crops,
-+                )
-+            });
++            .and_then(|painted| shown(painted, state.scale, crops));
 +        places_views |= view.configure(shown_at, &parent);
 +    }
 +    places_views
@@ -335,45 +332,23 @@ index 0000000..92891a2
 +    }
 +}
 +
-+/// The subsurface's bounds for a view painted at `bounds` (physical pixels), in the window surface's
-+/// logical pixels. `wl_subsurface.set_position` and `wp_viewport.set_destination` take whole logical
-+/// pixels, so the bounds are rounded outwards, and [`hole_inset`] keeps the window's own pixels over
-+/// any partly covered edge. (Chromium's `AdjustSubsurfaceBounds` scales the same way, but rounds its
-+/// origin up, as its overlays never need a hole.)
-+fn subsurface_bounds(bounds: Bounds<ScaledPixels>, scale: f32) -> Bounds<i32> {
-+    let logical = |value: ScaledPixels| value.0 / scale;
-+    let left = logical(bounds.origin.x).floor() as i32;
-+    let top = logical(bounds.origin.y).floor() as i32;
-+    let right = logical(bounds.origin.x + bounds.size.width).ceil() as i32;
-+    let bottom = logical(bounds.origin.y + bounds.size.height).ceil() as i32;
-+    Bounds {
-+        origin: point(left, top),
-+        size: size(right - left, bottom - top),
-+    }
-+}
-+
-+/// Where a view painted at `bounds` and clipped to `clip` (both physical pixels) shows, the way
-+/// macOS, iOS and Windows show it: only the part the clip leaves, with the view at its full size and
-+/// position. A subsurface can't be clipped, so it covers just that part, and `crops` (the app told
-+/// its buffer size) makes it show the matching part of the buffer; without, the whole view shows.
-+/// `None` when the clip leaves none of the view.
-+fn shown(
-+    bounds: Bounds<ScaledPixels>,
-+    clip: Bounds<ScaledPixels>,
-+    scale: f32,
-+    crops: bool,
-+) -> Option<Shown> {
-+    let visible = bounds.intersect(&clip);
-+    if visible.is_empty() {
-+        return None;
-+    }
++/// Where a painted view shows, the way macOS, iOS and Windows show it: only the part its clip leaves,
++/// with the view at its full size and position. `wl_subsurface.set_position` and
++/// `wp_viewport.set_destination` take whole logical pixels, so the subsurface's bounds are rounded
++/// outwards from the device pixels GPUI paints in (`round_outwards`; Chromium's
++/// `AdjustSubsurfaceBounds` scales the same way). A subsurface can't be clipped, so it covers just the
++/// visible part, and `crops` (the app told its buffer size) makes it show the matching part of the
++/// buffer; without, the whole view shows. `None` when the clip leaves none of the view.
++fn shown(painted: &PaintNativeView, scale: f32, crops: bool) -> Option<Shown> {
++    let visible = visible(painted)?;
++    let bounds = painted.bounds;
 +    if !crops || visible == bounds {
 +        return Some(Shown {
-+            bounds: subsurface_bounds(bounds, scale),
++            bounds: round_outwards(bounds, scale),
 +            crop: Crop::Whole,
 +        });
 +    }
-+    let rounded = subsurface_bounds(visible, scale);
++    let rounded = round_outwards(visible, scale);
 +    // The rounded part's edges as fractions of the view, from its top left.
 +    let fraction = |edge: i32, origin: ScaledPixels, length: ScaledPixels| {
 +        ((edge as f32 * scale - origin.0) / length.0).clamp(0., 1.)
@@ -407,16 +382,6 @@ index 0000000..92891a2
 +    Bounds {
 +        origin: point(x, y),
 +        size: size(width, height),
-+    }
-+}
-+
-+/// How far inside a view's bounds its hole is cut: one physical pixel at a fractional scale, where a
-+/// subsurface's whole logical pixels can end partway through a physical one, none otherwise.
-+fn hole_inset(scale: f32) -> ScaledPixels {
-+    if scale.fract() == 0. {
-+        ScaledPixels(0.)
-+    } else {
-+        ScaledPixels(1.)
 +    }
 +}
 +
@@ -737,52 +702,6 @@ index 0000000..92891a2
 +    }
 +
 +    #[test]
-+    fn subsurface_bounds_round_outwards() {
-+        // (row name, physical bounds, scale, logical bounds, hole inset)
-+        let rows = [
-+            (
-+                "whole pixels at 1",
-+                physical(10., 20., 300., 200.),
-+                1.0,
-+                rect(10, 20, 300, 200),
-+                0.,
-+            ),
-+            (
-+                "whole pixels at 2",
-+                physical(20., 40., 600., 400.),
-+                2.0,
-+                rect(10, 20, 300, 200),
-+                0.,
-+            ),
-+            (
-+                "half pixels at 2 grow",
-+                physical(21., 41., 600., 400.),
-+                2.0,
-+                rect(10, 20, 301, 201),
-+                0.,
-+            ),
-+            (
-+                "exact at 1.25",
-+                physical(125., 250., 500., 250.),
-+                1.25,
-+                rect(100, 200, 400, 200),
-+                1.,
-+            ),
-+            (
-+                "partial at 1.25 grow",
-+                physical(126., 251., 500., 250.),
-+                1.25,
-+                rect(100, 200, 401, 201),
-+                1.,
-+            ),
-+        ];
-+        for (name, bounds, scale, logical, inset) in rows {
-+            assert_eq!(subsurface_bounds(bounds, scale), logical, "{name}");
-+            assert_eq!(hole_inset(scale), ScaledPixels(inset), "{name}: hole inset");
-+        }
-+    }
-+
-+    #[test]
 +    fn clipped_views_show_their_visible_part() {
 +        // The example's `--clipped` view: 640x400 logical at (100, -120), half scrolled out of its
 +        // container, whose clip is 640x200 at (100, 80).
@@ -855,7 +774,15 @@ index 0000000..92891a2
 +            ),
 +        ];
 +        for (name, bounds, clip, scale, crops, expected) in rows {
-+            assert_eq!(shown(bounds, clip, scale, crops), expected, "{name}");
++            let painted = PaintNativeView {
++                order: 0,
++                id: NativeViewId::for_test(1),
++                hitbox_id: gpui::HitboxId::placeholder(),
++                bounds,
++                content_mask: gpui::ContentMask { bounds: clip },
++                background: gpui::Hsla::transparent_black(),
++            };
++            assert_eq!(shown(&painted, scale, crops), expected, "{name}");
 +        }
 +    }
 +

@@ -20,6 +20,11 @@ every target (a clipping container on Apple, a clip visual on Windows, a crop on
 hides. `NativeView::set_buffer_size(size, window)` tells the size of the app's buffers, which only Wayland needs, for
 that crop ([native-view-wayland.md](native-view-wayland.md#clipped-views)); elsewhere it does nothing.
 
+## Placement
+
+What shows of a painted view (its visible part, rounding for a coarser grid, the hole inset, the background colour) is
+decided once, in gpui's `native_view_placement`: [native-view-placement.md](native-view-placement.md).
+
 ## The hole
 
 The renderer turns `PrimitiveBatch::NativeViews` into a hole: the view's bounds, clipped to its content mask, replace

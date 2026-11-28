@@ -77,8 +77,8 @@ Cost on the owner's session (debug build, 10 s each, window 900×600 with a 640�
 
 ## Tests
 
-`native_view::tests::steps` (placement × frame → step), `subsurface_bounds_round_outwards` (rounding and inset at
-1, 2 and 1.25), `clipped_views_show_their_visible_part` (the crop: half scrolled out at 1 and 1.25, a clip partway
+`native_view::tests::steps` (placement × frame → step), `clipped_views_show_their_visible_part` (the crop: half scrolled out at 1 and 1.25, a clip partway
 through a pixel, clipped on the left at 2, no buffer size, clipped away) and `sources_stay_inside_the_buffer` run in
-[scripts/patch-test.sh](../scripts/patch-test.sh); the input rules in
+[scripts/patch-test.sh](../scripts/patch-test.sh); rounding and the inset at 1, 2 and 1.25 in core's
+`native_view_placement::tests` ([native-view-placement.md](native-view-placement.md)); the input rules in
 [native-view.md](native-view.md#tests).
