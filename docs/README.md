@@ -7,6 +7,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [flutter.md](flutter.md) | Recording Flutter ports in the ledger, port vs oracle, bumping the pinned tag with flutter-diff.sh |
 | [upstream.md](upstream.md) | upstream/ snapshot, apply-patches.sh, sync-upstream.sh, fixing patches that stop applying |
 | [vendor-zed.md](vendor-zed.md) | The gpui-pre fallback: vendor-zed.py builds upstream/ from Zed's tree as gpui-pre does (`sync-upstream.sh --zed`) |
+| [upstream-rehearsal.md](upstream-rehearsal.md) | A rehearsed sync to Zed main through the fallback: per-patch results, drift found, script gaps, lessons |
 | [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch on xuckless/zed (patches in Zed's layout, for upstream PRs), rebuilding it with sync-fork.sh, and how it differs from the published fork crates |
 | [gpui-fork-crates.md](gpui-fork-crates.md) | The published `parallax-gpui*` fork crates: naming, versioning and content hash, fork-crates.sh, fork-version.sh, publish-fork.sh, CI checks |
 | [patches.md](patches.md) | Writing, numbering and making patches |
