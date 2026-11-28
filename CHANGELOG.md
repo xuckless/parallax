@@ -31,7 +31,7 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   manager and its React Native spring).
 - iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
 - iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
-  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): all 46 rows pass.
+  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): all 47 rows pass.
 - iOS native text selection (patch 0038): a focused GPUI field gets UIKit's own selection UI through
   `UITextInteraction`: caret, double tap for a word, highlight and draggable handles, the loupe, and UIKit's edit menu
   ([docs/ios-text-selection.md](docs/ios-text-selection.md)).
@@ -100,6 +100,8 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
 
 ### Fixed
 
+- iOS: Select All in UIKit's edit menu selects the field's text; it left a caret at the end (patch 0036 tells the
+  keyboard before an edit action moves the selection, not after).
 - Android 9–10 (API 28–29): `WindowInsets::ime` now reports the on-screen keyboard (it stayed 0), and the
   keyboard no longer counts as bottom safe area: Flutter's `guessBottomKeyboardInset`, ported, and the generated
   manifest's `android:windowSoftInputMode="adjustResize"` (Flutter's app template), without which the keyboard never

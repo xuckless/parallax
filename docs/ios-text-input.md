@@ -40,7 +40,8 @@ simulator runtime is on the image; the Rust toolchain needs the `aarch64-apple-i
 
 ## Results (simulator, iOS 26.5)
 
-46 rows pass: Flutter's 45 and one GPUI row (every `AutofillHint` against UIKit's content type). Before the fixes,
+47 rows pass: Flutter's 45 and two Parallax rows (every `AutofillHint` against UIKit's content type; edit actions tell
+the input delegate before the selection moves). Before the fixes,
 15 failed, one of them by aborting the run:
 
 | Flutter test | Upstream did | Fix |
@@ -68,5 +69,5 @@ switch); the other autofill cases (Flutter's autofill groups and contexts). Affi
 ## Size limit
 
 AGENTS.md caps iOS text-input fixes at about 800 lines before they move to a crate. Changed lines today (added +
-removed, tables and the oracle file not counted): 0005's iOS part 1, 0027 126, 0029 170, 0030 17, 0036 90, 0037 27,
-0038 122 (553). 0028 is the test table (about 1,020 lines, 971 of them the oracle file).
+removed, tables and the oracle file not counted): 0005's iOS part 1, 0027 126, 0029 170, 0030 17, 0036 101, 0037 27,
+0038 199 (641). 0028 is the test table (about 1,020 lines, 971 of them the oracle file).

@@ -40,7 +40,9 @@ confirms it.
 - **Geometry** comes from the app's input handler, as for the IME: `caretRectForPosition:`, `firstRectForRange:`,
   `closestPositionToPoint:`, and `selectionRectsForRange:` from `selection_bounds_for_range`, falling back to
   `bounds_for_range` when the app gives none (fine for one-line fields; multi-line fields should give per-line rects).
-- **Edit actions** tell the input delegate afterwards (`action_changed`), so UIKit's handles follow a paste or cut.
+- **Edit actions** tell the input delegate around the change (`edit_action`): `selectionWillChange:` before, since
+  UIKit's keyboard collapses the selection it knows there (told only afterwards, Select All ended as a caret at the
+  end), and `selectionDidChange:` after, so UIKit's handles follow a paste or cut.
 - **One caret, one highlight.** GPUI fields paint their own (upstream's examples/input.rs, hello), so UIKit's would
   be a second caret and highlight on top. As Flutter's `FlutterTextInputView`, the view answers a clear
   `selectionHighlightColor`. Flutter's clear `insertionPointColor` is below iOS 17 only (on iOS 17+ it also fills

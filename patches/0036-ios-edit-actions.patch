@@ -9,19 +9,23 @@ app's text through the input handler, and `canPerformAction:withSender:` with Fl
 pasteboard holds strings (no images or memojis), copy, cut and delete only with selected text, select all only with
 text, `captureTextFromCamera:` always. Copy and cut are also off for a secure field: Flutter's framework does that
 (`EditableTextState.copyEnabled` / `cutEnabled`), and here UIKit's own edit menu is the field's menu. An action tells
-the input delegate afterwards (selection, and text unless select all), so UIKit's selection UI follows it. The view
-had none of these: UIKit's edit menu and Cmd+X/C/V/A did nothing in a GPUI field.
+the input delegate around its change, `selectionWillChange:` (and `textWillChange:` unless select all) before and the
+`Did` calls after, as UITextInput asks, so UIKit's selection UI follows it. Flutter's view tells it nothing here (its
+framework echoes the state back); told only afterwards, UIKit's keyboard collapsed select all's new selection to its
+end, since it accepts autocorrection and collapses the selection it knows on `selectionWillChange:`. The view had
+none of these: UIKit's edit menu and Cmd+X/C/V/A did nothing in a GPUI field.
 
 Test: patch 0028's rows testStandardEditActions, testCanPerformActionForSelectActions,
 testCanPerformActionCaptureTextFromCamera and testPastingNonTextDisallowed move from Open to passing (the last gains
-Flutter's "pasteboard holds a colour" step). The oracle binary has no app bundle, so iOS would ask the user before
+Flutter's "pasteboard holds a colour" step). A Parallax row (not Flutter's) checks the delegate's notices and the
+app's selection at each: select all and cut tell it before the selection moves. The oracle binary has no app bundle, so iOS would ask the user before
 each general-pasteboard read and hang: under `cfg(test)` the actions use a named pasteboard. Run on the iOS
 simulator with `scripts/ios-text-oracle.sh` in Parallax.
 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index 6b174c0..9530317 100644
+index cb20cf7..6431d8d 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -4,12 +4,12 @@ use gpui::{
@@ -39,7 +43,7 @@ index 6b174c0..9530317 100644
  };
  use objc2_ui_kit::*;
  use std::{
-@@ -214,6 +214,67 @@ define_class!(
+@@ -214,6 +214,71 @@ define_class!(
              }
          }
  
@@ -68,11 +72,12 @@ index 6b174c0..9530317 100644
 +
 +        #[unsafe(method(cut:))]
 +        fn cut_action(&self, _sender: Option<&AnyObject>) {
-+            let Some(range) = self.selectedTextRange() else { return; };
-+            // SAFETY: the pasteboard is written on the main thread.
-+            unsafe { pasteboard().setString(self.textInRange(&range).as_deref()) };
-+            self.replaceRange_withText(&range, ns_string!(""));
-+            self.action_changed(true);
++            self.edit_action(true, || {
++                let Some(range) = self.selectedTextRange() else { return; };
++                // SAFETY: the pasteboard is written on the main thread.
++                unsafe { pasteboard().setString(self.textInRange(&range).as_deref()) };
++                self.replaceRange_withText(&range, ns_string!(""));
++            });
 +        }
 +
 +        #[unsafe(method(copy:))]
@@ -83,42 +88,53 @@ index 6b174c0..9530317 100644
 +
 +        #[unsafe(method(paste:))]
 +        fn paste_action(&self, _sender: Option<&AnyObject>) {
-+            // SAFETY: the pasteboard is read on the main thread.
-+            if let Some(pasteboard_string) = unsafe { pasteboard().string() } {
-+                self.insertText(&pasteboard_string);
-+                self.action_changed(true);
-+            }
++            self.edit_action(true, || {
++                // SAFETY: the pasteboard is read on the main thread.
++                if let Some(pasteboard_string) = unsafe { pasteboard().string() } {
++                    self.insertText(&pasteboard_string);
++                }
++            });
 +        }
 +
 +        #[unsafe(method(delete:))]
 +        fn delete_action(&self, _sender: Option<&AnyObject>) {
-+            if let Some(range) = self.selectedTextRange() {
-+                self.replaceRange_withText(&range, ns_string!(""));
-+                self.action_changed(true);
-+            }
++            self.edit_action(true, || {
++                if let Some(range) = self.selectedTextRange() {
++                    self.replaceRange_withText(&range, ns_string!(""));
++                }
++            });
 +        }
 +
 +        #[unsafe(method(selectAll:))]
 +        fn select_all_action(&self, _sender: Option<&AnyObject>) {
-+            let all = self.textRangeFromPosition_toPosition(&self.beginningOfDocument(), &self.endOfDocument());
-+            self.setSelectedTextRange(all.as_deref());
-+            self.action_changed(false);
++            self.edit_action(false, || {
++                let all = self.textRangeFromPosition_toPosition(&self.beginningOfDocument(), &self.endOfDocument());
++                self.setSelectedTextRange(all.as_deref());
++            });
 +        }
      }
  
      unsafe impl UIKeyInput for TextInputView {
-@@ -631,6 +692,21 @@ impl TextInputView {
+@@ -632,6 +697,29 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
-+    /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
-+    /// delegate, as of an app edit.
-+    fn action_changed(&self, content_changed: bool) {
-+        self.ivars().selection_changed.set(true);
-+        if content_changed {
-+            self.ivars().content_changed.set(true);
++    /// An edit action is UIKit's call but not the keyboard's edit, so the input delegate hears of it around the
++    /// change, as `UITextInput` asks: `selectionWillChange:` before (UIKit's keyboard accepts its autocorrection and
++    /// collapses the selection it knows), `selectionDidChange:` after (UIKit's handles follow a paste or cut). Told
++    /// only afterwards, as an app edit is, UIKit collapsed select all's new selection to its end.
++    fn edit_action(&self, content_changed: bool, action: impl FnOnce()) {
++        let delegate = self.inputDelegate();
++        let input = Some(ProtocolObject::from_ref(self));
++        if let Some(delegate) = &delegate {
++            if content_changed { delegate.textWillChange(input); }
++            delegate.selectionWillChange(input);
 +        }
-+        self.refresh_keyboard();
++        action();
++        if let Some(delegate) = &delegate {
++            delegate.selectionDidChange(input);
++            if content_changed { delegate.textDidChange(input); }
++        }
 +    }
 +
 +    fn selected_text(&self) -> Option<Retained<NSString>> {
@@ -129,7 +145,7 @@ index 6b174c0..9530317 100644
      // Ported from flutter/flutter FlutterTextInputPlugin.mm `-[FlutterTokenizer lineEnclosingPosition:inDirection:]`
      // @ 3.50.1 (its iOS 17 branch). Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
      fn line_enclosing_position(
-@@ -769,6 +845,16 @@ impl TextInputView {
+@@ -770,6 +858,16 @@ impl TextInputView {
      }
  }
  
@@ -147,19 +163,94 @@ index 6b174c0..9530317 100644
      CGRect::new(
          CGPoint::new(f64::from(bounds.origin.x), f64::from(bounds.origin.y)),
 diff --git a/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs b/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
-index 94b4a1f..4cd922f 100644
+index 94b4a1f..3531a6f 100644
 --- a/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
 +++ b/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
-@@ -240,6 +240,8 @@ enum Step {
+@@ -37,6 +37,9 @@ struct Field {
+     answers: Vec<Answer>,
+     /// Calls that change the app's text, selection or composition: Flutter's `updateEditingClient` count.
+     edits: usize,
++    /// The view's input delegate once a row watches it, and what it heard: each notice with the app's selection then.
++    watcher: Option<Retained<SelectionWatcher>>,
++    notices: Vec<(&'static str, Range<usize>)>,
+ }
+ 
+ impl Field {
+@@ -74,6 +77,53 @@ impl Field {
+ 
+ struct FakeApp(Rc<RefCell<Field>>);
+ 
++define_class!(
++    /// The view's input delegate in a row that watches it, standing in for UIKit's keyboard, which acts on the
++    /// selection it knows when it hears `selectionWillChange:`.
++    #[unsafe(super = objc2_foundation::NSObject)]
++    #[thread_kind = MainThreadOnly]
++    #[name = "GPUITextInputOracleSelectionWatcher"]
++    #[ivars = std::rc::Weak<RefCell<Field>>]
++    struct SelectionWatcher;
++
++    unsafe impl NSObjectProtocol for SelectionWatcher {}
++    unsafe impl UITextInputDelegate for SelectionWatcher {
++        #[unsafe(method(selectionWillChange:))]
++        fn selection_will_change(&self, _input: Option<&ProtocolObject<dyn UITextInput>>) {
++            self.heard("selection-will");
++        }
++        #[unsafe(method(selectionDidChange:))]
++        fn selection_did_change(&self, _input: Option<&ProtocolObject<dyn UITextInput>>) {
++            self.heard("selection-did");
++        }
++        #[unsafe(method(textWillChange:))]
++        fn text_will_change(&self, _input: Option<&ProtocolObject<dyn UITextInput>>) {
++            self.heard("text-will");
++        }
++        #[unsafe(method(textDidChange:))]
++        fn text_did_change(&self, _input: Option<&ProtocolObject<dyn UITextInput>>) {
++            self.heard("text-did");
++        }
++        #[unsafe(method(conversationContext:didChange:))]
++        fn conversation_context_did_change(
++            &self,
++            _context: Option<&UIConversationContext>,
++            _input: Option<&ProtocolObject<dyn UITextInput>>,
++        ) {
++        }
++    }
++);
++
++impl SelectionWatcher {
++    fn heard(&self, notice: &'static str) {
++        if let Some(field) = self.ivars().upgrade() {
++            let mut field = field.borrow_mut();
++            let selection = field.selection.clone();
++            field.notices.push((notice, selection));
++        }
++    }
++}
++
+ fn bounds(rect: CGRect) -> Bounds<Pixels> {
+     Bounds::new(
+         point(px(rect.origin.x as f32), px(rect.origin.y as f32)),
+@@ -240,6 +290,10 @@ enum Step {
      Configure(TextInputConfiguration),
      /// A standard edit action (`selectAll:`, `cut:`, `copy:`, `paste:`, `delete:`).
      Action(&'static str),
 +    /// `UIPasteboard.generalPasteboard.color = UIColor.redColor`: the pasteboard holds no string.
 +    PasteboardHoldsColor,
++    /// The view gets an input delegate that records what it hears (checked by `Notices`).
++    WatchDelegate,
      // The app changes its own state and tells the view, as Flutter's framework does with `setTextInputState:`.
      AppSets {
          text: &'static str,
-@@ -386,7 +388,7 @@ fn rows() -> Vec<Row> {
+@@ -252,6 +306,8 @@ enum Step {
+     Selection(Range<usize>),
+     Marked(Option<Range<usize>>),
+     Edits(usize),
++    /// What the input delegate heard since the last check, each with the app's selection at that moment.
++    Notices(Vec<(&'static str, Range<usize>)>),
+     /// `textInRange:`'s `length`, nil counting as 0 as in Objective-C.
+     TextInRangeLength(Range<usize>, usize),
+     /// `textInRange:` from `beginningOfDocument` to `endOfDocument`.
+@@ -386,7 +442,7 @@ fn rows() -> Vec<Row> {
              Insert("text"),
              ForeignTextInRange(None),
          ]),
@@ -168,11 +259,25 @@ index 94b4a1f..4cd922f 100644
              Insert("aaaa"),
              Action("selectAll:"), Action("cut:"),
              Insert("bbbb"),
-@@ -395,20 +397,21 @@ fn rows() -> Vec<Row> {
+@@ -395,20 +451,35 @@ fn rows() -> Vec<Row> {
              Action("selectAll:"), Action("delete:"), Action("paste:"), Action("paste:"),
              Text("bbbbaaaabbbbaaaa"),
          ]),
 -        open("testCanPerformActionForSelectActions", "no selectAll: (see testStandardEditActions)", vec![
++        // Not a Flutter test: UIKit's keyboard collapses the selection it knows on `selectionWillChange:`, so an edit
++        // action sends it before the change. Sent afterwards, Select All in UIKit's edit menu left a caret at the end
++        // (hello on the iOS simulator).
++        row("Parallax: edit actions tell the input delegate before the selection moves", vec![
++            Insert("aaaa"),
++            WatchDelegate,
++            Action("selectAll:"),
++            Notices(vec![("selection-will", 4..4), ("selection-did", 0..4)]),
++            Selection(0..4),
++            Action("cut:"),
++            Notices(vec![
++                ("text-will", 0..4), ("selection-will", 0..4), ("selection-did", 0..0), ("text-did", 0..0),
++            ]),
++        ]),
 +        row("testCanPerformActionForSelectActions", vec![
              CanPerform("selectAll:", false),
              Insert("aaaa"),
@@ -194,10 +299,20 @@ index 94b4a1f..4cd922f 100644
              Text(""),
          ]),
          row("testDeletingBackward", vec![
-@@ -774,6 +777,14 @@ fn run_step(view: &TextInputView, field: &Rc<RefCell<Field>>, step: &Step) -> Re
+@@ -774,6 +845,24 @@ fn run_step(view: &TextInputView, field: &Rc<RefCell<Field>>, step: &Step) -> Re
          }
          Step::Configure(configuration) => view.set_configuration(configuration),
          Step::Action(name) => send_action(view, name)?,
++        Step::WatchDelegate => {
++            let watcher = SelectionWatcher::alloc(view.mtm()).set_ivars(Rc::downgrade(field));
++            // SAFETY: NSObject's `init` on a freshly allocated object.
++            let watcher: Retained<SelectionWatcher> = unsafe { msg_send![super(watcher), init] };
++            view.setInputDelegate(Some(ProtocolObject::from_ref(&*watcher)));
++            field.borrow_mut().watcher = Some(watcher);
++        }
++        Step::Notices(want) => {
++            check("input delegate notices", std::mem::take(&mut field.borrow_mut().notices), want.clone())?
++        }
 +        Step::PasteboardHoldsColor => {
 +            // SAFETY: `redColor` returns a UIColor and `setColor:` takes one; both on the main thread.
 +            unsafe {

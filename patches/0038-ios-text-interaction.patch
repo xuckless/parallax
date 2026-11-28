@@ -63,7 +63,7 @@ index 923ff13..5d020d8 100644
      "UITraitCollection",
      "UIView",
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d4359bc..36d6316 100644
+index 608859e..67ee86b 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
@@ -199,7 +199,7 @@ index d4359bc..36d6316 100644
              if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
                  self.reloadInputViews();
              }
-@@ -404,9 +490,10 @@ define_class!(
+@@ -410,9 +496,10 @@ define_class!(
  
      unsafe impl UITextInput for TextInputView {
          #[unsafe(method_id(textInRange:))]
@@ -212,7 +212,7 @@ index d4359bc..36d6316 100644
              self.with_handler(|handler| {
                  // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
                  let document = document_range(handler)?;
-@@ -582,7 +669,10 @@ define_class!(
+@@ -588,7 +675,10 @@ define_class!(
              let Some(range) = self.validated_range(range) else { return NSArray::new(); };
              let bounds = self.with_handler(|handler| {
                  if !allowed_range(handler, &range) { return Vec::new(); }
@@ -224,7 +224,7 @@ index d4359bc..36d6316 100644
              }).unwrap_or_default();
              let count = bounds.len();
              let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
-@@ -629,9 +719,8 @@ define_class!(
+@@ -635,9 +725,8 @@ define_class!(
          }
          #[unsafe(method_id(textInputView))]
          fn text_input_view(&self) -> Retained<UIView> {
@@ -236,7 +236,7 @@ index d4359bc..36d6316 100644
          }
      }
  
-@@ -655,6 +744,7 @@ impl TextInputView {
+@@ -661,6 +750,7 @@ impl TextInputView {
              content_changed: Cell::new(false),
              native_edit: Cell::new(false),
              temporarily_deleted_composed_character: RefCell::new(None),
@@ -244,7 +244,7 @@ index d4359bc..36d6316 100644
          });
          unsafe { msg_send![super(this), initWithFrame: frame] }
      }
-@@ -715,6 +805,60 @@ impl TextInputView {
+@@ -721,6 +811,60 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
@@ -302,10 +302,10 @@ index d4359bc..36d6316 100644
 +            })
 +    }
 +
-     /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
-     /// delegate, as of an app edit.
-     fn action_changed(&self, content_changed: bool) {
-@@ -885,6 +1029,12 @@ fn native_rect(bounds: gpui::Bounds<gpui::Pixels>) -> CGRect {
+     /// An edit action is UIKit's call but not the keyboard's edit, so the input delegate hears of it around the
+     /// change, as `UITextInput` asks: `selectionWillChange:` before (UIKit's keyboard accepts its autocorrection and
+     /// collapses the selection it knows), `selectionDidChange:` after (UIKit's handles follow a paste or cut). Told
+@@ -899,6 +1043,12 @@ fn native_rect(bounds: gpui::Bounds<gpui::Pixels>) -> CGRect {
      )
  }
  
@@ -318,7 +318,7 @@ index d4359bc..36d6316 100644
  fn nonempty_caret_rect(mut rect: CGRect) -> CGRect {
      // GPUI can report a zero-width insertion location; UIKit needs a visible caret.
      rect.size.width = rect.size.width.max(1.);
-@@ -1187,8 +1337,23 @@ pub(super) mod tests {
+@@ -1201,8 +1351,23 @@ pub(super) mod tests {
          view.ivars().keyboard_eligible.set(true);
          assert!(view.becomeFirstResponder());
          assert!(view.isFirstResponder());
