@@ -207,6 +207,24 @@ print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f
     || fail "clipped: no click at 400 300 in the view: $(grep 'view pointer down' "$log" | tail -1)"
   kill $app 2>/dev/null || true
   wait $app 2>/dev/null || true
+
+  # Resized while clipped and moving: from its own thread the page switches its buffer size every 45 frames, each
+  # switch trailed by two frames of the old size (a browser's frames in flight), while GPUI re-crops the view every
+  # frame. Every commit must carry a crop that fits its own buffer, or the compositor ends the app's connection.
+  "$bin" --clipped --animate --resize --seconds 8 >"$work/resize.log" 2>&1 &
+  app=$!
+  sleep 3
+  eval_js "Main.overview.hide()" >/dev/null
+  status=0
+  wait $app || status=$?
+  seconds=$(grep -c 'gpui frames/s' "$work/resize.log" || true)
+  late=$(grep 'gpui frames/s' "$work/resize.log" | tail -3)
+  if ((status == 0 && seconds >= 7)) && ! grep -qiE 'protocol error|connection is gone|broken pipe' "$work/resize.log" \
+    && ! grep -qE 'page frames/s: 0$' <<<"$late" && ! grep -q 'gpui frames/s: 0,' <<<"$late"; then
+    pass "resized while clipped: the connection held for $seconds s, page and GPUI kept drawing"
+  else
+    fail "resized while clipped: exit $status after $seconds s: $(grep -iE 'error|frames/s' "$work/resize.log" | tail -3)"
+  fi
   echo "$failures failure(s) at scale $scale"
   exit $((failures > 0))
 fi

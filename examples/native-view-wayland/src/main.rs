@@ -7,7 +7,9 @@
 //!
 //! Arguments: `--fps N` sets the page's frame rate; `--animate` moves and resizes the view every GPUI frame, to
 //! check that the hole and the subsurface stay in step; `--clipped` puts the view in a scrolled container that hides
-//! its top half, in a see-through window, to check that only the visible half shows;
+//! its top half, in a see-through window, to check that only the visible half shows; `--resize` makes the page switch
+//! its buffer size every 45 frames, each switch trailed by two frames of the old size (with `--clipped --animate`, the
+//! race between GPUI's crop and the page's commits, which must never cost the connection);
 //! `--seconds N` quits after N seconds; `--no-view` shows the same window without the view, to compare the
 //! compositor's cost.
 
@@ -33,8 +35,9 @@ fn main() {
 #[cfg(target_os = "linux")]
 mod demo {
     use crate::page::{self, Page};
+    use gpui_linux::NativeViewBuffers;
     use parallax::gpui::{
-        App, Bounds, Context, DevicePixels, MouseButton, MouseDownEvent, MouseMoveEvent,
+        App, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent,
         MouseUpEvent, NativeView, Pixels, Point, ScrollEvent, ScrollHandle, Window,
         WindowBackgroundAppearance, WindowBounds, WindowOptions, canvas, div, point, prelude::*,
         px, rgb, size,
@@ -47,10 +50,14 @@ mod demo {
         time::{Duration, Instant},
     };
 
+    /// The view's container, shown wherever the view hasn't drawn: what the checks look for as a gap.
+    const GAP_COLOUR: u32 = 0xc000c0;
+
     pub struct Options {
         fps: u32,
         animate: bool,
         clipped: bool,
+        resize: bool,
         seconds: Option<u64>,
         no_view: bool,
     }
@@ -69,6 +76,7 @@ mod demo {
                     .unwrap_or(60),
                 animate: args.iter().any(|arg| arg == "--animate"),
                 clipped: args.iter().any(|arg| arg == "--clipped"),
+                resize: args.iter().any(|arg| arg == "--resize"),
                 no_view: args.iter().any(|arg| arg == "--no-view"),
                 seconds: value("--seconds").and_then(|seconds| seconds.parse().ok()),
             }
@@ -112,7 +120,7 @@ mod demo {
             let attached = if options.no_view {
                 Err("--no-view".to_string())
             } else {
-                Self::attach(options.fps, window, cx)
+                Self::attach(options.fps, options.resize, window, cx)
             };
             let view = match attached {
                 Ok(view) => Some(view),
@@ -165,6 +173,7 @@ mod demo {
 
         fn attach(
             fps: u32,
+            resize: bool,
             window: &mut Window,
             cx: &mut App,
         ) -> Result<(NativeView, Page), String> {
@@ -173,17 +182,16 @@ mod demo {
                 return Err("the window is not on Wayland".into());
             };
             // SAFETY: the display is GPUI's own connection, alive as long as the app.
-            let page = unsafe { Page::new(display.display, fps) }?;
+            let mut page = unsafe { Page::new(display.display, fps, resize) }?;
             let proxy = page.proxy().ok_or("the page surface has no proxy")?;
             // SAFETY: a live, role-less wl_surface made on the window's own display, kept alive by `page`, which
             // is dropped after the view (field order of the tuple).
             let view =
                 unsafe { NativeView::new(proxy, window, cx) }.map_err(|error| error.to_string())?;
-            // The page's buffers never change size; Wayland needs it to crop a clipped view.
-            view.set_buffer_size(
-                size(DevicePixels(page::WIDTH), DevicePixels(page::HEIGHT)),
-                window,
-            );
+            // Shown where the page hasn't drawn yet: the container's colour, which the checks call the gap.
+            view.set_background(rgb(GAP_COLOUR), cx);
+            let buffers = NativeViewBuffers::of(&view).ok_or("the view is not a Wayland one")?;
+            page.start(buffers)?;
             Ok((view, page))
         }
 
@@ -221,7 +229,7 @@ mod demo {
                 .flex_none()
                 .w(px(width))
                 .h(px(400.))
-                .bg(rgb(0xc000c0))
+                .bg(rgb(GAP_COLOUR))
                 .when_some(self.view.as_ref(), |this, (view, _)| {
                     this.child(
                         view.clone()
@@ -300,8 +308,8 @@ mod demo {
                         .text_color(rgb(0xffffff))
                         .child(format!(
                             "page buffer {}x{}, scaled to the view",
-                            page::WIDTH,
-                            page::HEIGHT
+                            page::SIZES[0].0,
+                            page::SIZES[0].1
                         )),
                 )
         }
