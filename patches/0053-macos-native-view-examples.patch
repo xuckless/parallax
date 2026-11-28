@@ -1,0 +1,34 @@
+macOS: upstream's native view examples build from the fork crate: the dev-dependencies the gpui-pre package dropped.
+
+What: gpui-pre's Cargo.toml gets two macOS dev-dependencies, as Zed's crates/gpui/Cargo.toml has them:
+`gpui_platform` (`gpui-pre-platform`, feature `font-kit`; the examples start the app with
+`gpui_platform::application()`) and `objc2` 0.6 (the examples build their `WKWebView` and AppKit field with it).
+The `gpui_platform` table names no version, so fork-crates.sh gives it only a path to the sibling fork crate and
+`cargo publish` drops it (a version would ask crates.io for a crate published after this one).
+
+Why: `cargo run -p parallax-gpui --example native_view` (and `native_view_appkit_field`), upstream's reference for
+NativeView on macOS (docs/native-view-apple.md), failed to build: `objc2` is only an optional dependency of the
+package, and `gpui_platform` none at all. A manifest has no extension point, so this is a patch.
+
+Test: on macOS, `cargo build --manifest-path build/parallax-gpui/Cargo.toml -p parallax-gpui --example native_view
+--example native_view_appkit_field`.
+
+Upstream: Zed's own manifest already has both (nothing to file); the gpui-pre packaging drops them.
+
+diff --git a/gpui-pre/Cargo.toml b/gpui-pre/Cargo.toml
+--- a/gpui-pre/Cargo.toml
++++ b/gpui-pre/Cargo.toml
+@@ -664,6 +664,13 @@
+ version = "0.3"
+ optional = true
+ 
++[target.'cfg(target_os = "macos")'.dev-dependencies.gpui_platform]
++features = ["font-kit"]
++package = "gpui-pre-platform"
++
++[target.'cfg(target_os = "macos")'.dev-dependencies.objc2]
++version = "0.6"
++
+ [target.'cfg(target_os = "windows")'.dependencies.windows]
+ version = "0.62"
+ features = [

@@ -1,0 +1,5 @@
+Zed's manifest change for patches/0053-macos-native-view-examples.patch, which patch-paths.sh cannot translate.
+None: Zed's crates/gpui/Cargo.toml already has both dev-dependencies (`gpui_platform` with `font-kit` in
+[dev-dependencies], `objc2` under the macOS target); only the gpui-pre package drops them.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff (none)
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.

@@ -42,6 +42,11 @@ cargo run -p native-view-apple                                     # macOS
 cargo build -p native-view-apple --target aarch64-apple-ios-sim    # iOS: run as a bare .app, as in traces.md
 ```
 
+Upstream's macOS examples, the reference this follows, build from the fork crate (patch
+[0053](../patches/0053-macos-native-view-examples.patch) adds their dev-dependencies):
+`cargo run --manifest-path build/parallax-gpui/Cargo.toml -p parallax-gpui --example native_view` (also
+`native_view_appkit_field`).
+
 ## Checks (2026-11-27)
 
 iOS 26.5 simulator (iPhone 17, 3x; iPad Air 11-inch, 2x): 0 GPUI frames/s while the view runs at 63; taps and swipes
