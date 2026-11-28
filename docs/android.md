@@ -76,4 +76,4 @@ What GPUI asks of a platform that Android does not do yet: [android-stubs.md](an
 
 ## Run it on the emulator
 
-`cargo parallax run android --device <serial>` ([cli.md](cli.md)) on an emulator started with `-gpu host`; then `adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events, insets and `parallax: first frame drawn on a WxH portrait|landscape surface` (once per surface, when its first scene reaches the screen).
+`cargo parallax run android --device <serial>` ([cli-android.md](cli-android.md)) on an emulator started with `-gpu host`; then `adb logcat -s parallax` shows the font and renderer load times, the renderer backend, surface events, insets and `parallax: first frame drawn on a WxH portrait|landscape surface` (once per surface, when its first scene reaches the screen).

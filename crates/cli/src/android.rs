@@ -1,19 +1,19 @@
 //! `cargo parallax run android` / `build android`: NDK build of the app's cdylib, a generated Gradle project, then adb
 //! install and launch (`run`) or the APK / App Bundle alone (`build`, release-signed with `--release`). Step by step in
-//! docs/cli.md and docs/cli-android-release.md. Decisions are pure functions over plain values; `run`, `build` and
+//! docs/cli-android.md and docs/cli-android-release.md. Decisions are pure functions over plain values; `run`, `build` and
 //! `package` are the thin shell.
 //! Task naming and the install retry are ported from flutter/flutter packages/flutter_tools/lib/src/android/gradle.dart
 //! and android_device.dart @ 3.50.1. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use serde::Deserialize;
-
+use crate::cargo::{self, CARGO_FIX, MetaPackage, Metadata, Profile, capture, spawn_error, step};
 use crate::config::Config;
 use crate::error::CliError;
-use crate::icon;
+use crate::template::{self, render, write, xml_escape};
+use crate::{icon, version};
 
 /// One Android ABI. `clang_target` is the NDK's clang prefix (it differs from the Rust target only for armv7).
 #[derive(Debug, PartialEq)]
@@ -126,39 +126,6 @@ const PROJECT_FILES: [(&str, Content); 6] = [
         )),
     ),
 ];
-
-/// Cargo profile and Gradle build type, picked together by `--release`: a release build is a release Rust library in
-/// a release-signed, R8-shrunk package.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Profile {
-    Debug,
-    Release,
-}
-
-impl Profile {
-    fn cargo_args(self) -> &'static [&'static str] {
-        match self {
-            Profile::Debug => &[],
-            Profile::Release => &["--release"],
-        }
-    }
-
-    /// Cargo's output directory, and Gradle's build type as it names output directories and files.
-    pub fn dir(self) -> &'static str {
-        match self {
-            Profile::Debug => "debug",
-            Profile::Release => "release",
-        }
-    }
-
-    /// Gradle's build type as it names tasks.
-    fn gradle(self) -> &'static str {
-        match self {
-            Profile::Debug => "Debug",
-            Profile::Release => "Release",
-        }
-    }
-}
 
 /// What Gradle packages the app as.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -359,29 +326,12 @@ fn signing(
 /// What `package` needs to know about the app crate, from `cargo metadata`.
 struct AppCrate {
     package: String,
+    /// `app.version`, else the package's.
+    version: String,
     lib: String,
     target_dir: PathBuf,
     /// The parallax-android crate: its `java/` and `proguard-rules.pro`.
     android_dir: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<MetaPackage>,
-    target_directory: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct MetaPackage {
-    name: String,
-    manifest_path: PathBuf,
-    targets: Vec<MetaTarget>,
-}
-
-#[derive(Deserialize)]
-struct MetaTarget {
-    name: String,
-    crate_types: Vec<String>,
 }
 
 /// The Android SDK, NDK and host layout every Android command needs.
@@ -510,19 +460,12 @@ fn package(app_dir: &Path, config: &Config, args: &Args, sdk: &Sdk) -> Result<Pa
         None => Vec::new(),
     };
 
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let manifest = app_dir.join("Cargo.toml");
-    let metadata = capture(
-        Command::new(&cargo)
-            .args(["metadata", "--format-version", "1", "--manifest-path"])
-            .arg(&manifest),
-        "cargo metadata",
-        CARGO_FIX,
-    )?;
-    let app = app_crate(&metadata, &manifest)?;
+    let metadata = cargo::metadata(&manifest)?;
+    let app = app_crate(config, &metadata, metadata.app_package(&manifest)?)?;
 
     let abis = &config.android.abis;
-    let mut build = Command::new(&cargo);
+    let mut build = Command::new(cargo::cargo());
     build
         .args(["build", "--lib", "--manifest-path"])
         .arg(&manifest)
@@ -549,12 +492,7 @@ fn package(app_dir: &Path, config: &Config, args: &Args, sdk: &Sdk) -> Result<Pa
 
     let project = app.target_dir.join("parallax/android").join(&app.package);
     let src = project.join("src");
-    if src.exists() {
-        std::fs::remove_dir_all(&src).map_err(|source| CliError::Io {
-            path: src.clone(),
-            source,
-        })?;
-    }
+    template::clear(&src)?;
     let vars = project_vars(app_dir, config, &app, &sdk.ndk, &sdk.ndk_version);
     for (path, content) in &PROJECT_FILES {
         let bytes = match content {
@@ -619,13 +557,12 @@ fn gradle_task(profile: Profile, package: Package, project: &str) -> (String, St
     let (task, outputs, extension) = package.gradle();
     let variant = profile.dir();
     (
-        format!("{task}{}", profile.gradle()),
+        format!("{task}{}", profile.title()),
         format!("build/outputs/{outputs}/{variant}/{project}-{variant}.{extension}"),
     )
 }
 
 const ADB_FIX: &str = "Install the SDK platform-tools: sdkmanager \"platform-tools\"";
-const CARGO_FIX: &str = "Install Rust from https://rustup.rs";
 const JAVA_FIX: &str = "Install a JDK or JRE 17 or newer and put java on PATH, or set JAVA_HOME";
 
 /// `java` or `keytool`: from `$JAVA_HOME/bin`, else from `PATH`.
@@ -725,24 +662,11 @@ fn pick_device(online: &[String], requested: Option<&str>) -> Result<String, Cli
     }
 }
 
-fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
-    let metadata: Metadata =
-        serde_json::from_slice(metadata).map_err(|e| CliError::Metadata(e.to_string()))?;
-    // cargo metadata reports canonical manifest paths.
-    let manifest = manifest.canonicalize().map_err(|source| CliError::Io {
-        path: manifest.to_path_buf(),
-        source,
-    })?;
-    let package = metadata
-        .packages
-        .iter()
-        .find(|p| p.manifest_path == manifest)
-        .ok_or_else(|| CliError::NoAppPackage(manifest.clone()))?;
-    let lib = package
-        .targets
-        .iter()
-        .find(|t| t.crate_types.iter().any(|c| c == "cdylib"))
-        .ok_or_else(|| CliError::NotCdylib(package.name.clone()))?;
+fn app_crate(
+    config: &Config,
+    metadata: &Metadata,
+    package: &MetaPackage,
+) -> Result<AppCrate, CliError> {
     let android = metadata
         .packages
         .iter()
@@ -755,8 +679,9 @@ fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
         .to_path_buf();
     Ok(AppCrate {
         package: package.name.clone(),
-        lib: lib.name.replace('-', "_"),
-        target_dir: metadata.target_directory,
+        version: config.version(&package.version).to_string(),
+        lib: package.cdylib()?,
+        target_dir: metadata.target_directory.clone(),
         android_dir,
     })
 }
@@ -786,7 +711,7 @@ fn project_vars(
         ("project", app.package.clone()),
         ("min_sdk", config.android.min_sdk.to_string()),
         ("target_sdk", config.android.target_sdk.to_string()),
-        ("version", groovy_escape(&config.version)),
+        ("version", groovy_escape(version::build_name(&app.version))),
         ("version_code", config.android.version_code.to_string()),
         // Groovy expressions: `null` leaves the release signing config empty until [android.release] is set.
         (
@@ -814,70 +739,6 @@ fn project_vars(
 /// Text for inside a Groovy single-quoted string.
 fn groovy_escape(text: &str) -> String {
     text.replace('\\', "\\\\").replace('\'', "\\'")
-}
-
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-fn render(template: &str, vars: &[(&str, String)]) -> String {
-    vars.iter()
-        .fold(template.to_string(), |text, (key, value)| {
-            text.replace(&format!("{{{{{key}}}}}"), value)
-        })
-}
-
-fn write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
-    let io = |source| CliError::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(io)?;
-    }
-    std::fs::write(path, bytes).map_err(io)
-}
-
-fn spawn_error(cmd: &Command, fix: &'static str, source: std::io::Error) -> CliError {
-    CliError::ToolMissing {
-        tool: cmd.get_program().to_string_lossy().into_owned(),
-        fix,
-        source,
-    }
-}
-
-/// Runs `cmd`, returning stdout; stderr goes to the terminal.
-fn capture(cmd: &mut Command, step: &'static str, fix: &'static str) -> Result<Vec<u8>, CliError> {
-    let out = cmd
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|e| spawn_error(cmd, fix, e))?;
-    match out.status.success() {
-        true => Ok(out.stdout),
-        false => Err(CliError::StepFailed {
-            step,
-            status: out.status,
-            hint: String::new(),
-        }),
-    }
-}
-
-/// Runs `cmd` with its output on the terminal.
-fn step(
-    cmd: &mut Command,
-    fix: &'static str,
-    step: &'static str,
-    hint: String,
-) -> Result<(), CliError> {
-    let status = cmd.status().map_err(|e| spawn_error(cmd, fix, e))?;
-    match status.success() {
-        true => Ok(()),
-        false => Err(CliError::StepFailed { step, status, hint }),
-    }
 }
 
 #[cfg(test)]
@@ -1024,24 +885,18 @@ mod tests {
     }
 
     fn config(release: Option<crate::config::ReleaseKey>) -> Config {
-        Config {
-            name: "Tom & Jerry".into(),
-            id: "a.b".into(),
-            icon: None,
-            version: "1.0".into(),
-            android: crate::config::Android {
-                min_sdk: 28,
-                target_sdk: 35,
-                abis: vec![&ABIS[3]],
-                version_code: 1,
-                release,
-            },
-        }
+        let mut config = Config::parse(
+            "[app]\nname = \"Tom & Jerry\"\nid = \"a.b\"\n[android]\nabis = [\"x86_64\"]\n",
+        )
+        .expect("test parallax.toml");
+        config.android.release = release;
+        config
     }
 
     fn app() -> AppCrate {
         AppCrate {
             package: "hello".into(),
+            version: "1.2.3+4".into(),
             lib: "hello".into(),
             target_dir: "/t".into(),
             android_dir: "/android".into(),

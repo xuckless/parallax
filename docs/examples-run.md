@@ -35,7 +35,7 @@ shows which (`Browser graphics initialized successfully with …`) and `hello: b
 
 ## Android
 
-[cargo-parallax](cli.md) reads [parallax.toml](../examples/hello/parallax.toml) and builds both default ABIs.
+[cargo-parallax](cli-android.md) reads [parallax.toml](../examples/hello/parallax.toml) and builds both default ABIs.
 
 ```sh
 cargo install --path crates/cli

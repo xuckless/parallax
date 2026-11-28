@@ -2,9 +2,9 @@
 
 `cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]` builds the app crate's binary,
 wraps it in a generated Xcode project, installs it and runs it with its log on the terminal.
-`cargo parallax build ios [--release]` stops at the device `.app`. macOS only (Xcode); elsewhere it errors.
+`cargo parallax build ios [--release]` stops at the device `.app`. macOS only (Xcode); elsewhere `WrongHost`.
 Source: [ios.rs](../crates/cli/src/ios.rs), [templates/ios/](../crates/cli/templates/ios/), keys in
-[config.rs](../crates/cli/src/config.rs). Android and the shared keys: [cli.md](cli.md).
+[config.rs](../crates/cli/src/config.rs). Overview and the shared `[app]` keys: [cli.md](cli.md).
 
 ## parallax.toml `[ios]`
 
@@ -17,11 +17,11 @@ Defaults are one table, `IOS_DEFAULTS` in [config.rs](../crates/cli/src/config.r
 
 `app.name` is the home-screen name, `app.id` the bundle id (iOS refuses `_`, which Android allows), `app.icon` is
 rendered with `resvg` to every file of the AppIcon set, opaque over the SVG's tile colour (white if none). The bundle
-version is the crate's `version` without a SemVer suffix.
+versions are `app.version` (else the crate's) through Flutter's build-name / build-number rules ([version.rs](../crates/cli/src/version.rs)).
 
 ## What `run ios` does
 
-1. `cargo metadata --no-deps`: the app package, its bin target (the only one, or the one named like the package) and
+1. `cargo metadata`: the app package, its bin target (the only one, or the one named like the package) and
    the target directory. iOS runs the binary (`fn main` calling `parallax::run`), like desktop.
 2. Picks before the long build: `--simulator` matches an available iOS simulator's name or udid (`simctl list`),
    without it exactly one must be booted; `--device` takes the only paired physical iOS device (`devicectl list

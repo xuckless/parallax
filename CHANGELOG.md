@@ -12,45 +12,37 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   in `[android.release]` (before, it put a release Rust library in a debug-signed APK). Migration: add the key
   (docs/cli-android-release.md), or drop `--release`.
 - Breaking: `cargo-parallax` is now `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` and
-  `LICENSE-FLUTTER-WEBSITE` (its generated Gradle project ports Flutter's release settings). Migration: apps that list
-  their tools' licences add Flutter's BSD-3-Clause notices.
+  `LICENSE-FLUTTER-WEBSITE` (its Gradle, Xcode, web and macOS templates and its version rules are ported from
+  Flutter). Migration: apps that list their tools' licences add Flutter's BSD-3-Clause notices.
+- Breaking: the examples' hand-written web `index.html` is gone; the web build is `cargo parallax run web` /
+  `build web`. Migration: replace `wasm-pack build` + a static server with `cargo parallax run web`.
 - `cargo parallax build android [--release] [--apk|--aab]`: builds without installing; `--release` makes a signed App
   Bundle for Google Play (`--apk`: a signed universal APK). The key is `parallax.toml`'s `[android.release]`
   (`keystore`, `key_alias`); passwords come from `PARALLAX_KEYSTORE_PASSWORD` / `PARALLAX_KEY_PASSWORD` or a prompt,
   never a file, and are checked with keytool before the build (docs/cli-android-release.md).
-- `parallax.toml`: `app.version` (`versionName`) and `android.version_code` (`versionCode`).
-- `parallax-android` ships `proguard-rules.pro`, keeping the Java that Rust calls over JNI through R8.
 - `cargo parallax run android` uninstalls and reinstalls when an install fails over a build signed with another key.
-## Unreleased (0.1.11)
-
-### Added
-
-- `cargo parallax run|build macos [--release]`: builds the app crate's bin and wraps it in a real `.app`
-  (flutter_tools' Info.plist template, `AppIcon.icns` rendered from `app.icon`, ad-hoc `codesign`), then runs it
-  from inside the bundle with its logs in the terminal. New `[macos]` keys: `touch_native` (`NSIsTouchNative`,
-  default `false`), `archs` (default `["arm64"]`; two make a universal binary with `lipo`), `codesign` (default
-  `true`). docs/cli-desktop.md.
-- `cargo parallax run|build linux|windows [--release]`: `cargo run` / `cargo build` of the app crate, so every target
-  has one entry point; `cargo parallax run` with no target picks this machine's desktop.
-
-### Changed
-
-- `cargo-parallax` is now `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` (its Android manifest settings
-  and macOS Info.plist template are ported from Flutter's flutter_tools).
-- `cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]` and `cargo parallax build
-  ios [--release]`: build the app's binary, generate an Xcode project from Flutter's iOS Runner template (iPhone and
-  iPad natively, `app.icon` rendered to the AppIcon set), `xcodebuild`, then install and launch with `simctl` or
-  `devicectl`, the app's log streamed to the terminal. New `[ios]` keys: `team` (Apple team id, for device runs;
-  Xcode signs with its signed-in account) and `min_ios` (default 17.0). macOS only (docs/cli-ios.md).
-- cargo-parallax is now `Apache-2.0 AND BSD-3-Clause` (Flutter's app templates) and ships `LICENSE-FLUTTER`.
-## Unreleased (0.1.11)
-
-- `cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]` and `cargo parallax build web
-  [--release]`: wasm32 build, wasm-bindgen (its version checked against `Cargo.lock`), a host page and web app
-  manifest ported from Flutter's web template, optional `wasm-opt`, a built-in development server
-  (docs/cli-web.md). New `parallax.toml` table `[web]` (`title`, `background`, `index`, `assets`). The examples
-  run on the web through it; hello's hand-written `index.html` is gone.
-- cargo-parallax is now `Apache-2.0 AND BSD-3-Clause` (it ships Flutter's web template).
+- `parallax-android` ships `proguard-rules.pro`, keeping the Java that Rust calls over JNI through R8.
+- `cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]` and `build ios [--release]`:
+  the app's binary in an Xcode project from Flutter's iOS Runner template (iPhone and iPad natively, `app.icon` as
+  the AppIcon set), `xcodebuild`, then `simctl` or `devicectl` installs and launches it with its log on the terminal.
+  New `[ios]` keys: `team` (Apple team id for device runs; Xcode signs with its signed-in account) and `min_ios`
+  (default 17.0). macOS only (docs/cli-ios.md).
+- `cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]` and `build web [--release]`: wasm32
+  build, wasm-bindgen (its version checked against `Cargo.lock`), a host page and manifest from Flutter's web
+  template, `wasm-opt` for `--release` when installed, a built-in development server. New `[web]` keys: `title`,
+  `background`, `index`, `assets` (docs/cli-web.md).
+- `cargo parallax run|build macos [--release]`: the app's bin in a real `.app` (Flutter's Info.plist template,
+  `AppIcon.icns` from `app.icon`, ad-hoc `codesign`), run from inside the bundle with its logs on the terminal. New
+  `[macos]` keys: `touch_native` (`NSIsTouchNative`, default `false`), `archs` (default `["arm64"]`; two make a
+  universal binary), `codesign` (default `true`) (docs/cli-desktop.md).
+- `cargo parallax run|build linux|windows [--release]`: `cargo run` / `cargo build` of the app crate; `run` or
+  `build` with no target picks this machine's desktop.
+- `parallax.toml`: `app.version` (default: the Cargo package version) feeds every target through Flutter's
+  build-name / build-number rules (`1.2.3+4`: Android `versionName` 1.2.3, Apple `CFBundleShortVersionString` 1.2.3
+  and `CFBundleVersion` 4); `android.version_code` sets `versionCode`.
+- CI: a `cargo-parallax` workflow runs every target from a clean checkout through `cargo install --path crates/cli`
+  (Android emulator, iOS simulator, web headless incl. `--release` with wasm-opt, macOS `.app`, Linux and Windows
+  windows, release signing) (docs/ci.md).
 
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 

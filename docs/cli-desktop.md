@@ -31,7 +31,7 @@ windows` on Linux is a `WrongHost` error. Args, `parallax.toml` and errors: [cli
 |---|---|
 | `CFBundleIdentifier` / `CFBundleName` | `app.id` / `app.name` |
 | `CFBundleExecutable` | the bin target's name |
-| `CFBundleShortVersionString` / `CFBundleVersion` | the package version, as Flutter turns `1.2.3+4` into build name / number (`bundle_versions`): `0.1.10` → `0.1.10` / `0.1.10` |
+| `CFBundleShortVersionString` / `CFBundleVersion` | `app.version`, else the package version, as Flutter turns `1.2.3+4` into build name / number ([version.rs](../crates/cli/src/version.rs)): `0.1.10` → `0.1.10` / `0.1.10` |
 | `CFBundleIconFile` | `AppIcon` with `app.icon`, else empty (the generic icon) |
 | `LSMinimumSystemVersion` | `12.0`: GPUI's minimum (gpui_apple compiles its Metal shaders for macOS 12) |
 | `NSHighResolutionCapable` | `true` |
@@ -57,10 +57,10 @@ otherwise). Linux system packages: [examples-run.md](examples-run.md).
 
 ## Checks
 
-- `cargo test -p cargo-parallax`: `parse_args_table` (verbs, targets, host picks, `WrongHost`, `--device` only for
-  Android), `config::parse_table` (`[macos]` rows), `info_plist_table`, `bundle_versions_table`, Flutter's
+- `cargo test -p cargo-parallax`: main.rs `command_table` (verbs, targets, host picks, `WrongHost`), `cargo::bin_table`,
+  `config::parse_table` (`[macos]` rows), `info_plist_table`, `version::versions_table`, Flutter's
   `CFBundleVersion for iOS` and `CFBundleShortVersionString for iOS` (`build_info_test.dart`), and
-  `app_icon_has_every_iconset_size`.
+  `icon::icns_has_every_iconset_size`.
 - macOS (Wave 16, pixl-mac, macOS 27.3): `build macos` for `hello` and `native-view` passes `plutil -lint` and
   `codesign --verify --strict`; `iconutil -c iconset` unpacks all ten sizes; `archs = ["arm64", "x86_64"]` gives a
   universal binary. Over ssh there is no window server, so `run macos` was seen to start and stay up, not to open a

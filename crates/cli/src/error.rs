@@ -3,16 +3,35 @@
 use std::path::PathBuf;
 
 use crate::android::{ABIS, HOSTS};
+use crate::macos::ARCHS;
+
+/// Every command and its flags, one line each: the rows of `COMMANDS` in main.rs.
+const USAGE: &str = "  cargo parallax run android [--release] [--device <serial>]
+  cargo parallax build android [--release] [--apk|--aab]
+  cargo parallax run ios [--release] [--simulator <name|udid> | --device [<name|udid>]]
+  cargo parallax build ios [--release]
+  cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]
+  cargo parallax build web [--release]
+  cargo parallax run|build macos|linux|windows [--release]
+  cargo parallax run|build [--release]   (no target: this machine's desktop)";
 
 /// How to make an upload key; the command from Flutter's Android deployment guide.
 const KEYTOOL_GENKEY: &str = "keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error(
-        "usage: cargo parallax run android [--release] [--device <serial>]\n       cargo parallax build android [--release] [--apk|--aab]\n{0}"
-    )]
+    #[error("usage:\n{USAGE}\n{0}")]
     Usage(String),
+    #[error(
+        "cargo parallax builds {target} apps only on {needed} (host is {host}); they are not cross-built"
+    )]
+    WrongHost {
+        target: &'static str,
+        needed: &'static str,
+        host: String,
+    },
+    #[error("no desktop target for host OS {0:?}; name a target: cargo parallax run android")]
+    NoHostDesktop(String),
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
     )]
@@ -130,6 +149,84 @@ pub enum CliError {
     SeveralDevices(Vec<String>),
     #[error("device {serial:?} is not online; online: {online:?}")]
     DeviceNotFound { serial: String, online: Vec<String> },
+    #[error("parallax.toml: macos.archs is empty; list at least one arch")]
+    NoArchs,
+    #[error("parallax.toml: unknown macOS arch {0:?}; supported: {supported}", supported = ARCHS.map(|a| a.name).join(", "))]
+    UnknownArch(String),
+    #[error(
+        "package {0} has no bin target, which iOS and macOS bundle. Add src/main.rs (or a [[bin]]) that calls parallax::run"
+    )]
+    NoBin(String),
+    #[error(
+        "package {package} has several bin targets {bins:?} and none named {package}; a bundle holds one"
+    )]
+    SeveralBins { package: String, bins: Vec<String> },
+    #[error(
+        "parallax.toml: ios.min_ios {min_ios:?} is below {lowest}, the lowest iOS Parallax supports"
+    )]
+    MinIosTooLow { min_ios: String, lowest: u32 },
+    #[error("parallax.toml: ios.min_ios {0:?} is not an iOS version such as \"17.0\"")]
+    BadMinIos(String),
+    #[error(
+        "parallax.toml: ios.team {0:?} is not an Apple team id (ten upper-case letters and digits, shown under Membership details on developer.apple.com)"
+    )]
+    BadTeam(String),
+    #[error(
+        "app.id {0:?} is not an iOS bundle id (letters, digits, - and . only; no _). Pick an id that suits both Android and iOS"
+    )]
+    BadBundleId(String),
+    #[error("cargo parallax has no iOS Rust target for a {0:?} Mac (RUST_TARGETS in ios.rs)")]
+    UnsupportedIosHost(&'static str),
+    #[error(
+        "running on a device needs an Apple team id: add to parallax.toml\n[ios]\nteam = \"<your team id>\"\nXcode signs with the account signed in under Xcode → Settings → Accounts"
+    )]
+    TeamMissing,
+    #[error("no {what}. {fix}; available: {available:?}")]
+    NoIosTarget {
+        what: &'static str,
+        fix: &'static str,
+        available: Vec<String>,
+    },
+    #[error("several {what}s: {names:?}. Pick one with {flag} <name|udid>")]
+    SeveralIosTargets {
+        what: &'static str,
+        flag: &'static str,
+        names: Vec<String>,
+    },
+    #[error("no {what} named or with udid {requested:?}; available: {available:?}")]
+    IosTargetNotFound {
+        what: &'static str,
+        requested: String,
+        available: Vec<String>,
+    },
+    #[error("{tool} output did not parse: {reason}")]
+    ToolOutput { tool: &'static str, reason: String },
+    #[error("parallax.toml: web.background {0:?} is not a CSS hex colour (#rgb or #rrggbb)")]
+    BadColour(String),
+    #[error(
+        "{} wasm-bindgen {want} (the wasm-bindgen crate in Cargo.lock). Install that version: cargo install wasm-bindgen-cli --version {want}",
+        match have { Some(have) => format!("wasm-bindgen on PATH is {have}, not"), None => "wasm-bindgen is not on PATH; the app needs".into() }
+    )]
+    WasmBindgen { have: Option<String>, want: String },
+    #[error(
+        "package {0} does not depend on wasm-bindgen. Add to its Cargo.toml: [target.'cfg(target_family = \"wasm\")'.dependencies] wasm-bindgen = \"0.2\", and a #[wasm_bindgen(start)] function"
+    )]
+    NoWasmBindgen(String),
+    #[error(
+        "several wasm-bindgen versions in Cargo.lock: {0:?}. Make them one (cargo update -p wasm-bindgen), so one wasm-bindgen-cli fits"
+    )]
+    SeveralWasmBindgens(Vec<String>),
+    #[error("parallax.toml: web.assets entry {0} names no file")]
+    AssetName(PathBuf),
+    #[error(
+        "parallax.toml: web.assets file {0:?} has the name of a file cargo parallax writes (index.html: use web.index)"
+    )]
+    AssetClash(String),
+    #[error("cannot serve on {addr}: {source}. Pick another port with --port <n>")]
+    Bind {
+        addr: std::net::SocketAddr,
+        source: std::io::Error,
+    },
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,

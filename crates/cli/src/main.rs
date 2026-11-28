@@ -1,9 +1,17 @@
-//! cargo parallax: build and run GPUI apps on iOS, Android and web from parallax.toml. Reference: docs/cli.md.
+//! cargo parallax: build and run GPUI apps on Android, iOS, the web, macOS, Linux and Windows from parallax.toml.
+//! Reference: docs/cli.md.
 
 mod android;
+mod cargo;
 mod config;
+mod desktop;
 mod error;
 mod icon;
+mod ios;
+mod macos;
+mod template;
+mod version;
+mod web;
 
 use std::path::Path;
 
@@ -14,62 +22,137 @@ use error::CliError;
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Target {
     Android,
+    Ios,
+    Web,
+    Macos,
+    Linux,
+    Windows,
 }
 
-/// Target name on the command line → target. To add a target: add its variant and a row.
-const TARGETS: [(&str, Target); 1] = [("android", Target::Android)];
-
-/// One `cargo parallax <verb> <target>` command; the handler parses the flags after the target.
-struct Command {
-    verb: &'static str,
+struct TargetRow {
+    name: &'static str,
     target: Target,
-    handler: fn(&Path, &Config, &[String]) -> Result<(), CliError>,
+    /// `std::env::consts::OS` the target builds on (no cross builds); `None`: any host.
+    host: Option<&'static str>,
+    /// A desktop: `<verb>` with no target picks the desktop whose `host` is this machine's OS.
+    desktop: bool,
 }
 
-/// (verb, target) → handler. To add a command: add a row.
-const COMMANDS: [Command; 2] = [
-    Command {
-        verb: "run",
+/// Target name on the command line → target. To add a target: add its variant, a row and its `COMMANDS` rows.
+const TARGETS: [TargetRow; 6] = [
+    TargetRow {
+        name: "android",
         target: Target::Android,
-        handler: android::run,
+        host: None,
+        desktop: false,
     },
-    Command {
-        verb: "build",
-        target: Target::Android,
-        handler: android::build,
+    TargetRow {
+        name: "ios",
+        target: Target::Ios,
+        host: Some("macos"),
+        desktop: false,
     },
+    TargetRow {
+        name: "web",
+        target: Target::Web,
+        host: None,
+        desktop: false,
+    },
+    TargetRow {
+        name: "macos",
+        target: Target::Macos,
+        host: Some("macos"),
+        desktop: true,
+    },
+    TargetRow {
+        name: "linux",
+        target: Target::Linux,
+        host: Some("linux"),
+        desktop: true,
+    },
+    TargetRow {
+        name: "windows",
+        target: Target::Windows,
+        host: Some("windows"),
+        desktop: true,
+    },
+];
+
+/// A command's work: the app directory, its parsed `parallax.toml`, the flags after `<verb> <target>`. Each handler
+/// parses its own flags.
+type Handler = fn(&Path, &Config, &[String]) -> Result<(), CliError>;
+
+/// One `cargo parallax <verb> <target>` command: verb, target, handler.
+type Command = (&'static str, Target, Handler);
+
+/// (verb, target) → handler. To add a command: add a row and its line to `USAGE` in error.rs.
+const COMMANDS: [Command; 12] = [
+    ("run", Target::Android, android::run),
+    ("build", Target::Android, android::build),
+    ("run", Target::Ios, ios::run),
+    ("build", Target::Ios, ios::build),
+    ("run", Target::Web, web::run),
+    ("build", Target::Web, web::build),
+    ("run", Target::Macos, macos::run),
+    ("build", Target::Macos, macos::build),
+    ("run", Target::Linux, desktop::run),
+    ("build", Target::Linux, desktop::build),
+    ("run", Target::Windows, desktop::run),
+    ("build", Target::Windows, desktop::build),
 ];
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (command, flags) = parse_command(&args)?;
+    let ((_, _, handler), flags) = command(&args, std::env::consts::OS)?;
     let app_dir = std::env::current_dir()?;
     let path = app_dir.join("parallax.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|source| CliError::ConfigMissing { path, source })?;
     let config = Config::parse(&text)?;
-    (command.handler)(&app_dir, &config, flags)?;
+    handler(&app_dir, &config, flags)?;
     Ok(())
 }
 
-/// `[parallax] <verb> <target> <flags…>`; cargo passes the leading `parallax` when run as `cargo parallax`.
-fn parse_command(args: &[String]) -> Result<(&'static Command, &[String]), CliError> {
+/// `[parallax] <verb> [<target>] <flags…>` on host OS `host`; cargo passes the leading `parallax` when run as
+/// `cargo parallax`. No target (nothing, or a flag, after the verb): this machine's desktop.
+fn command<'a>(
+    args: &'a [String],
+    host: &str,
+) -> Result<(&'static Command, &'a [String]), CliError> {
     let args = match args.first().map(String::as_str) {
         Some("parallax") => &args[1..],
         _ => args,
     };
-    let [verb, target, flags @ ..] = args else {
-        return Err(CliError::Usage("expected a command and a target".into()));
+    let [verb, rest @ ..] = args else {
+        return Err(CliError::Usage("expected a command".into()));
     };
-    let target = TARGETS
-        .iter()
-        .find(|(name, _)| name == target)
-        .map(|(_, t)| *t)
-        .ok_or_else(|| CliError::Usage(format!("unknown target {target:?}")))?;
+    let (row, flags) = match rest {
+        [name, flags @ ..] if !name.starts_with("--") => (
+            TARGETS
+                .iter()
+                .find(|t| t.name == name)
+                .ok_or_else(|| CliError::Usage(format!("unknown target {name:?}")))?,
+            flags,
+        ),
+        flags => (
+            TARGETS
+                .iter()
+                .find(|t| t.desktop && t.host == Some(host))
+                .ok_or(CliError::NoHostDesktop(host.to_string()))?,
+            flags,
+        ),
+    };
     let command = COMMANDS
         .iter()
-        .find(|c| c.verb == verb && c.target == target)
-        .ok_or_else(|| CliError::Usage(format!("unknown command {verb:?}")))?;
+        .find(|(v, t, _)| v == verb && *t == row.target)
+        .ok_or_else(|| CliError::Usage(format!("unknown command `{verb} {}`", row.name)))?;
+    if let Some(needed) = row.host.filter(|needed| *needed != host) {
+        return Err(CliError::WrongHost {
+            target: row.name,
+            needed,
+            host: host.to_string(),
+        });
+    }
     Ok((command, flags))
 }
 
@@ -78,49 +161,138 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_command_table() {
-        // (row name, argv after the binary, expected (verb, target, flags) or a usage error)
+    fn command_table() {
+        // (row name, argv after the binary, host OS, expected (verb, target, flags) or the error variant)
         type Case<'a> = (
             &'a str,
             &'a [&'a str],
-            Result<(&'a str, Target, &'a [&'a str]), ()>,
+            &'a str,
+            Result<(&'a str, Target, &'a [&'a str]), &'a str>,
         );
-        let cases: [Case; 8] = [
+        let cases: [Case; 22] = [
             (
                 "as cargo subcommand",
                 &["parallax", "run", "android"],
+                "linux",
                 Ok(("run", Target::Android, &[])),
             ),
             (
                 "as binary",
                 &["run", "android"],
+                "linux",
                 Ok(("run", Target::Android, &[])),
             ),
             (
                 "flags go to the handler",
                 &["parallax", "build", "android", "--release", "--apk"],
+                "windows",
                 Ok(("build", Target::Android, &["--release", "--apk"])),
             ),
             (
-                "build",
-                &["build", "android"],
-                Ok(("build", Target::Android, &[])),
+                "run ios on a Mac",
+                &["run", "ios", "--simulator", "iPad Air"],
+                "macos",
+                Ok(("run", Target::Ios, &["--simulator", "iPad Air"])),
             ),
-            ("unknown verb", &["install", "android"], Err(())),
-            ("unknown target", &["run", "symbian"], Err(())),
-            ("no target", &["parallax", "run"], Err(())),
-            ("no command", &["parallax"], Err(())),
+            (
+                "build ios on a Mac",
+                &["build", "ios"],
+                "macos",
+                Ok(("build", Target::Ios, &[])),
+            ),
+            ("ios off a Mac", &["run", "ios"], "linux", Err("WrongHost")),
+            (
+                "run web anywhere",
+                &["run", "web", "--port", "9000"],
+                "windows",
+                Ok(("run", Target::Web, &["--port", "9000"])),
+            ),
+            (
+                "build web",
+                &["build", "web", "--release"],
+                "linux",
+                Ok(("build", Target::Web, &["--release"])),
+            ),
+            (
+                "run macos",
+                &["parallax", "run", "macos"],
+                "macos",
+                Ok(("run", Target::Macos, &[])),
+            ),
+            (
+                "build macos --release",
+                &["build", "macos", "--release"],
+                "macos",
+                Ok(("build", Target::Macos, &["--release"])),
+            ),
+            (
+                "macos off a Mac",
+                &["build", "macos"],
+                "linux",
+                Err("WrongHost"),
+            ),
+            (
+                "run linux",
+                &["run", "linux"],
+                "linux",
+                Ok(("run", Target::Linux, &[])),
+            ),
+            (
+                "windows off Windows",
+                &["run", "windows"],
+                "linux",
+                Err("WrongHost"),
+            ),
+            (
+                "no target: host desktop on macOS",
+                &["parallax", "run"],
+                "macos",
+                Ok(("run", Target::Macos, &[])),
+            ),
+            (
+                "no target, flags only: host desktop on Linux",
+                &["run", "--release"],
+                "linux",
+                Ok(("run", Target::Linux, &["--release"])),
+            ),
+            (
+                "no target: host desktop on Windows",
+                &["build"],
+                "windows",
+                Ok(("build", Target::Windows, &[])),
+            ),
+            (
+                "no target on a host with no desktop row",
+                &["run"],
+                "freebsd",
+                Err("NoHostDesktop"),
+            ),
+            (
+                "unknown verb",
+                &["install", "android"],
+                "linux",
+                Err("Usage"),
+            ),
+            (
+                "unknown verb before a host check",
+                &["serve", "ios"],
+                "linux",
+                Err("Usage"),
+            ),
+            ("unknown target", &["run", "symbian"], "linux", Err("Usage")),
+            ("no command", &["parallax"], "linux", Err("Usage")),
+            ("nothing", &[], "linux", Err("Usage")),
         ];
-        for (name, args, want) in cases {
+        for (name, args, host, want) in cases {
             let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            let got = parse_command(&args)
-                .map(|(c, flags)| (c.verb, c.target, flags.to_vec()))
+            let got = command(&args, host)
+                .map(|((verb, target, _), flags)| (*verb, *target, flags.to_vec()))
                 .map_err(|e| e.variant());
             let want = want
                 .map(|(verb, target, flags)| {
                     (verb, target, flags.iter().map(|s| s.to_string()).collect())
                 })
-                .map_err(|()| "Usage".to_string());
+                .map_err(String::from);
             assert_eq!(got, want, "{name}");
         }
     }

@@ -1,97 +1,60 @@
 # cargo-parallax
 
-`cargo parallax run android [--release] [--device <serial>]` builds the app crate in the current directory, wraps it
-in a generated Gradle project, installs the APK and launches it. `cargo parallax build android [--release] [--apk|--aab]`
-stops after Gradle and prints the package's path: a debug APK, or with `--release` a signed App Bundle (`--apk`: a
-signed universal APK). `--release` means release-signed and R8-shrunk: [cli-android-release.md](cli-android-release.md).
-Source: [main.rs](../crates/cli/src/main.rs) (the `(verb, target) → handler` table),
-[config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (flags, the build),
-in a generated Gradle project, installs the APK and launches it. `cargo parallax run|build macos|linux|windows
-[--release]`, or `run` with no target for this machine's desktop: [cli-desktop.md](cli-desktop.md) (a real `.app` on
-macOS, `cargo run` on Linux and Windows). Source: [main.rs](../crates/cli/src/main.rs) (args: the `VERBS`, `TARGETS`
-and `(verb, target) → handler` `DISPATCH` tables),
-[config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (the run),
-[icon.rs](../crates/cli/src/icon.rs) (launcher icon), [error.rs](../crates/cli/src/error.rs) (every failure and its fix),
-[templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
-Commands are rows of `COMMANDS` in [main.rs](../crates/cli/src/main.rs) (verb, target → handler). iOS
-(`run ios`, `build ios`, the `[ios]` table): [cli-ios.md](cli-ios.md).
-The web: `cargo parallax run web` / `build web`, [cli-web.md](cli-web.md).
+`cargo parallax <verb> <target> [flags]` builds the app crate in the current directory for one target, from the
+`parallax.toml` next to its `Cargo.toml`. Install: `cargo install --path crates/cli` (or `cargo install cargo-parallax`).
+
+| Command | What it does | Doc |
+|---|---|---|
+| `run android [--release] [--device <serial>]` | NDK build, generated Gradle project, `adb install`, launch | [cli-android.md](cli-android.md) |
+| `build android [--release] [--apk\|--aab]` | The same, no install; `--release`: a signed App Bundle | [cli-android-release.md](cli-android-release.md) |
+| `run ios [--release] [--simulator <name\|udid> \| --device [<name\|udid>]]` | cargo build, generated Xcode project, simulator or device run with its log | [cli-ios.md](cli-ios.md) |
+| `build ios [--release]` | Device build, signed when `ios.team` is set | [cli-ios.md](cli-ios.md) |
+| `run web [--release] [--port <n>] [--host <address>] [--open]` | wasm32 build, wasm-bindgen, host page, local server | [cli-web.md](cli-web.md) |
+| `build web [--release]` | The deployable site only; `--release` runs wasm-opt when installed | [cli-web.md](cli-web.md) |
+| `run\|build macos [--release]` | A real `.app` (Info.plist, icon, ad-hoc signature), run from inside the bundle | [cli-desktop.md](cli-desktop.md) |
+| `run\|build linux\|windows [--release]` | `cargo run` / `cargo build` of the app crate | [cli-desktop.md](cli-desktop.md) |
+| `run\|build [--release]` | No target: this machine's desktop | [cli-desktop.md](cli-desktop.md) |
+
+## Source
+
+| File | Holds |
+|---|---|
+| [main.rs](../crates/cli/src/main.rs) | One `Target` enum, the `TARGETS` table (name, host it builds on, desktop or not) and the `COMMANDS` table (verb, target → handler). Each handler parses its own flags. To add a command: a row there and a line in `USAGE` ([error.rs](../crates/cli/src/error.rs)) |
+| [cargo.rs](../crates/cli/src/cargo.rs) | What every target shares: `Profile` (`--release`, Cargo's dir, Gradle's and Xcode's build type), `cargo metadata` (the app package, its `cdylib`, its bin), running tools (`step`, `capture`) |
+| [template.rs](../crates/cli/src/template.rs) | `{{key}}` templates, XML escaping, writing generated files, clearing a generated tree |
+| [config.rs](../crates/cli/src/config.rs) | `parallax.toml`: one `*_DEFAULTS` table per section (`APP_`, `ANDROID_`, `IOS_`, `WEB_`, `MACOS_`), every value checked |
+| [icon.rs](../crates/cli/src/icon.rs) | `app.icon` rendered for each target: Android launcher icon, iOS AppIcon set, macOS `AppIcon.icns` |
+| [version.rs](../crates/cli/src/version.rs) | Flutter's build-name / build-number rules: `app.version` → Android `versionName`, Apple `CFBundleShortVersionString` / `CFBundleVersion` |
+| [android.rs](../crates/cli/src/android.rs), [ios.rs](../crates/cli/src/ios.rs), [web.rs](../crates/cli/src/web.rs), [macos.rs](../crates/cli/src/macos.rs), [desktop.rs](../crates/cli/src/desktop.rs) | One module per target; templates in [templates/\<target\>/](../crates/cli/templates/) |
+| [error.rs](../crates/cli/src/error.rs) | Every failure, each naming what to set or install |
+
+A target with a host (iOS and macOS: macOS; Linux; Windows) is never cross-built: on another OS the command fails
+with `WrongHost` before anything runs.
 
 ## parallax.toml
 
-Next to the app's `Cargo.toml`. Unknown keys and tables are errors. Defaults are one table per target,
-`ANDROID_DEFAULTS` and `MACOS_DEFAULTS` in [config.rs](../crates/cli/src/config.rs); the `[macos]` keys are in
-[cli-desktop.md](cli-desktop.md#macos-a-real-app).
+Unknown keys and tables are errors. The `[app]` table is shared by every target; each target's own table is in its
+doc: `[android]` [cli-android.md](cli-android.md), `[android.release]` [cli-android-release.md](cli-android-release.md),
+`[ios]` [cli-ios.md](cli-ios.md), `[web]` [cli-web.md](cli-web.md), `[macos]` [cli-desktop.md](cli-desktop.md).
 
-| Key | Required | Default | Meaning |
+| Key | Required | Default (`APP_DEFAULTS`) | Meaning |
 |---|---|---|---|
-| `app.name` | yes | | Launcher label |
-| `app.id` | yes | | Android application id and Gradle namespace, e.g. `io.github.xuckless.parallax.hello` |
-| `app.icon` | no | none: Android's default icon | SVG path relative to `parallax.toml`, rendered fresh each run with `resvg`: `mipmap-<density>/ic_launcher.png` at 48dp (`DENSITIES` in [icon.rs](../crates/cli/src/icon.rs)) and an adaptive icon in `mipmap-anydpi-v26/` (background: the SVG's top-left pixel colour, white if not opaque; foreground: the whole SVG in the centre 72dp of the 108dp layer) |
-| `app.version` | no | `1.0` | `versionName` |
-| `android.version_code` | no | `1` | `versionCode`, `1..=2100000000` (Google Play's range) |
-| `android.release.keystore`, `.key_alias` | for `--release` | none | The upload key: [cli-android-release.md](cli-android-release.md) |
-| `android.min_sdk` | no | `28` | `minSdk`; below 28 is an error ([AGENTS.md](../AGENTS.md), Minimum OS) |
-| `android.target_sdk` | no | `35` | `targetSdk` and `compileSdk`; must be ≥ `min_sdk` |
-| `android.abis` | no | `["arm64-v8a", "x86_64"]` | ABIs to build; rows of the `ABIS` table in [android.rs](../crates/cli/src/android.rs) (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`) |
+| `app.name` | yes | | Launcher label, `CFBundleName`, the web page's title unless `web.title` |
+| `app.id` | yes | | Android application id and Gradle namespace; Apple bundle id (no `_` on iOS), e.g. `io.github.xuckless.parallax.hello` |
+| `app.icon` | no | none: each platform's default icon | SVG path relative to `parallax.toml`, rendered fresh each run ([icon.rs](../crates/cli/src/icon.rs)) |
+| `app.version` | no | the Cargo package version | Flutter's `1.2.3+4` form: build name `1.2.3`, build number `4` ([version.rs](../crates/cli/src/version.rs)) |
 
-There is no `lib` key: the library name comes from the crate's `cdylib` target in `cargo metadata`, so it cannot
-drift from `Cargo.toml`.
+There is no `lib` or `bin` key: names come from the crate's targets in `cargo metadata`, so they cannot drift from
+`Cargo.toml`.
 
 ```toml
 [app]
 name = "Hello"
 id = "io.github.xuckless.parallax.hello"
+icon = "../../assets/brand/parallax-app-icon.svg"
 
 [android]
 abis = ["x86_64"]
 ```
 
-## What `run android` does
-
-`build android` skips steps 2 and 7.
-
-1. Reads `ANDROID_HOME`, finds the NDK and its `Pkg.Revision`, checks `platform-tools/adb`.
-2. Picks the device before the long build: `--device` must be online in `adb devices`; without it exactly one must be.
-   With `--release`, the key's passwords are read and checked here too.
-3. `cargo metadata`: the app package (its `Cargo.toml` is in the current directory), its `cdylib` name, the target
-   directory, and the `parallax-android` package, whose `java/` directory holds `ParallaxActivity` and the ported
-   Flutter embedding (works for a path, git or crates.io dependency).
-4. One `cargo build --lib --target <t>…` for all ABIs. The linker, `CC_*`, `CXX_*` and `AR_*` point at the NDK's
-   `<clang target><min_sdk>-clang` (env set by the CLI; no cargo-ndk needed). ABI → Rust target → clang is the
-   `ABIS` table; host OS → NDK layout is the `HOSTS` table.
-5. Writes the Gradle project to `<target dir>/parallax/android/<package>/`: `src/` is deleted and every file in
-   `PROJECT_FILES` is rewritten from the templates; the `.so` files go to `src/main/jniLibs/<abi>/`. Gradle's own
-   `build/` and `.gradle/` stay, for incremental builds. The project opens in Android Studio as is.
-6. Runs the Gradle wrapper (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain
-   <task>`), as `gradlew` would: `assembleDebug`, or the release task. AGP strips the `.so` files with the NDK.
-7. `adb -s <serial> install -r` (if that fails, `adb uninstall <app.id>` and install again, as `flutter run` does: a
-   build signed with another key cannot install over the old one), then
-   `am start -W -n <app.id>/io.github.xuckless.parallax.ParallaxActivity`.
-
-## Generated project
-
-| File | Notes |
-|---|---|
-| [AndroidManifest.xml](../crates/cli/templates/android/AndroidManifest.xml) | Launcher activity `io.github.xuckless.parallax.ParallaxActivity`; `<application>` carries `<meta-data android:name="parallax.lib_name" android:value="<cdylib name>"/>`, plus `android:icon="@mipmap/ic_launcher"` only when `app.icon` is set |
-| [build.gradle](../crates/cli/templates/android/build.gradle) | AGP 9.3.1 (Flutter's `test_runner` uses the same), Java toolchain 17, `ndkPath`/`ndkVersion`, Java sources from `parallax-android/java`, the release signing config and R8 settings |
-| [proguard-rules.pro](../crates/cli/templates/android/proguard-rules.pro) | Flutter's R8 rules; the JNI keep rules are parallax-android's own ([cli-android-release.md](cli-android-release.md)) |
-| [settings.gradle](../crates/cli/templates/android/settings.gradle) | `google()`/`mavenCentral()`; the foojay toolchain resolver downloads JDK 17 when none is installed |
-| [gradle-wrapper.properties](../crates/cli/templates/android/gradle/wrapper/gradle-wrapper.properties) | Gradle 9.8.2, pinned with `distributionSha256Sum` |
-| `gradle-wrapper.jar` | Gradle 9.8.2's wrapper, sha256 `3b8a2577…ce68e98` (matches `services.gradle.org`'s `gradle-9.8.2-wrapper.jar.sha256`); see [NOTICE](../NOTICE) |
-
-## Requirements
-
-| Need | How it is found | If missing |
-|---|---|---|
-| Android SDK with `platform-tools` | `ANDROID_HOME` (required; Studio's default is `~/Android/Sdk`) | Set `ANDROID_HOME`; `sdkmanager "platform-tools"` |
-| Android NDK | `ANDROID_NDK_HOME`, else the only directory in `$ANDROID_HOME/ndk/` (several is an error) | `sdkmanager "ndk;27.1.12297006"` or set `ANDROID_NDK_HOME` |
-| Java 17+ (a JRE is enough) | `$JAVA_HOME/bin/java`, else `java` on `PATH` | Install one; Gradle fetches JDK 17 for compiling itself |
-| Rust targets | `rustup` (the repo's toolchain lists the Android ones) | `rustup target add <rust target>` |
-| Network on first run | Gradle 9.8.2, AGP, JDK 17 download to `~/.gradle` | |
-| A device or emulator | `adb devices` | Start one; emulator flags in [android-spike.md](android-spike.md) |
-
-AGP downloads a missing `platforms;android-<target_sdk>` or build-tools into the SDK if its licenses are accepted (`sdkmanager --licenses`).
-
-The generated manifest sets `android:configChanges` on `ParallaxActivity` (as Flutter does), so rotation and other
-config changes reach `onConfigurationChanged` instead of recreating the Activity.
+CI runs every command from a clean checkout: [ci.md](ci.md).

@@ -7,9 +7,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::android::{self, CARGO_FIX, Metadata, Profile};
+use crate::cargo::{self, CARGO_FIX, Metadata, Profile, step};
 use crate::config::{Config, Web};
 use crate::error::CliError;
+use crate::template::{self, render, write, xml_escape};
 
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 
@@ -153,8 +154,9 @@ fn parse_args(args: &[String], serving: bool) -> Result<WebArgs, CliError> {
 /// Builds the app and writes the deployable site to `<target dir>/parallax/web/<package>/`; returns that directory.
 fn build_dist(app_dir: &Path, config: &Config, profile: Profile) -> Result<PathBuf, CliError> {
     let manifest = app_dir.join("Cargo.toml");
-    let metadata = android::metadata(&manifest)?;
-    let (package, lib) = android::app_package(&metadata, &manifest)?;
+    let metadata = cargo::metadata(&manifest)?;
+    let package = metadata.app_package(&manifest)?;
+    let lib = package.cdylib()?;
     // Fail on a missing or mismatched wasm-bindgen before the long build.
     let want = bindgen_version(&metadata, &package.name)?;
     let have = match Command::new("wasm-bindgen").arg("--version").output() {
@@ -198,8 +200,8 @@ fn build_dist(app_dir: &Path, config: &Config, profile: Profile) -> Result<PathB
     let files = site_files(&config.web, &lib, index, icon, assets)?;
 
     let web = web_profile(profile);
-    android::step(
-        Command::new(android::cargo())
+    step(
+        Command::new(cargo::cargo())
             .args(["build", "--lib", "--target", WASM_TARGET, "--manifest-path"])
             .arg(&manifest)
             .args(profile.cargo_args()),
@@ -212,19 +214,14 @@ fn build_dist(app_dir: &Path, config: &Config, profile: Profile) -> Result<PathB
         .target_directory
         .join("parallax/web")
         .join(&package.name);
-    if dist.exists() {
-        std::fs::remove_dir_all(&dist).map_err(|source| CliError::Io {
-            path: dist.clone(),
-            source,
-        })?;
-    }
+    template::clear(&dist)?;
     let wasm = metadata
         .target_directory
         .join(WASM_TARGET)
         .join(profile.dir())
         .join(format!("{lib}.wasm"));
     let pkg = dist.join(PKG);
-    android::step(
+    step(
         Command::new("wasm-bindgen")
             .args(["--target", "web", "--no-typescript", "--out-name", &lib])
             .args(web.bindgen)
@@ -239,7 +236,7 @@ fn build_dist(app_dir: &Path, config: &Config, profile: Profile) -> Result<PathB
         optimise(&pkg.join(format!("{lib}_bg.wasm")))?;
     }
     for (path, bytes) in &files {
-        android::write(&dist.join(path), bytes)?;
+        write(&dist.join(path), bytes)?;
     }
     println!("cargo parallax: web app in {}", dist.display());
     Ok(dist)
@@ -320,7 +317,7 @@ fn site_files(
                 ("index.html", Some(own)) => own.as_str(),
                 _ => template,
             };
-            (path.to_string(), android::render(text, &vars).into_bytes())
+            (path.to_string(), render(text, &vars).into_bytes())
         })
         .collect();
     if let Some(svg) = icon {
@@ -345,7 +342,7 @@ fn site_vars(web: &Web, lib: &str, icon: bool) -> Vec<(&'static str, String)> {
         false => (String::new(), "[]".into()),
     };
     vec![
-        ("title", android::xml_escape(&web.title)),
+        ("title", xml_escape(&web.title)),
         (
             "title_json",
             serde_json::Value::from(web.title.as_str()).to_string(),

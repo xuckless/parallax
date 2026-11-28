@@ -9,7 +9,7 @@ scripts/apply-patches.sh
 scripts/android-smoke.sh [serial]   # default: the only device in `adb devices`
 ```
 
-Needs what [cargo-parallax](cli.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
+Needs what [cargo-parallax](cli-android.md#requirements) needs (`ANDROID_HOME`, an NDK, Java) plus `python3`. It hides
 new system error dialogs (a slow emulator's "Pixel Launcher isn't responding" covered the app in CI), turns auto-rotate
 off in portrait (the `settings` table; an `EXIT` trap puts the old values back, pass or fail), then runs the `steps`
 table in order. It prints each step's name and exits 0 after `all N steps passed` and the renderer line (which GPU

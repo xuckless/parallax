@@ -29,7 +29,7 @@ Report: `crates/android/java-tests/build/reports/tests/testDebugUnitTest/index.h
 Gradle wrapper: not a second copy. The script runs
 [crates/cli/templates/android/gradle/wrapper/gradle-wrapper.jar](../crates/cli/templates/android/gradle/wrapper/)
 with `--project-dir`; the wrapper reads the `gradle-wrapper.properties` beside its jar, so the version and checksum
-pin ([cli.md](cli.md#generated-project)) are shared too.
+pin ([cli.md](cli-android.md#generated-project)) are shared too.
 
 ## The native seam
 

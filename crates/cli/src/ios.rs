@@ -7,10 +7,11 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::android::{self, CARGO_FIX, Profile, capture, render, step, write, xml_escape};
+use crate::cargo::{self, CARGO_FIX, Profile, capture, step};
 use crate::config::Config;
 use crate::error::CliError;
-use crate::icon;
+use crate::template::{self, render, write, xml_escape};
+use crate::{icon, version};
 
 /// Where the app runs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -151,7 +152,17 @@ pub fn run(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliEr
 }
 
 pub fn build(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
-    ios(app_dir, config, Action::Build, &parse_build(args)?)
+    ios(
+        app_dir,
+        config,
+        Action::Build,
+        // `build ios` always builds for devices.
+        &IosArgs {
+            profile: Profile::from_flags(args)?,
+            destination: Destination::Device,
+            pick: None,
+        },
+    )
 }
 
 /// `run ios` flags: `[--release] [--simulator <name|udid> | --device [<name|udid>]]`.
@@ -189,27 +200,7 @@ fn parse_run(args: &[String]) -> Result<IosArgs, CliError> {
     Ok(parsed)
 }
 
-/// `build ios` flags: `[--release]`. It always builds for devices.
-fn parse_build(args: &[String]) -> Result<IosArgs, CliError> {
-    let mut parsed = IosArgs {
-        profile: Profile::Debug,
-        destination: Destination::Device,
-        pick: None,
-    };
-    for arg in args {
-        match arg.as_str() {
-            "--release" => parsed.profile = Profile::Release,
-            other => return Err(CliError::Usage(format!("unknown argument {other:?}"))),
-        }
-    }
-    Ok(parsed)
-}
-
 fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Result<(), CliError> {
-    let os = std::env::consts::OS;
-    if os != "macos" {
-        return Err(CliError::IosNeedsMacos(os));
-    }
     if !is_bundle_id(&config.id) {
         return Err(CliError::BadBundleId(config.id.clone()));
     }
@@ -221,24 +212,10 @@ fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Resul
         None => Vec::new(),
     };
 
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let manifest = app_dir.join("Cargo.toml");
-    let metadata = capture(
-        Command::new(&cargo)
-            .args([
-                "metadata",
-                "--format-version",
-                "1",
-                "--no-deps",
-                "--manifest-path",
-            ])
-            .arg(&manifest),
-        "cargo metadata",
-        CARGO_FIX,
-    )?;
-    let (metadata, index) = android::app_package(&metadata, &manifest)?;
-    let package = &metadata.packages[index];
-    let bin = app_bin(&package.name, &package.targets)?;
+    let metadata = cargo::metadata(&manifest)?;
+    let package = metadata.app_package(&manifest)?;
+    let bin = package.bin()?;
     let project = metadata
         .target_directory
         .join("parallax/ios")
@@ -253,7 +230,7 @@ fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Resul
     let arch = std::env::consts::ARCH;
     let triple = rust_target(args.destination, arch).ok_or(CliError::UnsupportedIosHost(arch))?;
     step(
-        Command::new(&cargo)
+        Command::new(cargo::cargo())
             .args(["build", "--bin", &bin, "--manifest-path"])
             .arg(&manifest)
             .args(args.profile.cargo_args())
@@ -265,12 +242,7 @@ fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Resul
     )?;
 
     let runner = project.join("Runner");
-    if runner.exists() {
-        std::fs::remove_dir_all(&runner).map_err(|source| CliError::Io {
-            path: runner.clone(),
-            source,
-        })?;
-    }
+    template::clear(&runner)?;
     let vars = project_vars(config);
     for (path, text) in &PROJECT_FILES {
         write(&project.join(path), render(text, &vars).as_bytes())?;
@@ -295,12 +267,17 @@ fn ios(app_dir: &Path, config: &Config, action: Action, args: &IosArgs) -> Resul
         .collect();
     write(
         &project.join(GENERATED_XCCONFIG),
-        generated_xcconfig(&binaries, &bundle_version(&package.version), &signing).as_bytes(),
+        generated_xcconfig(
+            &binaries,
+            &version::apple(config.version(&package.version)),
+            &signing,
+        )
+        .as_bytes(),
     )?;
     println!("cargo parallax: Xcode project in {}", project.display());
 
     let build_dir = project.join("build");
-    let configuration = xcode_configuration(args.profile);
+    let configuration = args.profile.title();
     step(
         Command::new("xcrun")
             .arg("xcodebuild")
@@ -453,13 +430,6 @@ fn rust_target(destination: Destination, arch: &str) -> Option<&'static str> {
         .map(|(_, _, target)| *target)
 }
 
-fn xcode_configuration(profile: Profile) -> &'static str {
-    match profile {
-        Profile::Debug => "Debug",
-        Profile::Release => "Release",
-    }
-}
-
 /// Simulators sign ad hoc; a device needs the team, except for `build ios`, which then builds unsigned.
 fn signing(
     action: Action,
@@ -514,52 +484,29 @@ fn xcodebuild_args(
 }
 
 /// `Parallax/Generated.xcconfig`: the binary per SDK, the bundle version and the team.
-fn generated_xcconfig(binaries: &[(&str, PathBuf)], version: &str, signing: &Signing) -> String {
+fn generated_xcconfig(
+    binaries: &[(&str, PathBuf)],
+    (build_name, build_number): &(String, String),
+    signing: &Signing,
+) -> String {
     let mut text = String::from(
         "// Generated by cargo-parallax every run, as flutter_tools writes Flutter/Generated.xcconfig. Do not edit.\n",
     );
     for (sdk, path) in binaries {
         text += &format!("PARALLAX_BINARY[sdk={sdk}*] = {}\n", path.display());
     }
-    text += &format!("PARALLAX_BUILD_NAME = {version}\nPARALLAX_BUILD_NUMBER = {version}\n");
+    text +=
+        &format!("PARALLAX_BUILD_NAME = {build_name}\nPARALLAX_BUILD_NUMBER = {build_number}\n");
     if let Signing::Team(team) = signing {
         text += &format!("DEVELOPMENT_TEAM = {team}\n");
     }
     text
 }
 
-/// The package version as Apple takes it: `CFBundleShortVersionString` and `CFBundleVersion` are dot-separated
-/// integers, so a SemVer pre-release or build suffix is dropped.
-fn bundle_version(version: &str) -> String {
-    version
-        .split(['-', '+'])
-        .next()
-        .unwrap_or(version)
-        .to_string()
-}
-
 /// Apple's rule: dot-separated segments of letters, digits and `-` (no `_`, which Android allows).
 fn is_bundle_id(id: &str) -> bool {
     id.split('.')
         .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-}
-
-/// iOS runs the app's binary: its only bin target, or the one named like the package.
-fn app_bin(package: &str, targets: &[android::MetaTarget]) -> Result<String, CliError> {
-    let bins: Vec<&str> = targets
-        .iter()
-        .filter(|t| t.crate_types.iter().any(|c| c == "bin"))
-        .map(|t| t.name.as_str())
-        .collect();
-    match bins[..] {
-        [] => Err(CliError::NoBin(package.to_string())),
-        [one] => Ok(one.to_string()),
-        _ if bins.contains(&package) => Ok(package.to_string()),
-        _ => Err(CliError::SeveralBins {
-            package: package.to_string(),
-            bins: bins.iter().map(|b| b.to_string()).collect(),
-        }),
-    }
 }
 
 /// `{{key}}` values for the templates, escaped for the files they land in.
@@ -819,25 +766,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_build_table() {
-        let cases: [(&str, &[&str], Result<&str, ()>); 4] = [
-            ("debug", &[], Ok("debug")),
-            ("release", &["--release"], Ok("release")),
-            ("no simulator builds", &["--simulator", "x"], Err(())),
-            ("no device pick", &["--device"], Err(())),
-        ];
-        for (name, flags, want) in cases {
-            let got = parse_build(&args(flags))
-                .map(|a| (a.profile.dir(), a.destination, a.pick))
-                .map_err(|e| e.variant());
-            let want = want
-                .map(|p| (p, Destination::Device, None))
-                .map_err(|()| "Usage".to_string());
-            assert_eq!(got, want, "{name}");
-        }
-    }
-
-    #[test]
     fn destination_table() {
         // (destination, sdk, generic destination, rust target on arm64, on x86_64)
         let cases = [
@@ -1060,7 +988,7 @@ mod tests {
         let head = "// Generated by cargo-parallax every run, as flutter_tools writes Flutter/Generated.xcconfig. Do not edit.\n\
             PARALLAX_BINARY[sdk=iphonesimulator*] = /t/aarch64-apple-ios-sim/debug/hello\n\
             PARALLAX_BINARY[sdk=iphoneos*] = /t/aarch64-apple-ios/debug/hello\n\
-            PARALLAX_BUILD_NAME = 0.1.10\nPARALLAX_BUILD_NUMBER = 0.1.10\n";
+            PARALLAX_BUILD_NAME = 1.2.3\nPARALLAX_BUILD_NUMBER = 4\n";
         let cases = [
             ("unsigned", Signing::Off, head.to_string()),
             (
@@ -1071,22 +999,10 @@ mod tests {
         ];
         for (name, signing, want) in cases {
             assert_eq!(
-                generated_xcconfig(&binaries, "0.1.10", &signing),
+                generated_xcconfig(&binaries, &version::apple("1.2.3+4"), &signing),
                 want,
                 "{name}"
             );
-        }
-    }
-
-    #[test]
-    fn bundle_version_table() {
-        let cases = [
-            ("plain", "0.1.10", "0.1.10"),
-            ("pre-release", "1.2.0-alpha.1", "1.2.0"),
-            ("build metadata", "1.2.0+20261128", "1.2.0"),
-        ];
-        for (name, version, want) in cases {
-            assert_eq!(bundle_version(version), want, "{name}");
         }
     }
 
@@ -1105,42 +1021,6 @@ mod tests {
         ];
         for (name, id, want) in cases {
             assert_eq!(is_bundle_id(id), want, "{name}");
-        }
-    }
-
-    #[test]
-    fn app_bin_table() {
-        let target = |name: &str, kind: &str| android::MetaTarget {
-            name: name.into(),
-            crate_types: vec![kind.into()],
-        };
-        type Case = (
-            &'static str,
-            Vec<android::MetaTarget>,
-            Result<&'static str, &'static str>,
-        );
-        let cases: Vec<Case> = vec![
-            (
-                "one bin",
-                vec![target("hello", "cdylib"), target("hello", "bin")],
-                Ok("hello"),
-            ),
-            ("bin named otherwise", vec![target("app", "bin")], Ok("app")),
-            (
-                "several, one named like the package",
-                vec![target("tool", "bin"), target("hello", "bin")],
-                Ok("hello"),
-            ),
-            (
-                "several, none named like the package",
-                vec![target("a", "bin"), target("b", "bin")],
-                Err("SeveralBins"),
-            ),
-            ("lib only", vec![target("hello", "cdylib")], Err("NoBin")),
-        ];
-        for (name, targets, want) in cases {
-            let got = app_bin("hello", &targets).map_err(|e| e.variant());
-            assert_eq!(got, want.map(String::from).map_err(String::from), "{name}");
         }
     }
 
@@ -1300,20 +1180,8 @@ mod tests {
 
     #[test]
     fn templates_have_no_unfilled_placeholders() {
-        let config = Config {
-            name: "Tom & Jerry".into(),
-            id: "a.b".into(),
-            icon: None,
-            android: crate::config::Android {
-                min_sdk: 28,
-                target_sdk: 35,
-                abis: vec![],
-            },
-            ios: crate::config::Ios {
-                min_ios: "17.0".into(),
-                team: None,
-            },
-        };
+        let config = Config::parse("[app]\nname = \"Tom & Jerry\"\nid = \"a.b\"\n")
+            .expect("test parallax.toml");
         let vars = project_vars(&config);
         for (path, text) in &PROJECT_FILES {
             let out = render(text, &vars);
