@@ -1,8 +1,9 @@
 Give GPUI text fields on iOS UIKit's own selection UI with UITextInteraction.
 
-Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterTextInputPlugin.mm
-@ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `-[FlutterTextInputView textInteraction]`, its touch
-forwarding to the view responder and `textInRange:`'s nil check. Copyright 2014 The Flutter Authors. BSD-3-Clause.
+Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterTextInputPlugin.mm @
+3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `-[FlutterTextInputView textInteraction]`, its touch forwarding to
+the view responder, `textInRange:`'s nil check and `selectionHighlightColor`. Copyright 2014 The Flutter Authors.
+BSD-3-Clause.
 
 What: while GPUITextInputView is first responder it carries a `UITextInteraction` in editable mode, made as Flutter
 makes it, so a focused GPUI field gets what a UITextField has: the caret, tap to place it, double tap for a word,
@@ -12,13 +13,20 @@ patch 0036's actions. It leaves when the view resigns.
 - The interaction's gestures go on the text input's own view (its `textInputView`), so the view now covers GPUI's
   view (the window sizes it, autoresizing) instead of a hidden 1-point frame, and is its own `textInputView`.
 - `hitTest:withEvent:` claims a touch only while editing and only on the field's text (inside the app's selection
-  rects for the whole document: an app's `character_index_for_point` may clamp any point to a character, as
-  upstream's examples/input.rs does) or within half of Apple's 44 pt touch target of a selection end (a handle
-  knob); every other touch reaches GPUI's view as before. Touches it claims but UIKit's gestures leave are forwarded to GPUI's view (Flutter's
-  `touchesBegan:` … `touchesCancelled:`), so the app still sees them; a recognized gesture cancels them.
+  rects for the whole document: an app's `character_index_for_point` may clamp any point to a character, as upstream's
+  examples/input.rs does) or within half of Apple's 44 pt touch target of a selection end (a handle knob); every other
+  touch reaches GPUI's view as before. Touches it claims but UIKit's gestures leave are forwarded to GPUI's view
+  (Flutter's `touchesBegan:` … `touchesCancelled:`), so the app still sees them; a recognized gesture cancels them.
 - `selectionRectsForRange:` falls back to the app's first rect when the app gives no selection rects (UIKit draws
   no highlight or handles without them); one-line fields need nothing more.
 - `textInRange:` takes nil (UIKit sends it; Flutter checks too). It panicked in objc2 before.
+- UIKit draws no caret and no highlight: a GPUI field paints its own (upstream's examples/input.rs does), so UIKit's
+  were a second caret and a second highlight over the app's. Flutter's `selectionHighlightColor` is clear. Flutter
+  hides UIKit's caret with a clear `insertionPointColor` below iOS 17 only (its oracle row
+  testFlutterTextInputViewOnlyRespondsToInsertionPointColorBelowIOS17: on iOS 17+ that colour also fills the
+  selected IME candidate); on iOS 17+ the selection display interaction UITextInteraction brings gets an empty
+  cursor view (`GPUIEmptyTextCursorView`) instead. Handles (Flutter's `selectionBarColor` is not made clear: GPUI
+  apps draw no handles on iOS), the loupe and the edit menu stay UIKit's.
 
 Why: AGENTS.md "iOS text selection": native `UITextInteraction` on iOS. The behaviour table marks iOS
 `TextSelectionControls::Native`, so Parallax's own selection engine is off there and nothing selected text.
@@ -27,12 +35,13 @@ Test: the native protocol smoke test checks the interaction comes with the respo
 0028's table still passes. Checked by hand in Parallax's hello on the iPhone 17 Pro and iPad Pro 11-inch
 simulators (iOS 26.5): double tap selects a word with handles and the edit menu, a handle drag extends it, Copy
 then Paste replaces a selection, long press shows the loupe, taps outside the field reach GPUI, also when hello's
-`character_index_for_point` is made to clamp (Show emoji toggles while the field edits).
+`character_index_for_point` is made to clamp (Show emoji toggles while the field edits); with hello's caret and
+highlight recoloured, one caret and one highlight show (the smoke test checks the empty cursor view).
 
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index 923ff13..f645433 100644
+index 923ff13..5d020d8 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
 @@ -154,6 +154,7 @@ features = [
@@ -43,16 +52,18 @@ index 923ff13..f645433 100644
      "UIInterface",
      "UIKey",
      "UIKeyConstants",
-@@ -170,6 +171,7 @@ features = [
+@@ -170,6 +171,9 @@ features = [
      "UIScreen",
      "UITextInput",
      "UITextInputTraits",
 +    "UITextInteraction",
++    "UITextCursorView",
++    "UITextSelectionDisplayInteraction",
      "UITouch",
      "UITraitCollection",
      "UIView",
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d4359bc..fdb3de2 100644
+index d4359bc..36d6316 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
@@ -64,7 +75,36 @@ index d4359bc..fdb3de2 100644
  };
  use objc2_ui_kit::*;
  use std::{
-@@ -147,6 +147,8 @@ pub(super) struct TextInputIvars {
+@@ -131,6 +131,28 @@ define_class!(
+     }
+ );
+ 
++define_class!(
++    // UIKit's caret for a field whose app paints its own: an empty view, so it draws nothing whatever frame, alpha
++    // or hidden flag UIKit gives it. Flutter hides UIKit's caret with a clear `insertionPointColor` below iOS 17 only
++    // (on iOS 17+ that colour also fills the selected IME candidate, flutter/flutter#132548); on iOS 17+ the
++    // selection display interaction's caret is this view instead.
++    #[unsafe(super(UIView, UIResponder, objc2_foundation::NSObject))]
++    #[thread_kind = MainThreadOnly]
++    #[name = "GPUIEmptyTextCursorView"]
++    #[ivars = Cell<bool>]
++    struct EmptyCursorView;
++    unsafe impl NSObjectProtocol for EmptyCursorView {}
++    unsafe impl UICoordinateSpace for EmptyCursorView {}
++    unsafe impl UITextCursorView for EmptyCursorView {
++        #[unsafe(method(isBlinking))]
++        fn is_blinking(&self) -> bool { self.ivars().get() }
++        #[unsafe(method(setBlinking:))]
++        fn set_blinking(&self, blinking: bool) { self.ivars().set(blinking) }
++        #[unsafe(method(resetBlinkAnimation))]
++        fn reset_blink_animation(&self) {}
++    }
++);
++
+ pub(super) struct TextInputIvars {
+     window: WindowReference,
+     input_field: Cell<Option<gpui::FocusId>>,
+@@ -147,6 +169,8 @@ pub(super) struct TextInputIvars {
      content_changed: Cell<bool>,
      native_edit: Cell<bool>,
      temporarily_deleted_composed_character: RefCell<Option<Retained<NSString>>>,
@@ -73,7 +113,7 @@ index d4359bc..fdb3de2 100644
  }
  
  define_class!(
-@@ -165,6 +167,16 @@ define_class!(
+@@ -165,6 +189,16 @@ define_class!(
                  && self.ivars().keyboard_eligible.get()
          }
  
@@ -90,7 +130,7 @@ index d4359bc..fdb3de2 100644
          #[unsafe(method(resignFirstResponder))]
          fn resign_first_responder(&self) -> bool {
              let was_first_responder = self.isFirstResponder();
-@@ -175,9 +187,50 @@ define_class!(
+@@ -175,9 +209,60 @@ define_class!(
                  self.ivars().keyboard_desired.set(false);
                  self.ivars().keyboard_eligible.set(false);
              }
@@ -138,10 +178,20 @@ index d4359bc..fdb3de2 100644
 +            if let Some(view) = self.superview() { view.touchesCancelled_withEvent(touches, event); }
 +        }
 +
++        // Ported from flutter/flutter FlutterTextInputPlugin.mm @ 3.50.1 (`selectionHighlightColor`): "Prevent UIKit
++        // from showing selection handles or highlights." The app paints its own selection; UIKit's handles stay
++        // (Flutter's clear `selectionBarColor` is not ported: GPUI apps have no handles of their own on iOS).
++        // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++        #[unsafe(method_id(selectionHighlightColor))]
++        fn selection_highlight_color(&self) -> Retained<AnyObject> {
++            // SAFETY: `+[UIColor clearColor]` returns a UIColor, on the main thread.
++            unsafe { msg_send![objc2::class!(UIColor), clearColor] }
++        }
++
          #[unsafe(method(reconcileTextInput))]
          fn reconcile_text_input(&self) {
              self.ivars().update_pending.set(false);
-@@ -196,6 +249,7 @@ define_class!(
+@@ -196,6 +281,7 @@ define_class!(
                  self.resignFirstResponder();
                  self.ivars().reconciling_responder.set(previous);
              }
@@ -149,7 +199,7 @@ index d4359bc..fdb3de2 100644
              if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
                  self.reloadInputViews();
              }
-@@ -404,9 +458,10 @@ define_class!(
+@@ -404,9 +490,10 @@ define_class!(
  
      unsafe impl UITextInput for TextInputView {
          #[unsafe(method_id(textInRange:))]
@@ -162,7 +212,7 @@ index d4359bc..fdb3de2 100644
              self.with_handler(|handler| {
                  // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
                  let document = document_range(handler)?;
-@@ -582,7 +637,10 @@ define_class!(
+@@ -582,7 +669,10 @@ define_class!(
              let Some(range) = self.validated_range(range) else { return NSArray::new(); };
              let bounds = self.with_handler(|handler| {
                  if !allowed_range(handler, &range) { return Vec::new(); }
@@ -174,7 +224,7 @@ index d4359bc..fdb3de2 100644
              }).unwrap_or_default();
              let count = bounds.len();
              let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
-@@ -629,9 +687,8 @@ define_class!(
+@@ -629,9 +719,8 @@ define_class!(
          }
          #[unsafe(method_id(textInputView))]
          fn text_input_view(&self) -> Retained<UIView> {
@@ -186,7 +236,7 @@ index d4359bc..fdb3de2 100644
          }
      }
  
-@@ -655,6 +712,7 @@ impl TextInputView {
+@@ -655,6 +744,7 @@ impl TextInputView {
              content_changed: Cell::new(false),
              native_edit: Cell::new(false),
              temporarily_deleted_composed_character: RefCell::new(None),
@@ -194,7 +244,7 @@ index d4359bc..fdb3de2 100644
          });
          unsafe { msg_send![super(this), initWithFrame: frame] }
      }
-@@ -715,6 +773,50 @@ impl TextInputView {
+@@ -715,6 +805,60 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
@@ -214,6 +264,16 @@ index d4359bc..fdb3de2 100644
 +                unsafe { interaction.setTextInput(Some(self)) };
 +                self.ivars().text_interaction.replace(Some(interaction.clone()));
 +                self.addInteraction(ProtocolObject::from_ref(&*interaction));
++                // The interaction brings a selection display interaction (iOS 17+), whose caret the app paints.
++                let cursor = EmptyCursorView::alloc(self.mtm()).set_ivars(Cell::new(false));
++                let cursor: Retained<EmptyCursorView> = unsafe { msg_send![super(cursor), init] };
++                for added in self.interactions() {
++                    let added: &AnyObject = (*added).as_ref();
++                    if let Some(display) = added.downcast_ref::<UITextSelectionDisplayInteraction>() {
++                        // SAFETY: the view implements UITextCursorView, which `cursorView` requires.
++                        unsafe { display.setCursorView(&cursor) };
++                    }
++                }
 +            }
 +            (false, Some(interaction)) => {
 +                self.ivars().text_interaction.replace(None);
@@ -245,7 +305,7 @@ index d4359bc..fdb3de2 100644
      /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
      /// delegate, as of an app edit.
      fn action_changed(&self, content_changed: bool) {
-@@ -885,6 +987,12 @@ fn native_rect(bounds: gpui::Bounds<gpui::Pixels>) -> CGRect {
+@@ -885,6 +1029,12 @@ fn native_rect(bounds: gpui::Bounds<gpui::Pixels>) -> CGRect {
      )
  }
  
@@ -258,7 +318,7 @@ index d4359bc..fdb3de2 100644
  fn nonempty_caret_rect(mut rect: CGRect) -> CGRect {
      // GPUI can report a zero-width insertion location; UIKit needs a visible caret.
      rect.size.width = rect.size.width.max(1.);
-@@ -1187,8 +1295,16 @@ pub(super) mod tests {
+@@ -1187,8 +1337,23 @@ pub(super) mod tests {
          view.ivars().keyboard_eligible.set(true);
          assert!(view.becomeFirstResponder());
          assert!(view.isFirstResponder());
@@ -268,6 +328,13 @@ index d4359bc..fdb3de2 100644
 +            interaction.as_ref().and_then(|interaction| interaction.view()),
 +            Some(view.clone().into_super())
 +        );
++        // UIKit draws no caret over the app's: its selection display shows the empty cursor view.
++        assert!(view.interactions().iter().any(|added| {
++            let added: &AnyObject = (*added).as_ref();
++            added
++                .downcast_ref::<UITextSelectionDisplayInteraction>()
++                .is_some_and(|display| display.cursorView().isKindOfClass(<EmptyCursorView as objc2::ClassType>::class()))
++        }));
          assert!(view.resignFirstResponder());
          assert!(!view.isFirstResponder());
 +        assert!(view.ivars().text_interaction.borrow().is_none());

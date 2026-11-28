@@ -1,7 +1,7 @@
 # iOS text selection: UIKit's own
 
-On iOS a focused GPUI field selects text the way a `UITextField` does: UIKit draws the caret, highlight, handles and
-loupe and shows its edit menu. Patch [0038](../patches/0038-ios-text-interaction.patch) adds a `UITextInteraction`
+On iOS a focused GPUI field selects text the way a `UITextField` does: UIKit draws the handles and loupe and shows
+its edit menu; the app paints the caret and highlight, as on every other platform. Patch [0038](../patches/0038-ios-text-interaction.patch) adds a `UITextInteraction`
 to gpui_ios's text input view ([text_input.rs](../upstream/gpui-pre-ios/src/ios/text_input.rs) plus the patch);
 the edit menu calls patch [0036](../patches/0036-ios-edit-actions.patch)'s actions. The behaviour table marks iOS
 `TextSelectionControls::Native` ([behaviour.md](behaviour.md)), so Parallax's own engine
@@ -41,19 +41,27 @@ confirms it.
   `closestPositionToPoint:`, and `selectionRectsForRange:` from `selection_bounds_for_range`, falling back to
   `bounds_for_range` when the app gives none (fine for one-line fields; multi-line fields should give per-line rects).
 - **Edit actions** tell the input delegate afterwards (`action_changed`), so UIKit's handles follow a paste or cut.
+- **One caret, one highlight.** GPUI fields paint their own (upstream's examples/input.rs, hello), so UIKit's would
+  be a second caret and highlight on top. As Flutter's `FlutterTextInputView`, the view answers a clear
+  `selectionHighlightColor`. Flutter's clear `insertionPointColor` is below iOS 17 only (on iOS 17+ it also fills
+  the selected IME candidate; oracle row `testFlutterTextInputViewOnlyRespondsToInsertionPointColorBelowIOS17`),
+  so on iOS 17+ the `UITextSelectionDisplayInteraction` that `UITextInteraction` brings gets an empty cursor view
+  (`GPUIEmptyTextCursorView`) when the interaction is installed. Handles, loupe and edit menu stay UIKit's.
 
 ## For app authors
 
-UIKit draws its caret and highlight over GPUI's; an app may draw its own as well (hello does) or leave them to
-UIKit on iOS. Give `selection_bounds_for_range` for multi-line text. Read-only text has no interaction (the field
+Paint the caret and selection, as on desktop: UIKit draws neither on iOS. Give `selection_bounds_for_range` for
+multi-line text; those rects are also where the field takes touches while editing. Read-only text has no interaction (the field
 must take text input).
 
 ## Checks
 
-The protocol smoke test (patch 0028's harness) checks the interaction comes and goes with the responder; the oracle
-table covers the actions ([ios-text-input.md](ios-text-input.md)). The gestures were checked in hello on the iPhone
-17 Pro and iPad Pro 11-inch simulators (iOS 26.5) with idb: double tap, handle drag, Copy then Paste, the loupe, a
-tap on a button outside the field. A real iPad run is the owner's ([ROADMAP](../ROADMAP.md), Phase 4 follow-ups).
+The protocol smoke test (patch 0028's harness) checks the interaction comes and goes with the responder and that
+its selection display shows the empty cursor view; the oracle table covers the actions
+([ios-text-input.md](ios-text-input.md)). The gestures were checked in hello on the iPhone 17 Pro and iPad Pro
+11-inch simulators (iOS 26.5) with idb: double tap, handle drag, Copy then Paste, the loupe, a tap on a button
+outside the field (also with hello's `character_index_for_point` made to clamp). With hello's caret and highlight
+recoloured red, screenshots show one caret and one highlight (before the fix, UIKit's blue caret sat on hello's). A real iPad run is the owner's ([ROADMAP](../ROADMAP.md), Phase 4 follow-ups).
 
 ## Not done
 
