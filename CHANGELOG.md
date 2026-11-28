@@ -6,6 +6,15 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+### Added (0.1.10)
+
+- Native views on Linux (Wayland): `NativeView::new` takes a `wl_surface` the app made on GPUI's connection and shows
+  it as a subsurface under the window, in step with GPUI's frames, with no GPUI frame for the view's own
+  (docs/native-view-wayland.md, fork patches 0047–0049). The wgpu renderer cuts native views' holes for every wgpu
+  target. Example: `examples/native-view-wayland`.
+- `NativeView::bounds` and `NativeViewInput`: where the window gets input over a view, its element's listeners hear
+  it (docs/native-view.md).
+
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 
 Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0046).
