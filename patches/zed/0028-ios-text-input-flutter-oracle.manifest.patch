@@ -1,0 +1,17 @@
+Zed's manifest change for patches/0028-ios-text-input-flutter-oracle.patch, which patch-paths.sh cannot translate.
+PlatformInputHandler::for_focused_field is test-support only, so gpui_ios's text_input harness needs gpui
+with `test-support`. Zed's gpui_ios already has the other dev-dependencies the gpui-pre package dropped.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.
+
+diff --git a/crates/gpui_ios/Cargo.toml b/crates/gpui_ios/Cargo.toml
+--- a/crates/gpui_ios/Cargo.toml
++++ b/crates/gpui_ios/Cargo.toml
+@@ -29,6 +29,7 @@
+ 
+ 
+ [target.'cfg(target_os = "ios")'.dev-dependencies]
++gpui = { workspace = true, features = ["test-support"] }
+ gpui_platform.workspace = true
+ objc2-ui-kit = { workspace = true, features = ["UIConversationContext"] }
+ slotmap.workspace = true

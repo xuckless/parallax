@@ -1,0 +1,34 @@
+Zed's manifest change for patches/0031-ios-hardware-keyboard.patch, which patch-paths.sh cannot translate.
+In Zed, gpui_ios's objc2-foundation features live in gpui_ios's Cargo.toml and its objc2-ui-kit features in
+the workspace Cargo.toml.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.
+
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -732,8 +732,12 @@
+     "UIPanGestureRecognizer",
+     "UIScreenEdgePanGestureRecognizer",
+     "UIInterface",
++    "UIKey",
++    "UIKeyConstants",
+     "UIOpenURLContext",
+     "UIPasteboard",
++    "UIPress",
++    "UIPressesEvent",
+     "UIResponder",
+     "UIScene",
+     "UISceneConfiguration",
+diff --git a/crates/gpui_ios/Cargo.toml b/crates/gpui_ios/Cargo.toml
+--- a/crates/gpui_ios/Cargo.toml
++++ b/crates/gpui_ios/Cargo.toml
+@@ -42,7 +42,7 @@
+ gpui_apple = { workspace = true, features = ["font-kit"] }
+ log.workspace = true
+ objc2.workspace = true
+-objc2-foundation = { workspace = true, features = ["NSThread", "NSOperation", "NSUserActivity", "block2"] }
++objc2-foundation = { workspace = true, features = ["NSThread", "NSTimer", "NSOperation", "NSUserActivity", "block2"] }
+ objc2-ui-kit.workspace = true
+ objc2-quartz-core = { workspace = true, features = ["CADisplayLink"] }
+ objc2-core-foundation = { workspace = true, default-features = true }

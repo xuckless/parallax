@@ -1,0 +1,29 @@
+Zed's manifest change for patches/0032-ios-keyboard-inset.patch, which patch-paths.sh cannot translate.
+In Zed, gpui_ios's objc2-quartz-core features live in gpui_ios's Cargo.toml and its objc2-ui-kit features in
+the workspace Cargo.toml.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.
+
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -722,6 +722,7 @@
+     "UICommand",
+     "UICornerConfiguration",
+     "UICornerRadius",
++    "UIDevice",
+     "UIEvent",
+     "UIFeedbackGenerator",
+     "UIImpactFeedbackGenerator",
+diff --git a/crates/gpui_ios/Cargo.toml b/crates/gpui_ios/Cargo.toml
+--- a/crates/gpui_ios/Cargo.toml
++++ b/crates/gpui_ios/Cargo.toml
+@@ -44,7 +44,7 @@
+ objc2.workspace = true
+ objc2-foundation = { workspace = true, features = ["NSThread", "NSTimer", "NSOperation", "NSUserActivity", "block2"] }
+ objc2-ui-kit.workspace = true
+-objc2-quartz-core = { workspace = true, features = ["CADisplayLink"] }
++objc2-quartz-core = { workspace = true, features = ["CAAnimation", "CABase", "CADisplayLink"] }
+ objc2-core-foundation = { workspace = true, default-features = true }
+ parking_lot.workspace = true
+ raw-window-handle.workspace = true

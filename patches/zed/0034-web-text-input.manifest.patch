@@ -1,0 +1,16 @@
+Zed's manifest change for patches/0034-web-text-input.patch, which patch-paths.sh cannot translate.
+gpui_web's web-sys features, in Zed's gpui_web Cargo.toml.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.
+
+diff --git a/crates/gpui_web/Cargo.toml b/crates/gpui_web/Cargo.toml
+--- a/crates/gpui_web/Cargo.toml
++++ b/crates/gpui_web/Cargo.toml
+@@ -61,6 +61,7 @@
+     "FocusOptions",
+     "HtmlCanvasElement",
+     "HtmlElement",
++    "HtmlInputElement",
+     "HtmlTextAreaElement",
+     "IdleDeadline",
+     "IdleRequestOptions",

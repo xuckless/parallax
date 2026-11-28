@@ -1,0 +1,24 @@
+Zed's manifest change for patches/0040-apple-accessibility-display.patch, which patch-paths.sh cannot translate.
+In Zed, gpui_ios's objc2-ui-kit and gpui_macos's objc2-app-kit features live in the workspace Cargo.toml.
+sync-fork.sh translates the patch with --drop-manifests and appends this file's diff
+(docs/patch-translation.md). Change it only when the patch's Cargo.toml hunk changes.
+
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -718,6 +718,7 @@
+     "objc2-quartz-core",
+     "objc2-core-foundation",
+     "NSText",
++    "UIAccessibility",
+     "UIApplication",
+     "UICommand",
+     "UICornerConfiguration",
+@@ -760,6 +761,7 @@
+     "UIWindowScene",
+ ] }
+ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
++    "NSAccessibility",
+     "NSAlert",
+     "NSAppearance",
+     "NSApplication",
