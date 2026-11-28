@@ -28,9 +28,9 @@ hosted, and what each costs: [native-view-android-hosting.md](native-view-androi
    goes to GPUI first (`on_back_gesture`); unclaimed, the Activity's back follows.
 5. `view.set_background(colour)` paints the underlay: what shows where a view has not caught up with its hole.
 
-[examples/native-view-android](../examples/native-view-android/) does all of this (`--es surface view|hosted|control`
-picks the surface's kind, `--ez animate true` moves its slot every frame, `--ez stack true` shows two overlapping
-views in place of the WebView).
+[examples/native-view](../examples/native-view/) ([android.rs](../examples/native-view/src/android.rs)) does all of
+this (`--es view control|view|hosted` picks the surface's kind, `--ez animate true` moves its slot every frame,
+`--ez stack true` shows two overlapping views in place of the WebView; [examples-native-view.md](examples-native-view.md)).
 
 ## What happens
 

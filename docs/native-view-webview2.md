@@ -3,7 +3,8 @@
 Patch [0056](../patches/0056-windows-native-view-visuals.patch) lets a WebView2 page be a `NativeView` on Windows,
 through WebView2's visual hosting: the page renders into a DirectComposition visual in GPUI's own tree, under GPUI's
 hole, with no child window over GPUI's ([native-view-windows.md](native-view-windows.md) is the rest of the design).
-[examples/native-view-webview2](../examples/native-view-webview2/src/) is the whole pattern.
+[examples/native-view](../examples/native-view/)'s `--view webview2`
+([windows/webview2.rs](../examples/native-view/src/windows/webview2.rs)) is the whole pattern.
 
 ## How an app uses it
 
@@ -45,11 +46,11 @@ and `NativeView` on the new device.
 
 ## Checks
 
-[windows-native-view-checks.sh](../scripts/windows-native-view-checks.sh) runs the example in CI's `windows-touch` job
-at 100 and 125 % after the swap chain example. The job installs the Evergreen WebView2 runtime only when the image has
-none ([ci.yml](../.github/workflows/ci.yml)). The page (`src/page.html`, loaded with `NavigateToString`) posts its
-events and its animation frames per second through `window.chrome.webview.postMessage`; the example logs them
-(`WebMessageReceived`). Per scale: the page loads; a screenshot shows it in the hole, the cover over its corner, no
+[windows-native-view-checks.sh](../scripts/windows-native-view-checks.sh) runs `native-view --view webview2` in CI's `windows-touch` job
+at 100 and 125 % after the swap chain variant. The job installs the Evergreen WebView2 runtime only when the image has
+none ([ci.yml](../.github/workflows/ci.yml)). The page (`src/windows/page.html`, loaded with `NavigateToString`) posts its
+events and its animation frame count through `window.chrome.webview.postMessage`; the example logs the events
+(`WebMessageReceived`) and reports the count as its view frames. Per scale: the page loads; a screenshot shows it in the hole, the cover over its corner, no
 seam, no gap colour; a move and click over the view reach the page at 200 150 CSS px; the wheel and a key (after the
 click) reach it; the cover keeps its click; 0 GPUI frames per second over 3 s while the page animates.
 

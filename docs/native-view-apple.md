@@ -56,16 +56,17 @@ Keys the app's view leaves come up the responder chain to GPUI.
 
 ## The example
 
-[examples/native-view-apple](../examples/native-view-apple/): the view recolours itself 60 times a second on its own
+[examples/native-view](../examples/native-view/) ([apple.rs](../examples/native-view/src/apple.rs),
+[examples-native-view.md](examples-native-view.md)): the view recolours itself 60 times a second on its own
 `NSTimer`; an orange GPUI div covers part of it; "Move" moves and resizes its slot every frame; "Hide" stops painting
-it; "Drop views" drops every native view handle. Once a second: `native-view-apple: gpui frames/s N, native view
-frames/s M`. Input logs: `slot: mouse down at …` (iOS, view-relative), `NSView: mouseDown: at …` (macOS),
-`div over the view: click N`. The gap colour is magenta, so any frame where hole and view part shows it. iOS also
+it; "Drop views" drops every native view handle. Once a second: `native-view: gpui frames/s N, view frames/s M`.
+Input logs: `view pointer down at (x, y)` (iOS, view-relative), `NSView: mouseDown: at …` (macOS),
+`div over view: down`. The gap colour is magenta, so any frame where hole and view part shows it. iOS also
 has a GPUI field next to a native `UITextField` (`apple/typing.rs`), logging `UITextField: first responder yes/no`
 and `UITextField: text "…"`.
 
 ```sh
-cargo run -p native-view-apple                     # macOS
+cargo run -p native-view                           # macOS
 scripts/apple-native-view-checks.sh "iPhone 17"    # iOS simulator on pixl-mac, with its checks
 ```
 

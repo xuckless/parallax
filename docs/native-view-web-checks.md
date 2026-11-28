@@ -1,16 +1,16 @@
 # Native views on the web: checks
 
 Part of [native-view-web.md](native-view-web.md). [web-checks.mjs](../scripts/web-checks.mjs)' `native-view` suite
-drives [examples/native-view-web](../examples/native-view-web/) in a headless browser.
+drives [examples/native-view](../examples/native-view/) on the web in a headless browser.
 
 ## Running it
 
 Build and serve the example on two ports (the second origin for the cross-origin iframe):
 
 ```sh
-wasm-pack build examples/native-view-web --target web --no-typescript --no-pack --dev
-python3 -m http.server 8770 --bind 127.0.0.1 --directory examples/native-view-web &
-python3 -m http.server 8771 --bind 127.0.0.1 --directory examples/native-view-web &
+wasm-pack build examples/native-view --target web --no-typescript --no-pack --dev
+python3 -m http.server 8770 --bind 127.0.0.1 --directory examples/native-view &
+python3 -m http.server 8771 --bind 127.0.0.1 --directory examples/native-view &
 node scripts/web-checks.mjs http://127.0.0.1:8770/ desktop|mobile <chromium port>|firefox native-view [scale]
 ```
 

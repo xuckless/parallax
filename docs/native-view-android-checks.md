@@ -1,7 +1,7 @@
 # Android native view checks
 
 [android-native-view-checks.sh](../scripts/android-native-view-checks.sh) runs
-[examples/native-view-android](../examples/native-view-android/) on one emulator or device and asserts on what reaches
+[examples/native-view](../examples/native-view/) on one emulator or device and asserts on what reaches
 the screen and the log ([native-view-android.md](native-view-android.md) explains the code). Run it with one device
 up: `scripts/android-native-view-checks.sh [serial]`. Screenshots and logcat land in `target/android-native-view/`.
 
