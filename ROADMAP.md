@@ -371,26 +371,26 @@ platform views, WebView2's visual hosting. Helpers: React Native's `RCTSurfaceTo
 (touch into native views), `RCTComponentViewRegistry.mm` and `SurfaceMountingManager.kt` (view lifecycle), all MIT;
 gpui-component's `gpui-webview` crate (Apache-2.0) as a reference.
 
-- [ ] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
+- [x] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
       `set_sync` only for frames that move, resize, show or hide it, `desync` otherwise; `wp_viewport` for its size;
       fractional scale rounds the subsurface outwards and cuts the hole a physical pixel smaller. Port Chromium's
       `ui/ozone/platform/wayland/host/wayland_subsurface.cc` and `wayland_frame_manager.cc` (BSD-3; with its mutter
       buffer-release workaround). GStreamer's `waylandsink` layout sequence is reference only (LGPL).
-- [ ] wgpu renderer hole: `PrimitiveBatch::NativeViews` clears the view's bounds to transparent in paint order, with
+- [x] wgpu renderer hole: `PrimitiveBatch::NativeViews` clears the view's bounds to transparent in paint order, with
       Chromium's `ReplaceExistingQuadWithHolePunch` semantics; premultiplied alpha while a view shows; log the
       alpha mode chosen. Risk: NVIDIA's Vulkan WSI offers only opaque, so fall back to GL there.
-- [ ] Windows: GPUI already presents through DirectComposition. A root container visual, the app's visual below
+- [x] Windows: GPUI already presents through DirectComposition. A root container visual, the app's visual below
       GPUI's swapchain visual, a D3D11 hole, placement in GPUI's own DComp `Commit`. Model Chromium's
       `dc_layer_overlay.cc` / `dc_layer_tree.cc` and WebView2's visual hosting; never child HWNDs.
-- [ ] iOS: a `UIView` / `CALayer` under a non-opaque `CAMetalLayer`, the Metal hole shared with macOS; Flutter's
+- [x] iOS: a `UIView` / `CALayer` under a non-opaque `CAMetalLayer`, the Metal hole shared with macOS; Flutter's
       `FlutterPlatformViewsController.mm` as the oracle.
-- [ ] Android: a `SurfaceView` underlay; Flutter's HCPP `PlatformViewsController2.java` as reference (API 34+), with
+- [x] Android: a `SurfaceView` underlay; Flutter's HCPP `PlatformViewsController2.java` as reference (API 34+), with
       TLHC-style copies below it.
-- [ ] Web: a DOM slot under a transparent canvas, from Flutter's `slots.dart` and `content_manager.dart`.
-- [ ] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
+- [x] Web: a DOM slot under a transparent canvas, from Flutter's `slots.dart` and `content_manager.dart`.
+- [x] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
       take their own input.
-- [ ] The view's own frames cause 0 GPUI renders.
-- [ ] macOS: upstream's native view checked against the acceptance below; patch the gaps (owner wants native views on
+- [x] The view's own frames cause 0 GPUI renders.
+- [x] macOS: upstream's native view checked against the acceptance below; patch the gaps (owner wants native views on
       every desktop, 2026-11-27).
 - [ ] X11: deferred (no underlay); `NativeView::new` keeps failing there.
 
@@ -401,6 +401,11 @@ mode chosen is logged; no seams at 1.0 and a fractional scale (1.25). On Wayland
 NVIDIA (proprietary, Vulkan) and Mesa.
 
 **NativeView gate** (0.1.10): the acceptance above passes on every listed target.
+
+**NativeView gate passed 2026-11-28** ([native-view-gate.md](docs/native-view-gate.md)): 0 GPUI frames/s while only the
+view updates on Wayland (NVIDIA and Mesa), Windows, iOS, Android, web (Chromium, Firefox); macOS on upstream's native
+view plus in-step present. Owner checks owed: macOS screen recording, iPad, Wayland 125 % on the real desktop, headed
+WebGPU on NVIDIA, WebView2 popups and device loss on real Windows. Android `View` / `in_surface` lag a frame by design.
 
 ## Phase 5: Tooling and docs
 
