@@ -148,6 +148,8 @@ impl Render for Example {
             |_, _, _, _| {},
         )
         .absolute()
+        .top_0()
+        .left_0()
         .size_full();
         let button = |id: &'static str, top: f32| {
             div()

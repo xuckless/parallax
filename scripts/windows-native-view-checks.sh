@@ -133,15 +133,19 @@ for percent in "${percents[@]}"; do
   check_composition "$work/still.raw" "still"
   check_input
   # Moving: GPUI draws every step, the view's placement goes in each frame's own commit.
+  # Shots as fast as touch-inject takes them while the view slides; counted after, so they sample more frames.
   inject click 550 380
-  for i in $(seq 1 8); do
-    sleep 0.2
-    shot "$work/move-$i.raw"
-    gaps=$(count "$work/move-$i.raw" "$gap_colour")
-    ((gaps == 0)) || fail "moving, shot $i: $gaps gap pixels (hole and view out of step)"
-  done
+  shots=20
+  for i in $(seq 1 $shots); do shot "$work/move-$i.raw"; done
   sleep 2
-  grep -q 'motion: end' "$work/example.log" && pass "moved, gap checked in 8 shots" || fail "the move never ended"
+  grep -q 'motion: end' "$work/example.log" || fail "the move never ended"
+  out_of_step=0
+  for i in $(seq 1 $shots); do
+    gaps=$(count "$work/move-$i.raw" "$gap_colour")
+    ((gaps == 0)) || { echo "moving, shot $i: $gaps gap pixels"; out_of_step=$((out_of_step + 1)); }
+  done
+  ((out_of_step == 0)) && pass "moved: no gap in $shots shots" \
+    || fail "moving: hole and view out of step in $out_of_step of $shots shots"
   # Resizing: the view's own content follows a frame late, so the gap colour may show only until it does.
   inject click 550 440
   sleep 1.5
