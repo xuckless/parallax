@@ -14,6 +14,7 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceControl;
 import android.view.SurfaceControlViewHost;
@@ -168,7 +169,7 @@ final class NativeViews {
       view.setClipBounds(placement.unclipped() ? null : placement.clip);
       // The underlay draws (and hit-tests) its children by Z: GPUI's paint order. Negative, so no
       // elevation shadow.
-      
+      view.setZ(placement.layer);
       view.setVisibility(View.VISIBLE);
     }
 
@@ -328,12 +329,25 @@ final class NativeViews {
 
   NativeViews(Context context, ParallaxSurfaceView surfaceView) {
     this.surfaceView = surfaceView;
-    underlay = new FrameLayout(context);
+    underlay =
+        new FrameLayout(context) {
+          // Back is GPUI's back gesture, not a key for the focused view: it goes to GPUI's view
+          // first even while a native view has focus (GPUI focuses a view's handle when its
+          // element is tapped). Unclaimed, KeyboardManager redispatches it on to the Activity.
+          @Override
+          public boolean dispatchKeyEvent(KeyEvent event) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+              return surfaceView.dispatchKeyEvent(event);
+            }
+            return super.dispatchKeyEvent(event);
+          }
+        };
     // Insets are GPUI's: without this, a view that fits system windows could consume them before
     // GPUI's view, the next sibling, sees them (API 28-29 stop at the first consumer).
     underlay.setOnApplyWindowInsetsListener((view, insets) -> insets);
     // Keys and Back stay GPUI's: a forwarded tap must not move Android focus into a view (a
     // WebView takes it on touch). focus() lets it in while GPUI focuses the view's handle.
+    underlay.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
   }
 
   /** The Activity: the app builds its views with it (parallax_android::with_activity). */
