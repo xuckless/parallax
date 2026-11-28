@@ -26,27 +26,48 @@ for(let i=1;i<=60;i++){const p=document.createElement('p');p.textContent='Row '+
 let last=0;addEventListener('scroll',()=>{const y=Math.round(scrollY);if(Math.abs(y-last)>=100){last=y;console.log('page: scrollY '+y)}});
 </script></body></html>"#;
 
-/// What the surface is: `SurfaceControl` needs API 29.
+/// What the surface is: `SurfaceControl` needs API 29, `InSurface` hosting API 34.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SurfaceKind {
     /// A `SurfaceControl` with a buffer, made a child of GPUI's surface (API 29+).
     Control,
     /// An ordinary `SurfaceView`, laid out under GPUI's view.
     View,
+    /// A `SurfaceView` in a `SurfaceControlViewHost` of its own (`parallax_android::in_surface`, API 34+).
+    Hosted,
 }
 
-/// The intent's extras: `surface` (`view` or `control`) and `animate`.
+/// The intent's `surface` extra → kind. `SurfaceControl` is the default from API 29.
+const SURFACE_KINDS: [(&str, SurfaceKind); 3] = [
+    ("view", SurfaceKind::View),
+    ("hosted", SurfaceKind::Hosted),
+    ("control", SurfaceKind::Control),
+];
+
+/// The intent's extras: `surface` (`view`, `hosted` or `control`), `animate` and `stack`.
 pub struct Options {
     pub surface: SurfaceKind,
     pub animate: bool,
+    /// Two overlapping tiles in place of the WebView: SurfaceControls with `control`, plain Views otherwise.
+    pub stack: bool,
 }
 
 /// The objects handed to `NativeView::new`, and the surface the producer fills.
 pub struct Views {
     pub surface_view: GlobalRef,
     pub surface: GlobalRef,
-    pub web_view: GlobalRef,
+    /// The WebView, or with `stack` the two tiles in attach order (the top one first), each with the surface its
+    /// producer fills, if it has one.
+    pub second: Second,
 }
+
+pub enum Second {
+    Web(GlobalRef),
+    Tiles([(GlobalRef, Option<GlobalRef>); 2]),
+}
+
+/// The tiles' colours (RGB), in attach order: the yellow one is attached first but painted last, so it is on top.
+pub const TILE_COLOURS: [u32; 2] = [0xe0c020, 0xe03030];
 
 pub fn options(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<Options> {
     let sdk = env
@@ -69,28 +90,78 @@ pub fn options(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<Opti
     } else {
         Some(env.get_string(&surface.into())?.into())
     };
-    let key = env.new_string("animate")?;
-    let animate = env
-        .call_method(
+    let mut flag = |name: &str| -> jni::errors::Result<bool> {
+        let key = env.new_string(name)?;
+        env.call_method(
             &intent,
             "getBooleanExtra",
             "(Ljava/lang/String;Z)Z",
             &[JValue::Object(&key), JValue::Bool(0)],
         )?
-        .z()?;
-    let surface = match (surface.as_deref(), sdk) {
-        (Some("view"), _) | (_, ..29) => SurfaceKind::View,
-        _ => SurfaceKind::Control,
+        .z()
     };
-    Ok(Options { surface, animate })
+    let (animate, stack) = (flag("animate")?, flag("stack")?);
+    let asked = SURFACE_KINDS
+        .iter()
+        .find(|(name, _)| Some(*name) == surface.as_deref())
+        .map(|(_, kind)| *kind);
+    let surface = match (asked, sdk) {
+        (_, ..29) => SurfaceKind::View,
+        (Some(kind), _) => kind,
+        (None, _) => SurfaceKind::Control,
+    };
+    Ok(Options {
+        surface,
+        animate,
+        stack,
+    })
 }
 
 pub fn views(
     env: &mut JNIEnv,
     activity: &JObject,
-    kind: SurfaceKind,
+    options: &Options,
 ) -> jni::errors::Result<Views> {
-    let (surface_view, surface) = match kind {
+    let (surface_view, surface) = native_surface(env, activity, options.surface)?;
+    let second = if options.stack {
+        // A SurfaceControl with a producer, or a plain coloured View: a SurfaceView's surface stacks by Android's own
+        // SurfaceView rules, not by the View's Z (docs/native-view-android-hosting.md).
+        let mut tile = |colour: u32| -> jni::errors::Result<(GlobalRef, Option<GlobalRef>)> {
+            if options.surface == SurfaceKind::Control {
+                let (object, surface) = native_surface(env, activity, SurfaceKind::Control)?;
+                return Ok((
+                    env.new_global_ref(object)?,
+                    Some(env.new_global_ref(surface)?),
+                ));
+            }
+            let view = env.new_object(
+                "android/view/View",
+                "(Landroid/content/Context;)V",
+                &[JValue::Object(activity)],
+            )?;
+            let argb = (0xff00_0000 | colour) as i32;
+            env.call_method(&view, "setBackgroundColor", "(I)V", &[JValue::Int(argb)])?;
+            Ok((env.new_global_ref(view)?, None))
+        };
+        Second::Tiles([tile(TILE_COLOURS[0])?, tile(TILE_COLOURS[1])?])
+    } else {
+        let web_view = web_view(env, activity)?;
+        Second::Web(env.new_global_ref(web_view)?)
+    };
+    Ok(Views {
+        surface_view: env.new_global_ref(surface_view)?,
+        surface: env.new_global_ref(surface)?,
+        second,
+    })
+}
+
+/// A native view of `kind` and the `Surface` a producer fills: (what `NativeView::new` takes, its surface).
+fn native_surface<'local>(
+    env: &mut JNIEnv<'local>,
+    activity: &JObject,
+    kind: SurfaceKind,
+) -> jni::errors::Result<(JObject<'local>, JObject<'local>)> {
+    Ok(match kind {
         SurfaceKind::Control => {
             let builder = env.new_object("android/view/SurfaceControl$Builder", "()V", &[])?;
             let name = env.new_string("native-view-android surface")?;
@@ -119,7 +190,7 @@ pub fn views(
             )?;
             (control, surface)
         }
-        SurfaceKind::View => {
+        SurfaceKind::View | SurfaceKind::Hosted => {
             let view = env.new_object(
                 "android/view/SurfaceView",
                 "(Landroid/content/Context;)V",
@@ -131,9 +202,22 @@ pub fn views(
             let surface = env
                 .call_method(&holder, "getSurface", "()Landroid/view/Surface;", &[])?
                 .l()?;
-            (view, surface)
+            if kind == SurfaceKind::Hosted {
+                let hosted = parallax::parallax_android::in_surface(env, &view)
+                    .map_err(|_| jni::errors::Error::JavaException)?;
+                (hosted, surface)
+            } else {
+                (view, surface)
+            }
         }
-    };
+    })
+}
+
+/// The WebView with the local page.
+fn web_view<'local>(
+    env: &mut JNIEnv<'local>,
+    activity: &JObject,
+) -> jni::errors::Result<JObject<'local>> {
     let web_view = env.new_object(
         "android/webkit/WebView",
         "(Landroid/content/Context;)V",
@@ -171,22 +255,26 @@ pub fn views(
             JValue::Object(&null),
         ],
     )?;
-    Ok(Views {
-        surface_view: env.new_global_ref(surface_view)?,
-        surface: env.new_global_ref(surface)?,
-        web_view: env.new_global_ref(web_view)?,
-    })
+    Ok(web_view)
 }
 
-/// Fills the surface about 60 times a second with the next colour of a hue cycle and a white bar that moves one step
-/// per frame, from its own thread, never through GPUI. Stops when dropped.
+/// What a producer fills each frame with.
+#[derive(Clone, Copy)]
+pub enum Fill {
+    /// The surface's: a new colour every frame (`rgba`), with a white bar that moves one step per frame.
+    Changing,
+    /// A tile's: one colour (RGB).
+    Solid(u32),
+}
+
+/// Fills a surface about 60 times a second from its own thread, never through GPUI. Stops when dropped.
 pub struct Producer {
     pub frames: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
 }
 
 impl Producer {
-    pub fn start(vm: JavaVM, surface: GlobalRef) -> Self {
+    pub fn start(vm: Arc<JavaVM>, surface: GlobalRef, paint: Fill) -> Self {
         let frames = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (counted, stopped) = (frames.clone(), stop.clone());
@@ -196,7 +284,7 @@ impl Producer {
                 Err(error) => return log::error!("producer: cannot attach to the VM: {error}"),
             };
             while !stopped.load(Ordering::Relaxed) {
-                if fill(&mut env, &surface, counted.load(Ordering::Relaxed)) {
+                if fill(&mut env, &surface, paint, counted.load(Ordering::Relaxed)) {
                     counted.fetch_add(1, Ordering::Relaxed);
                 }
                 thread::sleep(Duration::from_millis(16));
@@ -213,7 +301,7 @@ impl Drop for Producer {
 }
 
 /// One frame into `surface`, if it has a buffer now (a hidden SurfaceView has none). Returns whether it posted.
-fn fill(env: &mut JNIEnv, surface: &GlobalRef, frame: u64) -> bool {
+fn fill(env: &mut JNIEnv, surface: &GlobalRef, paint: Fill, frame: u64) -> bool {
     let valid = env
         .call_method(surface.as_obj(), "isValid", "()Z", &[])
         .and_then(|valid| valid.z())
@@ -253,11 +341,15 @@ fn fill(env: &mut JNIEnv, surface: &GlobalRef, frame: u64) -> bool {
                 buffer.stride.max(0) as usize,
             );
             let pixels = std::slice::from_raw_parts_mut(buffer.bits.cast::<u32>(), stride * height);
-            let colour = rgba(frame);
-            let bar = (frame as usize * 4) % width.max(1);
+            let (colour, bar) = match paint {
+                Fill::Changing => (rgba(frame), Some((frame as usize * 4) % width.max(1))),
+                Fill::Solid(rgb) => (0xff00_0000 | rgb.swap_bytes() >> 8, None),
+            };
             for row in pixels.chunks_exact_mut(stride) {
                 row[..width].fill(colour);
-                row[bar..(bar + 12).min(width)].fill(0xffff_ffff);
+                if let Some(bar) = bar {
+                    row[bar..(bar + 12).min(width)].fill(0xffff_ffff);
+                }
             }
             ndk_sys::ANativeWindow_unlockAndPost(window);
         }
@@ -266,15 +358,9 @@ fn fill(env: &mut JNIEnv, surface: &GlobalRef, frame: u64) -> bool {
     }
 }
 
-/// Frame `frame`'s colour as RGBA bytes in memory order (little-endian `u32`): a hue cycle, never magenta.
+/// Frame `frame`'s colour as RGBA bytes in memory order (little-endian `u32`): green `c0` and blue `40` with red
+/// drifting 0..96 (the checks match it as `**c040`), never magenta.
 fn rgba(frame: u64) -> u32 {
-    let hue = 90. + (frame % 240) as f32 / 2.; // 90°..210°: greens, cyans, blues
-    let x = 1. - ((hue / 60.) % 2. - 1.).abs();
-    let (r, g, b) = match (hue / 60.) as u32 {
-        1 => (x, 1., 0.),
-        2 => (0., 1., x),
-        _ => (0., x, 1.),
-    };
-    let byte = |value: f32| (value * 255.) as u32;
-    0xff00_0000 | byte(b) << 16 | byte(g) << 8 | byte(r)
+    let red = (frame % 96) as u32;
+    0xff00_0000 | 0x40 << 16 | 0xc0 << 8 | red
 }

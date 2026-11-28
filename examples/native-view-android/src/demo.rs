@@ -10,14 +10,14 @@ use std::{
 
 use parallax::{
     gpui::{
-        App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NativeView,
-        Pixels, Point, ScrollEvent, Stateful, TouchPhase, Window, WindowOptions, canvas, div,
-        prelude::*, px, relative, rgb,
+        App, BackGestureEvent, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent,
+        MouseUpEvent, NativeView, Pixels, Point, ScrollEvent, Stateful, TouchPhase, Window,
+        WindowOptions, canvas, div, prelude::*, px, relative, rgb,
     },
     parallax_android::{self as android, TouchForwarding, jni::objects::GlobalRef},
 };
 
-use crate::java::{self, Producer};
+use crate::java::{self, Fill, Producer, Second, TILE_COLOURS};
 
 /// Where the surface has not caught up with its slot (`NativeView::set_background`): nothing else on screen is this.
 const GAP_COLOUR: u32 = 0xff00ff;
@@ -39,10 +39,17 @@ struct Shown {
     _object: GlobalRef,
 }
 
+/// The window's second half: the WebView, or (`--ez stack true`) two overlapping tiles in attach order.
+enum Lower {
+    Web(Shown),
+    Tiles(Vec<(Shown, Option<Producer>)>),
+    None,
+}
+
 struct Demo {
     /// `None` when a view could not be made (logged).
     surface: Option<(Shown, Producer)>,
-    web: Option<Shown>,
+    lower: Lower,
     /// Frames GPUI painted, counted by a canvas in the root.
     gpui_frames: Rc<Cell<u64>>,
     animate: bool,
@@ -53,11 +60,11 @@ impl Demo {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let made = android::with_activity(window, |env, activity| {
             let options = java::options(env, activity)?;
-            let views = java::views(env, activity, options.surface)?;
+            let views = java::views(env, activity, &options)?;
             Ok::<_, parallax::parallax_android::jni::errors::Error>((
                 options,
                 views,
-                env.get_java_vm()?,
+                std::sync::Arc::new(env.get_java_vm()?),
             ))
         });
         let (options, views, vm) = match made {
@@ -66,14 +73,15 @@ impl Demo {
             Err(error) => return Self::empty(&error.to_string(), cx),
         };
         log::info!(
-            "surface: {:?}, animate: {}",
+            "surface: {:?}, animate: {}, stack: {}",
             options.surface,
-            options.animate
+            options.animate,
+            options.stack
         );
         let surface = attach(&views.surface_view, window, cx).map(|view| {
             // Shown wherever the surface has not caught up with its slot: nothing else is magenta.
             view.set_background(rgb(GAP_COLOUR), cx);
-            let producer = Producer::start(vm, views.surface.clone());
+            let producer = Producer::start(vm.clone(), views.surface.clone(), Fill::Changing);
             (
                 Shown {
                     view,
@@ -82,20 +90,44 @@ impl Demo {
                 producer,
             )
         });
-        let web = attach(&views.web_view, window, cx).map(|view| Shown {
-            view,
-            _object: views.web_view.clone(),
-        });
-        if web.is_some() {
-            let forwarded =
-                android::forward_touches(window, views.web_view.as_obj(), TouchForwarding::On);
-            if let Err(error) = forwarded {
-                log::error!("touches stay GPUI's: {error}");
-            }
-        }
+        let lower = match views.second {
+            Second::Web(web_view) => match attach(&web_view, window, cx) {
+                Some(view) => {
+                    let forwarded =
+                        android::forward_touches(window, web_view.as_obj(), TouchForwarding::On);
+                    if let Err(error) = forwarded {
+                        log::error!("touches stay GPUI's: {error}");
+                    }
+                    Lower::Web(Shown {
+                        view,
+                        _object: web_view,
+                    })
+                }
+                None => Lower::None,
+            },
+            Second::Tiles(tiles) => Lower::Tiles(
+                tiles
+                    .into_iter()
+                    .zip(TILE_COLOURS)
+                    .filter_map(|((object, surface), colour)| {
+                        let view = attach(&object, window, cx)?;
+                        let producer = surface.map(|surface| {
+                            Producer::start(vm.clone(), surface, Fill::Solid(colour))
+                        });
+                        Some((
+                            Shown {
+                                view,
+                                _object: object,
+                            },
+                            producer,
+                        ))
+                    })
+                    .collect(),
+            ),
+        };
         let demo = Self {
             surface,
-            web,
+            lower,
             gpui_frames: Rc::new(Cell::new(0)),
             animate: options.animate,
             started: Instant::now(),
@@ -108,7 +140,7 @@ impl Demo {
         log::error!("no native views: {why}");
         let demo = Self {
             surface: None,
-            web: None,
+            lower: Lower::None,
             gpui_frames: Rc::new(Cell::new(0)),
             animate: false,
             started: Instant::now(),
@@ -218,7 +250,37 @@ impl Render for Demo {
         let insets = window.insets().safe_area;
         let viewport = window.viewport_size();
         let landscape = viewport.width > viewport.height;
+        let lower =
+            match &self.lower {
+                Lower::Web(shown) => Some(logged(&shown.view, "web").into_any_element()),
+                // Painted in the reverse of attach order, overlapping: the one attached first is on top.
+                Lower::Tiles(tiles) => {
+                    Some(
+                        div()
+                            .size_full()
+                            .relative()
+                            .children(tiles.iter().rev().zip([0.05, 0.35]).map(
+                                |((shown, _), at)| {
+                                    div()
+                                        .absolute()
+                                        .left(relative(at))
+                                        .top(relative(at))
+                                        .w(relative(0.6))
+                                        .h(relative(0.6))
+                                        .child(shown.view.clone())
+                                },
+                            ))
+                            .into_any_element(),
+                    )
+                }
+                Lower::None => None,
+            };
         div()
+            // scripts/android-native-view-checks.sh waits for this line after Back: keep its wording.
+            // Claims Back, so the Activity stays.
+            .on_back_gesture(|event: &BackGestureEvent, _, _| {
+                log::info!("GPUI back: {:?}", event.phase)
+            })
             .size_full()
             .flex()
             .when(landscape, |this| this.flex_row())
@@ -261,14 +323,6 @@ impl Render for Demo {
                     )
                 },
             ))
-            .child(
-                div()
-                    .flex_1()
-                    .m_2()
-                    .bg(rgb(0x404040))
-                    .when_some(self.web.as_ref(), |this, shown| {
-                        this.child(logged(&shown.view, "web"))
-                    }),
-            )
+            .child(div().flex_1().m_2().bg(rgb(0x404040)).children(lower))
     }
 }
