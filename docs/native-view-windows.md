@@ -27,7 +27,7 @@ copies nor draws for it.
 | Piece | Where |
 |---|---|
 | Visual tree, back to front under one root: background, the views (a clip visual over a content visual each, after Chromium's `VisualSubtree`), GPUI's own visual | `directx_renderer/native_view_tree.rs` (new in 0050), `DirectComposition::new` |
-| What a frame shows (placement in whole device px, order, background), the swap chain's alpha mode and the presenter, as plain values with host tests | `native_views.rs` (pure, in [patch-test.sh](../scripts/patch-test.sh)'s windows-pure row) |
+| What a frame shows (placement from core's `native_view_placement`, order, background) and the present step (`present_step`, one table), as plain values with host tests | `native_views.rs` (pure, in [patch-test.sh](../scripts/patch-test.sh)'s windows-pure row) |
 | The hole: `PrimitiveBatch::NativeViews` writes transparent black, blending off, at the batch's depth, so later opaque quads keep their pixels | `native_view_*` in `shaders.hlsl` |
 | GPUI's frame: rendered into the swap chain's back buffer; while a view shows, copied into a DComp surface instead of presented | `directx_renderer/native_view_surface.rs` (`Presenting::show`) |
 | Frame order: render, show (present or copy), restack/place only what changed, then one `Commit` (Chromium's `CommitAndClearPendingOverlays`) | `prepare_native_views`, `present_native_views` |
@@ -39,9 +39,13 @@ is copied into one and its holes and the views' placement change in the same `Co
 
 **Cost.** While a view shows: one GPU copy of GPUI's own frame (`CopySubresourceRegion`, window size) and one `Commit`
 per GPUI frame, never per frame of a view's content; an idle window draws no GPUI frame, so copies nothing. With no
-view shown GPUI presents its swap chain as upstream: no copy, no commit. The swap chain's alpha mode follows the
-window's appearance only (`Ignore` when opaque; the surface is premultiplied), so showing a view recreates nothing.
-Logged at info: `native views: GPUI's frame shows through a composition surface, alpha mode Premultiplied` and back.
+view shown GPUI presents its swap chain as upstream: no copy, no commit. The swap chain keeps upstream's
+premultiplied alpha mode for every window (as does the surface), so a window without views is upstream's exactly and
+showing a view recreates nothing. Leaving the surface takes two frames: the frame the last view goes is copied into the
+surface (committed with the views' removal) and presented to the swap chain; the next presents and shows the swap
+chain, which then already holds a current frame, so no stale one flashes. Logged at info: `native views: GPUI's
+frame shows through a composition surface, alpha mode Premultiplied` and back. A view dropped while the window draws
+leaves the tree at the next frame's start.
 Each copy logs at debug (`gpui_windows::directx_renderer::native_view_surface`), which the checks count.
 
 ## Checks
@@ -52,7 +56,8 @@ composed screen back (`BitBlt` with `CAPTUREBLT`, which includes DComp; [pixels.
 injects mouse moves, wheel and clicks. Per scale: alpha mode logged; 0 GPUI frames and 0 copies per second over 3 s
 while the view presents (the example counts paints and presents per second); the hole shows the view and the cover
 div over it shows (GPUI's visual is above the view's); one device pixel past each edge is GPUI's (no seam); no gap
-colour in any of 100 screenshots (`touch-inject shots`) taken while the view slides, nor after a resize; one copy per
+colour in any of 100 screenshots (`touch-inject shots`) taken while the view slides, and in each the view's colour
+over at least 80 % of its uncovered area and the cover's colour present, so a blank view fails; none after a resize; one copy per
 GPUI frame while it slides; a move, wheel and click over the view reach its element at 200 150 in the view; a click
 on the cover stays the cover's. Then the same for the WebView2 page ([native-view-webview2.md](native-view-webview2.md)).
 Logs and the screenshots with a gap: the `windows-touch` artifact, `target/native-view-windows/`.

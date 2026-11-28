@@ -168,7 +168,11 @@ impl Page {
         let Thread::Ready(setup) = std::mem::replace(&mut self.thread, Thread::Stopped) else {
             return Err("the page has started already".into());
         };
-        let (surface, frames, running) = (self.surface.clone(), self.frames.clone(), self.running.clone());
+        let (surface, frames, running) = (
+            self.surface.clone(),
+            self.frames.clone(),
+            self.running.clone(),
+        );
         let thread = thread::Builder::new()
             .name("page".into())
             .spawn(move || run(*setup, surface, view, frames, running))
@@ -213,7 +217,10 @@ fn run(
             let (width, height) = SIZES[which];
             // SAFETY: each slot of the mapping is only written while the compositor has released it.
             let pixels = unsafe {
-                std::slice::from_raw_parts_mut((memory + slot * SLOT) as *mut u32, (width * height) as usize)
+                std::slice::from_raw_parts_mut(
+                    (memory + slot * SLOT) as *mut u32,
+                    (width * height) as usize,
+                )
             };
             draw(pixels, frame, width, height);
             match view.commit_buffer(&surface, &buffers[which][slot], size(width, height)) {

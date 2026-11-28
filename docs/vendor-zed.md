@@ -16,7 +16,8 @@ scripts/sync-upstream.sh --zed 11e4141 0.4.0-zed.1      # or name one
 ## What vendor-zed.py does
 
 A Python port of the staging step of gpui-kit's
-[`script/bump-gpui.ts`](https://github.com/longbridge/gpui-kit/blob/85c05bf/script/bump-gpui.ts) (Apache-2.0,
+[`script/bump-gpui.ts`](https://github.com/longbridge/gpui-kit/blob/85c05bf/script/bump-gpui.ts) (Apache-2.0, ledger row and
+licence in [third_party/gpui-kit/](../third_party/gpui-kit/PORTED.md),
 the commit that cut gpui-pre 0.3.14), the script that publishes gpui-pre:
 
 1. Reads the crates in [`patch-paths.sh`](../scripts/patch-paths.sh)'s crate table from Zed's tree (one list of

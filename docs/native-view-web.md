@@ -14,7 +14,7 @@ it. Give it `width` and `height` (`100%` fills the view; unset, GPUI sets `100%`
 `view.set_background(colour, cx)` colours the slots ([native-view-placement.md](native-view-placement.md)'s
 `background`): a cross-origin iframe draws in its own process and shows its new size a frame after a resize, and the
 colour fills that frame (white for most pages). With no colour the page behind the canvas shows there.
-[examples/native-view-web](../examples/native-view-web/) does all of this ([examples.md](examples.md#native-view-web)).
+[examples/native-view-web](../examples/native-view-web/) does all of this ([examples.md](examples-native-view.md#native-view-web)).
 
 ## What GPUI does
 

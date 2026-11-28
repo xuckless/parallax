@@ -14,6 +14,11 @@ Why: owner decision 2026-11-27 (issue #1, WebView2). WebView2's visual hosting
 the tree it joins, so the app needs GPUI's device; with it, a WebView2 page is a NativeView like a swap chain, with
 its input sent from the view element's listeners (`SendMouseInput`, `MoveFocus`; examples/native-view-webview2).
 
+`gpui_windows::on_composition_device_changed(window, callback)` tells the app each time a lost GPU device gave the
+window a new DirectComposition device, after its tree is rebuilt (`events.rs` calls it once the renderer's borrow
+ends), since a visual made on the old device can't join the new tree: the app makes its visual (WebView2's
+controller) and `NativeView` again. examples/native-view-webview2 does.
+
 Test: `scripts/windows-native-view-checks.sh` runs examples/native-view-webview2 on CI's Windows runner at 100 and
 125 %: the page renders in the hole under the cover div, a click, wheel and key over it reach the page (it posts
 them back through `WebMessageReceived`), and GPUI draws 0 frames per second while only the page animates
@@ -26,18 +31,18 @@ patches are split.
 Upstream: not filed (patch rule 14).
 
 diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
-index 8ed49c2..0875eb8 100644
+index 2eb4df6..a1c0a24 100644
 --- a/gpui-pre-windows/src/directx_renderer.rs
 +++ b/gpui-pre-windows/src/directx_renderer.rs
-@@ -25,6 +25,7 @@ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, Sh
- use crate::native_views::AlphaMode;
+@@ -24,6 +24,7 @@ use crate::directx_renderer::native_view_tree::{NativeViewHole, NativeViewTree,
+ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
  use crate::*;
  
 +pub(crate) mod native_view_host;
  mod native_view_surface;
  mod native_view_tree;
  use gpui::*;
-@@ -346,7 +347,7 @@ impl DirectXRenderer {
+@@ -343,7 +344,7 @@ impl DirectXRenderer {
              let mut composition =
                  DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), self.hwnd)?;
              composition.set_swap_chain(&resources.swap_chain)?;
@@ -48,10 +53,10 @@ index 8ed49c2..0875eb8 100644
  
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_host.rs b/gpui-pre-windows/src/directx_renderer/native_view_host.rs
 new file mode 100644
-index 0000000..f2e099a
+index 0000000..e7ccce7
 --- /dev/null
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_host.rs
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,72 @@
 +//! GPUI's DirectComposition device, for apps that host content which wants a visual in the window's own tree rather
 +//! than content for one: WebView2's `CreateCoreWebView2CompositionController` renders into a `RootVisualTarget`
 +//! visual, which must be made on the device of the tree it joins (docs/native-view-windows.md in Parallax). The app
@@ -61,24 +66,74 @@ index 0000000..f2e099a
 +use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 +use windows::Win32::{Foundation::HWND, Graphics::DirectComposition::IDCompositionDevice};
 +
-+use crate::window_from_hwnd;
++use crate::{WindowsWindowInner, window_from_hwnd};
 +
 +/// The DirectComposition device of GPUI's window behind `window` (a `gpui::Window`, through its window handle).
 +/// `None` off the main thread's own windows, when GPUI_DISABLE_DIRECT_COMPOSITION turned DirectComposition off, or
-+/// while the window draws. A lost GPU device makes a new one: a visual made on the old device cannot join the new tree.
++/// while the window draws. A lost GPU device makes a new one: a visual made on the old device cannot join the new tree
++/// ([`on_composition_device_changed`]).
 +pub fn composition_device(window: &impl HasWindowHandle) -> Option<IDCompositionDevice> {
-+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
-+        return None;
-+    };
-+    let window = window_from_hwnd(HWND(handle.hwnd.get() as _))?;
++    let window = windows_window(window)?;
 +    let renderer = window.state.renderer.try_borrow().ok()?;
 +    Some(renderer.direct_composition.as_ref()?.comp_device.clone())
 +}
++
++/// Calls `callback` each time the window behind `window` gets a new DirectComposition device (GPUI recovered from a
++/// lost GPU device), once the new device's tree is in place. A visual made on the old device
++/// ([`composition_device`]) cannot join the new tree, so its native view shows nothing until the app makes its visual
++/// again on the new device (WebView2: a new composition controller) and attaches a new `NativeView`. The callback runs
++/// inside GPUI's handling of the device loss: schedule that work (an `AsyncApp` spawn), don't do it there. Returns
++/// false where [`composition_device`] gives `None`.
++pub fn on_composition_device_changed(
++    window: &impl HasWindowHandle,
++    callback: impl FnMut() + 'static,
++) -> bool {
++    let Some(window) = windows_window(window) else {
++        return false;
++    };
++    let Ok(mut renderer) = window.state.renderer.try_borrow_mut() else {
++        return false;
++    };
++    if renderer.direct_composition.is_none() {
++        return false;
++    }
++    renderer
++        .native_views
++        .composition_device_changed
++        .push(Box::new(callback));
++    true
++}
++
++/// After a device loss was recovered, outside the renderer's borrow: tells the app
++/// ([`on_composition_device_changed`]). Callbacks registered meanwhile are kept too.
++pub(crate) fn composition_device_changed(window: &WindowsWindowInner) {
++    let mut callbacks = std::mem::take(
++        &mut window
++            .state
++            .renderer
++            .borrow_mut()
++            .native_views
++            .composition_device_changed,
++    );
++    for callback in &mut callbacks {
++        callback();
++    }
++    let mut renderer = window.state.renderer.borrow_mut();
++    callbacks.append(&mut renderer.native_views.composition_device_changed);
++    renderer.native_views.composition_device_changed = callbacks;
++}
++
++fn windows_window(window: &impl HasWindowHandle) -> Option<std::rc::Rc<WindowsWindowInner>> {
++    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
++        return None;
++    };
++    window_from_hwnd(HWND(handle.hwnd.get() as _))
++}
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-index aa690c3..904f13f 100644
+index 1786a1d..f68f293 100644
 --- a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-@@ -25,7 +25,7 @@ use windows::{
+@@ -26,7 +26,7 @@ use windows::{
          },
          Dxgi::{DXGI_PRESENT, IDXGISwapChain1},
      },
@@ -87,7 +142,16 @@ index aa690c3..904f13f 100644
  };
  
  use super::{
-@@ -140,9 +140,16 @@ impl NativeViewTree {
+@@ -46,6 +46,8 @@ pub(super) struct NativeViews {
+     /// Views whose last handle was dropped while the renderer was borrowed (it draws), taken out of the tree when the
+     /// next frame starts. Shared with each `NativeViewAttachment`.
+     detached: Rc<RefCell<Vec<NativeViewId>>>,
++    /// The app's `native_view_host::on_composition_device_changed` callbacks.
++    pub(super) composition_device_changed: Vec<Box<dyn FnMut()>>,
+ }
+ 
+ /// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
+@@ -133,9 +135,16 @@ impl NativeViewTree {
              let content_visual = comp_device.CreateVisual()?;
              clip_visual.SetClip(&clip)?;
              clip_visual.AddVisual(&content_visual, false, None)?;
@@ -107,7 +171,7 @@ index aa690c3..904f13f 100644
              ViewVisuals {
                  clip_visual,
                  clip,
-@@ -167,6 +174,7 @@ impl NativeViewTree {
+@@ -160,6 +169,7 @@ impl NativeViewTree {
                  self.views_visual.RemoveVisual(&visuals.clip_visual)?;
              }
              visuals.content_visual.SetContent(None)?;
@@ -115,7 +179,7 @@ index aa690c3..904f13f 100644
              comp_device.Commit()?;
          }
          Ok(())
-@@ -249,11 +257,11 @@ impl NativeViewTree {
+@@ -242,11 +252,11 @@ impl NativeViewTree {
  
  impl DirectComposition {
      /// Shows every attached view's content again, on a new device after the old one was lost.
@@ -130,15 +194,28 @@ index aa690c3..904f13f 100644
      }
  }
  
+diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
+index 1d8110b..55b65c4 100644
+--- a/gpui-pre-windows/src/events.rs
++++ b/gpui-pre-windows/src/events.rs
+@@ -1564,6 +1564,8 @@ impl WindowsWindowInner {
+         {
+             panic!("Device lost: {err}");
+         }
++        // A visual the app made on the lost composition device can't join the new tree: the app makes it again.
++        crate::directx_renderer::native_view_host::composition_device_changed(self);
+         // Make sure the first `draw_window` after recovery (whether it comes
+         // from the forced WM_GPUI_FORCE_UPDATE_WINDOW or a stray WM_PAINT in
+         // between) is treated as a forced render so it both clears
 diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
-index 150a617..88d6461 100644
+index 150a617..866e88b 100644
 --- a/gpui-pre-windows/src/gpui_windows.rs
 +++ b/gpui-pre-windows/src/gpui_windows.rs
 @@ -41,6 +41,7 @@ pub(crate) use vsync::*;
  pub(crate) use window::*;
  pub(crate) use wrapper::*;
  
-+pub use directx_renderer::native_view_host::composition_device;
++pub use directx_renderer::native_view_host::{composition_device, on_composition_device_changed};
  pub use platform::WindowsPlatform;
  
  pub(crate) use windows::Win32::Foundation::HWND;
@@ -157,10 +234,24 @@ index 5688de9..522d766 100644
          &self,
          id: NativeViewId,
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index c240a44..ed5f04a 100644
+index be65081..dfe048b 100644
 --- a/gpui-pre/src/window/native_view.rs
 +++ b/gpui-pre/src/window/native_view.rs
-@@ -52,8 +52,11 @@ impl NativeViewId {
+@@ -42,18 +42,22 @@ impl NativeViewId {
+ ///
+ /// macOS shows an `NSView`, iOS a `UIView`, Windows DirectComposition
+ /// content (usually a composition swap chain), Wayland a `wl_surface` the
+-/// app created on GPUI's own connection, and the web a DOM element under the
+-/// canvas. [`NativeView::new`] fails on every other platform.
++/// app created on GPUI's own connection, Android a `SurfaceControl` or a
++/// `View`, and the web a DOM element under the canvas. [`NativeView::new`]
++/// fails on X11 and wherever the window can't show one.
+ ///
+ /// On a platform whose native views take no input of their own
+-/// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland), pointer input
++/// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland, Android), pointer input
+ /// over the view is hit-tested like any solid element's: listeners added to
+ /// the element this handle becomes (`view.into_element().on_mouse_move(…)`)
  /// and its ancestors hear it, elements painted before the view hear nothing
  /// over it, elements painted after the view take theirs, and
  /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
@@ -174,7 +265,19 @@ index c240a44..ed5f04a 100644
  /// The rest of this comment describes macOS and the web
  /// ([`crate::NativeViewInput::View`]), where the browser gives pointer input
  /// over an uncovered view to its element.
-@@ -120,7 +123,9 @@ impl NativeView {
+@@ -111,8 +115,9 @@ impl NativeView {
+     ///
+     /// # Errors
+     ///
+-    /// Fails on platforms that cannot composite native views, which is every
+-    /// platform but macOS for now.
++    /// Fails where the window cannot composite native views: on X11, on Wayland
++    /// without `wl_subcompositor` and `wp_viewporter` or with a window surface
++    /// that can't blend, on Windows with DirectComposition turned off.
+     ///
+     /// # Safety
+     ///
+@@ -120,11 +125,16 @@ impl NativeView {
      /// embeds, which is an `NSView` on macOS, and that view must not be in
      /// another view hierarchy. On iOS it is a `UIView`. On Windows it is a
      /// COM object (`IUnknown`) that `IDCompositionVisual::SetContent` takes,
@@ -185,3 +288,11 @@ index c240a44..ed5f04a 100644
      /// On Wayland it is a `wl_proxy` of a `wl_surface`
      /// made on the window's own `wl_display`, with no role, no `wp_viewport`
      /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
+-    /// and places it, and the app attaches and commits its buffers. On the web
++    /// and places it, and the app commits every buffer through
++    /// `gpui_linux::NativeViewBuffers`, from a thread it stops and joins before
++    /// GPUI's connection closes (in `cx.on_app_quit`, or when the window
++    /// closes). On the web
+     /// it is a `web_sys::HtmlElement`, which GPUI moves into a slot under the
+     /// canvas (moving an `<iframe>` already in the document reloads it).
+     ///

@@ -5,9 +5,9 @@ use std::{cell::Cell, ptr::NonNull, rc::Rc, time::Duration};
 
 use anyhow::Context as _;
 use parallax::gpui::{
-    App, Bounds, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NativeView, Pixels, Point, Render, ScrollDelta, ScrollEvent, Window, WindowBounds,
-    WindowOptions, canvas, div, prelude::*, px, rgb, size,
+    App, Bounds, Context, DispatchPhase, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, NativeView, Pixels, Point, Render, ScrollDelta, ScrollEvent, Window,
+    WindowBounds, WindowOptions, canvas, div, prelude::*, px, rgb, size,
 };
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -76,6 +76,9 @@ struct Example {
     hwnd: HWND,
     /// GPUI frames drawn, counted as the window paints.
     frames: Rc<Cell<u64>>,
+    /// The button pressed on the page, while it is held: the page then gets every move and the release, wherever
+    /// the pointer goes, as its own window's mouse capture would give it.
+    held: Option<MouseButton>,
 }
 
 pub fn open_window(cx: &mut App) {
@@ -104,17 +107,25 @@ impl Example {
             anyhow::bail!("not a Win32 window");
         };
         let hwnd = HWND(handle.hwnd.get() as _);
-        // The page's visual must be on GPUI's own device, the one its window's visual tree is on.
-        let device = gpui_windows::composition_device(window)
-            .context("GPUI shows no DirectComposition tree")?;
-        // SAFETY: plain creation on a live device.
-        let visual = unsafe { device.CreateVisual() }?;
-        let raw = NonNull::new(visual.as_raw()).context("null visual")?;
-        // SAFETY: `raw` is a live IDCompositionVisual on GPUI's device; GPUI takes a reference of its own.
-        let view = unsafe { NativeView::new(raw, window, cx) }?;
-        view.set_background(rgb(GAP_COLOUR), cx);
-        let page = Page::start(hwnd, device, visual)?;
-        log::info!("native view: attached");
+        let (view, page) = Self::attach(hwnd, window, cx)?;
+        // A lost GPU device gives GPUI a new DirectComposition device, which the page's visual can't join: the page
+        // is made again there. The callback runs inside GPUI's recovery, so the work waits for the app's next turn.
+        let (this, async_cx, gpui_window) = (
+            cx.entity().downgrade(),
+            cx.to_async(),
+            Window::window_handle(window),
+        );
+        let watched = gpui_windows::on_composition_device_changed(window, move || {
+            let this = this.clone();
+            async_cx
+                .spawn(async move |cx| {
+                    gpui_window.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.reattach(window, cx))
+                    })
+                })
+                .detach();
+        });
+        anyhow::ensure!(watched, "GPUI shows no DirectComposition tree");
         let frames = Rc::new(Cell::new(0));
         let counted = frames.clone();
         cx.spawn(async move |_, cx| {
@@ -131,7 +142,86 @@ impl Example {
             page,
             hwnd,
             frames,
+            held: None,
         })
+    }
+
+    /// Makes a visual on GPUI's DirectComposition device, the page rendering into it, and its native view.
+    fn attach(
+        hwnd: HWND,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<(NativeView, Page)> {
+        // The page's visual must be on GPUI's own device, the one its window's visual tree is on.
+        let device = gpui_windows::composition_device(window)
+            .context("GPUI shows no DirectComposition tree")?;
+        // SAFETY: plain creation on a live device.
+        let visual = unsafe { device.CreateVisual() }?;
+        let raw = NonNull::new(visual.as_raw()).context("null visual")?;
+        // SAFETY: `raw` is a live IDCompositionVisual on GPUI's device; GPUI takes a reference of its own.
+        let view = unsafe { NativeView::new(raw, window, cx) }?;
+        view.set_background(rgb(GAP_COLOUR), cx);
+        let page = Page::start(hwnd, device, visual)?;
+        log::info!("native view: attached");
+        Ok((view, page))
+    }
+
+    /// The window's DirectComposition device changed: the page and its view are made again on the new one.
+    fn reattach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        log::info!("native view: the DirectComposition device changed, attaching the page again");
+        match Self::attach(self.hwnd, window, cx) {
+            Ok((view, page)) => {
+                (self.view, self.page, self.held) = (view, page, None);
+                cx.notify();
+            }
+            Err(error) => log::error!("native view: cannot attach again: {error:#}"),
+        }
+    }
+
+    /// A move or the release of the held button, wherever the pointer is (the window's capture listeners).
+    fn drag(
+        &mut self,
+        kind: COREWEBVIEW2_MOUSE_EVENT_KIND,
+        modifiers: Modifiers,
+        position: Point<Pixels>,
+        window: &Window,
+    ) {
+        let held = if kind == COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE {
+            self.held
+        } else {
+            None
+        };
+        self.page.mouse(
+            kind,
+            virtual_keys(modifiers, held),
+            0,
+            self.at(position, window),
+        );
+    }
+
+    /// The held button was released: the page gets the release, and a leave if the pointer is off it.
+    fn release(
+        &mut self,
+        event: &MouseUpEvent,
+        up: COREWEBVIEW2_MOUSE_EVENT_KIND,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.held.is_none() {
+            return;
+        }
+        self.drag(up, event.modifiers, event.position, window);
+        self.held = None;
+        let over = self
+            .view
+            .bounds(window)
+            .is_some_and(|bounds| bounds.contains(&event.position));
+        if !over {
+            let keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
+            self.page
+                .mouse(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, keys, 0, [0, 0]);
+        }
+        cx.notify();
     }
 
     /// A window point in the page, in device px: WebView2's bounds are in raw pixels from the page's top left.
@@ -191,7 +281,7 @@ impl Render for Example {
                     edge(bounds.bottom()),
                 ];
                 log::info!("view placement: device {left} {top} {right} {bottom}");
-                page.resize((right - left) as i32, (bottom - top) as i32);
+                page.place([left, top, right, bottom].map(|edge| edge as i32));
             },
             |_, _, _, _| {},
         )
@@ -205,17 +295,16 @@ impl Render for Example {
             .clone()
             .into_element()
             .id("page")
+            // While a button is held, the window's capture listeners below send the moves.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
-                let keys = virtual_keys(event.modifiers, event.pressed_button);
-                this.page.mouse(
-                    COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
-                    keys,
-                    0,
-                    this.at(event.position, window),
-                );
+                if this.held.is_none() {
+                    let kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
+                    this.drag(kind, event.modifiers, event.position, window);
+                }
             }))
             .on_hover(cx.listener(|this, hovered: &bool, _, _| {
-                if !hovered {
+                // Mid-drag the page keeps the pointer until the release.
+                if !hovered && this.held.is_none() {
                     let keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
                     this.page
                         .mouse(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, keys, 0, [0, 0]);
@@ -238,31 +327,61 @@ impl Render for Example {
                 );
             }));
         for (button, down, up, _) in BUTTONS {
-            element = element
-                .on_mouse_down(
-                    button,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        let at = this.at(event.position, window);
-                        log::info!("view input: {button:?} down at {} {}", at[0], at[1]);
-                        this.page
-                            .mouse(down, virtual_keys(event.modifiers, Some(button)), 0, at);
-                        // The page takes the keys; the window's own listener below must not take them back.
-                        this.page.focus();
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_up(
-                    button,
-                    cx.listener(move |this, event: &MouseUpEvent, window, _| {
-                        let at = this.at(event.position, window);
-                        this.page
-                            .mouse(up, virtual_keys(event.modifiers, None), 0, at);
-                    }),
-                );
+            // A quick click's release, before `capture` was painted; capture's listener runs first otherwise.
+            element = element.on_mouse_up(
+                button,
+                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                    this.release(event, up, window, cx)
+                }),
+            );
+            element = element.on_mouse_down(
+                button,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    let at = this.at(event.position, window);
+                    log::info!("view input: {button:?} down at {} {}", at[0], at[1]);
+                    this.page
+                        .mouse(down, virtual_keys(event.modifiers, Some(button)), 0, at);
+                    this.held = Some(button);
+                    // The page takes the keys; the window's own listener below must not take them back.
+                    this.page.focus();
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
         }
+        // While a button pressed on the page is held: every move and its release, wherever the pointer is.
+        let capture = self.held.map(|held| {
+            let this = cx.entity();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moving = this.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture {
+                            let kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
+                            moving.update(cx, |this, _| {
+                                this.drag(kind, event.modifiers, event.position, window)
+                            });
+                        }
+                    });
+                    let Some((.., up, _)) =
+                        BUTTONS.iter().find(|(button, ..)| *button == held).copied()
+                    else {
+                        return;
+                    };
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture && event.button == held {
+                            this.update(cx, |this, cx| this.release(event, up, window, cx));
+                        }
+                    });
+                },
+            )
+            .size_0()
+        });
         div()
             .size_full()
             .bg(rgb(WINDOW_COLOUR))
+            .children(capture)
             // A click anywhere but the page gives GPUI's window the keys back.
             .on_mouse_down(
                 MouseButton::Left,

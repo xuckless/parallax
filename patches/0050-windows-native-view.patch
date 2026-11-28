@@ -7,10 +7,13 @@ DirectComposition tree becomes, back to front under one root visual: a backgroun
 subtree per native view (a clip visual holding a content visual, after Chromium's `VisualSubtree`), and GPUI's own
 visual. While a view shows, GPUI's frame is rendered into its swap chain's back buffer as always, then copied into a
 DirectComposition surface (`IDCompositionSurface::BeginDraw`/`EndDraw`) that GPUI's visual shows instead of the
-swap chain (`native_view_surface.rs`, `Presenter::new`): a surface changes only on `Commit`, while a swap chain's
-`Present` and a `Commit` are not atomic, so through the surface GPUI's frame, its holes and the views' placement
-change in one `Commit`. With no view shown the swap chain presents as upstream (no copy, no commit); the switch
-either way is logged at info. Each frame, `NativeViewTree::place_views` (named after macOS's
+swap chain (`native_view_surface.rs`, one table `native_views::present_step`): a surface changes only on `Commit`,
+while a swap chain's `Present` and a `Commit` are not atomic, so through the surface GPUI's frame, its holes and the
+views' placement change in one `Commit`. With no view shown the swap chain presents as upstream (no copy, no commit).
+The surface is left over two frames, so no stale swap chain frame flashes: the frame the last view goes is still
+copied into the surface and committed with the views' removal, and presented to the swap chain too; the next frame
+presents and shows the swap chain again, which already holds that hole-less frame. The switch either way is logged
+at info. Each frame, `NativeViewTree::place_views` (named after macOS's
 `Layout::places_views`) compares the scene's views
 (`native_views.rs`: placement from core's `native_view_placement::visible`, back-to-front order, background colour from
 `native_view_placement::background`, black when none asks) with what the tree
@@ -19,15 +22,15 @@ once after (Chromium's `DCLayerTree::CommitAndClearPendingOverlays` order: prese
 `PrimitiveBatch::NativeViews` draws a hole: a `native_view` shader writing transparent black with
 blending off, at the batch's fixed depth with the depth test on, so opaque quads painted after the view (drawn
 first by the opaque pass) keep their pixels and everything painted before it is erased, as Metal's
-`native_view_fragment` does. The swap chain's alpha mode is one table (`AlphaMode::new`): `Ignore` for an opaque
-window, `Premultiplied` otherwise (the surface is always premultiplied); a change recreates the swap chain, logged
-at info, and its first frame is presented before the commit that shows it. `NativeView::set_background`'s colour
+`native_view_fragment` does. The swap chain keeps upstream's premultiplied alpha mode for every window (the
+surface is premultiplied too), so a window without views behaves exactly as upstream. `NativeView::set_background`'s colour
 (black by default, as on macOS) fills a 1×1 swap chain stretched under the views, shown only for an opaque window
 while a view is shown, where a view's content hasn't caught up with its element. A lost device rebuilds every view's
-visuals from the content the app gave. The code is in three new files, `native_views.rs` (pure decisions),
+visuals from the content the app gave. A view whose last handle is dropped while the renderer is borrowed (it draws)
+is taken out of the tree when the next frame starts, never left behind. The code is in three new files, `native_views.rs` (pure decisions),
 `directx_renderer/native_view_tree.rs` (the visual tree, the hole pipeline, the attachment) and
 `directx_renderer/native_view_surface.rs` (swap chain or surface); `directx_renderer.rs` and `window.rs` get only
-hooks (a field, a call per stage, the alpha mode parameter, the shader module row).
+hooks (a field, a call per stage, the shader module row).
 
 Why: issue #1 (NativeView on every desktop). GPUI on Windows already presents through DirectComposition, so the
 app's content is one more visual in the same tree: no child window (no airspace problem: GPUI's window keeps all
@@ -39,8 +42,8 @@ a view's content (an idle window draws no GPUI frame, so copies nothing); a wind
 Upstream's `PrimitiveBatch::NativeViews` arm was a no-op. Modelled on Chromium's ui/gl/dc_layer_tree.cc @
 4fc26f32cd03f0e8443c4aa11d6859a901d90659 (BSD-3-Clause, third_party/chromium/PORTED.md).
 
-Test: `native_views.rs`'s tables (placement per layout and scale, alpha mode per appearance, presenter per frame,
-frame stacking and background) run on any host through `scripts/patch-test.sh` (windows-pure). Live:
+Test: `native_views.rs`'s tables (placement per layout, the present step per (showing, views) pair, frame stacking
+and background) run on any host through `scripts/patch-test.sh` (windows-pure). Live:
 `scripts/windows-native-view-checks.sh` on CI's Windows runner reads the composed screen back at 100 and 125 %: the
 hole shows the view, the div over it covers it, one device pixel past each edge is GPUI's, no gap colour in any of
 100 screenshots while the view slides, nor after a resize; one surface copy per GPUI frame while it slides; input
@@ -62,16 +65,15 @@ index 4b5c3d6..b29b426 100644
  
          let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
 diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
-index 5ab9167..8ed49c2 100644
+index 5ab9167..2eb4df6 100644
 --- a/gpui-pre-windows/src/directx_renderer.rs
 +++ b/gpui-pre-windows/src/directx_renderer.rs
-@@ -20,8 +20,13 @@ use windows::{
+@@ -20,8 +20,12 @@ use windows::{
      core::{HSTRING, Interface},
  };
  
 +use crate::directx_renderer::native_view_tree::{NativeViewHole, NativeViewTree, NativeViews};
  use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
-+use crate::native_views::AlphaMode;
  use crate::*;
 +
 +mod native_view_surface;
@@ -79,7 +81,7 @@ index 5ab9167..8ed49c2 100644
  use gpui::*;
  
  pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
-@@ -43,6 +48,7 @@ pub(crate) struct DirectXRenderer {
+@@ -43,6 +47,7 @@ pub(crate) struct DirectXRenderer {
      globals: DirectXGlobalElements,
      pipelines: DirectXRenderPipelines,
      direct_composition: Option<DirectComposition>,
@@ -87,7 +89,7 @@ index 5ab9167..8ed49c2 100644
      font_info: &'static FontInfo,
  
      width: u32,
-@@ -90,6 +96,7 @@ struct DirectXRenderPipelines {
+@@ -90,6 +95,7 @@ struct DirectXRenderPipelines {
      mono_sprites: PipelineState<MonochromeSprite>,
      subpixel_sprites: PipelineState<SubpixelSprite>,
      poly_sprites: PipelineState<PolychromeSprite>,
@@ -95,7 +97,7 @@ index 5ab9167..8ed49c2 100644
  }
  
  struct DirectXGlobalElements {
-@@ -113,10 +120,13 @@ impl Drop for Annotation<'_> {
+@@ -113,10 +119,13 @@ impl Drop for Annotation<'_> {
      }
  }
  
@@ -110,26 +112,25 @@ index 5ab9167..8ed49c2 100644
  }
  
  impl DirectXRendererDevices {
-@@ -164,8 +174,16 @@ impl DirectXRenderer {
+@@ -164,8 +173,15 @@ impl DirectXRenderer {
              .context("Creating DirectX devices")?;
          let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
  
 -        let resources = DirectXResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
 -            .context("Creating DirectX resources")?;
-+        let native_views = NativeViews::new();
++        let native_views = NativeViews::default();
 +        let resources = DirectXResources::new(
 +            &devices,
 +            1,
 +            1,
 +            hwnd,
 +            disable_direct_composition,
-+            native_views.alpha_mode,
 +        )
 +        .context("Creating DirectX resources")?;
          let globals = DirectXGlobalElements::new(&devices.device)
              .context("Creating DirectX global elements")?;
          let pipelines = DirectXRenderPipelines::new(&devices.device)
-@@ -190,6 +208,7 @@ impl DirectXRenderer {
+@@ -190,6 +206,7 @@ impl DirectXRenderer {
              globals,
              pipelines,
              direct_composition,
@@ -137,15 +138,7 @@ index 5ab9167..8ed49c2 100644
              font_info: Self::get_font_info(),
              width: 1,
              height: 1,
-@@ -313,6 +332,7 @@ impl DirectXRenderer {
-             self.height,
-             self.hwnd,
-             disable_direct_composition,
-+            self.native_views.alpha_mode,
-         )
-         .context("Creating DirectX resources")?;
-         let globals = DirectXGlobalElements::new(&devices.device)
-@@ -323,9 +343,10 @@ impl DirectXRenderer {
+@@ -323,9 +340,10 @@ impl DirectXRenderer {
          let direct_composition = if disable_direct_composition {
              None
          } else {
@@ -157,7 +150,7 @@ index 5ab9167..8ed49c2 100644
              Some(composition)
          };
  
-@@ -357,8 +378,9 @@ impl DirectXRenderer {
+@@ -357,8 +375,9 @@ impl DirectXRenderer {
              // and so likely do not have the textures anymore that are required for drawing
              return Ok(());
          }
@@ -168,7 +161,7 @@ index 5ab9167..8ed49c2 100644
      }
  
      /// Clear the render target for `background_appearance` and encode every
-@@ -438,8 +460,7 @@ impl DirectXRenderer {
+@@ -438,8 +457,7 @@ impl DirectXRenderer {
                      self.draw_polychrome_sprites(texture_id, range.start, range.len())
                  }
                  PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
@@ -178,7 +171,7 @@ index 5ab9167..8ed49c2 100644
              }
              .with_context(|| {
                  format!(
-@@ -697,7 +718,7 @@ impl DirectXRenderer {
+@@ -697,7 +715,7 @@ impl DirectXRenderer {
              )?;
          }
  
@@ -187,23 +180,7 @@ index 5ab9167..8ed49c2 100644
      }
  
      fn draw_shadows(&mut self, start: usize, len: usize) -> Result<()> {
-@@ -906,6 +927,7 @@ impl DirectXResources {
-         height: u32,
-         hwnd: HWND,
-         disable_direct_composition: bool,
-+        alpha_mode: AlphaMode,
-     ) -> Result<Self> {
-         let swap_chain = if disable_direct_composition {
-             create_swap_chain(&devices.dxgi_factory, &devices.device, hwnd, width, height)?
-@@ -915,6 +937,7 @@ impl DirectXResources {
-                 &devices.device,
-                 width,
-                 height,
-+                alpha_mode,
-             )?
-         };
- 
-@@ -1014,6 +1037,7 @@ impl DirectXRenderPipelines {
+@@ -1014,6 +1032,7 @@ impl DirectXRenderPipelines {
              create_blend_state(device)?,
          )?;
          let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
@@ -211,7 +188,7 @@ index 5ab9167..8ed49c2 100644
  
          Ok(Self {
              shadow_pipeline,
-@@ -1026,6 +1050,7 @@ impl DirectXRenderPipelines {
+@@ -1026,6 +1045,7 @@ impl DirectXRenderPipelines {
              mono_sprites,
              subpixel_sprites,
              poly_sprites,
@@ -219,7 +196,7 @@ index 5ab9167..8ed49c2 100644
          })
      }
  }
-@@ -1034,19 +1059,26 @@ impl DirectComposition {
+@@ -1034,19 +1054,26 @@ impl DirectComposition {
      pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
          let comp_device = get_comp_device(dxgi_device)?;
          let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, false) }?;
@@ -248,28 +225,7 @@ index 5ab9167..8ed49c2 100644
              self.comp_device.Commit()?;
          }
          Ok(())
-@@ -1344,6 +1376,7 @@ fn create_swap_chain_for_composition(
-     device: &ID3D11Device,
-     width: u32,
-     height: u32,
-+    alpha_mode: AlphaMode,
- ) -> Result<IDXGISwapChain1> {
-     let desc = DXGI_SWAP_CHAIN_DESC1 {
-         Width: width,
-@@ -1359,7 +1392,11 @@ fn create_swap_chain_for_composition(
-         // Composition SwapChains only support the DXGI_SCALING_STRETCH Scaling.
-         Scaling: DXGI_SCALING_STRETCH,
-         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
--        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-+        // (mode → DXGI), a row per AlphaMode variant.
-+        AlphaMode: match alpha_mode {
-+            AlphaMode::Ignore => DXGI_ALPHA_MODE_IGNORE,
-+            AlphaMode::Premultiplied => DXGI_ALPHA_MODE_PREMULTIPLIED,
-+        },
-         Flags: 0,
-     };
-     Ok(unsafe { dxgi_factory.CreateSwapChainForComposition(device, &desc, None)? })
-@@ -1741,6 +1778,7 @@ pub(crate) mod shader_resources {
+@@ -1741,6 +1768,7 @@ pub(crate) mod shader_resources {
          MonochromeSprite,
          SubpixelSprite,
          PolychromeSprite,
@@ -277,7 +233,7 @@ index 5ab9167..8ed49c2 100644
      }
  
      #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-@@ -1814,6 +1852,10 @@ pub(crate) mod shader_resources {
+@@ -1814,6 +1842,10 @@ pub(crate) mod shader_resources {
                      ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                      ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
                  },
@@ -288,7 +244,7 @@ index 5ab9167..8ed49c2 100644
              };
              Self { inner: bytes }
          }
-@@ -1894,6 +1936,7 @@ pub(crate) mod shader_resources {
+@@ -1894,6 +1926,7 @@ pub(crate) mod shader_resources {
                  ShaderModule::MonochromeSprite => "monochrome_sprite",
                  ShaderModule::SubpixelSprite => "subpixel_sprite",
                  ShaderModule::PolychromeSprite => "polychrome_sprite",
@@ -298,14 +254,14 @@ index 5ab9167..8ed49c2 100644
      }
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_surface.rs b/gpui-pre-windows/src/directx_renderer/native_view_surface.rs
 new file mode 100644
-index 0000000..4640ed5
+index 0000000..42febcb
 --- /dev/null
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_surface.rs
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,146 @@
 +//! GPUI's frame while native views show (docs/native-view-windows.md in Parallax): copied into a DirectComposition
 +//! surface, which changes only on `Commit`, so the frame, its holes and the views' placement reach the screen in the
-+//! same composition frame. With no view shown, the swap chain presents as upstream. `crate::native_views::Presenter`
-+//! decides which; this file applies it.
++//! same composition frame. With no view shown, the swap chain presents as upstream. `crate::native_views::present_step`
++//! decides each frame's step; this file applies it.
 +
 +use anyhow::{Context as _, Result};
 +use windows::Win32::{
@@ -318,9 +274,9 @@ index 0000000..4640ed5
 +};
 +
 +use super::{DirectXResources, RENDER_TARGET_FORMAT};
-+use crate::native_views::Presenter;
++use crate::native_views::{PresentStep, Showing, present_step};
 +
-+/// What GPUI's own visual shows.
++/// What GPUI's own visual shows (`Showing`, with the surface).
 +pub(super) enum Presenting {
 +    /// GPUI's swap chain.
 +    SwapChain,
@@ -329,41 +285,62 @@ index 0000000..4640ed5
 +        surface: IDCompositionSurface,
 +        size: [u32; 2],
 +    },
++    /// Still `surface`, the frame after the last view went (`Showing::LeavingSurface`).
++    LeavingSurface {
++        surface: IDCompositionSurface,
++        size: [u32; 2],
++    },
 +}
 +
 +impl Presenting {
-+    /// Shows this frame, rendered into the swap chain's back buffer, as `presenter` says. Returns whether that needs a
-+    /// `Commit`: every surface frame does; a swap chain frame only when it takes the surface's place.
++    fn showing(&self) -> Showing {
++        match self {
++            Self::SwapChain => Showing::SwapChain,
++            Self::Surface { .. } => Showing::Surface,
++            Self::LeavingSurface { .. } => Showing::LeavingSurface,
++        }
++    }
++
++    /// Shows this frame, rendered into the swap chain's back buffer, by `present_step`. Returns the step, which says
++    /// whether it needs a `Commit`.
 +    pub(super) fn show(
 +        &mut self,
-+        presenter: Presenter,
++        shows_views: bool,
 +        comp_device: &IDCompositionDevice,
 +        comp_visual: &IDCompositionVisual,
 +        resources: &DirectXResources,
 +        context: &ID3D11DeviceContext,
 +        size: [u32; 2],
-+    ) -> Result<bool> {
-+        match presenter {
-+            Presenter::SwapChain => {
-+                // SAFETY: the swap chain is live and its back buffer holds this frame.
-+                unsafe { resources.swap_chain.Present(0, DXGI_PRESENT(0)) }
-+                    .ok()
-+                    .context("Presenting swap chain failed")?;
-+                match std::mem::replace(self, Self::SwapChain) {
-+                    Self::SwapChain => Ok(false),
-+                    Self::Surface { .. } => {
-+                        log::info!("native views: GPUI's frame presents through its swap chain again");
-+                        // SAFETY: the visual belongs to this device and the swap chain is live.
-+                        unsafe { comp_visual.SetContent(&resources.swap_chain) }?;
-+                        Ok(true)
-+                    }
-+                }
++    ) -> Result<PresentStep> {
++        let (step, next) = present_step(self.showing(), shows_views);
++        let present = || {
++            // SAFETY: the swap chain is live and its back buffer holds this frame.
++            unsafe { resources.swap_chain.Present(0, DXGI_PRESENT(0)) }
++                .ok()
++                .context("Presenting swap chain failed")
++        };
++        let old = std::mem::replace(self, Self::SwapChain);
++        *self = match (step, next) {
++            (PresentStep::Present, _) => {
++                present()?;
++                Self::SwapChain
 +            }
-+            Presenter::Surface => {
-+                let surface = match self {
-+                    Self::Surface { surface, size: made } if *made == size => surface.clone(),
-+                    Self::Surface { .. } | Self::SwapChain => {
-+                        if let Self::SwapChain = self {
++            (PresentStep::PresentAndShowSwapChain, _) => {
++                present()?;
++                log::info!("native views: GPUI's frame presents through its swap chain again");
++                // SAFETY: the visual belongs to this device and the swap chain is live.
++                unsafe { comp_visual.SetContent(&resources.swap_chain) }?;
++                Self::SwapChain
++            }
++            (PresentStep::CopyToSurface | PresentStep::CopyToSurfaceAndPresent, next) => {
++                let surface = match old {
++                    Self::Surface { surface, size: made } | Self::LeavingSurface { surface, size: made }
++                        if made == size =>
++                    {
++                        surface
++                    }
++                    Self::SwapChain | Self::Surface { .. } | Self::LeavingSurface { .. } => {
++                        if let Self::SwapChain = old {
 +                            log::info!(
 +                                "native views: GPUI's frame shows through a composition surface, alpha mode Premultiplied"
 +                            );
@@ -371,7 +348,7 @@ index 0000000..4640ed5
 +                        let [width, height] = size;
 +                        // SAFETY: plain creation on a live device; the visual belongs to it, and what it shows
 +                        // changes only on the commit after this frame is drawn into the surface.
-+                        let surface = unsafe {
++                        unsafe {
 +                            let surface = comp_device.CreateSurface(
 +                                width,
 +                                height,
@@ -380,47 +357,59 @@ index 0000000..4640ed5
 +                            )?;
 +                            comp_visual.SetContent(&surface)?;
 +                            surface
-+                        };
-+                        *self = Self::Surface {
-+                            surface: surface.clone(),
-+                            size,
-+                        };
-+                        surface
++                        }
 +                    }
 +                };
-+                let render_target = resources
-+                    .render_target
-+                    .as_ref()
-+                    .context("missing render target")?;
-+                let mut offset = POINT::default();
-+                // SAFETY: a whole-surface update (no rect) is filled entirely by the copy of a back buffer of the
-+                // surface's size; both textures are on GPUI's device and share RENDER_TARGET_FORMAT.
-+                unsafe {
-+                    let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset)?;
-+                    context.CopySubresourceRegion(
-+                        &texture,
-+                        0,
-+                        offset.x as u32,
-+                        offset.y as u32,
-+                        0,
-+                        render_target,
-+                        0,
-+                        None,
-+                    );
-+                    surface.EndDraw()?;
++                copy(&surface, resources, context)?;
++                if step == PresentStep::CopyToSurfaceAndPresent {
++                    present()?;
 +                }
-+                log::debug!("native views: GPUI frame copied into the surface");
-+                Ok(true)
++                match next {
++                    Showing::LeavingSurface => Self::LeavingSurface { surface, size },
++                    Showing::Surface | Showing::SwapChain => Self::Surface { surface, size },
++                }
 +            }
-+        }
++        };
++        Ok(step)
 +    }
++}
++
++/// Copies the frame in the swap chain's back buffer into `surface`.
++fn copy(
++    surface: &IDCompositionSurface,
++    resources: &DirectXResources,
++    context: &ID3D11DeviceContext,
++) -> Result<()> {
++    let render_target = resources
++        .render_target
++        .as_ref()
++        .context("missing render target")?;
++    let mut offset = POINT::default();
++    // SAFETY: a whole-surface update (no rect) is filled entirely by the copy of a back buffer of the surface's
++    // size; both textures are on GPUI's device and share RENDER_TARGET_FORMAT.
++    unsafe {
++        let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset)?;
++        context.CopySubresourceRegion(
++            &texture,
++            0,
++            offset.x as u32,
++            offset.y as u32,
++            0,
++            render_target,
++            0,
++            None,
++        );
++        surface.EndDraw()?;
++    }
++    log::debug!("native views: GPUI frame copied into the surface");
++    Ok(())
 +}
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
 new file mode 100644
-index 0000000..aa690c3
+index 0000000..1786a1d
 --- /dev/null
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,390 @@
 +//! Native views in the renderer's DirectComposition tree (docs/native-view-windows.md in Parallax). Each view is the
 +//! app's content (a composition swap chain or anything `IDCompositionVisual::SetContent` takes) in a subtree under
 +//! GPUI's own swap chain visual, shown through a hole the renderer clears in paint order. What to show is decided on
@@ -432,6 +421,7 @@ index 0000000..aa690c3
 +
 +use std::{
 +    any::Any,
++    cell::RefCell,
 +    ops::Range,
 +    rc::{Rc, Weak},
 +};
@@ -452,30 +442,22 @@ index 0000000..aa690c3
 +};
 +
 +use super::{
-+    DirectComposition, DirectXRenderer, DirectXRendererDevices, DirectXResources, PipelineState,
++    DirectComposition, DirectXRenderer, DirectXRendererDevices, PipelineState,
 +    create_opaque_blend_state, create_render_target_and_its_view,
 +    create_swap_chain_for_composition, shader_resources::ShaderModule,
 +};
 +use crate::WindowsWindowInner;
 +use super::native_view_surface::Presenting;
-+use crate::native_views::{AlphaMode, Frame, Placement, Presenter};
++use crate::native_views::{Frame, Placement, PresentStep};
 +
 +/// What the renderer keeps of its native views across devices.
++#[derive(Default)]
 +pub(super) struct NativeViews {
 +    /// The content of every attached view, as the app gave it; a lost device's new composition device shows it again.
 +    contents: Vec<(NativeViewId, IUnknown)>,
-+    /// How the composition swap chain blends now: [`AlphaMode::new`].
-+    pub(super) alpha_mode: AlphaMode,
-+}
-+
-+impl NativeViews {
-+    pub(super) fn new() -> Self {
-+        Self {
-+            contents: Vec::new(),
-+            // Most windows are opaque and show no native view; their first frame keeps this.
-+            alpha_mode: AlphaMode::Ignore,
-+        }
-+    }
++    /// Views whose last handle was dropped while the renderer was borrowed (it draws), taken out of the tree when the
++    /// next frame starts. Shared with each `NativeViewAttachment`.
++    detached: Rc<RefCell<Vec<NativeViewId>>>,
 +}
 +
 +/// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
@@ -651,7 +633,7 @@ index 0000000..aa690c3
 +        };
 +        let swap_chain = match self.background.take() {
 +            Some(swap_chain) => swap_chain,
-+            None => create_swap_chain_for_composition(&devices.dxgi_factory, &devices.device, 1, 1, AlphaMode::Ignore)?,
++            None => create_swap_chain_for_composition(&devices.dxgi_factory, &devices.device, 1, 1)?,
 +        };
 +        let (_, render_target_view) = create_render_target_and_its_view(&swap_chain, &devices.device)?;
 +        // SAFETY: the view is of this swap chain's current back buffer, on GPUI's device and context.
@@ -684,6 +666,8 @@ index 0000000..aa690c3
 +struct NativeViewAttachment {
 +    window: Weak<WindowsWindowInner>,
 +    id: NativeViewId,
++    /// The renderer's [`NativeViews::detached`].
++    detached: Rc<RefCell<Vec<NativeViewId>>>,
 +}
 +
 +impl Drop for NativeViewAttachment {
@@ -691,9 +675,13 @@ index 0000000..aa690c3
 +        let Some(window) = self.window.upgrade() else {
 +            return;
 +        };
-+        // The renderer is only borrowed while the window draws, which never runs app code that drops a view.
-+        if let Ok(mut renderer) = window.state.renderer.try_borrow_mut() {
-+            renderer.detach_native_view(self.id).log_err();
++        // At once, as a dropped `NSView` leaves its window; while the window draws (app code it runs, such as a
++        // device-changed callback, may drop a view), at the start of the next frame.
++        match window.state.renderer.try_borrow_mut() {
++            Ok(mut renderer) => {
++                renderer.detach_native_view(self.id).log_err();
++            }
++            Err(_) => self.detached.borrow_mut().push(self.id),
 +        }
 +    }
 +}
@@ -716,6 +704,7 @@ index 0000000..aa690c3
 +        Ok(Box::new(NativeViewAttachment {
 +            window: Rc::downgrade(window),
 +            id,
++            detached: self.native_views.detached.clone(),
 +        }))
 +    }
 +
@@ -727,58 +716,48 @@ index 0000000..aa690c3
 +        composition.view_tree.detach(&composition.comp_device, id)
 +    }
 +
-+    /// Before a frame renders: what it shows of the native views, after making the swap chain blend as the window's
-+    /// appearance needs (recreating it). The bool says the swap chain is new, to be committed after its first
-+    /// present so it never shows empty.
++    /// Before a frame renders: takes out the views dropped while the renderer was borrowed, and works out what the
++    /// frame shows of the views.
 +    pub(super) fn prepare_native_views(
 +        &mut self,
 +        scene: &Scene,
 +        appearance: WindowBackgroundAppearance,
-+    ) -> Result<(Frame, bool)> {
-+        let frame = Frame::new(&scene.native_views, appearance);
-+        let alpha_mode = AlphaMode::new(appearance);
-+        let Some(composition) = &self.direct_composition else {
-+            return Ok((frame, false));
-+        };
-+        if self.native_views.alpha_mode == alpha_mode {
-+            return Ok((frame, false));
++    ) -> Result<Frame> {
++        let detached = std::mem::take(&mut *self.native_views.detached.borrow_mut());
++        for id in detached {
++            self.detach_native_view(id)?;
 +        }
-+        log::info!("native views: composition swap chain alpha mode {alpha_mode:?}");
-+        let devices = self.devices.as_ref().context("devices missing")?;
-+        // SAFETY: unbinding the render target before its swap chain is released.
-+        unsafe { devices.device_context.OMSetRenderTargets(None, None) };
-+        self.resources.take();
-+        let resources = DirectXResources::new(devices, self.width, self.height, self.hwnd, false, alpha_mode)
-+            .context("Recreating the swap chain for a new alpha mode")?;
-+        if let Presenting::SwapChain = composition.view_tree.presenting {
-+            // SAFETY: the visual belongs to this device and the swap chain is live.
-+            unsafe { composition.comp_visual.SetContent(&resources.swap_chain) }?;
-+        }
-+        self.resources = Some(resources);
-+        self.native_views.alpha_mode = alpha_mode;
-+        Ok((frame, true))
++        Ok(Frame::new(&scene.native_views, appearance))
 +    }
 +
-+    /// After a frame renders: shows it (through the surface while views show, `Presenting::show`), then changes the
-+    /// visual tree and commits once, after Chromium's DCLayerTree, which presents its swap chains, then builds and
-+    /// commits the tree. Through the surface, the frame, its holes and the views' new placement change in that one
-+    /// commit. A swap chain frame that moves no view commits nothing, and the views' own presents never need GPUI:
-+    /// DWM picks up a swap chain's present by itself.
-+    pub(super) fn present_native_views(&mut self, (frame, swapped): (Frame, bool)) -> Result<()> {
++    /// After a frame renders: shows it (`Presenting::show`), then changes the visual tree and commits once, after
++    /// Chromium's DCLayerTree, which presents its swap chains, then builds and commits the tree. Through the surface,
++    /// the frame, its holes and the views' new placement change in that one commit. A swap chain frame that moves no
++    /// view commits nothing, and the views' own presents never need GPUI: DWM picks up a swap chain's present by
++    /// itself.
++    pub(super) fn present_native_views(&mut self, frame: Frame) -> Result<()> {
 +        let Some(composition) = &mut self.direct_composition else {
 +            return self.present();
 +        };
 +        let devices = self.devices.as_ref().context("devices missing")?;
 +        let resources = self.resources.as_ref().context("resources missing")?;
-+        let shown = composition.view_tree.presenting.show(
-+            Presenter::new(!frame.views.is_empty()),
++        let step = composition.view_tree.presenting.show(
++            !frame.views.is_empty(),
 +            &composition.comp_device,
 +            &composition.comp_visual,
 +            resources,
 +            &devices.device_context,
 +            [self.width, self.height],
 +        )?;
-+        if composition.view_tree.place_views(frame, devices)? || shown || swapped {
++        let placed = composition.view_tree.place_views(frame, devices)?;
++        // step → whether it changes what DirectComposition shows. Only a plain present doesn't.
++        let commits = match step {
++            PresentStep::Present => placed,
++            PresentStep::CopyToSurface
++            | PresentStep::CopyToSurfaceAndPresent
++            | PresentStep::PresentAndShowSwapChain => true,
++        };
++        if commits {
 +            // SAFETY: plain call on a live device.
 +            unsafe { composition.comp_device.Commit() }?;
 +        }
@@ -835,10 +814,10 @@ index bff01be..150a617 100644
  mod system_settings;
 diff --git a/gpui-pre-windows/src/native_views.rs b/gpui-pre-windows/src/native_views.rs
 new file mode 100644
-index 0000000..7bc336b
+index 0000000..1455dbf
 --- /dev/null
 +++ b/gpui-pre-windows/src/native_views.rs
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,219 @@
 +//! What DirectComposition shows of a window's native views, decided on plain values so it is tested on any host
 +//! (Parallax's `scripts/patch-test.sh` builds this file on its own); `directx_renderer.rs` applies it to the visual
 +//! tree. Modelled on Chromium's `ui/gl/dc_layer_tree.cc` (`VisualTree::BuildTree`, `VisualSubtree::Update`): every
@@ -872,51 +851,45 @@ index 0000000..7bc336b
 +    }
 +}
 +
-+/// How DXGI composes GPUI's swap chain over what is under it.
++/// What GPUI's own visual shows, as a plain value (`directx_renderer`'s `Presenting` holds the surface).
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum AlphaMode {
-+    /// Every pixel opaque: DWM skips blending the window.
-+    Ignore,
-+    /// Pixels blend over what is under them: the desktop behind a transparent window. (GPUI's composition surface,
-+    /// over the native views, always blends: it exists only while a view shows, see [`Presenter`].)
-+    Premultiplied,
++pub(crate) enum Showing {
++    /// GPUI's swap chain, as upstream.
++    SwapChain,
++    /// The composition surface GPUI's frames are copied into while a view shows.
++    Surface,
++    /// Still the surface, the frame after the last view went; the swap chain already holds that frame.
++    LeavingSurface,
 +}
 +
-+impl AlphaMode {
-+    /// The swap chain's mode. It never shows over a native view (GPUI's frame goes through a surface then), so an
-+    /// opaque window keeps the mode it has without native views and costs what it did before.
-+    pub(crate) fn new(appearance: WindowBackgroundAppearance) -> Self {
-+        // appearance → mode. Every appearance but Opaque lets the desktop show through.
-+        match appearance {
-+            WindowBackgroundAppearance::Opaque => Self::Ignore,
-+            WindowBackgroundAppearance::Transparent
-+            | WindowBackgroundAppearance::Blurred
-+            | WindowBackgroundAppearance::MicaBackdrop
-+            | WindowBackgroundAppearance::MicaAltBackdrop => Self::Premultiplied,
-+        }
-+    }
-+}
-+
-+/// How GPUI's frame reaches DirectComposition. A swap chain's `Present` and a `Commit` are not atomic (DComp has no API
-+/// to tie them), so a frame that moves a view could show its new hole a composition frame before or after the view's
-+/// new placement. A composition surface changes only on `Commit`, so GPUI's frame, its holes and the views' placement
++/// How a frame reaches DirectComposition. A swap chain's `Present` and a `Commit` are not atomic (DComp has no API to
++/// tie them), so a frame that moves a view could show its new hole a composition frame before or after the view's new
++/// placement. A composition surface changes only on `Commit`, so GPUI's frame, its holes and the views' placement
 +/// change together, at one GPU copy of GPUI's frame per GPUI frame (never per frame of a view's own content).
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum Presenter {
++pub(crate) enum PresentStep {
 +    /// `Present` on GPUI's swap chain, as upstream: no copy, no `Commit`.
-+    SwapChain,
-+    /// GPUI's frame copied into a composition surface, shown by the `Commit` that also places the views.
-+    Surface,
++    Present,
++    /// Copy into the surface (made first, or again at a new size) and commit it with the views' placement.
++    CopyToSurface,
++    /// The last view went: this hole-less frame is copied into the surface and committed with the views' removal,
++    /// and presented to the swap chain too, so the swap chain holds it when it shows again.
++    CopyToSurfaceAndPresent,
++    /// Present, then show the swap chain again (`SetContent` and a `Commit`): it already holds the previous
++    /// hole-less frame, so whichever of the two frames DWM composes first is current, never a stale one.
++    PresentAndShowSwapChain,
 +}
 +
-+impl Presenter {
-+    /// A window pays for the surface only while it shows a native view.
-+    pub(crate) fn new(shows_native_views: bool) -> Self {
-+        // shows a view → presenter.
-+        match shows_native_views {
-+            false => Self::SwapChain,
-+            true => Self::Surface,
++/// `showing × whether the frame shows a view → (step, showing next)`. A window pays for the surface only while it
++/// shows a native view, and leaves it over two frames, so no stale swap chain frame ever flashes.
++pub(crate) fn present_step(showing: Showing, shows_views: bool) -> (PresentStep, Showing) {
++    match (showing, shows_views) {
++        (Showing::SwapChain, false) => (PresentStep::Present, Showing::SwapChain),
++        (Showing::SwapChain | Showing::Surface | Showing::LeavingSurface, true) => {
++            (PresentStep::CopyToSurface, Showing::Surface)
 +        }
++        (Showing::Surface, false) => (PresentStep::CopyToSurfaceAndPresent, Showing::LeavingSurface),
++        (Showing::LeavingSurface, false) => (PresentStep::PresentAndShowSwapChain, Showing::SwapChain),
 +    }
 +}
 +
@@ -995,29 +968,20 @@ index 0000000..7bc336b
 +    }
 +
 +    #[test]
-+    fn alpha_mode_per_appearance() {
-+        // (appearance, swap chain mode). One row per WindowBackgroundAppearance variant.
++    fn present_steps() {
++        use PresentStep::*;
++        use Showing::*;
++        // (row name, showing, the frame shows a view, step, showing next). One row per (showing, views) pair.
 +        let rows = [
-+            (WindowBackgroundAppearance::Opaque, AlphaMode::Ignore),
-+            (WindowBackgroundAppearance::Transparent, AlphaMode::Premultiplied),
-+            (WindowBackgroundAppearance::Blurred, AlphaMode::Premultiplied),
-+            (WindowBackgroundAppearance::MicaBackdrop, AlphaMode::Premultiplied),
-+            (WindowBackgroundAppearance::MicaAltBackdrop, AlphaMode::Premultiplied),
++            ("no view: the swap chain, as upstream", SwapChain, false, Present, SwapChain),
++            ("the first view: the surface", SwapChain, true, CopyToSurface, Surface),
++            ("views go on showing", Surface, true, CopyToSurface, Surface),
++            ("the last view goes: the surface once more, the swap chain primed", Surface, false, CopyToSurfaceAndPresent, LeavingSurface),
++            ("the frame after: the swap chain again", LeavingSurface, false, PresentAndShowSwapChain, SwapChain),
++            ("a view shows again while leaving: the surface stays", LeavingSurface, true, CopyToSurface, Surface),
 +        ];
-+        for (appearance, expected) in rows {
-+            assert_eq!(AlphaMode::new(appearance), expected, "{appearance:?}");
-+        }
-+    }
-+
-+    #[test]
-+    fn presenter_per_frame() {
-+        // (name, shows a native view, presenter). One row per case.
-+        let rows = [
-+            ("no view: the swap chain, as upstream", false, Presenter::SwapChain),
-+            ("a view shows: the surface, committed with the views", true, Presenter::Surface),
-+        ];
-+        for (name, shows, expected) in rows {
-+            assert_eq!(Presenter::new(shows), expected, "{name}");
++        for (name, showing, shows_views, step, next) in rows {
++            assert_eq!(present_step(showing, shows_views), (step, next), "{name}");
 +        }
 +    }
 +

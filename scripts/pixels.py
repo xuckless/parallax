@@ -9,6 +9,8 @@ A colour is rrggbb in hex; `**` for a channel matches any value (the Wayland pag
 
 Usage: python3 -I scripts/pixels.py <shot> at <x> <y>           prints "r g b" of that pixel
        python3 -I scripts/pixels.py <shot> count <colour>       prints how many pixels are that colour
+       python3 -I scripts/pixels.py <shot> counts <colour>...   prints, on one line, how many pixels are each colour
+                                                                (one read of the shot, for checks of many shots)
        python3 -I scripts/pixels.py <shot> size                 prints "width height"
        python3 -I scripts/pixels.py <shot> bbox <colour>...     prints "left top right bottom" (right and bottom
                                                                 exclusive) of the rows and columns with 20 or more
@@ -96,6 +98,17 @@ def matches(pixels, at, want):
     return all(w is None or abs(pixels[at + c] - w) <= TOLERANCE for c, w in enumerate(want))
 
 
+def count(pixels, want):
+    """How many pixels match `want`, fast: each channel's bytes become 0 or 1 by a lookup table (bytes.translate),
+    the three are ANDed as big integers, and the ones counted, so a 2-megapixel shot takes milliseconds."""
+    total = None
+    for channel, wanted in enumerate(want):
+        table = bytes(1 if wanted is None or abs(value - wanted) <= TOLERANCE else 0 for value in range(256))
+        bits = int.from_bytes(bytes(pixels[channel::4]).translate(table), "big")
+        total = bits if total is None else total & bits
+    return total.bit_count()
+
+
 def bbox(width, pixels, wants):
     """The bounds of the rows and columns with at least MIN_RUN pixels of the colours, so stray antialiased text
     pixels that happen to match don't count."""
@@ -122,8 +135,9 @@ def main():
         at = (y * width + x) * 4
         print(*pixels[at : at + 3])
     elif command == "count":
-        want = colour(args[0])
-        print(sum(matches(pixels, at, want) for at in range(0, len(pixels), 4)))
+        print(count(pixels, colour(args[0])))
+    elif command == "counts":
+        print(*(count(pixels, colour(spec)) for spec in args))
     elif command == "size":
         print(width, height)
     elif command == "bbox":
