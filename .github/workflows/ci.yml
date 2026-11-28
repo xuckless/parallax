@@ -1,6 +1,7 @@
 # Six builds, one per target, no feature variants (ROADMAP Phase 0), plus the Java tests, the patch tests (GPUI's own
 # tests on the patched fork crate), Linux and Windows touch injection (Gate 3) and an Android emulator smoke test of
-# examples/hello. See docs/ci.md.
+# examples/hello, and Gate 5: every example on every target through `cargo parallax` from a clean checkout.
+# See docs/ci.md.
 name: CI
 
 on:
@@ -8,9 +9,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer push to the same ref cancels the run it supersedes.
+# A newer run of the same ref and event cancels the one it supersedes (a manual run leaves the push run alone).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -327,3 +328,303 @@ jobs:
         with:
           name: android-smoke
           path: target/android-smoke/
+
+  # Gate 5 (docs/ci-gate5.md): every example on every target through the published path, from a clean checkout: no
+  # Cargo cache, build/ generated fresh, `cargo install --path crates/cli`, then `cargo parallax`. Each job waits for
+  # the log line that proves the app ran, and checks `run … -- <app args>` with native-view's `--no-view`. They build
+  # GPUI from nothing, so like the touch jobs they run on main, pull requests and manual runs.
+  gate5-linux:
+    name: gate5 linux
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES mesa-vulkan-drivers gnome-shell dbus-user-session fuse3
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # A private headless GNOME Shell (Wayland), the app on lavapipe (docs/ci-gate5.md#linux).
+      - run: scripts/linux-run-check.sh hello "window open"
+      - run: |
+          scripts/linux-run-check.sh native-view "native-view: window open" "no native view: no-view" -- --no-view
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-linux
+          path: target/linux-run-check/
+
+  gate5-windows:
+    name: gate5 windows
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # hello runs until closed: wait for its line, then stop it.
+      - run: |
+          cd examples/hello
+          cargo parallax run windows > ../../hello-windows.log 2>&1 &
+          for _ in $(seq 600); do grep -q "window open" ../../hello-windows.log && break; sleep 1; done
+          taskkill //IM hello.exe //F || true
+          grep "window open" ../../hello-windows.log
+      # native-view quits by itself after --seconds.
+      - run: |
+          cd examples/native-view
+          cargo parallax run windows -- --no-view --seconds 5 2>&1 | tee ../../native-view-windows.log
+          grep "native-view: window open" ../../native-view-windows.log
+          grep "no native view: no-view" ../../native-view-windows.log
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-windows
+          path: "*-windows.log"
+
+  gate5-macos:
+    name: gate5 macos
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # The bundle: Info.plist well-formed, the ad-hoc signature valid.
+      - run: |
+          cd examples/hello
+          cargo parallax build macos
+          app=$(ls -d ../../target/parallax/macos/hello/*.app)
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --strict --verbose=2 "$app"
+      # Launched from inside the bundle (the runner has a window server): hello until its line, native-view by itself.
+      - run: |
+          cd examples/hello
+          cargo parallax run macos > ../../hello-macos.log 2>&1 &
+          for _ in $(seq 300); do grep -q "window open" ../../hello-macos.log && break; sleep 1; done
+          pkill -f Hello.app/Contents/MacOS || true
+          grep "window open" ../../hello-macos.log
+      - run: |
+          cd examples/native-view
+          cargo parallax run macos -- --no-view --seconds 5 2>&1 | tee ../../native-view-macos.log
+          grep "native-view: window open" ../../native-view-macos.log
+          grep "no native view: no-view" ../../native-view-macos.log
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-macos
+          path: "*-macos.log"
+
+  gate5-ios:
+    name: gate5 ios
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # The first available iPhone simulator; `run ios` boots it and streams the app's log until stopped.
+      - run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
+          echo "SIMULATOR=$udid" >> "$GITHUB_ENV"
+      - run: |
+          for example in hello native-view; do
+            args=(); pattern="window open"
+            [[ $example == native-view ]] && { args=(-- --no-view); pattern="no native view: no-view"; }
+            (cd examples/$example && cargo parallax run ios --simulator "$SIMULATOR" "${args[@]}") > $example-ios.log 2>&1 &
+            run=$!
+            for _ in $(seq 900); do grep -q "$pattern" $example-ios.log && break; kill -0 $run 2>/dev/null || break; sleep 1; done
+            kill $run 2>/dev/null; pkill -P $run 2>/dev/null || true
+            grep "$pattern" $example-ios.log || { tail -40 $example-ios.log; exit 1; }
+          done
+      - if: always()
+        run: xcrun simctl shutdown all
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-ios
+          path: "*-ios.log"
+
+  gate5-web:
+    name: gate5 web
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PLAYWRIGHT_DIR: ${{ github.workspace }}/target/playwright
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright/browsers
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      # binaryen: wasm-opt, which `--release` runs. Playwright: Firefox (web-checks.mjs drives Chromium over CDP).
+      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      - run: |
+          mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR" && npm init -y >/dev/null
+          npm install playwright@1.56.1 && npx playwright install --with-deps firefox
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # wasm-bindgen-cli at exactly the wasm-bindgen version in Cargo.lock (cargo parallax checks it).
+      - run: cargo install --locked wasm-bindgen-cli --version "$(cargo metadata --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "wasm-bindgen"))')"
+      # Serve hello and native-view (and native-view's second origin); `-- offset` checks the app-args query.
+      - run: |
+          (cd examples/hello && cargo parallax run web --port 8765 > ../../hello-web.log 2>&1 &)
+          (cd examples/native-view && cargo parallax run web --port 8770 -- offset > ../../native-view-web.log 2>&1 &)
+          for _ in $(seq 900); do grep -q serving hello-web.log && grep -q serving native-view-web.log && break; sleep 1; done
+          grep "at http://127.0.0.1:8765/ " hello-web.log
+          grep "at http://127.0.0.1:8770/?offset " native-view-web.log
+          python3 -m http.server 8771 --bind 127.0.0.1 --directory target/parallax/web/native-view > /dev/null 2>&1 &
+      # Fresh headless browsers per suite (docs/web-text-input.md): Chromium over CDP, Firefox through Playwright.
+      - run: |
+          chrome() {
+            local size=$1; shift
+            rm -rf "$RUNNER_TEMP/chrome"
+            google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir="$RUNNER_TEMP/chrome" \
+              --window-size=$size --force-device-scale-factor=1 --touch-events=enabled about:blank > /dev/null 2>&1 &
+            local pid=$!
+            sleep 3
+            node scripts/web-checks.mjs "$@" 9222 ${SUITE:-}
+            local status=$?
+            kill $pid; wait $pid 2>/dev/null
+            return $status
+          }
+          failed=0
+          for mode in desktop mobile; do
+            chrome 412,915 http://127.0.0.1:8765/ $mode || failed=1
+            node scripts/web-checks.mjs http://127.0.0.1:8765/ $mode firefox || failed=1
+            SUITE=native-view chrome 900,700 http://127.0.0.1:8770/ $mode || failed=1
+            node scripts/web-checks.mjs http://127.0.0.1:8770/ $mode firefox native-view || failed=1
+          done
+          exit $failed
+      # `--release`: wasm-opt must run (no "wasm-opt not found"), and the optimised hello passes the checks.
+      - run: |
+          (cd examples/hello && cargo parallax run web --release --port 8766 > ../../hello-web-release.log 2>&1 &)
+          for _ in $(seq 900); do grep -q serving hello-web-release.log && break; sleep 1; done
+          if grep "wasm-opt not found" hello-web-release.log; then exit 1; fi
+          google-chrome --headless=new --remote-debugging-port=9223 --user-data-dir="$RUNNER_TEMP/chrome-release" \
+            --window-size=412,915 --force-device-scale-factor=1 --touch-events=enabled about:blank > /dev/null 2>&1 &
+          sleep 3
+          node scripts/web-checks.mjs http://127.0.0.1:8766/ desktop 9223
+      - if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-web
+          path: |
+            *-web*.log
+            target/web-checks/
+
+  gate5-android:
+    name: gate5 android
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # The android-smoke job's emulator, AVD and cache key (see it for why each option).
+      EMULATOR_OPTIONS: -no-window -gpu auto -noaudio -no-boot-anim -camera-back none
+      AVD_API_LEVEL: 35
+      AVD_TARGET: google_apis
+      AVD_ARCH: x86_64
+      AVD_PROFILE: pixel_7
+      AVD_RUNNER: v2.38.0
+      AVD_CACHE_BUMP: 1
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13+9
+      - run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # The emulator image only, from android-smoke's cache (no Cargo or Gradle cache).
+      - uses: actions/cache@v6.1.0
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.AVD_API_LEVEL }}-${{ env.AVD_TARGET }}-${{ env.AVD_ARCH }}-${{ env.AVD_PROFILE }}-runner-${{ env.AVD_RUNNER }}-${{ env.AVD_CACHE_BUMP }}
+      - if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
+          force-avd-creation: false
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: false
+          script: echo "AVD snapshot made for the cache"
+      # One line: the runner runs each script line in its own shell. hello through `cargo parallax run android`, then
+      # android-smoke.sh's steps; native-view with an Intent extra from `-- --no-view`.
+      - uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: ${{ env.AVD_API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save ${{ env.EMULATOR_OPTIONS }}
+          disable-animations: true
+          script: >-
+            (cd examples/hello && cargo parallax run android) && scripts/android-smoke.sh && (cd examples/native-view && cargo parallax run android -- --no-view) && for i in $(seq 90); do adb logcat -d | grep -q "no native view: no-view" && break; sleep 1; done && adb logcat -d | grep "native-view: window open\|no native view: no-view"
+      - if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gate5-android
+          path: target/android-smoke/
+
+  # Release signing (docs/cli-android-release.md): a throwaway upload key made in the job, a signed App Bundle and a
+  # signed universal APK, each checked with the SDK's and Google's tools. No device needed.
+  gate5-release-signing:
+    name: gate5 release-signing
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BUNDLETOOL: 1.17.2
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: 21.0.13+9
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - run: scripts/apply-patches.sh
+      - run: cargo install --locked --path crates/cli
+      # The key and its password live only in this job; the password reaches cargo parallax through its env var.
+      - run: |
+          password=$(openssl rand -hex 16)
+          echo "::add-mask::$password"
+          echo "PARALLAX_KEYSTORE_PASSWORD=$password" >> "$GITHUB_ENV"
+          keytool -genkey -keystore "$RUNNER_TEMP/upload.jks" -storetype PKCS12 -keyalg RSA -keysize 2048 \
+            -validity 10000 -alias upload -dname "CN=Parallax CI" -storepass "$password" -keypass "$password"
+          printf '\n[android.release]\nkeystore = "%s"\nkey_alias = "upload"\n' "$RUNNER_TEMP/upload.jks" >> examples/hello/parallax.toml
+      - run: |
+          cd examples/hello
+          cargo parallax build android --release 2>&1 | tee ../../aab.log
+          cargo parallax build android --release --apk 2>&1 | tee ../../apk.log
+      - run: |
+          aab=$(sed -n 's/^cargo parallax: built //p' aab.log)
+          apk=$(sed -n 's/^cargo parallax: built //p' apk.log)
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs "$apk" | tee apksigner.log
+          grep "CN=Parallax CI" apksigner.log
+          keytool -printcert -jarfile "$aab" | grep "CN=Parallax CI"
+          curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" \
+            "https://github.com/google/bundletool/releases/download/$BUNDLETOOL/bundletool-all-$BUNDLETOOL.jar"
+          java -jar "$RUNNER_TEMP/bundletool.jar" validate --bundle="$aab"
+          java -jar "$RUNNER_TEMP/bundletool.jar" build-apks --mode=universal --bundle="$aab" --output=app.apks \
+            --ks="$RUNNER_TEMP/upload.jks" --ks-key-alias=upload --ks-pass="pass:$PARALLAX_KEYSTORE_PASSWORD"
+          unzip -o app.apks universal.apk
+          "$apksigner" verify --print-certs universal.apk | grep "CN=Parallax CI"

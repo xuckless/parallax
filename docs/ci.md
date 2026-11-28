@@ -2,7 +2,8 @@
 
 [ci.yml](../.github/workflows/ci.yml) builds Parallax for the six targets of [ROADMAP Phase 0](../ROADMAP.md):
 one job per target, no feature variants, plus one job each for the Java tests, the patch tests, Linux touch, Windows
-touch and the Android smoke test. Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
+touch and the Android smoke test, and the seven Gate 5 jobs that run every example through `cargo parallax` from a clean
+checkout ([ci-gate5.md](ci-gate5.md)). Runs: [GitHub Actions](https://github.com/xuckless/parallax/actions).
 
 Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-toolchain.toml), runs
 [apply-patches.sh](../scripts/apply-patches.sh) to generate `build/` (patched GPUI and the
@@ -10,11 +11,12 @@ Every job checks out, installs the toolchain from [rust-toolchain.toml](../rust-
 
 ## Jobs
 
-Eight jobs run on every push, pull request and manual `workflow_dispatch`. Three drive a device or a desktop:
+Eight jobs run on every push, pull request and manual `workflow_dispatch`. Three more drive a device or a desktop (and
+the seven Gate 5 jobs build from nothing):
 `android-smoke` boots an emulator and builds a two-ABI APK (about 5 minutes warm, 7 cold), `linux-touch` builds
 Weston, `windows-touch` injects into a desktop session. They run only where a merge is decided: pull requests, pushes
 to `main` and manual runs; start them on a branch with `gh workflow run ci.yml --ref <branch>` (emulator setup:
-[android-smoke-ci.md](android-smoke-ci.md#in-ci)). A newer push to the same ref cancels the older run.
+[android-smoke-ci.md](android-smoke-ci.md#in-ci)). A newer run for the same ref and event cancels the older one.
 
 | Target | Runner | Runs |
 |---|---|---|

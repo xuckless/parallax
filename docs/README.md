@@ -72,6 +72,7 @@ How the code works:
 | [behaviour-tuning.md](behaviour-tuning.md) | How the behaviour row reaches GPUI's gesture tuning automatically, density changes on Android, overriding it, what GPUI reads |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [ci.md](ci.md) | The eleven CI jobs (six targets, Java tests, patch tests, Linux touch, Windows touch, Android smoke), what each checks, when each runs, adding a target |
+| [ci-gate5.md](ci-gate5.md) | Gate 5 CI: seven `gate5-*` jobs run hello and native-view on Linux, Windows, macOS, iOS, the web and Android through `cargo install --path crates/cli` + `cargo parallax` from a clean checkout, app arguments after `--`, and release signing with a throwaway key |
 | [ci-local.md](ci-local.md) | Running CI's checks locally: the commands, the Android NDK setup, desktop touch runs |
 | [audits/android-fonts.md](audits/android-fonts.md) | Android font audit: cosmic-text/fontdb gaps, fonts.xml parsing, CJK and emoji fallback (COLRv1 vs CBDT), sizing and proposed Phase 1 tasks |
 | [audits/oracle-inventory.md](audits/oracle-inventory.md) | Flutter 3.50.1 test files per area (gestures, text input, accessibility), the upstream GPUI code each checks, portability verdicts, Android/iOS test-infra risks, Phase 2/4 order |
