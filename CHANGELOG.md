@@ -43,6 +43,14 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - CI: a `cargo-parallax` workflow runs every target from a clean checkout through `cargo install --path crates/cli`
   (Android emulator, iOS simulator, web headless incl. `--release` with wasm-opt, macOS `.app`, Linux and Windows
   windows, release signing) (docs/ci.md).
+- Docs for app developers: getting started overall and per target (docs/getting-started*.md: Android, iOS, web,
+  macOS, Windows, Linux, each with prerequisites, the command that runs hello and common errors), guides to the
+  touch → mouse rule and `.on_touch` (docs/touch-and-mouse.md), the platform behaviour table and
+  `parallax::set_gesture_tuning` (docs/platform-feel.md), native views (docs/native-views-guide.md), and a credits
+  page for every source Parallax ports (docs/credits.md). The README is now the app developer's front door.
+- hello shows a short guide line under its box or emoji grid and on its trace pad; its and native-view's
+  `parallax.toml` cover every target (native-view gains the app icon); native-view's README says what each target
+  shows.
 
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 

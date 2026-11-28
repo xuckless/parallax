@@ -12,7 +12,8 @@ from a mouse, a tap or a key; a tap outside a field blurs it. A two-finger or tr
 `ZOOM` and its label shows the zoom and the pinch's rotation; `hello: pinch end: …` logs each end
 ([pinch.md](pinch.md)). Hovering or long-pressing the box shows its colour as a tooltip; the long press plays the
 platform's long-press haptic ([haptics.md](haptics.md)) with no app code. It is the app of Milestone 0.1.1 in
-[ROADMAP.md](../ROADMAP.md): it opens, draws and reacts to a tap on desktop, web and Android.
+[ROADMAP.md](../ROADMAP.md): it opens, draws and reacts to a tap on desktop, web and Android. A dim line under the
+box or grid (`Shown::guide`, in `GUIDE_TEXT`, a colour no check looks for) and one on the trace pad say what to try.
 
 Two Android checks ride along: 直骨 in `SCRIPTS` change glyph form with the app's language
 ([android-fonts.md](android-fonts.md#locale-changes)), and "Show emoji" swaps the box for 100 distinct emoji

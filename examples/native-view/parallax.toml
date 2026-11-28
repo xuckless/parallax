@@ -1,7 +1,9 @@
-# cargo parallax reads this (docs/cli.md and one docs/cli-<target>.md per target). Every other key keeps its default.
+# cargo parallax reads this on every target (docs/getting-started.md; keys: docs/cli.md). Every other key keeps its
+# default. What each target shows: README.md.
 [app]
 name = "Native views"
 id = "io.github.xuckless.parallax.nativeview"
+icon = "../../assets/brand/parallax-app-icon.svg"
 
 [android]
 abis = ["x86_64"]

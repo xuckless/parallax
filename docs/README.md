@@ -2,6 +2,24 @@
 
 How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan lives in [ROADMAP.md](../ROADMAP.md).
 
+For app developers, start here:
+
+| Doc | Covers |
+|---|---|
+| [getting-started.md](getting-started.md) | Rust toolchain, installing cargo-parallax, the app crate's entry points, parallax.toml, running hello; links to each target |
+| [getting-started-android.md](getting-started-android.md) | Android: SDK, NDK, Java, an emulator, `run android`, release signing in short, common errors |
+| [getting-started-ios.md](getting-started-ios.md) | iOS: Xcode, the simulator, running on your own device with only the team id, common errors |
+| [getting-started-web.md](getting-started-web.md) | The web: wasm-bindgen-cli at the lock file's version, `run web`, deploying the built site, common errors |
+| [getting-started-macos.md](getting-started-macos.md) | macOS: the command line tools, the `.app`, `[macos]` keys, `touch_native` and Sidecar, common errors |
+| [getting-started-windows.md](getting-started-windows.md) | Windows: the MSVC Build Tools, `run windows`, touch and pen, WebView2 native views, common errors |
+| [getting-started-linux.md](getting-started-linux.md) | Linux: system packages per distro, Wayland and X11, `run linux`, touch, common errors |
+| [touch-and-mouse.md](touch-and-mouse.md) | The touch → mouse rule for app code: what a tap, pan, long press and pinch become, `pointer_source`, opting out with `.on_touch` (deepest wins) |
+| [platform-feel.md](platform-feel.md) | The behaviour table in short (slop, scrolling, overscroll, haptics, touch targets per target) and overriding it with `parallax::set_gesture_tuning` |
+| [native-views-guide.md](native-views-guide.md) | Native views for app code: what each target takes, using the handle, who gets the pointer, the example |
+| [credits.md](credits.md) | What Parallax ports from Flutter, Flutter's website, Chromium, React Native, winit, page-lifecycle and GPUI Kit, what it reads as references, bundled files, the ledgers and NOTICE |
+
+How the code works:
+
 | Doc | Covers |
 |---|---|
 | [flutter.md](flutter.md) | Recording Flutter ports in the ledger, port vs oracle, bumping the pinned tag with flutter-diff.sh |
