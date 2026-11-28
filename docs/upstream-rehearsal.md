@@ -31,7 +31,8 @@ patches to Zed main.
   too. Zed's `keyboard_height` overlaps our Flutter port: decide at the real sync whether to share it.
 - **0041** (Linux reduce motion): Zed added a GNOME text-scale reader in the same portal spots. Neighbour added.
 - **0042** (Windows accessibility settings): Zed took `WM_USER + 11` for a new message. A fuzzy apply would compile
-  and send our message to Zed's handler. Ours is now `+ 12`. This conflict was about meaning, not text.
+  and send our message to Zed's handler. The rehearsal moved ours to `+ 12`; main has since moved it to `WM_APP + 1`, out of Zed's range
+  (AGENTS patch rule 4). This conflict was about meaning, not text.
 - **0046**, applied with offsets but drifted: Zed's new iOS refocus rule read the user agent again. Fixed so it reads
   the OS value stored once.
 - **0028**, applied but broke a build: its manifest hunk pins `=0.3.14`. `fork-crates.sh` rewrote only the current

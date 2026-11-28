@@ -6,9 +6,9 @@ What (needs 0039):
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (Personalization > Colors > Transparency
   effects) reduces transparency; an unreadable or missing value reduces neither. platform.rs reads both at startup
   (windows-registry, already a dependency) and again on `WM_SETTINGCHANGE`, which the platform's hidden top-level
-  window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_USER + 11`) first, as for display
-  changes, and calls the app back only when the settings moved. Table test runs on the host through
-  scripts/patch-test.sh's `windows-pure` crate.
+  window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_APP + 1`: our own range, clear of
+  upstream's `WM_USER + n` ids) first, as for display changes, and calls the app back only when the settings
+  moved. Table test runs on the host through scripts/patch-test.sh's `windows-pure` crate.
 
 Why: 0039 gives GPUI a platform hook for the OS's reduce-motion and reduce-transparency settings; Windows reported
 neither. The platform's message handling is private to gpui_windows.
@@ -72,11 +72,12 @@ new file mode 100644
 diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
 --- a/gpui-pre-windows/src/events.rs
 +++ b/gpui-pre-windows/src/events.rs
-@@ -64,6 +64,7 @@
+@@ -64,6 +64,8 @@
  pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
  pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
  pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
-+pub(crate) const WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED: u32 = WM_USER + 11;
++// Parallax: WM_APP range, so upstream's next WM_USER id cannot collide with ours.
++pub(crate) const WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED: u32 = WM_APP + 1;
  
  const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
  
