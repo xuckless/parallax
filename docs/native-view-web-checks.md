@@ -39,7 +39,9 @@ Chromium as in [web-text-input.md](web-text-input.md) with `--window-size=900,70
 
 ## Results
 
-Checked 2026-11-28, every check passing (34 desktop, 29 mobile, where wheel, drag and hover don't apply):
+Checked 2026-11-28, every check passing (34 desktop, 29 mobile, where wheel, drag and hover don't apply), and again
+on the one `examples/native-view` crate in every row below, its log saying `gpui frames/s 0, view frames/s 60`
+while only the elements change:
 
 | Browser | Renderer | Scales | Pointer move, views / none | Animating frame, views / none |
 |---|---|---|---|---|
