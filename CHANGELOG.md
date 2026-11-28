@@ -6,6 +6,12 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.10)
+
+- Windows: `NativeView` shows an app's composition swap chain (or any DirectComposition content) under GPUI's
+  content, with no child window and no GPUI frame for the view's own presents; input over it reaches the view's
+  element (patch 0050, docs/native-view-windows.md, examples/native-view-windows).
+
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 
 Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0046).

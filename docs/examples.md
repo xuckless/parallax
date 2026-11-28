@@ -43,3 +43,10 @@ point per target, all through the `parallax` facade.
 | iOS | none yet | |
 
 How to build and run it on each target: [examples-run.md](examples-run.md).
+
+## native-view-windows
+
+[examples/native-view-windows](../examples/native-view-windows/): a `NativeView` on Windows, the app's own composition
+swap chain presented every vsync from its own thread, under an orange div; "move" and "resize" buttons; logs GPUI
+frames and view presents per second and the input its element hears. A platform-specific check, so it does nothing
+on other targets (it still builds there). `cargo run -p native-view-windows`; checks: [native-view-windows.md](native-view-windows.md).
