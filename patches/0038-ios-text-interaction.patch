@@ -50,7 +50,7 @@ index 923ff13..f645433 100644
      "UITraitCollection",
      "UIView",
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d4359bc..f331b3f 100644
+index d4359bc..cb1b368 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
@@ -71,7 +71,24 @@ index d4359bc..f331b3f 100644
  }
  
  define_class!(
-@@ -175,9 +177,49 @@ define_class!(
+@@ -165,6 +167,16 @@ define_class!(
+                 && self.ivars().keyboard_eligible.get()
+         }
+ 
++        // UIKit can make this view first responder itself (not only `reconcileTextInput`), so the selection UI comes
++        // with the responder wherever it starts.
++        #[unsafe(method(becomeFirstResponder))]
++        fn become_first_responder(&self) -> bool {
++            // SAFETY: UIResponder's own `becomeFirstResponder`, on the main thread.
++            let became: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
++            self.sync_text_interaction();
++            became
++        }
++
+         #[unsafe(method(resignFirstResponder))]
+         fn resign_first_responder(&self) -> bool {
+             let was_first_responder = self.isFirstResponder();
+@@ -175,9 +187,49 @@ define_class!(
                  self.ivars().keyboard_desired.set(false);
                  self.ivars().keyboard_eligible.set(false);
              }
@@ -121,7 +138,7 @@ index d4359bc..f331b3f 100644
          #[unsafe(method(reconcileTextInput))]
          fn reconcile_text_input(&self) {
              self.ivars().update_pending.set(false);
-@@ -196,6 +238,7 @@ define_class!(
+@@ -196,6 +248,7 @@ define_class!(
                  self.resignFirstResponder();
                  self.ivars().reconciling_responder.set(previous);
              }
@@ -129,7 +146,7 @@ index d4359bc..f331b3f 100644
              if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
                  self.reloadInputViews();
              }
-@@ -404,9 +447,10 @@ define_class!(
+@@ -404,9 +457,10 @@ define_class!(
  
      unsafe impl UITextInput for TextInputView {
          #[unsafe(method_id(textInRange:))]
@@ -142,7 +159,7 @@ index d4359bc..f331b3f 100644
              self.with_handler(|handler| {
                  // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
                  let document = document_range(handler)?;
-@@ -582,7 +626,10 @@ define_class!(
+@@ -582,7 +636,10 @@ define_class!(
              let Some(range) = self.validated_range(range) else { return NSArray::new(); };
              let bounds = self.with_handler(|handler| {
                  if !allowed_range(handler, &range) { return Vec::new(); }
@@ -154,7 +171,7 @@ index d4359bc..f331b3f 100644
              }).unwrap_or_default();
              let count = bounds.len();
              let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
-@@ -629,9 +676,8 @@ define_class!(
+@@ -629,9 +686,8 @@ define_class!(
          }
          #[unsafe(method_id(textInputView))]
          fn text_input_view(&self) -> Retained<UIView> {
@@ -166,7 +183,7 @@ index d4359bc..f331b3f 100644
          }
      }
  
-@@ -655,6 +701,7 @@ impl TextInputView {
+@@ -655,6 +711,7 @@ impl TextInputView {
              content_changed: Cell::new(false),
              native_edit: Cell::new(false),
              temporarily_deleted_composed_character: RefCell::new(None),
@@ -174,7 +191,7 @@ index d4359bc..f331b3f 100644
          });
          unsafe { msg_send![super(this), initWithFrame: frame] }
      }
-@@ -715,6 +762,47 @@ impl TextInputView {
+@@ -715,6 +772,47 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
@@ -222,12 +239,11 @@ index d4359bc..f331b3f 100644
      /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
      /// delegate, as of an app edit.
      fn action_changed(&self, content_changed: bool) {
-@@ -1187,8 +1275,17 @@ pub(super) mod tests {
+@@ -1187,8 +1285,16 @@ pub(super) mod tests {
          view.ivars().keyboard_eligible.set(true);
          assert!(view.becomeFirstResponder());
          assert!(view.isFirstResponder());
-+        // UIKit's selection UI lives on the view while it edits, and leaves with the responder.
-+        view.sync_text_interaction();
++        // UIKit's selection UI comes with the responder (`becomeFirstResponder`), and leaves with it.
 +        let interaction = view.ivars().text_interaction.borrow().clone();
 +        assert_eq!(
 +            interaction.as_ref().and_then(|interaction| interaction.view()),
