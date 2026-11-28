@@ -42,7 +42,7 @@ its axes while the touch's `Started` is dispatched (`Window::scroll_container_un
 
 So in a vertical list a horizontal drag wins sideways moves, and a `Pan` drag (a desktop field) wins a mostly
 horizontal one past 36 px; outside a one-axis container a `Pan` drag only wins a move that crosses both slops at once.
-`list()` reports no axes. To add a kind: one arm in each of `TouchDragKind`'s two methods.
+`list()` reports y, its one axis, the same way. To add a kind: one arm in each of `TouchDragKind`'s two methods.
 A touch the pan has not taken yet is no tap or long press once it strays past `touch_slop` from where it went down
 (`PressSlop`, Flutter's `preAcceptSlopTolerance`): a sideways swipe in a vertical list never clicks its row.
 
