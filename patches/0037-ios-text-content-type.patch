@@ -17,7 +17,7 @@ constant, on the iOS simulator (`scripts/ios-text-oracle.sh` in Parallax).
 Upstream PR: not filed yet (needs 0005 upstream first).
 
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index 9530317..d4359bc 100644
+index 679a712..643fd65 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -1,7 +1,7 @@
@@ -30,13 +30,14 @@ index 9530317..d4359bc 100644
  };
  use objc2::rc::{Retained, Weak};
  use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-@@ -343,6 +343,29 @@ define_class!(
+@@ -344,6 +344,30 @@ define_class!(
                  KeyboardType::Search => UIKeyboardType::WebSearch,
              }
          }
-+        // Flutter's `ToUITextContentType` (FlutterTextInputPlugin.mm @ 3.50.1), for GPUI's hints under Flutter's
-+        // names (`username` is UIKit's own value, which Flutter passes through). No hint is Flutter's
-+        // `autofill == nil`: "", which turns autofill off.
++        // Ported from flutter/flutter FlutterTextInputPlugin.mm's `ToUITextContentType` @ 3.50.1, for GPUI's hints
++        // under Flutter's names (`username` is UIKit's own value, which Flutter passes through). No hint is Flutter's
++        // `autofill == nil`: "", which turns autofill off. Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++        // third_party/flutter/LICENSE.
 +        #[unsafe(method_id(textContentType))]
 +        fn text_content_type(&self) -> Retained<NSString> {
 +            // SAFETY: UIKit's content type constants are immutable strings.

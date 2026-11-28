@@ -14,7 +14,7 @@ Test: patch 0028's rows, on the iOS simulator (`scripts/ios-text-oracle.sh` in P
 Upstream PR: not filed yet (needs 0005 upstream first).
 
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d3c02a7..ee5ef41 100644
+index 6ac9f7e..cb20cf7 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -1,6 +1,6 @@
@@ -25,11 +25,12 @@ index d3c02a7..ee5ef41 100644
      TextInputStateChange, px,
  };
  use objc2::rc::{Retained, Weak};
-@@ -269,8 +269,21 @@ define_class!(
+@@ -269,8 +269,22 @@ define_class!(
      }
  
      unsafe impl UITextInputTraits for TextInputView {
-+        // Flutter's `ToUIKeyboardType` (FlutterTextInputPlugin.mm @ 3.50.1), for GPUI's keyboard types.
++        // Ported from flutter/flutter FlutterTextInputPlugin.mm's `ToUIKeyboardType` @ 3.50.1, for GPUI's keyboard
++        // types. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
          #[unsafe(method(keyboardType))]
 -        fn keyboard_type(&self) -> UIKeyboardType { UIKeyboardType::Default }
 +        fn keyboard_type(&self) -> UIKeyboardType {
