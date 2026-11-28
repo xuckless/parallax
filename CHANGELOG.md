@@ -23,6 +23,15 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
   no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0051).
 - `native-view-apple` example.
+- Web: `NativeView::new` takes a DOM element (`web_sys::HtmlElement`: an iframe, a video, a canvas) and shows it under
+  GPUI's canvas, placed in GPUI's frame; the browser gives pointer input over an uncovered view to the element itself
+  (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patch 0057,
+  docs/native-view-web.md, examples/native-view-web). `scripts/web-checks.mjs` gains a `native-view` suite.
+
+### Fixed (0.1.10)
+
+- Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
+  scale 1 and drew at the square of the scale (fork patch 0057).
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
