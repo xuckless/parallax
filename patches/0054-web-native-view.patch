@@ -24,7 +24,9 @@ What:
   target, copy). Views that start to show take the pointer, so a touch's first tap reaches the element; a touch
   release hands it back to them; after a frame a still mouse over a view that moved under it gives it to the view.
   The canvas's `pointerleave` is not reported while the pointer is over a view. `set_focused_native_view` focuses
-  the element unless focus is already inside it (an `<input>` in it), and its `focusin` focuses the view's handle.
+  the element unless focus is already inside it (an `<input>` in it); DOM focus moving into a slot (the document's
+  `focusin`, or the window's `blur` when it moves into an iframe, which the parent sees no `focusin` for) focuses
+  the view's handle.
   Events listen in a `Phase` (bubble or capture).
 - gpui_wgpu: a WebGL2 canvas is premultiplied by its context's default whatever mode wgpu reports (only `Opaque`), so
   0047's alpha log says so there instead of warning that holes show black.
@@ -418,10 +420,10 @@ index 0000000..84ffc76
 +}
 diff --git a/gpui-pre-web/src/native_views.rs b/gpui-pre-web/src/native_views.rs
 new file mode 100644
-index 0000000..eae5944
+index 0000000..bad2cb5
 --- /dev/null
 +++ b/gpui-pre-web/src/native_views.rs
-@@ -0,0 +1,769 @@
+@@ -0,0 +1,789 @@
 +// `render_content`, `ensure_content_correctly_sized`, `create_slot`, `reset_anchor` and `detach_native_view` are
 +// ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_views/content_manager.dart,
 +// slots.dart and embedder.dart (`_resetAnchor`, `disposeView`) @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
@@ -502,8 +504,8 @@ index 0000000..eae5944
 +
 +type HitTest = Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>;
 +type Occluders = Box<dyn FnMut() -> Vec<Bounds<Pixels>>>;
-+/// GPUI's callback that turns a platform's focus of a view into GPUI focus; the slots' `focusin` listeners share it.
-+type Focused = Rc<CallbackSlot<Box<dyn FnMut(NativeViewId)>>>;
++/// GPUI's callback that turns DOM focus inside a view into GPUI focus.
++type Focused = CallbackSlot<Box<dyn FnMut(NativeViewId)>>;
 +
 +#[derive(Default)]
 +pub(crate) struct NativeViews {
@@ -539,7 +541,6 @@ index 0000000..eae5944
 +    content: web_sys::HtmlElement,
 +    /// Where it was last placed, its rank in paint order and the CSS colour under it; `None` while hidden.
 +    placed: Option<(Placement, usize, String)>,
-+    _focus: EventListenerHandle,
 +}
 +
 +/// Removes its view's slot from the document when the last `NativeView` handle goes.
@@ -817,23 +818,35 @@ index 0000000..eae5944
 +            .collect();
 +        set_styles(&self.canvas, &CANVAS_STYLES);
 +
-+        let listeners = POINTER_EVENTS
-+            .iter()
-+            .map(|&(event_name, kind)| {
-+                let window = Rc::downgrade(self);
-+                EventListenerHandle::add_non_passive_in(
-+                    document.as_ref(),
-+                    event_name,
-+                    Phase::Capture,
-+                    move |event| {
-+                        if let Some(window) = window.upgrade() {
-+                            let event: web_sys::MouseEvent = event.unchecked_into();
-+                            window.decide_native_view_pointer(&event, kind(&event));
-+                        }
-+                    },
-+                )
++        let pointer = POINTER_EVENTS.iter().map(|&(event_name, kind)| {
++            let window = Rc::downgrade(self);
++            EventListenerHandle::add_non_passive_in(
++                document.as_ref(),
++                event_name,
++                Phase::Capture,
++                move |event| {
++                    if let Some(window) = window.upgrade() {
++                        let event: web_sys::MouseEvent = event.unchecked_into();
++                        window.decide_native_view_pointer(&event, kind(&event));
++                    }
++                },
++            )
++        });
++        // DOM focus moving into a view: `focusin` within this document; the window's `blur` when it moves into an
++        // iframe, whose document gets the events (the parent sees no `focusin`).
++        let focus_targets: [(&web_sys::EventTarget, &'static str); 2] = [
++            (document.as_ref(), "focusin"),
++            (self.browser_window.as_ref(), "blur"),
++        ];
++        let focus = focus_targets.map(|(target, event_name)| {
++            let window = Rc::downgrade(self);
++            EventListenerHandle::add(target, event_name, move |_| {
++                if let Some(window) = window.upgrade() {
++                    window.report_native_view_focus();
++                }
 +            })
-+            .collect();
++        });
++        let listeners = pointer.chain(focus).collect();
 +        Some(Layer {
 +            root,
 +            slots_element,
@@ -879,18 +892,27 @@ index 0000000..eae5944
 +            .slots_element
 +            .append_child(&slot)
 +            .ok()?;
-+        let focused = Rc::clone(&self.native_views.focused);
-+        let focus = EventListenerHandle::add(slot.as_ref(), "focusin", move |_| {
-+            focused.with(|callback| callback(id));
-+        });
 +        Some(Slot {
 +            id,
 +            slot,
 +            wrapper,
 +            content,
 +            placed: None,
-+            _focus: focus,
 +        })
++    }
++
++    /// DOM focus moved: if it is inside a view's slot now, GPUI focuses that view's handle.
++    fn report_native_view_focus(&self) {
++        let focused = self.native_views.layer.borrow().as_ref().and_then(|layer| {
++            layer
++                .slots
++                .iter()
++                .find(|slot| self.holds_focus(&slot.slot))
++                .map(|slot| slot.id)
++        });
++        if let Some(id) = focused {
++            self.native_views.focused.with(|callback| callback(id));
++        }
 +    }
 +
 +    /// Whether DOM focus is inside `element`.
@@ -1175,7 +1197,7 @@ index 0000000..eae5944
 +            // Focus already inside the element (an `<input>` in it) stays where the user put it.
 +            (Some(_), Some(content)) if self.holds_focus(&content) => {}
 +            (Some(_), Some(content)) => {
-+                // GPUI moved its focus; the element's `focusin` must not report it back.
++                // GPUI moved its focus; the `focusin` this fires must not report it back.
 +                let callback = self.native_views.focused.take();
 +                content.focus().ok();
 +                if let Some(callback) = callback {
