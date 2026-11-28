@@ -14,7 +14,8 @@ What:
   core's `hole_inset(true)` cuts the hole one pixel inside the view, so the layer's own pixels cover the view's
   blended edges; `MetalRenderer::set_native_view_hole_inset` applies it (0 by default, so exact edges at 1x/2x/3x
   stay).
-- macOS: `draw` passes `Layout::places_views()` (the scene changes a view's placement); placement from gpui_apple,
+- macOS: `draw` passes `Layout::places_views()` (the scene moves, resizes, shows, hides or restacks a view); placement
+  from gpui_apple,
   the background colour from core's `native_view_placement::background`.
 - Who takes pointer input over a view (`NativeViewInput`, macOS `View`, iOS `Window`) is patch 0048's.
 
@@ -350,7 +351,7 @@ index 7c0c918..b8d40a8 100644
          native_views::apply_layout(&self.0, native_view_layout);
      }
 diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
-index 0f551ca..e847d1c 100644
+index 0f551ca..5e885e6 100644
 --- a/gpui-pre-macos/src/window/native_views.rs
 +++ b/gpui-pre-macos/src/window/native_views.rs
 @@ -15,9 +15,10 @@ use super::{
@@ -448,10 +449,10 @@ index 0f551ca..e847d1c 100644
  }
  
 +impl Layout {
-+    /// Whether the scene moves, resizes, shows or hides a view, whose frame must then reach the screen with the
-+    /// scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
++    /// Whether the scene moves, resizes, shows, hides or restacks a view, whose frame must then reach the screen with
++    /// the scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
 +    pub(super) fn places_views(&self) -> bool {
-+        !self.placements.is_empty()
++        !self.placements.is_empty() || self.stacking.is_some()
 +    }
 +}
 +
