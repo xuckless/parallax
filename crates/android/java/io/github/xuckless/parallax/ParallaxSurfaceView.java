@@ -141,8 +141,8 @@ final class ParallaxSurfaceView extends SurfaceView
   // native views with (docs/native-view-android.md).
   static native void nativeViewCreated(int activity, NativeViews nativeViews);
 
-  // A touch down at (x, y) in view pixels: the handle of the native view GPUI shows topmost there,
-  // if the app forwards touches to it, else -1 (NativeViewTouchDispatcher).
+  // A touch down or wheel turn at (x, y) in view pixels: the handle of the native view GPUI shows
+  // topmost there (no GPUI element over it), else -1 (NativeViewTouchDispatcher).
   static native int nativeHitTestNativeView(int activity, float x, float y);
 
   // Both tag what they send with `activity`, so they are built once it is set.
@@ -265,8 +265,11 @@ final class ParallaxSurfaceView extends SurfaceView
   public boolean onTouchEvent(MotionEvent event) {
     // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
     requestUnbufferedDispatch(event);
-    // GPUI still gets every touch: forwarding adds the native view, it takes nothing from GPUI.
-    nativeViewTouches.handleTouchEvent(event);
+    // GPUI gets every touch unless a native view takes the gesture exclusively
+    // (TouchForwarding::Exclusive).
+    if (nativeViewTouches.handleTouchEvent(event)) {
+      return true;
+    }
     return touchProcessor.onTouchEvent(event);
   }
 
@@ -276,6 +279,9 @@ final class ParallaxSurfaceView extends SurfaceView
   // without accessibility.
   @Override
   public boolean onGenericMotionEvent(MotionEvent event) {
+    if (nativeViewTouches.handleGenericMotionEvent(event)) {
+      return true;
+    }
     boolean handled = touchProcessor.onGenericMotionEvent(event, getContext());
     return handled || super.onGenericMotionEvent(event);
   }

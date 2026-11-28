@@ -1,7 +1,7 @@
 //! Native views on Android: the app's `View` or `SurfaceControl` under GPUI's surface, showing through the hole the
 //! wgpu renderer cuts (patch 0047). This side decides; Java's `NativeViews` acts (lays a View out, moves a
-//! SurfaceControl with GPUI's frame) and its `NativeViewTouchDispatcher` forwards touches. How it fits together:
-//! docs/native-view-android.md.
+//! SurfaceControl with GPUI's frame, moves Android focus) and its `NativeViewTouchDispatcher` forwards touches. How it
+//! fits together: docs/native-view-android.md.
 
 use std::{
     any::Any,
@@ -23,13 +23,17 @@ use crate::{
     native_view_placement::{self, Placement},
 };
 
-/// Whether a touch gesture that starts on a native view, with no GPUI element over it there, also goes to the
-/// Android View (offset into its coordinates), so a WebView scrolls and takes taps. GPUI gets the touch either way
-/// (`NativeViewInput::Window`).
+/// Whether touch gestures (and mouse wheel turns) that start on a native view, with no GPUI element over it there,
+/// go to the Android View (offset into its coordinates), so a WebView scrolls and takes taps. The discriminants are
+/// Java's `NativeViews.TOUCHES_*`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TouchForwarding {
-    Off,
-    On,
+    /// GPUI's alone (`NativeViewInput::Window`): the view's element hears them.
+    Off = 0,
+    /// The View's and GPUI's: a WebView inside a GPUI scroll container scrolls both.
+    On = 1,
+    /// The View's alone: GPUI does not see the gesture at all.
+    Exclusive = 2,
 }
 
 /// One attached view. Kept alive by the `NativeView`'s attachment; dropping it removes the view from the Activity.
@@ -37,25 +41,22 @@ struct AttachedView {
     id: NativeViewId,
     /// The view's key in Java's `NativeViews`.
     handle: i32,
-    /// The app's `View` or `SurfaceControl`.
-    object: GlobalRef,
-    /// The Activity's `NativeViews`, which removes the view on drop.
-    host: GlobalRef,
+    /// The Activity's `NativeViews`, which removes the view on drop. Weak: an app keeping its `NativeView` past the
+    /// Activity must not keep the Activity alive (Java's `NativeViews` holds it).
+    host: Weak<GlobalRef>,
     placement: Cell<Placement>,
-    touches: Cell<TouchForwarding>,
 }
 
-/// Removing the view from the Activity's hierarchy is freeing what `attach` added.
+/// Removing the view from the Activity's hierarchy is freeing what `attach` added. Nothing to remove once the
+/// Activity is gone.
 impl Drop for AttachedView {
     fn drop(&mut self) {
+        let Some(host) = self.host.upgrade() else {
+            return;
+        };
         let detached = with_env(|env| {
-            env.call_method(
-                self.host.as_obj(),
-                "detach",
-                "(I)V",
-                &[JValue::Int(self.handle)],
-            )?
-            .v()
+            env.call_method(host.as_obj(), "detach", "(I)V", &[JValue::Int(self.handle)])?
+                .v()
         });
         if let Err(error) = detached {
             log::error!(
@@ -69,8 +70,9 @@ impl Drop for AttachedView {
 /// One Activity's native views. Main thread only.
 #[derive(Default)]
 pub(crate) struct NativeViews {
-    /// Java's `NativeViews`, sent once the Activity's view exists (`nativeViewCreated`).
-    host: OnceCell<GlobalRef>,
+    /// Java's `NativeViews`, sent once the Activity's view exists (`nativeViewCreated`). The one strong reference: it
+    /// goes with the Activity's window.
+    host: OnceCell<Rc<GlobalRef>>,
     views: RefCell<Vec<Weak<AttachedView>>>,
     next_handle: Cell<i32>,
     /// The underlay's colour as Java last set it ([`native_view_placement::background`]).
@@ -79,7 +81,7 @@ pub(crate) struct NativeViews {
 
 impl NativeViews {
     pub(crate) fn created(&self, host: GlobalRef) {
-        if self.host.set(host).is_err() {
+        if self.host.set(Rc::new(host)).is_err() {
             log::error!("parallax: a second NativeViews for one Activity ignored");
         }
     }
@@ -87,49 +89,44 @@ impl NativeViews {
     /// `PlatformWindow::attach_native_view`: hands the app's object to Java, hidden until a frame places it.
     ///
     /// # Safety
-    /// `view` is a live JNI reference (local or global) to an `android.view.View` without a parent or an
-    /// `android.view.SurfaceControl`, valid for this call.
+    /// `view` is a live JNI reference (local or global), valid for this call, to an `android.view.View` without a
+    /// parent, an `android.view.SurfaceControl` or an `InSurface` ([`in_surface`]).
     pub(crate) unsafe fn attach(
         &self,
         id: NativeViewId,
         view: NonNull<c_void>,
     ) -> Option<Box<dyn Any>> {
-        let host = self.host.get()?.clone();
+        let host = self.host.get()?;
         // SAFETY: the caller passes a live JNI reference; `JObject` frees nothing on drop.
         let object = unsafe { JObject::from_raw(view.as_ptr().cast()) };
+        let handle = self.next_handle.replace(self.next_handle.get() + 1);
         let attached = with_env(|env| {
-            let object = env.new_global_ref(&object)?;
-            let handle = self.next_handle.replace(self.next_handle.get() + 1);
-            let args = [JValue::Int(handle), JValue::Object(object.as_obj())];
-            let attached = env
-                .call_method(host.as_obj(), "attach", "(ILjava/lang/Object;)Z", &args)?
-                .z()?;
-            Ok(attached.then_some((handle, object)))
+            let args = [JValue::Int(handle), JValue::Object(&object)];
+            env.call_method(host.as_obj(), "attach", "(ILjava/lang/Object;)Z", &args)?
+                .z()
         });
-        let (handle, object) = match attached {
-            Ok(Some(attached)) => attached,
-            Ok(None) => return None,
+        match attached {
+            Ok(true) => {}
+            Ok(false) => return None,
             Err(error) => {
                 log::error!("parallax: cannot attach a native view: {error}");
                 return None;
             }
-        };
+        }
         log::info!("parallax: native view {handle} attached");
         let view = Rc::new(AttachedView {
             id,
             handle,
-            object,
-            host,
+            host: Rc::downgrade(host),
             placement: Cell::new(Placement::Hidden),
-            touches: Cell::new(TouchForwarding::Off),
         });
         self.views.borrow_mut().push(Rc::downgrade(&view));
         Some(Box::new(view))
     }
 
-    /// Before the renderer draws `scene`: every view the scene moves, resizes, shows or hides goes to Java in one
-    /// call, which places it with this frame, with the colour under the views. A frame that changes neither costs
-    /// nothing.
+    /// Before the renderer draws `scene`: every view the scene moves, resizes, restacks, shows or hides goes to Java
+    /// in one call, which places it with this frame, with the colour under the views. A frame that changes neither
+    /// costs nothing.
     pub(crate) fn place(&self, scene: &Scene) {
         self.views
             .borrow_mut()
@@ -143,9 +140,10 @@ impl NativeViews {
                 let shown_at = scene
                     .native_views
                     .iter()
-                    .find(|painted| painted.id == view.id)
-                    .map(|painted| painted.bounds);
-                let next = Placement::of(shown_at);
+                    .enumerate()
+                    .find(|(_, painted)| painted.id == view.id)
+                    .map(|(rank, painted)| (rank, painted.bounds));
+                let next = Placement::of(shown_at, scene.native_views.len());
                 (view.placement.replace(next) != next).then(|| next.record(view.handle))
             })
             .flatten()
@@ -173,32 +171,38 @@ impl NativeViews {
         }
     }
 
-    /// GPUI's surface was recreated: Java moved the SurfaceControl views to it, hidden, so the next frame places
-    /// every view again.
+    /// GPUI's surface was recreated: Java moved the child surfaces to it, hidden, so the next frame places every view
+    /// again.
     pub(crate) fn surface_replaced(&self) {
         for view in self.views.borrow().iter().filter_map(Weak::upgrade) {
             view.placement.set(Placement::Hidden);
         }
     }
 
-    /// The handle Java forwards a touch down to: the view GPUI's hit test found (`hit`), if its touches are
-    /// forwarded; -1 otherwise.
-    pub(crate) fn forwarded(&self, hit: Option<NativeViewId>) -> i32 {
+    /// Java's handle of view `id`, or -1 for none (or a view not attached here).
+    pub(crate) fn handle(&self, id: Option<NativeViewId>) -> i32 {
         self.views
             .borrow()
             .iter()
             .filter_map(Weak::upgrade)
-            .find(|view| Some(view.id) == hit && view.touches.get() == TouchForwarding::On)
+            .find(|view| Some(view.id) == id)
             .map_or(-1, |view| view.handle)
     }
 
-    fn set_touches(&self, env: &mut JNIEnv, object: &JObject, touches: TouchForwarding) -> bool {
-        let views = self.views.borrow();
-        let view = views.iter().filter_map(Weak::upgrade).find(|view| {
-            env.is_same_object(view.object.as_obj(), object)
-                .unwrap_or(false)
+    /// `PlatformWindow::set_focused_native_view`: Android focus (keys, Back, the IME) goes into view `id`'s View, or
+    /// back to GPUI's view for `None`. Until GPUI focuses a view, a tap forwarded to it does not take focus.
+    pub(crate) fn focus(&self, id: Option<NativeViewId>) {
+        let Some(host) = self.host.get() else {
+            return;
+        };
+        let handle = self.handle(id);
+        let focused = with_env(|env| {
+            env.call_method(host.as_obj(), "focus", "(I)V", &[JValue::Int(handle)])?
+                .v()
         });
-        view.map(|view| view.touches.set(touches)).is_some()
+        if let Err(error) = focused {
+            log::error!("parallax: cannot move focus to native view {handle}: {error}");
+        }
     }
 }
 
@@ -246,9 +250,9 @@ pub fn with_activity<R>(
     Ok(result)
 }
 
-/// Sets whether touch gestures that start on `view` (a native view of `window`, as passed to `NativeView::new`) go
-/// to the Android View too ([`TouchForwarding`]). A gesture starting under a GPUI element painted over the view
-/// stays GPUI's alone.
+/// Sets whether touch gestures and wheel turns that start on `view` (a native view of `window`, as passed to
+/// `NativeView::new`) go to the Android View ([`TouchForwarding`]). A gesture starting under a GPUI element painted
+/// over the view stays GPUI's alone.
 ///
 /// # Errors
 /// [`Error::NotANativeView`] when `view` is not one of `window`'s native views.
@@ -258,14 +262,39 @@ pub fn forward_touches(
     touches: TouchForwarding,
 ) -> Result<(), Error> {
     let activity_window = activity_window(window)?;
-    let shell = crate::host::shell()?;
-    let mut env = shell.vm.get_env()?;
-    if activity_window
+    let host = activity_window
         .native_views
-        .set_touches(&mut env, view, touches)
-    {
-        Ok(())
-    } else {
-        Err(Error::NotANativeView)
-    }
+        .host
+        .get()
+        .ok_or(Error::NoActivityForWindow)?;
+    let args = [JValue::Object(view), JValue::Int(touches as i32)];
+    let forwarded = with_env(|env| {
+        env.call_method(
+            host.as_obj(),
+            "forwardTouches",
+            "(Ljava/lang/Object;I)Z",
+            &args,
+        )?
+        .z()
+    })?;
+    forwarded.then_some(()).ok_or(Error::NotANativeView)
+}
+
+/// Wraps `view` (an `android.view.View` without a parent) so `NativeView::new` hosts it in a surface of its own
+/// (`SurfaceControlViewHost`, API 34+), placed with GPUI's frame instead of a frame behind it. Opt-in, for views
+/// without text input (video, a map): the hosted View is its own window, so focus, the IME and accessibility don't
+/// reach it (docs/native-view-android-hosting.md). Below API 34 the View is hosted as an ordinary one. Pass the
+/// returned object to `NativeView::new` in place of the View.
+///
+/// # Errors
+/// [`Error::Jni`] when Java fails.
+pub fn in_surface<'local>(
+    env: &mut JNIEnv<'local>,
+    view: &JObject,
+) -> Result<JObject<'local>, Error> {
+    Ok(env.new_object(
+        "io/github/xuckless/parallax/InSurface",
+        "(Landroid/view/View;)V",
+        &[JValue::Object(view)],
+    )?)
 }

@@ -259,8 +259,9 @@ impl PlatformWindow for AndroidWindow {
         // Not yet on Android: dark mode changes (onConfigurationChanged uiMode).
     }
 
-    // SAFETY (for callers): `view` is a live JNI reference to an `android.view.View` without a parent or an
-    // `android.view.SurfaceControl` (API 29+), as `NativeView::new` documents for Android.
+    // SAFETY (for callers): `view` is a live JNI reference to an `android.view.View` without a parent, an
+    // `android.view.SurfaceControl` (API 29+) or an `InSurface` (`in_surface`), as `NativeView::new` documents for
+    // Android.
     unsafe fn attach_native_view(
         &self,
         id: NativeViewId,
@@ -273,6 +274,10 @@ impl PlatformWindow for AndroidWindow {
     // GPUI's own content takes touches over a view; the app may forward them to it too (`forward_touches`).
     fn native_view_input(&self) -> NativeViewInput {
         NativeViewInput::Window
+    }
+
+    fn set_focused_native_view(&self, id: Option<NativeViewId>) {
+        self.window.native_views.focus(id);
     }
 
     fn on_hit_test_native_view(

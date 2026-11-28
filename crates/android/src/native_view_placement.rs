@@ -22,14 +22,19 @@ pub(crate) fn background(painted: impl DoubleEndedIterator<Item = Hsla>) -> i32 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
     Hidden,
-    Shown(Bounds<i32>),
+    Shown {
+        bounds: Bounds<i32>,
+        /// Paint order among the frame's `n` views: -n (painted first, bottom) to -1 (last, top). Java stacks
+        /// SurfaceControls by it (`setLayer`, under GPUI's buffer at 0) and Views by Z.
+        layer: i32,
+    },
 }
 
 impl Placement {
-    /// Where a scene shows the view: its snapped bounds (whole device pixels; rounded in case), or hidden when the
-    /// scene doesn't paint it.
-    pub(crate) fn of(shown_at: Option<Bounds<ScaledPixels>>) -> Self {
-        let Some(bounds) = shown_at else {
+    /// Where a scene shows the view: its snapped bounds (whole device pixels; rounded in case) at paint position
+    /// `rank` of `count` views, or hidden when the scene doesn't paint it.
+    pub(crate) fn of(shown_at: Option<(usize, Bounds<ScaledPixels>)>, count: usize) -> Self {
+        let Some((rank, bounds)) = shown_at else {
             return Placement::Hidden;
         };
         let pixel = |value: ScaledPixels| value.0.round() as i32;
@@ -38,21 +43,30 @@ impl Placement {
             pixel(bounds.origin.x + bounds.size.width),
             pixel(bounds.origin.y + bounds.size.height),
         );
-        Placement::Shown(Bounds {
-            origin: point(left, top),
-            size: size(right - left, bottom - top),
-        })
+        Placement::Shown {
+            bounds: Bounds {
+                origin: point(left, top),
+                size: size(right - left, bottom - top),
+            },
+            layer: rank as i32 - count as i32,
+        }
     }
 
-    /// `NativeViews.place`'s record for view `handle`: {handle, shown, x, y, width, height}.
-    pub(crate) fn record(self, handle: i32) -> [i32; 6] {
+    /// `NativeViews.place`'s record for view `handle` (`NativeViews.RECORD` ints): {handle, shown, x, y, width,
+    /// height, layer, clip left, top, right, bottom}, the clip in the view's own pixels.
+    pub(crate) fn record(self, handle: i32) -> [i32; 11] {
         match self {
-            Placement::Hidden => [handle, 0, 0, 0, 0, 0],
-            Placement::Shown(bounds) => [
+            Placement::Hidden => [handle, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            Placement::Shown { bounds, layer } => [
                 handle,
                 1,
                 bounds.origin.x,
                 bounds.origin.y,
+                bounds.size.width,
+                bounds.size.height,
+                layer,
+                0,
+                0,
                 bounds.size.width,
                 bounds.size.height,
             ],
@@ -97,62 +111,93 @@ mod tests {
         }
     }
 
-    /// One row per kind of frame: what Java is told for view 7, or nothing when the placement stands.
+    /// One row per kind of frame: what Java is told for view 7, or nothing when the placement stands. `shown_at` is
+    /// (paint rank, bounds) among `count` views.
     #[test]
     fn placements_reach_java_only_when_they_change() {
-        let shown = |x, y, width, height| {
-            Placement::Shown(Bounds {
+        let shown = |x, y, width, height, layer| Placement::Shown {
+            bounds: Bounds {
                 origin: point(x, y),
                 size: size(width, height),
-            })
+            },
+            layer,
         };
         type Row = (
             &'static str,
             Placement,
-            Option<Bounds<ScaledPixels>>,
-            Option<[i32; 6]>,
+            Option<(usize, Bounds<ScaledPixels>)>,
+            usize,
+            Option<[i32; 11]>,
         );
-        let rows: [Row; 7] = [
-            ("hidden stays hidden", Placement::Hidden, None, None),
+        let at = Some((0, scaled(10., 20., 300., 200.)));
+        let rows: [Row; 10] = [
+            ("hidden stays hidden", Placement::Hidden, None, 0, None),
             (
                 "shown first",
                 Placement::Hidden,
-                Some(scaled(10., 20., 300., 200.)),
-                Some([7, 1, 10, 20, 300, 200]),
+                at,
+                1,
+                Some([7, 1, 10, 20, 300, 200, -1, 0, 0, 300, 200]),
             ),
             (
                 "same bounds: nothing",
-                shown(10, 20, 300, 200),
-                Some(scaled(10., 20., 300., 200.)),
+                shown(10, 20, 300, 200, -1),
+                at,
+                1,
                 None,
             ),
             (
                 "moved",
-                shown(10, 20, 300, 200),
-                Some(scaled(14., 20., 300., 200.)),
-                Some([7, 1, 14, 20, 300, 200]),
+                shown(10, 20, 300, 200, -1),
+                Some((0, scaled(14., 20., 300., 200.))),
+                1,
+                Some([7, 1, 14, 20, 300, 200, -1, 0, 0, 300, 200]),
             ),
             (
                 "resized",
-                shown(10, 20, 300, 200),
-                Some(scaled(10., 20., 320., 180.)),
-                Some([7, 1, 10, 20, 320, 180]),
+                shown(10, 20, 300, 200, -1),
+                Some((0, scaled(10., 20., 320., 180.))),
+                1,
+                Some([7, 1, 10, 20, 320, 180, -1, 0, 0, 320, 180]),
             ),
             (
                 "hidden",
-                shown(10, 20, 300, 200),
+                shown(10, 20, 300, 200, -1),
                 None,
-                Some([7, 0, 0, 0, 0, 0]),
+                1,
+                Some([7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
             ),
             (
                 "fractional edges round to the pixels the hole covers",
                 Placement::Hidden,
-                Some(scaled(10.4, 19.6, 300.2, 200.)),
-                Some([7, 1, 10, 20, 301, 200]),
+                Some((0, scaled(10.4, 19.6, 300.2, 200.))),
+                1,
+                Some([7, 1, 10, 20, 301, 200, -1, 0, 0, 301, 200]),
+            ),
+            (
+                "painted first of two: the bottom layer",
+                Placement::Hidden,
+                at,
+                2,
+                Some([7, 1, 10, 20, 300, 200, -2, 0, 0, 300, 200]),
+            ),
+            (
+                "painted last of two: the top layer, under GPUI's buffer",
+                Placement::Hidden,
+                Some((1, scaled(10., 20., 300., 200.))),
+                2,
+                Some([7, 1, 10, 20, 300, 200, -1, 0, 0, 300, 200]),
+            ),
+            (
+                "a view painted before it went: restacked",
+                shown(10, 20, 300, 200, -2),
+                at,
+                1,
+                Some([7, 1, 10, 20, 300, 200, -1, 0, 0, 300, 200]),
             ),
         ];
-        for (name, current, shown_at, expected) in rows {
-            let next = Placement::of(shown_at);
+        for (name, current, shown_at, count, expected) in rows {
+            let next = Placement::of(shown_at, count);
             let record = (next != current).then(|| next.record(7));
             assert_eq!(record, expected, "{name}");
         }

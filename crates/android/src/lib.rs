@@ -59,7 +59,7 @@ pub use host::{TouchSlopChanged, on_load};
 #[cfg(target_os = "android")]
 pub use jni;
 #[cfg(target_os = "android")]
-pub use native_view::{TouchForwarding, forward_touches, with_activity};
+pub use native_view::{TouchForwarding, forward_touches, in_surface, with_activity};
 
 /// Declares the app's entry point on Android. Write it once in the app's `cdylib` crate:
 ///

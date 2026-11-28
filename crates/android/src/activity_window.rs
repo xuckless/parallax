@@ -448,7 +448,7 @@ impl ActivityWindow {
         }
     }
 
-    /// The native view a touch down at `(x, y)` view pixels forwards to ([`NativeViews::forwarded`]), or -1.
+    /// Java's handle of the native view GPUI shows topmost at `(x, y)` view pixels, no GPUI element over it, or -1.
     pub(crate) fn native_view_at(&self, x: f32, y: f32) -> i32 {
         let density = self.metrics.get().density;
         let hit = self
@@ -456,7 +456,7 @@ impl ActivityWindow {
             .hit_test_native_view
             .with(|hit_test| hit_test(point(px(x / density), px(y / density))))
             .flatten();
-        self.native_views.forwarded(hit)
+        self.native_views.handle(hit)
     }
 
     /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
