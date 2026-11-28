@@ -7,21 +7,22 @@ frame. The plan and acceptance list: [ROADMAP.md, Phase: NativeView](../ROADMAP.
 
 | | macOS | iOS |
 |---|---|---|
-| Code | upstream's [native_views.rs](../upstream/gpui-pre-macos/src/window/native_views.rs) | patch [0053](../patches/0053-ios-native-view.patch): `ios/window/native_views.rs` |
+| Code | upstream's [native_views.rs](../upstream/gpui-pre-macos/src/window/native_views.rs) | patch [0052](../patches/0052-ios-native-view.patch): `ios/window/native_views.rs` |
 | Where the view goes | a clipping container below GPUI's `NSView` | a clipping container below GPUI's `UIView`, inside the view controller's plain root view (so it turns with GPUI's content) |
 | Pointer input over it | the view's (AppKit hit-tests it): `NativeViewInput::View` | GPUI's view stays on top and takes every touch, so the element's listeners hear it: `NativeViewInput::Window`. The view gets none unless the app forwards touches |
 | Keyboard | the view takes keys while its focus handle is focused (upstream) | not wired: the view never becomes first responder |
 | Gap colour | `NativeView::set_background` colours the window behind the views | the same, on the `UIWindow` |
 
-Shared, patch [0052](../patches/0052-native-view-in-step.patch):
+Shared, patch [0051](../patches/0051-native-view-in-step.patch):
 
 - **In step.** A frame that moves, resizes, shows or hides a view is presented with the Core Animation transaction
   that places it (`MetalRenderer::draw_placing_native_views`), so hole and view reach the screen together; other
   frames present on their own and pay nothing.
 - **Alpha mode logged:** `metal layer alpha: opaque` / `premultiplied, native views show through` (target
   `gpui_apple`, info), each time a view shows or goes.
-- **`NativeViewInput`** (gpui's `window/native_view_input.rs`): who a platform gives input over a view to. Backends
-  where GPUI keeps the input (iOS, and Wayland's empty input region) return `Window`.
+
+Who takes input over a view (`NativeViewInput`, iOS's `Window`) is patch
+[0048](../patches/0048-native-view-window-input.patch)'s: [native-view.md](native-view.md#input).
 
 Lifecycle, clipping and z-order on iOS follow Flutter's `FlutterPlatformViewsController.mm` (oracle only: Flutter
 draws over its views, Parallax draws under them). An app that wants the view to get touches forwards them from the

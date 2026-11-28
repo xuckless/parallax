@@ -1,0 +1,113 @@
+Native views: place a view in step with the frame that moves its hole, and log the Metal layer's alpha. Shared by
+the Apple backends (macOS's upstream one, 0052's iOS).
+
+What:
+- gpui_apple `MetalRenderer::draw_placing_native_views(scene, places_native_views)` (`draw` passes false): a frame
+  that moves, resizes, shows or hides a native view is presented with the Core Animation transaction that places the
+  view (`presentsWithTransaction` for that frame only, as upstream's live resize does for every frame), so hole and
+  view reach the screen together; every other frame presents on its own. It logs the layer's alpha mode
+  (`metal layer alpha: opaque` / `premultiplied, native views show through`) each time a native view shows or goes.
+- macOS: `draw` passes `Layout::places_views()` (the scene changes a view's placement).
+- Who takes pointer input over a view (`NativeViewInput`, macOS `View`, iOS `Window`) is patch 0048's.
+
+Why: upstream presents every frame on its own, so a view's new frame reaches the screen a frame or two before the
+hole that moves with it (upstream's own comment in macOS's native_views.rs); the gap shows the window's background.
+Measured on the iOS simulator (0052) with the view's slot moving every frame: 28 of 442 recorded frames showed the gap
+colour presented on their own, 0 of 212 presented in step. Idle frames are untouched, so a window whose native view
+alone changes still renders 0 GPUI frames.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
+index 33c5299..b235ddf 100644
+--- a/gpui-pre-apple/src/metal_renderer.rs
++++ b/gpui-pre-apple/src/metal_renderer.rs
+@@ -509,6 +509,14 @@ impl MetalRenderer {
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
++        self.draw_placing_native_views(scene, false);
++    }
++
++    /// Draws `scene`. `places_native_views` says whether the platform moves, resizes, shows or hides a native view
++    /// with this scene: such a frame is presented with the Core Animation transaction that places the view, so the
++    /// hole and the view reach the screen together. Every other frame presents on its own, as `draw` does, so a
++    /// window waits for the GPU only on frames that place a view.
++    pub fn draw_placing_native_views(&mut self, scene: &Scene, places_native_views: bool) {
+         let layer = match &self.layer {
+             Some(l) => l.clone(),
+             None => {
+@@ -524,6 +532,19 @@ impl MetalRenderer {
+         if shows_native_views != self.shows_native_views {
+             self.shows_native_views = shows_native_views;
+             layer.setOpaque(self.opaque && !shows_native_views);
++            // The pixels are premultiplied BGRA either way; only whether Core Animation blends them changes.
++            log::info!(
++                "metal layer alpha: {}",
++                if layer.isOpaque() {
++                    "opaque"
++                } else {
++                    "premultiplied, native views show through"
++                }
++            );
++        }
++        let with_transaction = self.presents_with_transaction || places_native_views;
++        if layer.presentsWithTransaction() != with_transaction {
++            layer.setPresentsWithTransaction(with_transaction);
+         }
+         let drawable = match &mut self.display_link_mode {
+             DisplayLinkMode::Attached { drawable } => {
+@@ -560,7 +581,7 @@ impl MetalRenderer {
+             }
+         };
+ 
+-        if self.presents_with_transaction {
++        if with_transaction {
+             command_buffer.commit();
+             command_buffer.waitUntilScheduled();
+             drawable.present();
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 7c0c918..b8d40a8 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -2219,7 +2219,8 @@ impl PlatformWindow for MacWindow {
+         let native_view_layout = native_views::plan_layout(&this, scene);
+         native_views::update_background(&mut this, scene);
+         native_views::scene_drawn(&mut this, scene);
+-        this.renderer.draw(scene);
++        this.renderer
++            .draw_placing_native_views(scene, native_view_layout.places_views());
+         drop(this);
+         native_views::apply_layout(&self.0, native_view_layout);
+     }
+diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
+index 0f551ca..5b36707 100644
+--- a/gpui-pre-macos/src/window/native_views.rs
++++ b/gpui-pre-macos/src/window/native_views.rs
+@@ -324,8 +324,9 @@ extern "C" fn container_perform_key_equivalent(_: &AnyObject, _: Sel, _: *mut An
+ /// A view's frame change reaches the screen a frame or two before the scene
+ /// that moves its opening, so the opening briefly uncovers whatever is behind
+ /// the views. That is the window's background, which is given the color the
+-/// scene asks for. Presenting scenes in step with AppKit would close the gap,
+-/// but costs every frame of a window that shows a native view.
++/// scene asks for. A scene that places a view is presented in step with
++/// AppKit's transaction, which closes the gap; the color still covers any
++/// frame the compositor shows early.
+ ///
+ /// The color stays until a scene without native views is drawn. The last
+ /// view's opening is still on screen when the view goes, and would show the
+@@ -369,6 +370,14 @@ pub(super) struct Layout {
+     stacking: Option<Vec<NativeViewId>>,
+ }
+ 
++impl Layout {
++    /// Whether the scene moves, resizes, shows or hides a view, whose frame must then reach the screen with the
++    /// scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
++    pub(super) fn places_views(&self) -> bool {
++        !self.placements.is_empty()
++    }
++}
++
+ /// Works out which attached views the scene moves, shows, hides, or restacks.
+ pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
+     if state.native_views.views.is_empty() {

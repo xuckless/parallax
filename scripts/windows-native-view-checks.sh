@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime checks of NativeView on Windows (patches 0050 and 0051, docs/native-view-windows.md): runs
+# Runtime checks of NativeView on Windows (patches 0048 and 0050, docs/native-view-windows.md): runs
 # examples/native-view-windows on the desktop, reads the composed screen back through crates/touch-inject, injects
 # mouse input, and asserts on pixels and on what the example logged. Each scale relaunches the example; logs and
 # screenshots land in target/native-view-windows/<percent>/.

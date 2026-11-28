@@ -1,4 +1,4 @@
-iOS native views: the app's UIView shown beneath GPUI's non-opaque CAMetalLayer, through gpui_apple's hole (needs 0052).
+iOS native views: the app's UIView shown beneath GPUI's non-opaque CAMetalLayer, through gpui_apple's hole (needs 0048 and 0051).
 
 What:
 - `IosWindow::attach_native_view` puts the view in a clipping container inserted directly below GPUI's view; `draw`
