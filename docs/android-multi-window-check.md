@@ -18,3 +18,8 @@ On an emulator with API 33+ (split screen through the WM shell; `hello` logs `wi
 
 Checked on API 35 (Gboard 14.2, GL): both halves draw, take taps and text, rotate with their state, and a destroyed
 half's window closes while the other keeps drawing.
+
+An app closing its window finishes its Activity at once, even in the background: in hello press Ctrl-W
+(`adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_W`), then Home within 3 s. Logcat shows the Activity's
+`Stop`, then `the app closed Activity N's window: it finishes` and its `Destroy` right after, not when the user
+returns. Checked on API 35.
