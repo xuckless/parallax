@@ -34,6 +34,11 @@ env:
   CARGO_TERM_COLOR: always
   ZED_REF: ${{ inputs.zed_ref || 'main' }}
   REPORT: ${{ github.workspace }}/drift-report
+  # sync-fork.sh commits each patch in its scratch Zed checkout (never pushed with --no-push); git needs a name.
+  GIT_AUTHOR_NAME: parallax-drift
+  GIT_AUTHOR_EMAIL: parallax-drift@localhost
+  GIT_COMMITTER_NAME: parallax-drift
+  GIT_COMMITTER_EMAIL: parallax-drift@localhost
 
 defaults:
   run:
