@@ -60,3 +60,9 @@ view-relative position. Flags: `--fps N` (page rate), `--animate` (the view move
 swap chain presented every vsync from its own thread, under an orange div; "move" and "resize" buttons; logs GPUI
 frames and view presents per second and the input its element hears. A platform-specific check, so it does nothing
 on other targets (it still builds there). `cargo run -p native-view-windows`; checks: [native-view-windows.md](native-view-windows.md).
+
+## native-view-apple
+
+[examples/native-view-apple](../examples/native-view-apple/): a native view (`NSView` on macOS, `UIView` on iOS)
+that recolours itself every frame under a GPUI div, with a GPUI frame counter; macOS and iOS only (other targets
+print a line and exit). What it shows and how to run it: [native-view-apple.md](native-view-apple.md#the-example).
