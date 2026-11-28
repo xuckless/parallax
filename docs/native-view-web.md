@@ -1,6 +1,6 @@
 # Native views on the web
 
-Patch [0057](../patches/0057-web-native-view.patch): a DOM element (an iframe, a video, a canvas) shown under GPUI's
+Patch [0054](../patches/0054-web-native-view.patch): a DOM element (an iframe, a video, a canvas) shown under GPUI's
 canvas through the wgpu renderer's hole ([native-view.md](native-view.md)). Code: gpui_web's new `native_views.rs`
 (the DOM shell) and `native_view_layout.rs` (pure decisions); the slot lifecycle is ported from Flutter's
 `content_manager.dart` and `slots.dart` ([PORTED.md](../third_party/flutter/PORTED.md)).
@@ -35,7 +35,7 @@ size a frame after a resize, and the slot's colour fills that frame (white for m
   with its press's target. Views that start to show, and every touch release, give the views the pointer, so a tap
   needs no hover. Focus: `set_focused_native_view` focuses the element; its `focusin` focuses the view's handle.
 - **Scale emulation.** DevTools' device mode and Playwright's `deviceScaleFactor` scale `devicePixelRatio` but not
-  `devicePixelContentBoxSize`; gpui_web now trusts that box only where it agrees with the CSS box times the ratio.
+  `devicePixelContentBoxSize`; gpui_web now trusts that box only where it agrees with the CSS box times the ratio (patch [0055](../patches/0055-web-canvas-device-pixel-size.patch)).
 
 Costs: the capture listeners (and a non-passive document `wheel` listener) exist once a view was attached; frames that
 place nothing write no style; the shields are rebuilt only when GPUI's hitboxes over a view change.

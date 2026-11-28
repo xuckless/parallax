@@ -1,6 +1,6 @@
 # WebView2 as a NativeView
 
-Patch [0058](../patches/0058-windows-native-view-visuals.patch) lets a WebView2 page be a `NativeView` on Windows,
+Patch [0056](../patches/0056-windows-native-view-visuals.patch) lets a WebView2 page be a `NativeView` on Windows,
 through WebView2's visual hosting: the page renders into a DirectComposition visual in GPUI's own tree, under GPUI's
 hole, with no child window over GPUI's ([native-view-windows.md](native-view-windows.md) is the rest of the design).
 [examples/native-view-webview2](../examples/native-view-webview2/src/) is the whole pattern.

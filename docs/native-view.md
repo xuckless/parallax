@@ -45,7 +45,7 @@ every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
 
 | `NativeViewInput` | Targets | Pointer input over the view |
 |---|---|---|
-| `View` | macOS, web | the view (AppKit hit-tests it; the browser does, with the canvas's `pointer-events` toggled by GPUI's hit test, patch [0057](../patches/0057-web-native-view.patch)); the view's element blocks the mouse from everything behind |
+| `View` | macOS, web | the view (AppKit hit-tests it; the browser does, with the canvas's `pointer-events` toggled by GPUI's hit test, patch [0054](../patches/0054-web-native-view.patch)); the view's element blocks the mouse from everything behind |
 | `Window` | Wayland, Windows, iOS, Android | GPUI: the view's element occludes like a solid element (`HitboxBehavior::BlockMouseExceptAncestors`), so it and its ancestors hear the input, elements painted before it don't, elements painted after it keep theirs |
 
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract

@@ -4,7 +4,7 @@ Patch [0050](../patches/0050-windows-native-view.patch) shows an app's own conte
 DirectComposition, which GPUI already presents with. No child window (no airspace: GPUI's `HWND` keeps all input), no
 copy of the app's frames, and the app's presents reach the screen with no GPUI frame. Input goes to the view's element
 ([0048](../patches/0048-native-view-window-input.patch), `NativeViewInput::Window`). Plan: ROADMAP "Phase: NativeView".
-A WebView2 page is a NativeView too (patch 0058): [native-view-webview2.md](native-view-webview2.md).
+A WebView2 page is a NativeView too (patch 0056): [native-view-webview2.md](native-view-webview2.md).
 
 ## How an app uses it
 

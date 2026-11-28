@@ -20,7 +20,7 @@ parallax = { path = "../../crates/parallax" }
 env_logger = "0.11"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# `composition_device`: the DirectComposition device the page's visual must be made on (patch 0058).
+# `composition_device`: the DirectComposition device the page's visual must be made on (patch 0056).
 gpui_windows.workspace = true
 raw-window-handle = { version = "0.6", features = ["std"] }
 # Microsoft's WebView2 COM API and its loader (MIT, as tauri's wry uses it), on the windows crate gpui_windows uses.

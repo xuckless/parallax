@@ -21,7 +21,7 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   goes through a DirectComposition surface, so a moving view and its hole change in the same composition frame.
 - Windows: a WebView2 page as a `NativeView`: `gpui_windows::composition_device` gives GPUI's DirectComposition
   device, and `NativeView::new` takes a visual made on it, such as a WebView2 composition controller's root visual
-  target (patch 0058, docs/native-view-webview2.md, examples/native-view-webview2).
+  target (patch 0056, docs/native-view-webview2.md, examples/native-view-webview2).
 - iOS: `gpui::NativeView` shows an app's `UIView` under GPUI's content; touches over it reach the element's listeners
   (patch 0052, [docs/native-view-apple.md](docs/native-view-apple.md)).
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
@@ -35,13 +35,8 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - `native-view-apple` example (iOS: also a GPUI field next to a native `UITextField`).
 - Web: `NativeView::new` takes a DOM element (`web_sys::HtmlElement`: an iframe, a video, a canvas) and shows it under
   GPUI's canvas, placed in GPUI's frame; the browser gives pointer input over an uncovered view to the element itself
-  (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patch 0057,
+  (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patch 0054,
   docs/native-view-web.md, examples/native-view-web). `scripts/web-checks.mjs` gains a `native-view` suite.
-
-### Fixed (0.1.10)
-
-- Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
-  scale 1 and drew at the square of the scale (fork patch 0057).
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
@@ -53,6 +48,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   any `View` (WebView, SurfaceView; laid out under GPUI's translucent surface), with no GPUI frame for the view's own;
   `parallax_android::with_activity` builds views, `forward_touches` sends gestures that start on a view to it too
   (React Native's `JSTouchDispatcher`, ported). Example: `examples/native-view-android` (docs/native-view-android.md).
+
+### Fixed (0.1.10)
+
+- Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
+  scale 1 and drew at the square of the scale (fork patch 0055).
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

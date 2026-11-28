@@ -20,10 +20,6 @@ What:
   touch's first tap reaches the element; a touch release hands it back to them. The canvas's `pointerleave` is not
   reported while the pointer is over a view. `set_focused_native_view` focuses the element, and its `focusin`
   focuses the view's handle.
-- gpui_web's canvas sizing trusts `devicePixelContentBoxSize` only where it agrees with the CSS box times
-  `devicePixelRatio`: scale emulation (DevTools' device mode, CDP `Emulation.setDeviceMetricsOverride`,
-  Playwright's `deviceScaleFactor`, in Chromium and Firefox) scales the ratio but not that box, so GPUI drew at the
-  square of the scale and holes landed 1.25x off at 1.25.
 - gpui_wgpu: a WebGL2 canvas is premultiplied by its context's default whatever mode wgpu reports (only `Opaque`), so
   0047's alpha log says so there instead of warning that holes show black.
 
@@ -42,6 +38,193 @@ private to gpui_web; the occluders need GPUI's hitboxes (rule 12).
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
+diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
+index 0b7b157..af08002 100644
+--- a/gpui-pre/src/platform/test/window.rs
++++ b/gpui-pre/src/platform/test/window.rs
+@@ -36,6 +36,7 @@ pub(crate) struct TestWindowState {
+     focused_native_view: Option<NativeViewId>,
+     native_view_input: NativeViewInput,
+     hit_test_native_view_callback: Option<Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>>,
++    native_view_occluders_callback: Option<Box<dyn FnMut() -> Vec<Bounds<Pixels>>>>,
+     native_view_focused_callback: Option<Box<dyn FnMut(NativeViewId)>>,
+     key_down_before_native_view_callback: Option<Box<dyn FnMut(KeyDownEvent) -> bool>>,
+     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
+@@ -137,6 +138,7 @@ impl TestWindow {
+             focused_native_view: None,
+             native_view_input: NativeViewInput::View,
+             hit_test_native_view_callback: None,
++            native_view_occluders_callback: None,
+             native_view_focused_callback: None,
+             key_down_before_native_view_callback: None,
+             request_frame_callback: None,
+@@ -308,6 +310,17 @@ impl TestWindow {
+         id
+     }
+ 
++    /// Asks the window where its own content takes mouse input over the shown
++    /// native views.
++    pub fn native_view_occluders(&self) -> Vec<Bounds<Pixels>> {
++        let Some(mut callback) = self.0.lock().native_view_occluders_callback.take() else {
++            return Vec::new();
++        };
++        let occluders = callback();
++        self.0.lock().native_view_occluders_callback = Some(callback);
++        occluders
++    }
++
+     /// Acts as if the user pressed a key while a native view had keyboard input,
+     /// and returns whether the window used the key before the view saw it.
+     pub fn simulate_key_down_before_native_view(&self, event: KeyDownEvent) -> bool {
+@@ -697,6 +710,10 @@ impl PlatformWindow for TestWindow {
+         self.0.lock().hit_test_native_view_callback = Some(callback);
+     }
+ 
++    fn on_native_view_occluders(&self, callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {
++        self.0.lock().native_view_occluders_callback = Some(callback);
++    }
++
+     fn on_native_view_focused(&self, callback: Box<dyn FnMut(NativeViewId)>) {
+         self.0.lock().native_view_focused_callback = Some(callback);
+     }
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 0fba390..7510a58 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1445,6 +1445,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+         _callback: Box<dyn FnMut(Point<Pixels>) -> Option<crate::NativeViewId>>,
+     ) {
+     }
++    /// Registers the callback that gives the regions over shown native views
++    /// where the window's own content takes mouse input: elements with a
++    /// hitbox painted after a view. A platform whose views take input
++    /// themselves (the web) keeps these regions for the window. Asked after a
++    /// frame is drawn, outside any window update.
++    fn on_native_view_occluders(&self, _callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {}
+     /// Registers the callback invoked when the user moves keyboard input to
+     /// a native view through the platform, such as by clicking in it.
+     fn on_native_view_focused(&self, _callback: Box<dyn FnMut(crate::NativeViewId)>) {}
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 3eee104..924b8ef 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -29,9 +29,9 @@ impl NativeViewId {
+ /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
+ ///
+ /// macOS shows an `NSView`, iOS a `UIView`, Windows DirectComposition
+-/// content (usually a composition swap chain), and Wayland a `wl_surface` the
+-/// app created on GPUI's own connection. [`NativeView::new`] fails on every
+-/// other platform.
++/// content (usually a composition swap chain), Wayland a `wl_surface` the
++/// app created on GPUI's own connection, and the web a DOM element under the
++/// canvas. [`NativeView::new`] fails on every other platform.
+ ///
+ /// On a platform whose native views take no input of their own
+ /// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland), pointer input
+@@ -42,7 +42,9 @@ impl NativeViewId {
+ /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
+ /// the view's [`FocusHandle`] is focused are dispatched from that element like
+ /// any other key press, so the app forwards the ones it wants to the view.
+-/// The rest of this comment describes macOS ([`crate::NativeViewInput::View`]).
++/// The rest of this comment describes macOS and the web
++/// ([`crate::NativeViewInput::View`]), where the browser gives pointer input
++/// over an uncovered view to its element.
+ ///
+ /// The view is composited beneath the window's GPUI content and shows through
+ /// wherever this handle is used as an element, so elements painted after it
+@@ -110,7 +112,9 @@ impl NativeView {
+     /// On Wayland it is a `wl_proxy` of a `wl_surface`
+     /// made on the window's own `wl_display`, with no role, no `wp_viewport`
+     /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
+-    /// and places it, and the app attaches and commits its buffers.
++    /// and places it, and the app attaches and commits its buffers. On the web
++    /// it is a `web_sys::HtmlElement`, which GPUI moves into a slot under the
++    /// canvas (moving an `<iframe>` already in the document reloads it).
+     ///
+     /// GPUI retains the view and puts it inside a view of its own, until the
+     /// last clone of the returned handle is dropped. Until then GPUI decides the
+@@ -363,6 +367,33 @@ impl Window {
+             .map(|view| view.id)
+     }
+ 
++    /// Where the window's own content takes mouse input over the shown native
++    /// views: each hitbox inserted after a view's, clipped to that view. Every
++    /// other point of a view is the view's (`hit_test_native_view`), so a
++    /// platform whose views hit-test themselves (the web) keeps these regions
++    /// for the window.
++    pub(super) fn native_view_occluders(&self) -> Vec<Bounds<Pixels>> {
++        let hitboxes = &self.rendered_frame.hitboxes;
++        let clipped = |hitbox: &Hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds);
++        self.rendered_frame
++            .scene
++            .native_views
++            .iter()
++            .filter_map(|native_view| {
++                hitboxes
++                    .iter()
++                    .position(|hitbox| hitbox.id == native_view.hitbox_id)
++            })
++            .flat_map(|index| {
++                let view = clipped(&hitboxes[index]);
++                hitboxes[index + 1..]
++                    .iter()
++                    .map(move |hitbox| clipped(hitbox).intersect(&view))
++                    .filter(|occluder| !occluder.is_empty())
++            })
++            .collect()
++    }
++
+     /// The native view that a mouse event at this position reaches, if no
+     /// GPUI hitbox is above it there.
+     pub(super) fn hit_test_native_view(&self, position: Point<Pixels>) -> Option<NativeViewId> {
+@@ -455,7 +486,7 @@ mod tests {
+     use crate::{
+         Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
+         MouseDownEvent, MouseMoveEvent, Render, ScaledPixels, ScrollEvent, TestAppContext,
+-        UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*, px, rgb,
++        UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*, px, rgb, size,
+     };
+     use std::ops::Range;
+ 
+@@ -604,6 +635,19 @@ mod tests {
+         assert_eq!(platform_window.hit_test_native_view(outside), None);
+     }
+ 
++    /// The cover, painted after the view and taking input, is the window's over
++    /// the view; nothing else is (the view is at (0, 10), the cover at (0, 0),
++    /// both from the fixture).
++    #[gpui::test]
++    fn native_view_occluders_are_the_hitboxes_painted_over_it(cx: &mut TestAppContext) {
++        let window = open_window(cx);
++        let platform_window = cx.test_window(window.into());
++        cx.run_until_parked();
++
++        let cover_over_view = Bounds::new(point(px(0.), px(10.)), size(px(50.), px(40.)));
++        assert_eq!(platform_window.native_view_occluders(), [cover_over_view]);
++    }
++
+     #[gpui::test]
+     fn mouse_press_on_a_native_view_reaches_nothing_behind_it(cx: &mut TestAppContext) {
+         let window = open_window(cx);
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 98dac26..249add8 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -2415,6 +2415,14 @@ impl Window {
+                     .flatten()
+             })
+         });
++        platform_window.on_native_view_occluders({
++            let mut cx = cx.to_async();
++            Box::new(move || {
++                handle
++                    .update(&mut cx, |_, window, _| window.native_view_occluders())
++                    .unwrap_or_default()
++            })
++        });
+         platform_window.on_key_down_before_native_view({
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
 diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
 index 04593d2..f572495 100644
 --- a/gpui-pre-web/src/events.rs
@@ -986,7 +1169,7 @@ index 0000000..63807c4
 +    }
 +}
 diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 3d1ba31..e3c24f9 100644
+index 3d1ba31..4d6763e 100644
 --- a/gpui-pre-web/src/window.rs
 +++ b/gpui-pre-web/src/window.rs
 @@ -1,6 +1,7 @@
@@ -1014,45 +1197,7 @@ index 3d1ba31..e3c24f9 100644
              mql_handle: RefCell::new(None),
              pending_physical_size: Cell::new(None),
              raf_id: Cell::new(None),
-@@ -303,19 +307,32 @@ impl WebWindow {
-             let dpr = inner.browser_window.device_pixel_ratio();
-             let dpr_f32 = dpr as f32;
- 
--            let (physical_width, physical_height, logical_width, logical_height) =
--                if inner.has_device_pixel_support {
-+            // Scale emulation (DevTools' device mode, `Emulation.setDeviceMetricsOverride`, Playwright's
-+            // `deviceScaleFactor`) scales devicePixelRatio but leaves the device-pixel box at CSS size; the box
-+            // is trusted only where it agrees with the CSS box at that ratio, to within the browser's rounding.
-+            let device_box = inner
-+                .has_device_pixel_support
-+                .then(|| {
-                     let size: web_sys::ResizeObserverSize = entry
-                         .device_pixel_content_box_size()
-                         .get(0)
-                         .unchecked_into();
--                    let pw = size.inline_size() as u32;
--                    let ph = size.block_size() as u32;
-+                    (size.inline_size(), size.block_size())
-+                })
-+                .filter(|&(width, height)| {
-+                    let rect = entry.content_rect();
-+                    (width - rect.width() * dpr).abs() <= 1.
-+                        && (height - rect.height() * dpr).abs() <= 1.
-+                });
-+            let (physical_width, physical_height, logical_width, logical_height) =
-+                if let Some((width, height)) = device_box {
-+                    let pw = width as u32;
-+                    let ph = height as u32;
-                     let lw = pw as f64 / dpr;
-                     let lh = ph as f64 / dpr;
-                     (pw, ph, lw as f32, lh as f32)
-                 } else {
--                    // Safari fallback: use contentRect (always CSS px).
-+                    // Safari, or scale emulation: use contentRect (always CSS px).
-                     let rect = entry.content_rect();
-                     let lw = rect.width() as f32;
-                     let lh = rect.height() as f32;
-@@ -406,6 +423,7 @@ impl WebWindow {
+@@ -406,6 +410,7 @@ impl WebWindow {
                      })
                  },
              );
@@ -1060,7 +1205,7 @@ index 3d1ba31..e3c24f9 100644
          })
      }
  }
-@@ -495,6 +513,7 @@ impl WebWindowInner {
+@@ -495,6 +500,7 @@ impl WebWindowInner {
                      })
                  },
              );
@@ -1068,7 +1213,7 @@ index 3d1ba31..e3c24f9 100644
          });
  
          let js_func: js_sys::Function =
-@@ -1095,9 +1114,39 @@ impl PlatformWindow for WebWindow {
+@@ -1095,9 +1101,39 @@ impl PlatformWindow for WebWindow {
              drop(state);
          }
  
@@ -1108,22 +1253,6 @@ index 3d1ba31..e3c24f9 100644
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
          self.inner.state.borrow().renderer.sprite_atlas().clone()
      }
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
-index 1ed0f2c..4c41ee8 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
-@@ -1154,7 +1154,10 @@ impl WgpuRenderer {
-             self.shows_native_views = shows_native_views;
-             self.apply_alpha_mode();
-             if shows_native_views {
--                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
-+                native_view_hole::log_alpha_mode(
-+                    self.transparent_alpha_mode,
-+                    self.core().map(|core| core.adapter_info.backend),
-+                );
-             }
-         }
- 
 diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
 index aebde2c..1468650 100644
 --- a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
@@ -1143,190 +1272,19 @@ index aebde2c..1468650 100644
      match alpha_mode {
          wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
              log::info!("native views: window surface alpha mode {alpha_mode:?}")
-diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 6e1bced..db93288 100644
---- a/gpui-pre/src/platform.rs
-+++ b/gpui-pre/src/platform.rs
-@@ -1435,6 +1435,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
-         _callback: Box<dyn FnMut(Point<Pixels>) -> Option<crate::NativeViewId>>,
-     ) {
-     }
-+    /// Registers the callback that gives the regions over shown native views
-+    /// where the window's own content takes mouse input: elements with a
-+    /// hitbox painted after a view. A platform whose views take input
-+    /// themselves (the web) keeps these regions for the window. Asked after a
-+    /// frame is drawn, outside any window update.
-+    fn on_native_view_occluders(&self, _callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {}
-     /// Registers the callback invoked when the user moves keyboard input to
-     /// a native view through the platform, such as by clicking in it.
-     fn on_native_view_focused(&self, _callback: Box<dyn FnMut(crate::NativeViewId)>) {}
-diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
-index 0b7b157..af08002 100644
---- a/gpui-pre/src/platform/test/window.rs
-+++ b/gpui-pre/src/platform/test/window.rs
-@@ -36,6 +36,7 @@ pub(crate) struct TestWindowState {
-     focused_native_view: Option<NativeViewId>,
-     native_view_input: NativeViewInput,
-     hit_test_native_view_callback: Option<Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>>,
-+    native_view_occluders_callback: Option<Box<dyn FnMut() -> Vec<Bounds<Pixels>>>>,
-     native_view_focused_callback: Option<Box<dyn FnMut(NativeViewId)>>,
-     key_down_before_native_view_callback: Option<Box<dyn FnMut(KeyDownEvent) -> bool>>,
-     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
-@@ -137,6 +138,7 @@ impl TestWindow {
-             focused_native_view: None,
-             native_view_input: NativeViewInput::View,
-             hit_test_native_view_callback: None,
-+            native_view_occluders_callback: None,
-             native_view_focused_callback: None,
-             key_down_before_native_view_callback: None,
-             request_frame_callback: None,
-@@ -308,6 +310,17 @@ impl TestWindow {
-         id
-     }
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
+index 1ed0f2c..4c41ee8 100644
+--- a/gpui-pre-wgpu/src/wgpu_renderer.rs
++++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
+@@ -1154,7 +1154,10 @@ impl WgpuRenderer {
+             self.shows_native_views = shows_native_views;
+             self.apply_alpha_mode();
+             if shows_native_views {
+-                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
++                native_view_hole::log_alpha_mode(
++                    self.transparent_alpha_mode,
++                    self.core().map(|core| core.adapter_info.backend),
++                );
+             }
+         }
  
-+    /// Asks the window where its own content takes mouse input over the shown
-+    /// native views.
-+    pub fn native_view_occluders(&self) -> Vec<Bounds<Pixels>> {
-+        let Some(mut callback) = self.0.lock().native_view_occluders_callback.take() else {
-+            return Vec::new();
-+        };
-+        let occluders = callback();
-+        self.0.lock().native_view_occluders_callback = Some(callback);
-+        occluders
-+    }
-+
-     /// Acts as if the user pressed a key while a native view had keyboard input,
-     /// and returns whether the window used the key before the view saw it.
-     pub fn simulate_key_down_before_native_view(&self, event: KeyDownEvent) -> bool {
-@@ -697,6 +710,10 @@ impl PlatformWindow for TestWindow {
-         self.0.lock().hit_test_native_view_callback = Some(callback);
-     }
- 
-+    fn on_native_view_occluders(&self, callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {
-+        self.0.lock().native_view_occluders_callback = Some(callback);
-+    }
-+
-     fn on_native_view_focused(&self, callback: Box<dyn FnMut(NativeViewId)>) {
-         self.0.lock().native_view_focused_callback = Some(callback);
-     }
-diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 98dac26..249add8 100644
---- a/gpui-pre/src/window.rs
-+++ b/gpui-pre/src/window.rs
-@@ -2415,6 +2415,14 @@ impl Window {
-                     .flatten()
-             })
-         });
-+        platform_window.on_native_view_occluders({
-+            let mut cx = cx.to_async();
-+            Box::new(move || {
-+                handle
-+                    .update(&mut cx, |_, window, _| window.native_view_occluders())
-+                    .unwrap_or_default()
-+            })
-+        });
-         platform_window.on_key_down_before_native_view({
-             let mut cx = cx.to_async();
-             Box::new(move |event| {
-diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index 66b55fb..d00178c 100644
---- a/gpui-pre/src/window/native_view.rs
-+++ b/gpui-pre/src/window/native_view.rs
-@@ -29,9 +29,9 @@ impl NativeViewId {
- /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
- ///
- /// macOS shows an `NSView`, iOS a `UIView`, Windows DirectComposition
--/// content (usually a composition swap chain), and Wayland a `wl_surface` the
--/// app created on GPUI's own connection. [`NativeView::new`] fails on every
--/// other platform.
-+/// content (usually a composition swap chain), Wayland a `wl_surface` the
-+/// app created on GPUI's own connection, and the web a DOM element under the
-+/// canvas. [`NativeView::new`] fails on every other platform.
- ///
- /// On a platform whose native views take no input of their own
- /// ([`crate::NativeViewInput::Window`]: iOS, Windows, Wayland), pointer input
-@@ -42,7 +42,9 @@ impl NativeViewId {
- /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
- /// the view's [`FocusHandle`] is focused are dispatched from that element like
- /// any other key press, so the app forwards the ones it wants to the view.
--/// The rest of this comment describes macOS ([`crate::NativeViewInput::View`]).
-+/// The rest of this comment describes macOS and the web
-+/// ([`crate::NativeViewInput::View`]), where the browser gives pointer input
-+/// over an uncovered view to its element.
- ///
- /// The view is composited beneath the window's GPUI content and shows through
- /// wherever this handle is used as an element, so elements painted after it
-@@ -110,7 +112,9 @@ impl NativeView {
-     /// On Wayland it is a `wl_proxy` of a `wl_surface`
-     /// made on the window's own `wl_display`, with no role, no `wp_viewport`
-     /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
--    /// and places it, and the app attaches and commits its buffers.
-+    /// and places it, and the app attaches and commits its buffers. On the web
-+    /// it is a `web_sys::HtmlElement`, which GPUI moves into a slot under the
-+    /// canvas (moving an `<iframe>` already in the document reloads it).
-     ///
-     /// GPUI retains the view and puts it inside a view of its own, until the
-     /// last clone of the returned handle is dropped. Until then GPUI decides the
-@@ -341,6 +345,33 @@ impl Window {
-             .map(|view| view.id)
-     }
- 
-+    /// Where the window's own content takes mouse input over the shown native
-+    /// views: each hitbox inserted after a view's, clipped to that view. Every
-+    /// other point of a view is the view's (`hit_test_native_view`), so a
-+    /// platform whose views hit-test themselves (the web) keeps these regions
-+    /// for the window.
-+    pub(super) fn native_view_occluders(&self) -> Vec<Bounds<Pixels>> {
-+        let hitboxes = &self.rendered_frame.hitboxes;
-+        let clipped = |hitbox: &Hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-+        self.rendered_frame
-+            .scene
-+            .native_views
-+            .iter()
-+            .filter_map(|native_view| {
-+                hitboxes
-+                    .iter()
-+                    .position(|hitbox| hitbox.id == native_view.hitbox_id)
-+            })
-+            .flat_map(|index| {
-+                let view = clipped(&hitboxes[index]);
-+                hitboxes[index + 1..]
-+                    .iter()
-+                    .map(move |hitbox| clipped(hitbox).intersect(&view))
-+                    .filter(|occluder| !occluder.is_empty())
-+            })
-+            .collect()
-+    }
-+
-     /// The native view that a mouse event at this position reaches, if no
-     /// GPUI hitbox is above it there.
-     pub(super) fn hit_test_native_view(&self, position: Point<Pixels>) -> Option<NativeViewId> {
-@@ -433,7 +464,7 @@ mod tests {
-     use crate::{
-         Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
-         MouseDownEvent, MouseMoveEvent, Render, ScaledPixels, ScrollEvent, TestAppContext,
--        UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*, px, rgb,
-+        UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*, px, rgb, size,
-     };
-     use std::ops::Range;
- 
-@@ -582,6 +613,19 @@ mod tests {
-         assert_eq!(platform_window.hit_test_native_view(outside), None);
-     }
- 
-+    /// The cover, painted after the view and taking input, is the window's over
-+    /// the view; nothing else is (the view is at (0, 10), the cover at (0, 0),
-+    /// both from the fixture).
-+    #[gpui::test]
-+    fn native_view_occluders_are_the_hitboxes_painted_over_it(cx: &mut TestAppContext) {
-+        let window = open_window(cx);
-+        let platform_window = cx.test_window(window.into());
-+        cx.run_until_parked();
-+
-+        let cover_over_view = Bounds::new(point(px(0.), px(10.)), size(px(50.), px(40.)));
-+        assert_eq!(platform_window.native_view_occluders(), [cover_over_view]);
-+    }
-+
-     #[gpui::test]
-     fn mouse_press_on_a_native_view_reaches_nothing_behind_it(cx: &mut TestAppContext) {
-         let window = open_window(cx);

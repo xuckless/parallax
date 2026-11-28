@@ -7,7 +7,7 @@
 // - firefox, webkit: Playwright's builds, loaded from PLAYWRIGHT_DIR (a directory whose node_modules holds playwright;
 //   its browsers come from PLAYWRIGHT_BROWSERS_PATH). Checks needing what Playwright can't drive print "skip".
 // Usage: node scripts/web-checks.mjs <hello url> desktop|mobile <chromium debugging port | firefox | webkit>
-// With a fourth argument `native-view` and native-view-web's url, it checks patch 0057's native views instead
+// With a fourth argument `native-view` and native-view-web's url, it checks patch 0054's native views instead
 // (docs/native-view-web.md): input into the views' elements and the divs over them, 0 GPUI frames while only the
 // elements change, the alpha mode, no gap colour (still and animating) at the page's scale, and, on Chromium, the
 // toggle's and the views' costs (on a phone profile in mobile mode). A fifth argument is the page's scale (default
