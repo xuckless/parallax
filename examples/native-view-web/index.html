@@ -6,13 +6,22 @@
     <title>Parallax native views on the web</title>
     <!-- gpui_web appends its full-page canvas to <body>. Green is the gap colour: it shows only where a hole has no
          element under it (scripts/web-checks.mjs counts it). -->
-    <style>html, body { margin: 0; height: 100%; overflow: hidden; background: #00ff00; }</style>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #00ff00; }
+      /* `?offset`: the canvas away from the page's origin, under page content that scrolls and takes clicks. */
+      html.offset { background: #ffffff; }
+      html.offset body { margin: 8px; height: calc(100% - 16px); }
+      #header { display: none; height: 40px; overflow-y: auto; background: #ffffff; font: 14px sans-serif; }
+      html.offset #header { display: block; }
+    </style>
   </head>
   <body>
+    <div id="header"><div style="height: 400px">Page content above the canvas: it scrolls and takes clicks.</div></div>
     <script type="module">
       // The views, made here as an app would, and handed to the Rust side (src/lib.rs) by name. `?animate` moves
       // and resizes them every GPUI frame; `?noview` shows the window without them, for the cost comparisons.
       const options = new URLSearchParams(location.search);
+      if (options.has("offset")) document.documentElement.classList.add("offset");
       const frame = (name, origin) => {
         const iframe = document.createElement("iframe");
         iframe.src = `${origin}/frame.html?name=${name}`;
@@ -38,9 +47,29 @@
         requestAnimationFrame(draw);
       };
       requestAnimationFrame(draw);
-      for (const kind of ["click", "wheel"]) {
-        animated.addEventListener(kind, (event) =>
-          window.frameEvents.push({ frame: "canvas", kind, x: event.offsetX, y: event.offsetY, trusted: event.isTrusted }));
+      // The form: a focusable box with an <input> where a click at view-relative (280, 190) lands.
+      const form = document.createElement("div");
+      form.tabIndex = -1;
+      form.style.cssText = "width: 100%; height: 100%; position: relative; background: #e0a030";
+      const input = document.createElement("input");
+      input.style.cssText = "position: absolute; left: 200px; top: 170px; width: 180px; height: 40px; box-sizing: border-box";
+      form.append(input);
+      // What reaches the elements on this page (the iframes post theirs): kind, element-relative position, trusted.
+      // A `pointerdown` alone is a copy GPUI sent; a real one comes with its click.
+      const record = (frame, element) => {
+        for (const kind of ["click", "wheel", "pointerdown"]) {
+          element.addEventListener(kind, (event) => {
+            const box = element.getBoundingClientRect();
+            window.frameEvents.push({ frame, kind, x: event.clientX - box.left, y: event.clientY - box.top, trusted: event.isTrusted });
+          });
+        }
+      };
+      record("canvas", animated);
+      record("form", form);
+      const header = document.getElementById("header");
+      for (const kind of ["click", "scroll"]) {
+        header.addEventListener(kind, (event) =>
+          window.frameEvents.push({ frame: "header", kind, top: header.scrollTop, trusted: event.isTrusted }));
       }
       window.addEventListener("message", (event) => {
         window.frameEvents.push(event.data);
@@ -48,7 +77,7 @@
       });
       window.nativeViewElements = options.has("noview")
         ? {}
-        : { same: frame("same", location.origin), cross: frame("cross", other), canvas: animated };
+        : { same: frame("same", location.origin), cross: frame("cross", other), canvas: animated, form };
       window.nativeViewAnimate = options.has("animate");
 
       // The toggle cost: time from the first capture listener (this one, on window) to the last bubbling one, per

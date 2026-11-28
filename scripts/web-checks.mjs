@@ -296,19 +296,56 @@ await driver.close();
 process.exit(failed ? 1 : 0);
 
 // native-view-web (examples/native-view-web, src/lib.rs's VIEWS), in CSS px of a 900 x 700 page: each view is
-// 400 x 260 at its corner, with a GPUI div at +20..+180, +20..+80 over it.
+// 400 x 260 at its corner of the canvas, with a GPUI div at +20..+180, +20..+80 over it. `?offset` puts the canvas
+// at (8, 48), under a header of page content.
 async function nativeViewChecks() {
-  const views = { same: [20, 60], cross: [460, 60], canvas: [20, 360] };
-  const uncovered = (name) => [views[name][0] + 280, views[name][1] + 190];
-  const covered = (name) => [views[name][0] + 80, views[name][1] + 50];
+  const views = { same: [20, 60], cross: [460, 60], canvas: [20, 360], form: [460, 360] };
+  const names = Object.keys(views);
+  const [VIEW_W, VIEW_H, OVER_W, OVER_H] = [400, 260, 160, 60];
+  let origin = [0, 0];
+  const at = (name, [x, y]) => [origin[0] + views[name][0] + x, origin[1] + views[name][1] + y];
+  const uncovered = (name) => at(name, [280, 190]);
+  const covered = (name) => at(name, [80, 50]);
   const shots = mkdtempSync(`${process.env.SHOTS_DIR ?? tmpdir()}/native-view-web-`);
   const pixels = (...args) => execFileSync("python3", ["-I", new URL("pixels.py", import.meta.url).pathname, ...args]).toString().trim();
-  // Green is the page's background: it shows only where a hole has no element under it.
-  const gap = async (name) => {
+  const count = (path, colour) => Number(pixels(path, "count", colour));
+  const s = Number(scale);
+  const rgb = (path, [x, y]) => pixels(path, "at", String(Math.round(x * s)), String(Math.round(y * s))).split(" ").map(Number);
+  // Each view's content, looked for at points clear of its div, its text and (±12 px) the animation's shift: the
+  // iframes' frame.html gradient (blue, not the slot's white), the canvas's hsl(h 70% 60%) (two points, one clear of
+  // its moving black bar) and the form's orange. Add a row per view.
+  const hsl = ([r, g, b]) => {
+    const [max, min] = [Math.max(r, g, b) / 255, Math.min(r, g, b) / 255];
+    const l = (max + min) / 2;
+    return [max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1)), l];
+  };
+  const LOOKS = {
+    same: [[[280, 200]], ([r, , b]) => b > 200 && r > 120 && r < 230],
+    cross: [[[280, 200]], ([r, , b]) => b > 200 && r > 120 && r < 230],
+    canvas: [[[100, 130], [140, 130]], (pixel) => { const [sat, l] = hsl(pixel); return sat > 0.55 && sat < 0.85 && l > 0.5 && l < 0.7; }],
+    form: [[[200, 130]], ([r, g, b]) => Math.abs(r - 0xe0) < 24 && Math.abs(g - 0xa0) < 24 && Math.abs(b - 0x30) < 24],
+  };
+  // The page's gap colour (green: a hole with no element under it), GPUI's view boxes (magenta: a view not cut out),
+  // the divs over the views, GPUI's background and each view's content, in one screenshot.
+  const content = async (name, shown = names) => {
     const path = `${shots}/${name}.png`;
     await driver.screenshot(path);
-    return Number(pixels(path, "count", "00ff00"));
+    const divs = count(path, "2050d0") / (shown.length * OVER_W * OVER_H * s * s);
+    const canvasArea = (900 - 2 * origin[0]) * (700 - origin[1] - origin[0]);
+    const background = count(path, "202020") / ((canvasArea - shown.length * VIEW_W * VIEW_H) * s * s);
+    return {
+      gap: count(path, "00ff00"),
+      uncut: count(path, "c000c0"),
+      divs: divs > 0.9 && divs < 1.1 ? "drew" : divs.toFixed(2),
+      background: background > 0.5 ? "drew" : background.toFixed(2),
+      views: Object.fromEntries(shown.map((view) => {
+        const [points, looks] = LOOKS[view];
+        const seen = points.map((point) => rgb(path, at(view, point)));
+        return [view, seen.some(looks) ? "drew" : seen.map((pixel) => pixel.join(" ")).join(", ")];
+      })),
+    };
   };
+  const drew = (shown = names) => ({ gap: 0, uncut: 0, divs: "drew", background: "drew", views: Object.fromEntries(shown.map((v) => [v, "drew"])) });
   const open = async (query) => {
     await driver.viewport(900, 700);
     logs.length = 0;
@@ -320,6 +357,27 @@ async function nativeViewChecks() {
   const events = async (frame, kind) =>
     (await js("window.frameEvents.splice(0)")).filter((e) => e.frame === frame && e.kind === kind);
   const said = (pattern) => logs.some((line) => pattern.test(line));
+  const saidSince = (mark, text) => logs.slice(mark).some((line) => line.includes(text));
+  const command = async (text) => {
+    await js(`window.nativeViewCommand(${JSON.stringify(text)})`);
+    await sleep(600);
+  };
+  const active = () => js("document.activeElement.localName");
+  // A real click (or tap) into each element at view-relative (280, 190), and the GPUI div over each.
+  const pressChecks = async (label) => {
+    for (const name of names) {
+      await js("window.frameEvents.length = 0");
+      await press(...uncovered(name));
+      await sleep(500);
+      check(`${label}${name} element takes a real ${mode === "mobile" ? "tap" : "click"} at view-relative (280, 190)`,
+        (await events(name, "click")).map(({ x, y, trusted }) => [Math.round(x), Math.round(y), trusted]), [[280, 190, true]]);
+      const mark = logs.length;
+      await press(...covered(name));
+      await sleep(500);
+      check(`${label}the div over ${name} takes its own press`,
+        [saidSince(mark, `GPUI div over ${name}: down`), (await events(name, "click")).length], [true, 0]);
+    }
+  };
 
   await open("");
   check(`page scale ${scale}`, await js("devicePixelRatio"), Number(scale));
@@ -329,20 +387,17 @@ async function nativeViewChecks() {
   const [gpui1, element1] = await js("[window.gpuiFrames, window.elementFrames]");
   check("GPUI frames while only the elements change", gpui1 - gpui0, 0);
   check("the canvas element drew frames meanwhile", element1 - element0 > 30, true);
-  check("no gap", await gap("still"), 0);
+  check("still: holes cut, views, divs and GPUI drew, no gap", await content("still"), drew());
 
-  for (const name of ["same", "cross", "canvas"]) {
-    await js("window.frameEvents.length = 0");
-    await press(...uncovered(name));
-    await sleep(500);
-    check(`${name} element takes a real ${mode === "mobile" ? "tap" : "click"} at view-relative (280, 190)`,
-      (await events(name, "click")).map(({ x, y, trusted }) => [Math.round(x), Math.round(y), trusted]), [[280, 190, true]]);
-    const mark = logs.length;
-    await press(...covered(name));
-    await sleep(500);
-    check(`the div over ${name} takes its own press`,
-      [logs.slice(mark).some((line) => line.includes(`GPUI div over ${name}: down`)), (await events(name, "click")).length], [true, 0]);
-  }
+  await pressChecks("");
+  // A press into the form lands in its <input>: GPUI focusing the view (from its field) must leave it there.
+  await command("field");
+  await press(...uncovered("form"));
+  await sleep(500);
+  await driver.insertText("hi");
+  await sleep(300);
+  check("focus inside an element (its <input>) stays when GPUI focuses the view",
+    await js("[document.activeElement.localName, document.querySelector('gpui-native-view input').value]"), ["input", "hi"]);
 
   if (mode === "desktop") {
     await driver.wheel(...uncovered("same"), 200);
@@ -351,7 +406,7 @@ async function nativeViewChecks() {
     const mark = logs.length;
     await driver.wheel(...covered("same"), 200);
     await sleep(600);
-    check("a wheel over the div is GPUI's", [logs.slice(mark).some((line) => line.includes("GPUI div over same: scroll")),
+    check("a wheel over the div is GPUI's", [saidSince(mark, "GPUI div over same: scroll"),
       (await events("same", "wheel")).length], [true, 0]);
     await js("window.frameEvents.length = 0");
     await driver.drag([views.cross[0] + 5, views.cross[1] + 130], [views.cross[0] + 390, views.cross[1] + 130]);
@@ -366,10 +421,62 @@ async function nativeViewChecks() {
     check("the canvas lets the pointer through only over a view", [overView, await pointerEvents()], ["none", "auto"]);
   }
 
+  // A shield left over a spot where GPUI's content no longer is (moved there by hand): the pointer there must reach
+  // the element under it, and the shield go back where GPUI's frame has its occluder.
+  const shield = "document.querySelector('gpui-native-views > div:nth-child(2) > div')";
+  const placed = await js(`${shield}.style.transform`);
+  await js(`${shield}.style.transform = 'translate(${views.canvas[0] + 260}px, ${views.canvas[1] + 170}px)'`);
+  await js("window.frameEvents.length = 0");
+  await press(...uncovered("canvas"));
+  await sleep(500);
+  check("a stale shield gives its press to the element under it",
+    [await js(`${shield}.style.transform`) === placed,
+      (await events("canvas", "pointerdown")).some(({ x, y }) => Math.round(x) === 280 && Math.round(y) === 190)], [true, true]);
+
+  // Focus: GPUI's field must get the keys back from a view's element, also when that view goes.
+  await open("");
+  const enter = async () => {
+    const mark = logs.length;
+    await driver.pressEnter();
+    await sleep(400);
+    return saidSince(mark, "field key enter");
+  };
+  await press(...uncovered("same"));
+  await sleep(500);
+  const inFrame = await active();
+  await command("field");
+  check("GPUI field focused from inside a view: typing reaches it", [inFrame, await enter()], ["iframe", true]);
+  await press(...uncovered("same"));
+  await sleep(500);
+  await command("drop same");
+  await command("field");
+  check("focused view dropped then GPUI field focused: typing reaches it", await enter(), true);
+  for (const name of names.slice(1)) await command(`drop ${name}`);
+  check("the last view gone, the canvas has its own styles back and no layer",
+    await js("(() => { const c = document.body.querySelector(':scope > canvas'); return [c.style.position, c.style.zIndex, c.style.pointerEvents, !!document.querySelector('gpui-native-views')]; })()"),
+    ["", "", "", false]);
+
+  // The canvas away from the page's origin, under page content.
+  origin = [8, 48];
+  await open("?offset");
+  check("offset: holes cut, views, divs and GPUI drew, no gap", await content("offset"), drew());
+  await pressChecks("offset: ");
+  await js("window.frameEvents.length = 0");
+  await press(100, 28);
+  await sleep(400);
+  check("page content outside the canvas takes a real press while views show",
+    (await events("header", "click")).map(({ trusted }) => trusted), [true]);
+  if (mode === "desktop") {
+    await driver.wheel(100, 28, 100);
+    await sleep(600);
+    check("page content outside the canvas scrolls while views show", (await events("header", "scroll")).some((e) => e.top > 0), true);
+  }
+  origin = [0, 0];
+
   await open("?animate");
   const moving = [];
-  for (let i = 0; i < 8; i++) moving.push(await gap(`animate-${i}`));
-  check("no gap while moving and resizing", moving, Array(8).fill(0));
+  for (let i = 0; i < 8; i++) moving.push(await content(`animate-${i}`));
+  check("while moving and resizing: holes cut, views, divs and GPUI drew, no gap", moving, Array(8).fill(drew()));
 
   if (!driver.throttle) {
     skip("the toggle's and the views' costs");

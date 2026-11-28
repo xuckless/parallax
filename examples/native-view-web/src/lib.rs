@@ -1,17 +1,18 @@
-//! A GPUI window in the browser with three DOM elements under its canvas as native views: a same-origin iframe, a
-//! cross-origin iframe and a canvas that index.html redraws every animation frame. A GPUI div covers part of each and
-//! logs the presses it takes. The page reads `window.gpuiFrames` (frames GPUI painted, which must not grow while only
-//! the elements change); GPUI logs the surface alpha mode it chose. `?animate` moves and resizes the views every
-//! GPUI frame. See docs/native-view-web.md; scripts/web-checks.mjs drives it.
+//! A GPUI window in the browser with four DOM elements under its canvas as native views: a same-origin iframe, a
+//! cross-origin iframe, a canvas that index.html redraws every animation frame and a form (a box with an `<input>`).
+//! A GPUI div covers part of each and logs the presses it takes; a focusable GPUI field logs the keys it gets. The
+//! page reads `window.gpuiFrames` (frames GPUI painted, which must not grow while only the elements change) and can
+//! call `window.nativeViewCommand("field")` (focus the field) or `("drop <name>")` (drop that view). GPUI logs the surface alpha mode it chose. `?animate` moves and resizes the views every GPUI frame. See
+//! docs/native-view-web.md; scripts/web-checks.mjs drives it.
 
 #[cfg(target_family = "wasm")]
 mod demo {
     use parallax::gpui::{
-        App, Context, MouseButton, NativeView, Window, WindowOptions, canvas, div, prelude::*, px,
-        rgb,
+        App, Context, FocusHandle, MouseButton, NativeView, Window, WindowOptions, canvas, div,
+        prelude::*, px, rgb,
     };
     use std::{cell::Cell, ptr::NonNull, rc::Rc};
-    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
     use web_time::Instant;
 
     /// Text needs a font, and a browser gives GPUI none (hello's, OFL).
@@ -19,10 +20,11 @@ mod demo {
 
     /// The views by the name index.html gives their elements, and where each goes, in CSS pixels:
     /// (name, left, top). Each is `VIEW` big, with its div `OVER` big at `OVER_AT` inside it. Add a row per view.
-    const VIEWS: [(&str, f32, f32); 3] = [
+    const VIEWS: [(&str, f32, f32); 4] = [
         ("same", 20., 60.),
         ("cross", 460., 60.),
         ("canvas", 20., 360.),
+        ("form", 460., 360.),
     ];
     const VIEW: (f32, f32) = (400., 260.);
     const OVER: (f32, f32) = (160., 60.);
@@ -30,6 +32,8 @@ mod demo {
 
     struct Demo {
         views: Vec<(&'static str, NativeView)>,
+        /// A GPUI field that takes keys; `nativeViewCommand` focuses it.
+        field: FocusHandle,
         /// Frames GPUI painted, counted by a canvas in the root.
         gpui_frames: Rc<Cell<u64>>,
         animate: bool,
@@ -68,8 +72,32 @@ mod demo {
                     }
                 })
                 .collect();
+            // The page's way in, for the focus checks: the page lives as long as the app, so the closure is leaked.
+            let demo = cx.entity().downgrade();
+            let mut app = cx.to_async();
+            let command = Closure::<dyn FnMut(String)>::new(move |command: String| {
+                demo.update_in(&mut app, |demo, window, cx| {
+                    match command.strip_prefix("drop ") {
+                        Some(name) => demo.views.retain(|(view_name, _)| *view_name != name),
+                        None => window.focus(&demo.field, cx),
+                    }
+                    log::info!("native-view-web: command {command}");
+                    cx.notify();
+                })
+                .ok();
+            });
+            if let Some(page) = web_sys::window() {
+                js_sys::Reflect::set(
+                    &page,
+                    &JsValue::from_str("nativeViewCommand"),
+                    command.as_ref(),
+                )
+                .ok();
+            }
+            command.forget();
             Self {
                 views,
+                field: cx.focus_handle(),
                 gpui_frames: Rc::new(Cell::new(0)),
                 animate: page_value("nativeViewAnimate").is_truthy(),
                 started: Instant::now(),
@@ -115,6 +143,22 @@ mod demo {
                         .top(px(20.))
                         .left(px(20.))
                         .child("Native views under a GPUI canvas"),
+                )
+                .child(
+                    div()
+                        .id("field")
+                        .track_focus(&self.field)
+                        .absolute()
+                        .top(px(16.))
+                        .left(px(460.))
+                        .w(px(400.))
+                        .h(px(32.))
+                        .px_2()
+                        .bg(rgb(0x404040))
+                        .on_key_down(|event, _, _| {
+                            log::info!("native-view-web: field key {}", event.keystroke.key)
+                        })
+                        .child("A GPUI field"),
                 )
                 .children(VIEWS.iter().map(|&(name, left, top)| {
                     let view = self
