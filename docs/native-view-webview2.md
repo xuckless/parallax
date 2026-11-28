@@ -16,8 +16,11 @@ hole, with no child window over GPUI's ([native-view-windows.md](native-view-win
    joins GPUI's tree, which shows only after a commit, and GPUI commits only for its own frames: without it the page
    stays hidden until GPUI next draws), `SetIsVisible(true)`, navigate. The handlers run
    from GPUI's own message loop on the main thread, so state shared with listeners can live in an `Rc`.
-4. Size it from the element's laid-out bounds in device px (`SetBounds(0, 0, w, h)`; WebView2's bounds are raw pixels
-   and its rasterization scale follows the monitor, as GPUI's does).
+4. Place it at the element's laid-out bounds in device px, in the window (`SetBounds(left, top, right, bottom)`;
+   WebView2's bounds are raw pixels and its rasterization scale follows the monitor, as GPUI's does). WebView2 draws at
+   its visual's origin, which GPUI places, but positions its popups (a `<select>`'s list, the context menu, IME
+   candidates) from these bounds, as in Microsoft's WinComp sample: at (0, 0) they would show off by the view's
+   position.
 
 ## Input
 
@@ -25,15 +28,20 @@ WebView2's visual hosting takes no spatial input itself; the app sends it
 ([Microsoft's docs](https://learn.microsoft.com/microsoft-edge/webview2/concepts/windowed-vs-visual-hosting)).
 The view element's listeners do (`NativeViewInput::Window`, patch 0048): `on_mouse_move`, `on_mouse_down` /
 `on_mouse_up` per button (one table, `BUTTONS` in the example's `app.rs`), `on_scroll` and `on_hover` (leave) become
-`ICoreWebView2CompositionController::SendMouseInput`, at the position in the element × scale, rounded. The cover div
-over the page occludes it, so it keeps its own clicks.
+`ICoreWebView2CompositionController::SendMouseInput`, at the position in the element × scale, rounded. The view's
+element hears the pointer only over it, so a button pressed on the page is followed with window-level capture-phase
+listeners (`on_mouse_event`) until its release: every move and the release reach the page wherever the pointer goes,
+as its own window's mouse capture would give them, and a leave is sent only with no button held (or after a release
+off the page). The cover div over the page occludes it, so it keeps its own clicks.
 
 Keys are not sent: WebView2 has no key-input call. A click on the page calls `ICoreWebView2Controller::MoveFocus`,
 WebView2 takes the window's keyboard focus and reads keys itself; a click anywhere else in the window calls
 `SetFocus` on GPUI's `HWND` to take them back (the page's listener stops propagation so that one doesn't run).
 
 **Lost device.** GPUI rebuilds its tree on a new device; a visual of the old one cannot join it (GPUI logs and skips
-it), so the app makes a new visual and controller.
+it). `gpui_windows::on_composition_device_changed(window, callback)` says so once the new tree is in place; the
+callback runs inside GPUI's recovery, so the example schedules (an `AsyncApp` spawn) making a new visual, controller
+and `NativeView` on the new device.
 
 ## Checks
 

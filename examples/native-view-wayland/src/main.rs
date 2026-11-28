@@ -37,7 +37,7 @@ mod demo {
     use crate::page::{self, Page};
     use gpui_linux::NativeViewBuffers;
     use parallax::gpui::{
-        App, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent,
+        App, Bounds, Context, DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent,
         MouseUpEvent, NativeView, Pixels, Point, ScrollEvent, ScrollHandle, Window,
         WindowBackgroundAppearance, WindowBounds, WindowOptions, canvas, div, point, prelude::*,
         px, rgb, size,
@@ -113,6 +113,8 @@ mod demo {
         /// `--clipped`: the scrolled container that hides the view's top half.
         scroll: Option<ScrollHandle>,
         started: Instant,
+        /// The left button pressed on the view, while it is held (`capture`).
+        held: bool,
     }
 
     impl Demo {
@@ -168,7 +170,45 @@ mod demo {
                 animate: options.animate,
                 scroll,
                 started: Instant::now(),
+                held: false,
             }
+        }
+
+        /// The held button's release: from `capture` wherever the pointer is, or from the view's element for a quick
+        /// click released before `capture` was painted. Whichever hears it first clears `held`.
+        fn release(&mut self, event: &MouseUpEvent, window: &Window, cx: &mut Context<Self>) {
+            if !self.held {
+                return;
+            }
+            self.log_pointer("up", event.position, window);
+            self.held = false;
+            cx.notify();
+        }
+
+        /// While the button pressed on the view is held: every move and its release, wherever the pointer is, as a
+        /// browser's own window capture would give them (the view's element hears the pointer only over it).
+        fn capture(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+            let this = cx.entity();
+            self.held.then(|| {
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let moving = this.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                moving.read(cx).log_pointer("move", event.position, window);
+                            }
+                        });
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture && event.button == MouseButton::Left
+                            {
+                                this.update(cx, |this, cx| this.release(event, window, cx));
+                            }
+                        });
+                    },
+                )
+                .size_0()
+            })
         }
 
         fn attach(
@@ -236,19 +276,24 @@ mod demo {
                             .into_element()
                             .on_mouse_move(cx.listener(
                                 |this, event: &MouseMoveEvent, window, _| {
-                                    this.log_pointer("move", event.position, window)
+                                    // Mid-drag, `capture` logs the moves.
+                                    if !this.held {
+                                        this.log_pointer("move", event.position, window)
+                                    }
                                 },
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, window, _| {
-                                    this.log_pointer("down", event.position, window)
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    this.log_pointer("down", event.position, window);
+                                    this.held = true;
+                                    cx.notify();
                                 }),
                             )
                             .on_mouse_up(
                                 MouseButton::Left,
-                                cx.listener(|this, event: &MouseUpEvent, window, _| {
-                                    this.log_pointer("up", event.position, window)
+                                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                    this.release(event, window, cx)
                                 }),
                             )
                             .on_scroll(cx.listener(|this, event: &ScrollEvent, window, _| {
@@ -296,6 +341,7 @@ mod demo {
             div()
                 .size_full()
                 .when(self.scroll.is_none(), |this| this.bg(rgb(0x202020)))
+                .children(self.capture(cx))
                 .child(
                     canvas(|_, _, _| {}, move |_, _, _, _| frames.set(frames.get() + 1)).size_0(),
                 )

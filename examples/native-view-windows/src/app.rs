@@ -4,9 +4,9 @@
 use std::{cell::Cell, rc::Rc, sync::atomic::Ordering, time::Duration};
 
 use parallax::gpui::{
-    App, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, NativeView, Pixels, Point,
-    Render, ScrollEvent, Window, WindowBounds, WindowOptions, canvas, div, prelude::*, px, rgb,
-    size,
+    App, Bounds, Context, DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    NativeView, Pixels, Point, Render, ScrollEvent, Window, WindowBounds, WindowOptions, canvas,
+    div, prelude::*, px, rgb, size,
 };
 
 use crate::content::Content;
@@ -32,6 +32,8 @@ struct Example {
     frames: Rc<Cell<u64>>,
     offset: f32,
     size_index: usize,
+    /// The left button pressed on the view, while it is held (`capture`).
+    held: bool,
 }
 
 pub fn open_window(cx: &mut App) {
@@ -84,7 +86,44 @@ impl Example {
             frames,
             offset: 0.,
             size_index: 0,
+            held: false,
         }
+    }
+
+    /// The held button's release: from `capture` wherever the pointer is, or from the view's element for a quick
+    /// click released before `capture` was painted. Whichever hears it first clears `held`.
+    fn release(&mut self, event: &MouseUpEvent, window: &Window, cx: &mut Context<Self>) {
+        if !self.held {
+            return;
+        }
+        self.log_input("up", event.position, window);
+        self.held = false;
+        cx.notify();
+    }
+
+    /// While the button pressed on the view is held: every move and its release, wherever the pointer is, as a
+    /// browser's own window capture would give them (the view's element hears the pointer only over it).
+    fn capture(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let this = cx.entity();
+        self.held.then(|| {
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moving = this.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture {
+                            moving.read(cx).log_input("move", event.position, window);
+                        }
+                    });
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                            this.update(cx, |this, cx| this.release(event, window, cx));
+                        }
+                    });
+                },
+            )
+            .size_0()
+        })
     }
 
     /// Slides the view right and back by a step per frame, logging when it starts and ends.
@@ -166,6 +205,7 @@ impl Render for Example {
         div()
             .size_full()
             .bg(rgb(WINDOW_COLOUR))
+            .children(self.capture(cx))
             .child(
                 div()
                     .id("page")
@@ -181,13 +221,24 @@ impl Render for Example {
                             .into_element()
                             .on_mouse_move(cx.listener(
                                 |this, event: &MouseMoveEvent, window, _| {
-                                    this.log_input("move", event.position, window)
+                                    // Mid-drag, `capture` logs the moves.
+                                    if !this.held {
+                                        this.log_input("move", event.position, window)
+                                    }
                                 },
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, window, _| {
-                                    this.log_input("down", event.position, window)
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    this.log_input("down", event.position, window);
+                                    this.held = true;
+                                    cx.notify();
+                                }),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                                    this.release(event, window, cx)
                                 }),
                             )
                             .on_scroll(cx.listener(|this, event: &ScrollEvent, window, _| {

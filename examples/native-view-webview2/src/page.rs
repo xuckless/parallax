@@ -28,8 +28,8 @@ const PAGE: &str = include_str!("page.html");
 
 /// Where the page is in its life.
 enum State {
-    /// The environment and controller are on their way; the latest size, in device px, waits for them.
-    Starting { size: [i32; 2] },
+    /// The environment and controller are on their way; the latest bounds wait for them.
+    Starting { bounds: RECT },
     Ready {
         composition: ICoreWebView2CompositionController,
         controller: ICoreWebView2Controller,
@@ -46,7 +46,14 @@ impl Page {
         device: IDCompositionDevice,
         visual: IDCompositionVisual,
     ) -> windows::core::Result<Self> {
-        let page = Self(Rc::new(RefCell::new(State::Starting { size: [1, 1] })));
+        let page = Self(Rc::new(RefCell::new(State::Starting {
+            bounds: RECT {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+        })));
         let state = page.0.clone();
         let created = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
             move |result, environment| {
@@ -63,12 +70,12 @@ impl Page {
                             })
                             .inspect_err(|error| log::error!("webview: no page: {error}"))?;
                         let controller: ICoreWebView2Controller = composition.cast()?;
-                        let [width, height] = match &*state.borrow() {
-                            State::Starting { size } => *size,
+                        let bounds = match &*state.borrow() {
+                            State::Starting { bounds } => *bounds,
                             State::Ready { .. } => return Ok(()),
                         };
                         // SAFETY: plain call on a live controller.
-                        unsafe { controller.SetBounds(rect(width, height)) }?;
+                        unsafe { controller.SetBounds(bounds) }?;
                         *state.borrow_mut() = State::Ready {
                             composition,
                             controller,
@@ -94,14 +101,23 @@ impl Page {
         Ok(page)
     }
 
-    /// Sizes the page to its element's laid-out size, in device px.
-    pub fn resize(&self, width: i32, height: i32) {
+    /// Places the page where its element is laid out, `[left, top, right, bottom]` device px in the window. WebView2
+    /// renders at its visual's origin (GPUI places the visual), but places its popups (a `<select>`'s list, the
+    /// context menu, the IME's candidates) and reports positions from these bounds, as Microsoft's WinComp sample
+    /// sets them; at (0, 0) they would show off by the view's position.
+    pub fn place(&self, [left, top, right, bottom]: [i32; 4]) {
+        let placed = RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
         match &mut *self.0.borrow_mut() {
-            State::Starting { size } => *size = [width, height],
-            // SAFETY: plain call on a live controller.
+            State::Starting { bounds } => *bounds = placed,
             State::Ready { controller, .. } => {
-                if let Err(error) = unsafe { controller.SetBounds(rect(width, height)) } {
-                    log::error!("webview: cannot resize: {error}");
+                // SAFETY: plain call on a live controller.
+                if let Err(error) = unsafe { controller.SetBounds(placed) } {
+                    log::error!("webview: cannot place: {error}");
                 }
             }
         }
@@ -169,13 +185,4 @@ fn show(
         webview.NavigateToString(&HSTRING::from(PAGE))?;
     }
     Ok(())
-}
-
-fn rect(width: i32, height: i32) -> RECT {
-    RECT {
-        left: 0,
-        top: 0,
-        right: width,
-        bottom: height,
-    }
 }
