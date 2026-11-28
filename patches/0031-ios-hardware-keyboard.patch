@@ -19,8 +19,10 @@ events. A non-modifier key is a `KeyDown`/`KeyUp` with GPUI's key name from Flut
 events, are one `ModifiersChanged`. GPUI's conventions on top, as gpui_macos: no `key_char` with Control or Command,
 Shift folded into a key that is not a letter (`!`, not `shift-1`). `PlatformWindow::capslock` reports the lock.
 Changed from Flutter: a cancelled press releases its key (Flutter's TODO there); `UIKeyInputEnd` is End (Flutter's
-generated table maps it to Enter's logical key); `is_held` stays false (UIKit sends no repeat presses; a held key's
-repeat in a field is UIKit's text system's). Table test `keyboard::tests::presses`: one row per
+generated table maps it to Enter's logical key). Added: key repeat. UIKit sends no repeat presses and repeats only the
+keys its text system got; Flutter's iOS embedder has no repeat to port. A held key GPUI took repeats on an NSTimer
+(`KEY_REPEAT_DELAY` 500 ms, then every `KEY_REPEAT_INTERVAL` 100 ms) as a `KeyDown` with `is_held`, until its up or
+cancel, another key's down, or the window resigning. Table test `keyboard::tests::presses`: one row per
 `FlutterEmbedderKeyResponderTest.mm` case, then GPUI's own rows; it runs on the host (scripts/patch-test.sh,
 `ios-pure`).
 
@@ -38,10 +40,18 @@ an extension trait can add them. cfg: the crate's own (iOS).
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index 453a173..d570615 100644
+index 453a173..31198d2 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
-@@ -151,8 +151,12 @@ features = [
+@@ -111,6 +111,7 @@ features = [
+     "objc2-core-foundation",
+     "std",
+     "NSThread",
++    "NSTimer",
+     "NSOperation",
+     "NSUserActivity",
+     "block2",
+@@ -151,8 +152,12 @@ features = [
      "UIPanGestureRecognizer",
      "UIScreenEdgePanGestureRecognizer",
      "UIInterface",
@@ -68,10 +78,10 @@ index 350a36d..7de9471 100644
  mod window;
 diff --git a/gpui-pre-ios/src/ios/keyboard.rs b/gpui-pre-ios/src/ios/keyboard.rs
 new file mode 100644
-index 0000000..2d73a6f
+index 0000000..9e15042
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/keyboard.rs
-@@ -0,0 +1,970 @@
+@@ -0,0 +1,1069 @@
 +// Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterEmbedderKeyResponder.mm,
 +// KeyCodeMap.g.mm and KeyCodeMap_Internal.h @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
 +// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
@@ -85,6 +95,7 @@ index 0000000..2d73a6f
 +use gpui::{
 +    Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, PlatformInput,
 +};
++use std::time::Duration;
 +
 +// `UIKey.modifierFlags` bits (KeyCodeMap_Internal.h's `ModifierFlag`). The sided ones are not in Apple's docs;
 +// Flutter found them by experiment.
@@ -285,8 +296,15 @@ index 0000000..2d73a6f
 +    pub primary: Primary,
 +}
 +
++/// A held key's repeats, for a key GPUI took: UIKit repeats only the keys its text system got and sends no repeat
++/// presses (Flutter's iOS embedder has none either). The wait before the first repeat, then between repeats. To
++/// retune: change the values; iPadOS's own pace (Settings > Accessibility > Keyboards > Key Repeat) is not readable
++/// by apps.
++pub const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
++pub const KEY_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
++
 +/// Flutter's `FlutterEmbedderKeyResponder`: the keys down and the modifier state GPUI was last told; added for
-+/// UIKit, the keys UIKit has down.
++/// UIKit, the keys UIKit has down and the key GPUI repeats.
 +#[derive(Debug, Default)]
 +pub struct KeyResponder {
 +    /// Flutter's `pressingRecords`: each key down GPUI was told of (HID usage) and the GPUI key its down carried
@@ -294,6 +312,8 @@ index 0000000..2d73a6f
 +    pressing_records: Vec<(u32, Option<String>)>,
 +    /// The keys whose down went on to UIKit (`super`), so their up and cancel go there too.
 +    uikit_pressing: Vec<u32>,
++    /// The held key GPUI took that repeats (HID usage, its down's keystroke): the last key down.
++    repeating: Option<(u32, Keystroke)>,
 +    /// Flutter's `lastModifierFlagsOfInterest`: the last press's flags, sides included, as `adjust_modifiers` fixed them.
 +    last_modifier_flags_of_interest: u32,
 +    /// The Caps Lock state GPUI was last told: the lock, which a Caps Lock down toggles (Flutter's framework toggles it
@@ -361,6 +381,9 @@ index 0000000..2d73a6f
 +                }
 +                None => false,
 +            };
++            if self.repeating_key() == Some(press.key_code) {
++                self.repeating = None;
++            }
 +            let (modifiers_changed, event) = if is_modifier_key {
 +                // The press is its own modifier change.
 +                (None, changed.map(PlatformInput::ModifiersChanged))
@@ -383,6 +406,8 @@ index 0000000..2d73a6f
 +                primary,
 +            };
 +        }
++        // A new key down ends the last one's repeat, as on macOS.
++        self.repeating = None;
 +        let primary = if composing {
 +            self.to_uikit(press.key_code, None)
 +        } else {
@@ -394,11 +419,37 @@ index 0000000..2d73a6f
 +        }
 +    }
 +
-+    /// GPUI's answer to an `Offer`ed down: one it left unhandled went on to UIKit, so its up goes there too.
-+    pub fn offered(&mut self, key_code: u32, handled: bool) {
-+        if !handled {
-+            self.uikit_pressing.push(key_code);
++    /// GPUI's answer to an `Offer`ed down: one it left unhandled went on to UIKit, so its up goes there too; a key
++    /// GPUI took repeats while held.
++    pub fn offered(&mut self, key_code: u32, event: &PlatformInput, handled: bool) {
++        match (handled, event) {
++            (false, _) => self.uikit_pressing.push(key_code),
++            (true, PlatformInput::KeyDown(down)) => {
++                self.repeating = Some((key_code, down.keystroke.clone()));
++            }
++            (true, _) => {}
 +        }
++    }
++
++    /// The held key GPUI repeats, by HID usage.
++    pub fn repeating_key(&self) -> Option<u32> {
++        self.repeating.as_ref().map(|(key, _)| *key)
++    }
++
++    /// One repeat of the held key: its down again, `is_held`.
++    pub fn repeat(&self) -> Option<PlatformInput> {
++        self.repeating.as_ref().map(|(_, keystroke)| {
++            PlatformInput::KeyDown(KeyDownEvent {
++                keystroke: keystroke.clone(),
++                is_held: true,
++                prefer_character_input: false,
++            })
++        })
++    }
++
++    /// Ends the repeat with no press: the window resigned active, so the key's up may never come.
++    pub fn stop_repeat(&mut self) {
++        self.repeating = None;
 +    }
 +
 +    /// A down UIKit gets, GPUI told only `event`: its up goes to UIKit too.
@@ -612,7 +663,8 @@ index 0000000..2d73a6f
 +
 +    /// One press through the responder, as GPUI and UIKit see it, one string each: `mods <modifiers>` for a
 +    /// `ModifiersChanged`, `down <keystroke> <key_char>`, `up <keystroke>`, then `uikit` if UIKit gets the press
-+    /// (`super`) and `empty` if nobody gets anything. GPUI stands in for an app whose focused field binds the keys that type no text: it handles a
++    /// (`super`), `empty` if nobody gets anything, and `repeat <keystroke>` / `repeat stops` when the held key that
++    /// repeats changes. GPUI stands in for an app whose focused field binds the keys that type no text: it handles a
 +    /// `KeyDown` without `key_char` and leaves every other event unhandled (GPUI's `propagate` still set).
 +    fn step(responder: &mut KeyResponder, press: &Press, composing: bool) -> Vec<String> {
 +        fn mods(event: &ModifiersChangedEvent) -> String {
@@ -652,13 +704,14 @@ index 0000000..2d73a6f
 +                other => format!("unexpected {other:?}"),
 +            }
 +        }
++        let repeating = responder.repeating_key();
 +        let events = responder.handle_press(press, composing);
 +        let mut out: Vec<String> = events.modifiers_changed.iter().map(mods).collect();
 +        let uikit = match events.primary {
 +            Primary::Offer(event) => {
 +                out.push(event_name(&event));
 +                let handled = matches!(&event, PlatformInput::KeyDown(down) if down.keystroke.key_char.is_none());
-+                responder.offered(press.key_code, handled);
++                responder.offered(press.key_code, &event, handled);
 +                !handled
 +            }
 +            Primary::Send { event, uikit } => {
@@ -671,6 +724,17 @@ index 0000000..2d73a6f
 +        }
 +        if out.is_empty() {
 +            out.push("empty".into());
++        }
++        if responder.repeating_key() != repeating {
++            out.push(match responder.repeat() {
++                Some(PlatformInput::KeyDown(down)) => {
++                    format!(
++                        "repeat {}",
++                        down.keystroke.unparse(gpui::OperatingSystem::Ios)
++                    )
++                }
++                _ => "repeat stops".into(),
++            });
 +        }
 +        out
 +    }
@@ -761,8 +825,14 @@ index 0000000..2d73a6f
 +                    // Fn sends HID usage 0x03 (undefined), with no characters.
 +                    ((D, KEY_UNDEFINED, NONE, "", ""), &["uikit"]),
 +                    // F1's characters are "\^P", which are not printable.
-+                    ((D, KEY_F1, NONE, "\\^P", "\\^P"), &["down f1 None"]),
-+                    ((D, KEY_A, NONE, "a", "a"), &["down a Some(\"a\")", "uikit"]),
++                    (
++                        (D, KEY_F1, NONE, "\\^P", "\\^P"),
++                        &["down f1 None", "repeat f1"],
++                    ),
++                    (
++                        (D, KEY_A, NONE, "a", "a"),
++                        &["down a Some(\"a\")", "uikit", "repeat stops"],
++                    ),
 +                    (
 +                        (D, SHIFT_LEFT, MODIFIER_FLAG_SHIFT_ANY, "", ""),
 +                        &["mods shift", "uikit"],
@@ -844,7 +914,7 @@ index 0000000..2d73a6f
 +                            "UIKeyInputEscape",
 +                            "UIKeyInputEscape",
 +                        ),
-+                        &["down cmd-escape None"],
++                        &["down cmd-escape None", "repeat cmd-escape"],
 +                    ),
 +                    (
 +                        (
@@ -854,7 +924,7 @@ index 0000000..2d73a6f
 +                            "UIKeyInputEscape",
 +                            "UIKeyInputEscape",
 +                        ),
-+                        &["up cmd-escape"],
++                        &["up cmd-escape", "repeat stops"],
 +                    ),
 +                    (
 +                        (U, META_LEFT, MODIFIER_FLAG_META_ANY, "", ""),
@@ -873,7 +943,7 @@ index 0000000..2d73a6f
 +                            "UIKeyInputLeftArrow",
 +                            "UIKeyInputLeftArrow",
 +                        ),
-+                        &["down left None"],
++                        &["down left None", "repeat left"],
 +                    ),
 +                    (
 +                        (
@@ -883,13 +953,16 @@ index 0000000..2d73a6f
 +                            "UIKeyInputLeftArrow",
 +                            "UIKeyInputLeftArrow",
 +                        ),
-+                        &["up left"],
++                        &["up left", "repeat stops"],
 +                    ),
 +                    (
 +                        (D, KEY_BACKSPACE, NONE, "\u{8}", "\u{8}"),
-+                        &["down backspace None"],
++                        &["down backspace None", "repeat backspace"],
 +                    ),
-+                    ((U, KEY_BACKSPACE, NONE, "", ""), &["up backspace"]),
++                    (
++                        (U, KEY_BACKSPACE, NONE, "", ""),
++                        &["up backspace", "repeat stops"],
++                    ),
 +                ],
 +            ),
 +            (
@@ -917,11 +990,11 @@ index 0000000..2d73a6f
 +                    ),
 +                    (
 +                        (D, KEY_A, MODIFIER_FLAG_CONTROL_ANY, "\u{1}", "a"),
-+                        &["down ctrl-a None"],
++                        &["down ctrl-a None", "repeat ctrl-a"],
 +                    ),
 +                    (
 +                        (U, KEY_A, MODIFIER_FLAG_CONTROL_ANY, "", ""),
-+                        &["up ctrl-a"],
++                        &["up ctrl-a", "repeat stops"],
 +                    ),
 +                    (
 +                        (U, CONTROL_LEFT, MODIFIER_FLAG_CONTROL_ANY, "", ""),
@@ -933,9 +1006,12 @@ index 0000000..2d73a6f
 +                    ),
 +                    (
 +                        (D, KEY_A, MODIFIER_FLAG_META_ANY, "a", "a"),
-+                        &["down cmd-a None"],
++                        &["down cmd-a None", "repeat cmd-a"],
 +                    ),
-+                    ((U, KEY_A, MODIFIER_FLAG_META_ANY, "", ""), &["up cmd-a"]),
++                    (
++                        (U, KEY_A, MODIFIER_FLAG_META_ANY, "", ""),
++                        &["up cmd-a", "repeat stops"],
++                    ),
 +                    (
 +                        (U, META_LEFT, MODIFIER_FLAG_META_ANY, "", ""),
 +                        &["mods none", "uikit"],
@@ -949,6 +1025,39 @@ index 0000000..2d73a6f
 +                    ((Ch, KEY_A, NONE, "a", "a"), &["uikit"]),
 +                    ((C, KEY_A, NONE, "", ""), &["up a", "uikit"]),
 +                    ((D, KEY_A, NONE, "a", "a"), &["down a Some(\"a\")", "uikit"]),
++                ],
++            ),
++            (
++                // UIKit repeats the keys its text system got; GPUI's keys repeat on the window. A new key down ends
++                // the repeat, a modifier does not; an up or cancel ends it. GPUI's key's up stays GPUI's.
++                "GPUI: a held key GPUI took repeats until its up; UIKit's keys do not",
++                &[
++                    (
++                        (D, KEY_BACKSPACE, NONE, "\u{8}", "\u{8}"),
++                        &["down backspace None", "repeat backspace"],
++                    ),
++                    (
++                        (D, KEY_A, NONE, "a", "a"),
++                        &["down a Some(\"a\")", "uikit", "repeat stops"],
++                    ),
++                    ((U, KEY_A, NONE, "", ""), &["up a", "uikit"]),
++                    ((U, KEY_BACKSPACE, NONE, "", ""), &["up backspace"]),
++                    (
++                        (
++                            D,
++                            KEY_LEFT,
++                            NONE,
++                            "UIKeyInputLeftArrow",
++                            "UIKeyInputLeftArrow",
++                        ),
++                        &["down left None", "repeat left"],
++                    ),
++                    (
++                        (D, SHIFT_LEFT, MODIFIER_FLAG_SHIFT_ANY, "", ""),
++                        &["mods shift", "uikit"],
++                    ),
++                    ((U, SHIFT_LEFT, NONE, "", ""), &["mods none", "uikit"]),
++                    ((C, KEY_LEFT, NONE, "", ""), &["up left", "repeat stops"]),
 +                ],
 +            ),
 +        ];
@@ -1008,9 +1117,9 @@ index 0000000..2d73a6f
 +                            "UIKeyInputLeftArrow",
 +                            "UIKeyInputLeftArrow",
 +                        ),
-+                        &["down left None"],
++                        &["down left None", "repeat left"],
 +                    ),
-+                    ((U, KEY_LEFT, NONE, "", ""), &["up left"]),
++                    ((U, KEY_LEFT, NONE, "", ""), &["up left", "repeat stops"]),
 +                ],
 +            ),
 +        ];
@@ -1043,7 +1152,7 @@ index 0000000..2d73a6f
 +    }
 +}
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 2546fd5..9ed9170 100644
+index 2546fd5..3ab94f6 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
 @@ -10,6 +10,7 @@
@@ -1138,24 +1247,27 @@ index 2546fd5..9ed9170 100644
  }
  
  /// Set the iOS status bar content style (light or dark text/icons).
-@@ -301,6 +357,8 @@ pub(crate) struct IosWindowState {
+@@ -301,6 +357,10 @@ pub(crate) struct IosWindowState {
      mouse_position: Cell<Point<Pixels>>,
      /// Current modifiers
      modifiers: Cell<Modifiers>,
 +    /// The hardware keyboard's keys down and modifier state (keyboard.rs).
 +    key_responder: RefCell<KeyResponder>,
++    /// Fires the held key's repeats while `key_responder` has a key that repeats.
++    key_repeat_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
      renderer: Mutex<MetalRenderer>,
  }
  
-@@ -460,6 +518,7 @@ impl IosWindow {
+@@ -460,6 +520,8 @@ impl IosWindow {
              keyboard_height: Cell::new(0.),
              mouse_position: Cell::new(Point::default()),
              modifiers: Cell::new(Modifiers::default()),
 +            key_responder: RefCell::default(),
++            key_repeat_timer: RefCell::default(),
              renderer: Mutex::new(renderer),
          };
  
-@@ -563,6 +622,57 @@ impl IosWindowState {
+@@ -563,6 +625,95 @@ impl IosWindowState {
          }
      }
  
@@ -1174,6 +1286,7 @@ index 2546fd5..9ed9170 100644
 +        let characters = key.characters().to_string();
 +        let characters_ignoring_modifiers = key.charactersIgnoringModifiers().to_string();
 +        let key_code = key.keyCode().0 as u32;
++        let repeating = self.key_responder.borrow().repeating_key();
 +        let events = self.key_responder.borrow_mut().handle_press(
 +            &Press {
 +                phase: press_phase(press.phase()),
@@ -1193,11 +1306,11 @@ index 2546fd5..9ed9170 100644
 +            Primary::Offer(event) => {
 +                let handled = self
 +                    .input_callback
-+                    .with(|callback| !callback(event).propagate)
++                    .with(|callback| !callback(event.clone()).propagate)
 +                    .unwrap_or(false);
 +                self.key_responder
 +                    .borrow_mut()
-+                    .offered(key_code, handled);
++                    .offered(key_code, &event, handled);
 +                !handled
 +            }
 +            Primary::Send { event, uikit } => {
@@ -1207,13 +1320,62 @@ index 2546fd5..9ed9170 100644
 +                uikit
 +            }
 +        };
++        if self.key_responder.borrow().repeating_key() != repeating {
++            self.restart_key_repeat();
++        }
 +        uikit
++    }
++
++    /// Stops the held key's repeat timer and, if a key repeats now, starts one for it: `KEY_REPEAT_DELAY`, then a
++    /// repeat every `KEY_REPEAT_INTERVAL` until the key's up, another key's down or the window resigning.
++    fn restart_key_repeat(&self) {
++        if let Some(timer) = self.key_repeat_timer.take() {
++            timer.invalidate();
++        }
++        if self.key_responder.borrow().repeating_key().is_none() {
++            return;
++        }
++        let window = self.view.ivars().0.borrow().clone();
++        let block = block2::RcBlock::new(move |_: NonNull<objc2_foundation::NSTimer>| {
++            let Some(window) = window.upgrade() else {
++                return;
++            };
++            let repeat = window.key_responder.borrow().repeat();
++            if let Some(event) = repeat {
++                window.input_callback.with(|callback| callback(event));
++            }
++        });
++        // SAFETY: scheduled on the main thread's run loop, so the block (which holds only a weak window) runs on the
++        // main thread it was made on; the timer is invalidated before it is replaced and when the window resigns.
++        let timer = unsafe {
++            objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(
++                super::keyboard::KEY_REPEAT_INTERVAL.as_secs_f64(),
++                true,
++                &block,
++            )
++        };
++        timer.setFireDate(&objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(
++            super::keyboard::KEY_REPEAT_DELAY.as_secs_f64(),
++        ));
++        self.key_repeat_timer.replace(Some(timer));
 +    }
 +
      /// Delivers one step of a trackpad or mouse-wheel scroll gesture.
      fn handle_scroll(&self, recognizer: &UIPanGestureRecognizer) {
          let Some(event) = scroll_event(recognizer, &self.view) else {
-@@ -811,6 +921,19 @@ impl IosWindowState {
+@@ -748,6 +899,11 @@ impl IosWindowState {
+     pub fn notify_active_status_change(&self, is_active: bool) {
+         log::info!("GPUI iOS: Window active status changed to: {}", is_active);
+ 
++        if !is_active && self.key_responder.borrow().repeating_key().is_some() {
++            // A held key's up may never come once the window resigns (app switcher, backgrounding).
++            self.key_responder.borrow_mut().stop_repeat();
++            self.restart_key_repeat();
++        }
+         self.active_status_callback
+             .with(|callback| callback(is_active));
+     }
+@@ -811,6 +967,19 @@ impl IosWindowState {
      }
  }
  
@@ -1233,7 +1395,7 @@ index 2546fd5..9ed9170 100644
  /// Whether UIKit can resolve corner configurations, which arrived in iOS 26.
  fn reports_corner_radii(view: &UIView) -> bool {
      view.respondsToSelector(sel!(effectiveRadiusForCorner:))
-@@ -904,8 +1027,7 @@ impl PlatformWindow for IosWindow {
+@@ -904,8 +1073,7 @@ impl PlatformWindow for IosWindow {
      }
  
      fn capslock(&self) -> Capslock {

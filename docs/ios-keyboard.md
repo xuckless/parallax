@@ -33,8 +33,13 @@ Three patches to gpui_ios. Two are ported from Flutter's iOS embedder (ledger:
 - **Caps Lock** is the lock: a Caps Lock down toggles it, any other key takes iOS's flag.
   `PlatformWindow::capslock()` reports it.
 - **Changed from Flutter.** A cancelled press releases its key (Flutter's TODO). `UIKeyInputEnd` is End (Flutter's
-  generated table gives Enter's logical key). `is_held` is always false: UIKit sends no repeat presses; a held key
-  repeats in a field through UIKit's text system.
+  generated table gives Enter's logical key).
+- **Key repeat** (not Flutter's: its iOS embedder has none). UIKit sends no repeat presses and repeats only keys its
+  text system got (a held `a` types `aaa` through `insertText:`). A held key GPUI took (Backspace, arrows,
+  shortcuts) repeats on the window: an `NSTimer` sends its `KeyDown` again with `is_held` after `KEY_REPEAT_DELAY`
+  (500 ms), then every `KEY_REPEAT_INTERVAL` (100 ms), until its up or cancel, another key's down, or the window
+  resigning. iPadOS's own Key Repeat setting is not readable by apps; to retune, change the two constants in
+  `keyboard.rs`.
 
 ## Keyboard inset (0032)
 
