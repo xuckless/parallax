@@ -3001,6 +3001,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-view-apple"
+version = "0.1.9"
+dependencies = [
+ "env_logger",
+ "log",
+ "objc2 0.6.5",
+ "parallax",
+]
+
+[[package]]
 name = "native-view-wayland"
 version = "0.1.9"
 dependencies = [
@@ -3011,6 +3021,17 @@ dependencies = [
  "raw-window-handle",
  "wayland-backend",
  "wayland-client",
+]
+
+[[package]]
+name = "native-view-windows"
+version = "0.1.9"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "log",
+ "parallax",
+ "windows 0.62.2",
 ]
 
 [[package]]
