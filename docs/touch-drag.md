@@ -1,7 +1,7 @@
 # Touch drags: claimed at down, or won past the slop
 
 How an element takes a finger drag from GPUI's touch recognizer (`TouchGestureRecognizer` in `gestures.rs`).
-[Patch 0042](../patches/0042-touch-drag-past-slop.patch) adds the second way, ported from Flutter's
+[Patch 0044](../patches/0044-touch-drag-offer.patch) adds the second way, ported from Flutter's
 `tap_and_drag.dart` @ 3.50.1 (ledger: [PORTED.md](../third_party/flutter/PORTED.md)). The recognizer's tests and
 trace format: [gesture-recognizers.md](gesture-recognizers.md).
 
@@ -31,7 +31,8 @@ when it passes the slop (`gpui::slops` from the window's `GestureTuning::touch_s
 | `Horizontal` | `TapAndHorizontalDragGestureRecognizer` | the signed horizontal travel | the hit slop (18 px for a finger) |
 | `Pan` | `TapAndPanGestureRecognizer` | the path length | the pan slop (36 px) |
 
-GPUI's pan stands in for the drag recognizers of the scroll containers under the touch: each scrolling div reports
+GPUI's pan stands in for the drag recognizers of the scroll containers under the touch
+([patch 0045](../patches/0045-pan-follows-scroll-axes.patch)): each scrolling div reports
 its axes while the touch's `Started` is dispatched (`Window::scroll_container_under_touch`), and the pan accepts by them:
 
 | Containers under the touch | Flutter recognizer | The pan takes the touch once | Locked to |

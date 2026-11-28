@@ -25,7 +25,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [overscroll.md](overscroll.md) | Patch 0017: bounce, stretch and glow in `div` scroll containers, chosen by `GestureTuning::overscroll` from the behaviour table, the per-container `.overscroll(..)`, the ported `ScrollPosition` glue, limits and tests |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [gesture-recognizers.md](gesture-recognizers.md) | Patch 0013: Flutter's recognizer tests as table rows through the test platform, the tuning, slop, per-target tap-count and fling-distance fixes, the touch trace format for trace replay |
-| [touch-drag.md](touch-drag.md) | Patch 0042: claiming a touch drag at touch down or competing for it past the slop (Flutter's tap-and-drag recognizers), the slop per `TouchDragKind`, who uses it, the tests |
+| [touch-drag.md](touch-drag.md) | Patches 0044–0045: claiming a touch drag at touch down or competing for it past the slop (Flutter's tap-and-drag recognizers), the slop per `TouchDragKind`, who uses it, the tests |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
 | [web-text-input.md](web-text-input.md) | Patch 0034: the web IME mirror, Flutter's per-field attribute rules, the password element, keyboard layout and IME placement on the caret, the ported test rows, checking in Chromium and Firefox |
@@ -34,7 +34,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
 | [text-selection.md](text-selection.md) | Flutter's text selection for Android and touch desktops (`parallax-ext`): the engine, how an app feeds it and draws its overlay, the per-platform rules |
 | [text-selection-tests.md](text-selection-tests.md) | Text selection's tests, live checks under Weston, what is not ported, other implementations |
-| [os-settings.md](os-settings.md) | Patches 0039–0041 and Android: the OS's reduce-motion and reduce-transparency settings as `App::reduce_motion` / `reduce_transparency`, what each target reads and how it follows changes, the app override, checking it |
+| [os-settings.md](os-settings.md) | Patches 0039–0043 and Android: the OS's reduce-motion and reduce-transparency settings as `App::reduce_motion` / `reduce_transparency`, what each target reads and how it follows changes, the app override, checking it |
 | [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; extending it |
 | [behaviour-tuning.md](behaviour-tuning.md) | How the behaviour row reaches GPUI's gesture tuning automatically, density changes on Android, overriding it, what GPUI reads |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |

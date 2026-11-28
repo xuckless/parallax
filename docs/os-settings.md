@@ -3,8 +3,10 @@
 GPUI apps follow the user's "reduce motion" and "reduce transparency" settings on every target. Upstream already has
 `App::reduce_motion` (its animation element, animated SVGs and animated images render a static frame when it is set),
 but no platform set it. [Patch 0039](../patches/0039-os-accessibility-display-settings.patch) adds the platform hook
-and `App::reduce_transparency`; [0040](../patches/0040-linux-reduce-motion.patch),
-[0041](../patches/0041-windows-web-accessibility-display.patch) and [parallax-android](../crates/android/src/accessibility.rs)
+and `App::reduce_transparency`; [0040](../patches/0040-apple-accessibility-display.patch) (macOS, iOS),
+[0041](../patches/0041-linux-reduce-motion.patch) (Linux), [0042](../patches/0042-windows-accessibility-display.patch)
+(Windows), [0043](../patches/0043-web-accessibility-display.patch) (web) and
+[parallax-android](../crates/android/src/accessibility.rs)
 fill it per backend; the React Native code they port is ledgered in
 [third_party/react-native/PORTED.md](../third_party/react-native/PORTED.md). Plan: [ROADMAP.md](../ROADMAP.md) Phase 4 follow-ups; Phase 7's motion and Phase 10's materials read them.
 

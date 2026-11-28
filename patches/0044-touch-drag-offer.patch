@@ -1,0 +1,616 @@
+Let an element compete for a touch drag that it wins once the touch passes the drag's slop, as Flutter's tap-and-drag
+recognizers do, instead of only claiming it at touch down.
+
+What: `Window::compete_for_touch_drag(kind)`, called from a listener of the touch-down offer (the `Started`
+`TouchDragEvent`), enters the drag in the touch's arena without claiming it. The touch stays a tap, long press or pan
+to be; on each move the competing drag runs first (Flutter routes the deeper recognizer first, so on a move both accept
+the drag wins) and wins when its travel passes its kind's slop: `TouchDragKind::Horizontal`
+(`TapAndHorizontalDragGestureRecognizer`: the signed horizontal travel past the hit slop) or `TouchDragKind::Pan`
+(`TapAndPanGestureRecognizer`: the travel along the path past the pan slop), from `gpui::slops` and the window's
+`GestureTuning::touch_slop`. It then streams `TouchDragEvent`s (`Started` at the touch's position, moves, end) like a
+claimed drag, and the touch is the drag's: no tap, long press, pan or pinch. A drag that loses (a tap, a claimed long
+press, the pan, a scroll hold) gets no event. `TouchDragEvent` gains `start: TouchDragStart` (`Down`: offered at touch
+down, claimed with `prevent_default`; `PastSlop(kind)`: won by competing), so a listener tells the offer from the win.
+The recognizer's pending touch holds the offer as one enum (`TouchDragOffer`: not offered, offered, competing with
+Flutter's `_globalDistanceMoved`), replacing its `touch_drag_offered` flag. The acceptance rule
+(`TouchDragKind::global_distance_moved`, `has_sufficient_global_distance_to_accept`) is ported near-verbatim from
+Flutter's tap_and_drag.dart @ 3.50.1 (`BaseTapAndDragGestureRecognizer._checkDrag` and the two subclasses'
+`_getDeltaForDetails`, `_getPrimaryValueFromOffset`, `_hasSufficientGlobalDistanceToAccept`). Dropped: the
+`_wonArenaForPrimaryPointer && _globalDistanceMovedAllAxes > panSlop` clause (GPUI's pan always competes, so the drag
+never wins an arena by default), `eagerVictoryOnDrag: false`, consecutive tap counts (a drag after a double tap),
+`onTapDown` / `onCancel` callbacks, drag update throttling.
+
+
+Why: a text field must keep its taps (caret) and long presses (word selection) while a horizontal finger drag moves
+its caret, as Flutter's `TextSelectionGestureDetector` does on Android. GPUI's touch drag could only be claimed at
+touch down, which takes the touch away from the tap and long-press recognizers, so Parallax's selection engine
+(parallax-ext's text_selection, which already has Flutter's finger-drag caret move) could not get finger drags.
+
+Test: `gestures::recognizer_tests::flutter_recognizer_tests_pass` gains 5 rows from tap_and_drag_test.dart (GPUI's pan
+stands in for the test's `VerticalDragGestureRecognizer` or `PanGestureRecognizer`: horizontal drag beats it on a
+horizontal drag and loses on a vertical one; a pan loses on a vertical drag; self-victory past the pan slop; a tap
+within the slop stays a tap) and 4 GPUI rows for a text field's pair (claimed long press plus competing horizontal
+drag): the horizontal travel adds up across moves, a diagonal move is the pan's before the horizontal slop, a tap
+stays a tap, a long press held past its deadline beats the drag. Run: `scripts/patch-test.sh recognizer`.
+
+Upstream: not filed (patch rule 14).
+
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -327,18 +327,77 @@
+     };
+ }
+ 
+-/// A direct touch drag claimed by an element before touch input becomes a tap,
+-/// long press, or scrolling gesture.
++/// A direct touch drag an element took from the touch recognizer: claimed at
++/// touch down, before the touch can become a tap, long press or pan, or won
++/// once it passed the drag's slop ([`Window::compete_for_touch_drag`](crate::Window::compete_for_touch_drag)).
+ #[derive(Clone, Debug)]
+ pub struct TouchDragEvent {
+     /// The phase of the touch drag.
+     pub phase: TouchPhase,
++    /// How the drag started: every event of one drag carries the same value.
++    pub start: TouchDragStart,
+     /// The position where the touch started.
+     pub start_position: Point<Pixels>,
+     /// The touch's current position.
+     pub position: Point<Pixels>,
+ }
+ 
++/// How a touch drag started, in Flutter's arena terms.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum TouchDragStart {
++    /// Offered at touch down (the offer is the `Started` event): claiming it
++    /// with `prevent_default` wins the touch at once, as a drag recognizer
++    /// alone in its arena does.
++    Down,
++    /// Won once the touch moved past this kind's slop, ahead of the tap, the
++    /// long press and the pan it competed with (the `Started` event comes
++    /// then, at the touch's position).
++    PastSlop(TouchDragKind),
++}
++
++/// The drag an element competes for, and so what the touch must travel for it
++/// to win: Flutter's `TapAndHorizontalDragGestureRecognizer` (a text field on
++/// mobile) or `TapAndPanGestureRecognizer` (on desktop). A new kind gets one
++/// arm in each `match` of [`TouchDragKind`]'s methods.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum TouchDragKind {
++    /// Wins when the horizontal travel passes the hit slop.
++    Horizontal,
++    /// Wins when the travel on any axis passes the pan slop.
++    Pan,
++}
++
++// Ported from flutter/flutter packages/flutter/lib/src/gestures/tap_and_drag.dart @ 3.50.1
++// (ae9b586f34a8443573f82ef57c3bf914a908cbf7) (BaseTapAndDragGestureRecognizer._checkDrag;
++// TapAndHorizontalDragGestureRecognizer's and TapAndPanGestureRecognizer's _getDeltaForDetails,
++// _getPrimaryValueFromOffset and _hasSufficientGlobalDistanceToAccept). Copyright 2014 The Flutter Authors.
++// BSD-3-Clause, see third_party/flutter/LICENSE.
++impl TouchDragKind {
++    /// What one move of `delta` adds to `_globalDistanceMoved`:
++    /// `_getDeltaForDetails(delta).distance * (_getPrimaryValueFromOffset(delta) ?? 1).sign`.
++    fn global_distance_moved(self, delta: Point<Pixels>) -> f32 {
++        match self {
++            // Offset(delta.dx, 0.0), signed by dx: the horizontal travel.
++            TouchDragKind::Horizontal => f32::from(delta.x),
++            // The whole delta, unsigned.
++            TouchDragKind::Pan => delta.magnitude() as f32,
++        }
++    }
++
++    /// `_hasSufficientGlobalDistanceToAccept`.
++    fn has_sufficient_global_distance_to_accept(
++        self,
++        global_distance_moved: f32,
++        slops: Slops,
++    ) -> bool {
++        let slop = match self {
++            TouchDragKind::Horizontal => slops.hit,
++            TouchDragKind::Pan => slops.pan,
++        };
++        global_distance_moved.abs() > f32::from(slop)
++    }
++}
++
+ impl Sealed for TouchDragEvent {}
+ impl InputEvent for TouchDragEvent {
+     fn to_platform_input(self) -> PlatformInput {
+@@ -514,7 +573,7 @@
+         touch: ActiveTouch,
+         deadline: Instant,
+         long_press_offered: bool,
+-        touch_drag_offered: bool,
++        touch_drag: TouchDragOffer,
+     },
+     /// The touch exceeded `touch_slop`: it is a pan until it ends, and its
+     /// movement flows out as scroll events.
+@@ -527,7 +586,24 @@
+     /// movement, not inherited from the fling it stopped.
+     Caught(ActiveTouch),
+     LongPressing(ActiveTouch),
+-    TouchDragging(ActiveTouch),
++    TouchDragging {
++        touch: ActiveTouch,
++        start: TouchDragStart,
++    },
++}
++
++/// A pending touch's drag offer: the touch-down dispatch offers it once.
++#[derive(Clone, Copy)]
++enum TouchDragOffer {
++    NotOffered,
++    /// Offered; nothing competes for it (a claim leaves `Pending`).
++    Offered,
++    /// The deepest element that competes for it, with Flutter's
++    /// `_globalDistanceMoved` so far: the touch's travel as its kind counts it.
++    Competing {
++        kind: TouchDragKind,
++        global_distance_moved: f32,
++    },
+ }
+ 
+ /// What a tap lands on: the bounds of the innermost hitbox under the touch
+@@ -598,9 +674,8 @@
+                 TouchClaim::Possible(touch.id)
+             }
+             TouchGestureState::Panning { touch, .. } => TouchClaim::Pan(touch.id),
+-            TouchGestureState::LongPressing(touch) | TouchGestureState::TouchDragging(touch) => {
+-                TouchClaim::Press(touch.id)
+-            }
++            TouchGestureState::LongPressing(touch)
++            | TouchGestureState::TouchDragging { touch, .. } => TouchClaim::Press(touch.id),
+         }
+     }
+ 
+@@ -701,7 +776,7 @@
+                             touch,
+                             deadline: now + self.tuning.long_press_duration,
+                             long_press_offered: false,
+-                            touch_drag_offered: false,
++                            touch_drag: TouchDragOffer::NotOffered,
+                         };
+                     }
+                 }
+@@ -711,19 +786,47 @@
+                     mut touch,
+                     deadline,
+                     long_press_offered,
+-                    touch_drag_offered,
++                    mut touch_drag,
+                 } if touch.id == event.id => {
++                    let moved = event.position - touch.last_position;
+                     touch
+                         .velocity_tracker
+                         .add_position(sampled_at, event.position);
+                     touch.last_position = event.position;
+                     let accumulated = event.position - touch.start_position;
+-                    if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
++                    // A competing drag sees the move before the pan does, as
++                    // the deeper recognizer's route runs first in Flutter: on
++                    // a move both accept, the drag wins.
++                    let pan_axis = (accumulated.magnitude() > f64::from(self.tuning.touch_slop))
++                        .then(|| dominant_axis(accumulated));
++                    let drag_won = match &mut touch_drag {
++                        TouchDragOffer::Competing {
++                            kind,
++                            global_distance_moved,
++                        } => {
++                            *global_distance_moved += kind.global_distance_moved(moved);
++                            kind.has_sufficient_global_distance_to_accept(
++                                *global_distance_moved,
++                                slops(touch.device, Some(self.tuning.touch_slop)),
++                            )
++                            .then_some(*kind)
++                        }
++                        TouchDragOffer::NotOffered | TouchDragOffer::Offered => None,
++                    };
++                    if let Some(kind) = drag_won {
++                        let start = TouchDragStart::PastSlop(kind);
++                        recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
++                            phase: TouchPhase::Started,
++                            start,
++                            start_position: touch.start_position,
++                            position: event.position,
++                        }));
++                        self.state = TouchGestureState::TouchDragging { touch, start };
++                    } else if let Some(axis) = pan_axis {
+                         // Carry the full movement so far into the first scroll
+                         // step: the content catches up to the finger instead
+                         // of losing the slop distance.
+                         let mut target = event.predicted_position.unwrap_or(event.position);
+-                        let axis = dominant_axis(accumulated);
+                         let mut delta = target - touch.start_position;
+                         lock_delta_to_axis(&mut delta, axis);
+                         touch.last_movement = accumulated;
+@@ -745,7 +848,7 @@
+                             touch,
+                             deadline,
+                             long_press_offered,
+-                            touch_drag_offered,
++                            touch_drag,
+                         };
+                     }
+                 }
+@@ -803,14 +906,15 @@
+                     }));
+                     self.state = TouchGestureState::LongPressing(touch);
+                 }
+-                TouchGestureState::TouchDragging(mut touch) if touch.id == event.id => {
++                TouchGestureState::TouchDragging { mut touch, start } if touch.id == event.id => {
+                     touch.last_position = event.position;
+                     recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                         phase: TouchPhase::Moved,
++                        start,
+                         start_position: touch.start_position,
+                         position: event.position,
+                     }));
+-                    self.state = TouchGestureState::TouchDragging(touch);
++                    self.state = TouchGestureState::TouchDragging { touch, start };
+                 }
+                 other => self.state = other,
+             },
+@@ -936,9 +1040,10 @@
+                         position: event.position,
+                     }));
+                 }
+-                TouchGestureState::TouchDragging(touch) if touch.id == event.id => {
++                TouchGestureState::TouchDragging { touch, start } if touch.id == event.id => {
+                     recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                         phase: TouchPhase::Ended,
++                        start,
+                         start_position: touch.start_position,
+                         position: event.position,
+                     }));
+@@ -963,9 +1068,10 @@
+                         position: event.position,
+                     }));
+                 }
+-                TouchGestureState::TouchDragging(touch) if touch.id == event.id => {
++                TouchGestureState::TouchDragging { touch, start } if touch.id == event.id => {
+                     recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                         phase: TouchPhase::Cancelled,
++                        start,
+                         start_position: touch.start_position,
+                         position: event.position,
+                     }));
+@@ -1053,23 +1159,39 @@
+     pub(crate) fn offer_touch_drag(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
+         let TouchGestureState::Pending {
+             touch,
+-            touch_drag_offered,
++            touch_drag: touch_drag @ TouchDragOffer::NotOffered,
+             ..
+         } = &mut self.state
+         else {
+             return None;
+         };
+-        if touch.id != id || *touch_drag_offered {
++        if touch.id != id {
+             return None;
+         }
+-        *touch_drag_offered = true;
++        *touch_drag = TouchDragOffer::Offered;
+         Some(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+             phase: TouchPhase::Started,
++            start: TouchDragStart::Down,
+             start_position: touch.start_position,
+             position: touch.last_position,
+         }))
+     }
+ 
++    /// While the offer is dispatched: the first (deepest) element to compete
++    /// for it gets it, unless one claims it.
++    pub(crate) fn compete_for_touch_drag(&mut self, kind: TouchDragKind) {
++        if let TouchGestureState::Pending { touch_drag, .. } = &mut self.state
++            && let TouchDragOffer::Offered = touch_drag
++        {
++            *touch_drag = TouchDragOffer::Competing {
++                kind,
++                global_distance_moved: 0.,
++            };
++        }
++    }
++
++    /// After the offer's dispatch: a claim wins the touch now; otherwise it
++    /// stays pending, with any drag that competes for it.
+     pub(crate) fn resolve_touch_drag(&mut self, claimed: bool) {
+         if !claimed {
+             return;
+@@ -1078,9 +1200,12 @@
+         self.state = match state {
+             TouchGestureState::Pending {
+                 touch,
+-                touch_drag_offered: true,
++                touch_drag: TouchDragOffer::Offered | TouchDragOffer::Competing { .. },
+                 ..
+-            } => TouchGestureState::TouchDragging(touch),
++            } => TouchGestureState::TouchDragging {
++                touch,
++                start: TouchDragStart::Down,
++            },
+             other => other,
+         };
+     }
+diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
+--- a/gpui-pre/src/gestures/recognizer_tests.rs
++++ b/gpui-pre/src/gestures/recognizer_tests.rs
+@@ -1,5 +1,5 @@
+ // Ported from flutter/flutter packages/flutter/test/gestures/tap_test.dart, double_tap_test.dart,
+-// long_press_test.dart and drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// long_press_test.dart, drag_test.dart and tap_and_drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
+ // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+ 
+ //! Flutter's recognizer tests as the oracle for the touch recognizer, driven
+@@ -15,8 +15,8 @@
+ use crate::{
+     App, Bounds, Context, DispatchPhase, GestureTuning, HitboxBehavior, InputEvent as _,
+     IntoElement, LongPressEvent, MouseDownEvent, Pixels, PointerDevice, Render, ScrollDelta,
+-    ScrollEvent, TestAppContext, TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, canvas,
+-    point, px, size,
++    ScrollEvent, TestAppContext, TouchDragEvent, TouchDragKind, TouchDragStart, TouchEvent,
++    TouchId, TouchPhase, Window, canvas, point, px, size,
+ };
+ 
+ use TouchPhase::{Cancelled, Ended, Moved, Started};
+@@ -59,12 +59,16 @@
+ 
+ /// What the element claims, standing in for the recognizer the Flutter test
+ /// builds. Taps and pans are always recognized; a long press or touch drag
+-/// only reaches an element that claims it.
++/// only reaches an element that claims it, or that competes for the drag
++/// (`Window::compete_for_touch_drag`, Flutter's tap-and-drag recognizers).
+ #[derive(Clone, Copy)]
+ enum Claim {
+     Nothing,
+     LongPress,
+     TouchDrag,
++    Compete(TouchDragKind),
++    /// A text field's pair: it claims long presses and competes for drags.
++    LongPressAndCompete(TouchDragKind),
+ }
+ 
+ struct Row<'a> {
+@@ -121,28 +125,40 @@
+                         );
+                     }
+                 });
+-                match claim {
+-                    Claim::Nothing => {}
+-                    Claim::LongPress => {
+-                        window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
+-                            if phase != DispatchPhase::Bubble {
+-                                return;
+-                            }
+-                            let at = event.position;
+-                            record(cx, LongPress(event.phase, at.x.into(), at.y.into()));
+-                            window.prevent_default();
+-                        })
+-                    }
+-                    Claim::TouchDrag => {
+-                        window.on_mouse_event(move |event: &TouchDragEvent, phase, window, cx| {
+-                            if phase != DispatchPhase::Bubble {
+-                                return;
++                // The drag: `Some(None)` claims it at touch down, `Some(Some(kind))` competes for it.
++                let (long_press, drag) = match claim {
++                    Claim::Nothing => (false, None),
++                    Claim::LongPress => (true, None),
++                    Claim::TouchDrag => (false, Some(None)),
++                    Claim::Compete(kind) => (false, Some(Some(kind))),
++                    Claim::LongPressAndCompete(kind) => (true, Some(Some(kind))),
++                };
++                if long_press {
++                    let record = record.clone();
++                    window.on_mouse_event(move |event: &LongPressEvent, phase, window, cx| {
++                        if phase != DispatchPhase::Bubble {
++                            return;
++                        }
++                        let at = event.position;
++                        record(cx, LongPress(event.phase, at.x.into(), at.y.into()));
++                        window.prevent_default();
++                    })
++                }
++                if let Some(compete) = drag {
++                    window.on_mouse_event(move |event: &TouchDragEvent, phase, window, cx| {
++                        if phase != DispatchPhase::Bubble {
++                            return;
++                        }
++                        match (compete, event.start) {
++                            (Some(kind), TouchDragStart::Down) => {
++                                return window.compete_for_touch_drag(kind);
+                             }
+-                            let at = event.position;
+-                            record(cx, TouchDrag(event.phase, at.x.into(), at.y.into()));
+-                            window.prevent_default();
+-                        })
+-                    }
++                            (None, _) => window.prevent_default(),
++                            (Some(_), TouchDragStart::PastSlop(_)) => {}
++                        }
++                        let at = event.position;
++                        record(cx, TouchDrag(event.phase, at.x.into(), at.y.into()));
++                    })
+                 }
+             },
+         )
+@@ -831,6 +847,153 @@
+             until_ms: 0,
+             expected: &[(0, Tap(1))],
+         },
++        // tap_and_drag_test.dart: the element competes for the drag
++        // (`Window::compete_for_touch_drag`), as Flutter's tap-and-drag
++        // recognizers do; GPUI's pan, accepting in any direction, stands in for
++        // the VerticalDragGestureRecognizer or PanGestureRecognizer the test
++        // adds. The drag starts where it wins.
++        Row {
++            name: "TapAndHorizontalDragGestureRecognizer beats VerticalDragGestureRecognizer on a horizontal drag",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(0, 5, Moved, 45., 10.),
++                touch(0, 5, Ended, 45., 10.),
++            ],
++            until_ms: 0,
++            expected: &[
++                (0, TouchDrag(Started, 45., 10.)),
++                (0, TouchDrag(Ended, 45., 10.)),
++            ],
++        },
++        Row {
++            name: "TapAndHorizontalDragGestureRecognizer loses to VerticalDragGestureRecognizer on a vertical drag",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(0, 5, Moved, 10., 45.),
++                touch(0, 5, Moved, 10., 100.),
++                touch(0, 5, Ended, 10., 100.),
++            ],
++            until_ms: 0,
++            expected: &[
++                (0, Scroll(Started, 0., 35.)),
++                (0, Scroll(Moved, 0., 55.)),
++                (0, Scroll(Ended, 0., 0.)),
++            ],
++        },
++        Row {
++            name: "TapAndPanGestureRecognizer loses to VerticalDragGestureRecognizer on a vertical drag",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Pan),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(0, 5, Moved, 10., 45.),
++                touch(0, 5, Moved, 10., 100.),
++                touch(0, 5, Ended, 10., 100.),
++            ],
++            until_ms: 0,
++            expected: &[
++                (0, Scroll(Started, 0., 35.)),
++                (0, Scroll(Moved, 0., 55.)),
++                (0, Scroll(Ended, 0., 0.)),
++            ],
++        },
++        Row {
++            name: "Recognizer declares self-victory in a non-empty arena when pointer travels minimum distance to be considered a drag",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Pan),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(0, 5, Moved, 40., 45.),
++                touch(0, 5, Ended, 40., 45.),
++            ],
++            until_ms: 0,
++            expected: &[
++                (0, TouchDrag(Started, 40., 45.)),
++                (0, TouchDrag(Ended, 40., 45.)),
++            ],
++        },
++        Row {
++            name: "Recognizer detects tap gesture when pointer does not move past tap tolerance",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Pan),
++            targets: &[],
++            trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 11., 9.)],
++            until_ms: 0,
++            expected: &[(0, Tap(1))],
++        },
++        // Not Flutter tests: a text field's pair (a claimed long press and a
++        // competing drag) against GPUI's tap and pan.
++        Row {
++            // `_globalDistanceMoved` adds each move's dx: 10, then 19 > 18.
++            name: "A horizontal drag wins once its travel along x passes the hit slop",
++            tuning: flutter,
++            claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 20., 10.),
++                touch(20, 5, Moved, 29., 10.),
++                touch(30, 5, Moved, 60., 12.),
++                touch(40, 5, Ended, 60., 12.),
++            ],
++            until_ms: 40,
++            expected: &[
++                (20, TouchDrag(Started, 29., 10.)),
++                (30, TouchDrag(Moved, 60., 12.)),
++                (40, TouchDrag(Ended, 60., 12.)),
++            ],
++        },
++        Row {
++            // 19 px away but only 15 px along x: the pan takes it first.
++            name: "The pan takes a diagonal move before the horizontal drag's slop",
++            tuning: flutter,
++            claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 25., 22.),
++                touch(20, 5, Ended, 25., 22.),
++            ],
++            until_ms: 20,
++            expected: &[
++                (10, Scroll(Started, 15., 0.)),
++                (20, Scroll(Ended, 0., 0.)),
++            ],
++        },
++        Row {
++            name: "A competing drag leaves the tap",
++            tuning: flutter,
++            claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[touch(0, 1, Started, 10., 10.), touch(50, 1, Ended, 11., 9.)],
++            until_ms: 50,
++            expected: &[(50, Tap(1))],
++        },
++        Row {
++            name: "A long press held past its deadline beats the competing drag",
++            tuning: flutter,
++            claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(600, 5, Moved, 45., 10.),
++                touch(600, 5, Ended, 45., 10.),
++            ],
++            until_ms: 600,
++            expected: &[
++                (500, LongPress(Started, 10., 10.)),
++                (600, LongPress(Moved, 45., 10.)),
++                (600, LongPress(Ended, 45., 10.)),
++            ],
++        },
+         // Not a Flutter test: Flutter counts double taps per widget, GPUI's
+         // one recognizer per window counts them per target (the innermost
+         // hitbox). Two 50 px buttons side by side, taps 60 px apart.
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -3959,6 +3959,21 @@
+         self.long_press_capture == Some(entity.entity_id())
+     }
+ 
++    /// Competes for the touch drag being offered, instead of claiming it.
++    /// Call it from a listener of the offer: the `Started`
++    /// [`TouchDragEvent`] with [`TouchDragStart::Down`](crate::TouchDragStart).
++    ///
++    /// The touch stays a tap, a long press or a pan to be. Once it travels
++    /// past `kind`'s slop, before the pan takes it, the drag wins: the
++    /// listeners get a `Started` event with
++    /// [`TouchDragStart::PastSlop`](crate::TouchDragStart) at the touch's
++    /// position, then its moves and its end, as for a claimed drag. A drag
++    /// that loses gets no event. The deepest element to compete gets it; a
++    /// claim (`prevent_default`) beats any competitor.
++    pub fn compete_for_touch_drag(&mut self, kind: crate::TouchDragKind) {
++        self.touch_gestures.compete_for_touch_drag(kind);
++    }
++
+     /// The tuning this window's touch recognition runs with: the app's when it
+     /// opened ([`App::gesture_tuning`]), or the last
+     /// [`Window::set_gesture_tuning`].
