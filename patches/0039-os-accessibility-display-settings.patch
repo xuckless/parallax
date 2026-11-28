@@ -2,9 +2,13 @@ OS reduce-motion and reduce-transparency settings: `App::reduce_transparency`, t
 
 What:
 - Core: `AccessibilityDisplaySettings { reduce_motion, reduce_transparency }`; `Platform::accessibility_display_settings`
-  (default: neither) and `Platform::on_accessibility_display_settings_change` (default: no-op). `App::new` takes the
-  settings at startup and follows each change through `set_reduce_motion` / the new `set_reduce_transparency`, inside
-  an app update so the windows refresh. An OS change wins over an app's own `set_reduce_*` made since.
+  (default: neither; `None` while a platform that reads them asynchronously has not) and
+  `Platform::on_accessibility_display_settings_change` (default: no-op). `App::new` takes the settings at startup and
+  follows each report inside an app update, so the windows refresh. `App::follow_os_display` applies a report field
+  by field (`os_report_applies`, one pure rule with a table test): a setting whose OS value moved wins over an app's
+  own `set_reduce_*` made since; one that did not move keeps it (macOS posts one notification for every display
+  option, iOS and the web report both values on either change); the late startup report of a `None` platform fills
+  only what the app has not set (`SetBy::{Os, App}`, recorded by `set_reduce_*`).
   `App::reduce_transparency` / `set_reduce_transparency` mirror upstream's `reduce_motion` (no reader in GPUI yet;
   Parallax's materials will read it). The test platform keeps the callback for a table test of the rules.
 - gpui_apple: `process_info::observe_notification`, the process info observers' deferred, drop-removed observer for
@@ -102,7 +106,7 @@ index db85889..c5a9656 100644
              Box::new({
                  let calls = calls.clone();
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index 33ceef8..785d2e1 100644
+index f8973f3..6e552e9 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
 @@ -139,6 +139,7 @@ features = [
@@ -114,7 +118,7 @@ index 33ceef8..785d2e1 100644
      "UICommand",
      "UICornerConfiguration",
 diff --git a/gpui-pre-ios/src/ios/platform.rs b/gpui-pre-ios/src/ios/platform.rs
-index b93aa1c..fdc6c78 100644
+index 46cf80e..8a5cf38 100644
 --- a/gpui-pre-ios/src/ios/platform.rs
 +++ b/gpui-pre-ios/src/ios/platform.rs
 @@ -17,10 +17,11 @@ use futures::{
@@ -169,8 +173,8 @@ index b93aa1c..fdc6c78 100644
              .spawn(async move { Ok(keychain::delete_credentials(&url)?) })
      }
  
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        accessibility_display_settings()
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(accessibility_display_settings())
 +    }
 +
 +    fn on_accessibility_display_settings_change(
@@ -205,7 +209,7 @@ index b93aa1c..fdc6c78 100644
      fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
          // The user switching keyboard (another layout or language, from the globe key or a hardware keyboard's
          // shortcut) posts UIKit's input-mode notification. It can arrive inside a UIKit text callback, so GPUI runs
-@@ -513,6 +552,17 @@ impl Platform for IosPlatform {
+@@ -514,6 +553,17 @@ impl Platform for IosPlatform {
      }
  }
  
@@ -236,7 +240,7 @@ index 7836a43..12b8e83 100644
      "NSAppearance",
      "NSApplication",
 diff --git a/gpui-pre-macos/src/platform.rs b/gpui-pre-macos/src/platform.rs
-index 218b296..5c7457e 100644
+index 218b296..b8f950f 100644
 --- a/gpui-pre-macos/src/platform.rs
 +++ b/gpui-pre-macos/src/platform.rs
 @@ -11,12 +11,12 @@ use ctor::ctor;
@@ -288,8 +292,8 @@ index 218b296..5c7457e 100644
          self.0.lock().power_mode_observer = Some(observer);
      }
  
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        accessibility_display_settings()
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(accessibility_display_settings())
 +    }
 +
 +    fn on_accessibility_display_settings_change(
@@ -328,48 +332,117 @@ index 218b296..5c7457e 100644
  /// and `onSystemWake:` (see `build_classes`).
  fn register_system_power_observers(observer: &AnyObject) {
 diff --git a/gpui-pre/src/app.rs b/gpui-pre/src/app.rs
-index e143547..6103729 100644
+index e143547..36d4c55 100644
 --- a/gpui-pre/src/app.rs
 +++ b/gpui-pre/src/app.rs
-@@ -975,6 +975,7 @@ pub struct App {
+@@ -45,16 +45,16 @@ use crate::InspectorElementRegistry;
+ use crate::asset_cache::CachedLoad;
+ use crate::subscription::SingleSubscriberSet;
+ use crate::{
+-    Action, ActionBuildError, ActionRegistry, ActivationPolicy, ActivityGuard, Any, AnyView,
+-    AnyWindowHandle, AppContext, AppLifecyclePhase, Arena, ArenaBox, Asset, AssetSource,
+-    BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle, DispatchPhase,
+-    DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
+-    FocusMap, ForegroundExecutor, GestureTuning, Global, KeyBinding, KeyContext, Keymap, Keystroke,
+-    LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform,
+-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority,
+-    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
+-    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
+-    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
++    AccessibilityDisplaySettings, Action, ActionBuildError, ActionRegistry, ActivationPolicy,
++    ActivityGuard, Any, AnyView, AnyWindowHandle, AppContext, AppLifecyclePhase, Arena, ArenaBox,
++    Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle,
++    DispatchPhase, DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload,
++    FocusHandle, FocusMap, ForegroundExecutor, GestureTuning, Global, KeyBinding, KeyContext,
++    Keymap, Keystroke, LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions,
++    Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point,
++    PowerMode, Priority, PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render,
++    RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
++    SubscriberSet, Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
+     TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowBounds,
+     WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator, WindowingRequest,
+     colors::{Colors, GlobalColors},
+@@ -975,6 +975,9 @@ pub struct App {
      pub(crate) mode: GpuiMode,
      pub(crate) cursor_hide_mode: CursorHideMode,
      pub(crate) reduce_motion: bool,
 +    reduce_transparency: bool,
++    /// What the app follows of the OS's display settings ([`App::follow_os_display`]).
++    os_display: OsDisplay,
      /// The app's override of the platform's gesture tuning, set by [`App::set_gesture_tuning`].
      gesture_tuning: Option<GestureTuning>,
      /// Origin of the shared clock that phase-locks synced repeating animations.
-@@ -1021,6 +1022,7 @@ impl App {
+@@ -1000,6 +1003,34 @@ pub(crate) struct WindowUpdateEntry {
+     display_id: Option<DisplayId>,
+ }
+ 
++/// Who last set one of the OS display settings the app follows (`App::reduce_motion`, `App::reduce_transparency`).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum SetBy {
++    Os,
++    /// The app's own `set_reduce_*`.
++    App,
++}
++
++/// The OS display settings as the app follows them: the platform's last report (`None` while a platform that reads
++/// them late, Linux's desktop portal, has not answered) and who set each of the app's values.
++struct OsDisplay {
++    last: Option<AccessibilityDisplaySettings>,
++    motion: SetBy,
++    transparency: SetBy,
++}
++
++/// Whether an OS report sets one followed setting, from the OS's last value (`None`: this report is the late
++/// startup value), its value now and who set the app's. A change does when the OS's value moved, so a notification
++/// for another setting (macOS posts one for every display option) leaves the app's override alone; the late startup
++/// value does unless the app set its own since (in its launch, say), as a startup read before the app ran would.
++pub(crate) fn os_report_applies(previous: Option<bool>, reported: bool, set_by: SetBy) -> bool {
++    match (previous, set_by) {
++        (Some(previous), SetBy::Os | SetBy::App) => previous != reported,
++        (None, SetBy::Os) => true,
++        (None, SetBy::App) => false,
++    }
++}
++
+ impl App {
+     pub(crate) fn new_app(
+         platform: Rc<dyn Platform>,
+@@ -1021,6 +1052,11 @@ impl App {
          let keyboard_layout = platform.keyboard_layout();
          let keyboard_mapper = platform.keyboard_mapper();
          let power_mode = platform.power_mode();
 +        let accessibility_display = platform.accessibility_display_settings();
++        let startup_display = accessibility_display.unwrap_or(AccessibilityDisplaySettings {
++            reduce_motion: false,
++            reduce_transparency: false,
++        });
  
          #[cfg(any(test, gpui_leak_detection))]
          let _ref_counts = entities.ref_counts_drop_handle();
-@@ -1094,7 +1096,8 @@ impl App {
+@@ -1094,7 +1130,13 @@ impl App {
                  quit_mode: QuitMode::default(),
                  quitting: false,
                  cursor_hide_mode: CursorHideMode::default(),
 -                reduce_motion: false,
-+                reduce_motion: accessibility_display.reduce_motion,
-+                reduce_transparency: accessibility_display.reduce_transparency,
++                reduce_motion: startup_display.reduce_motion,
++                reduce_transparency: startup_display.reduce_transparency,
++                os_display: OsDisplay {
++                    last: accessibility_display,
++                    motion: SetBy::Os,
++                    transparency: SetBy::Os,
++                },
                  gesture_tuning: None,
                  synced_animation_epoch,
                  power_mode,
-@@ -1210,6 +1213,19 @@ impl App {
+@@ -1210,6 +1252,15 @@ impl App {
              }
          }));
  
-+        // The OS settings win when the user changes them, over an app's own `set_reduce_*` since.
 +        platform.on_accessibility_display_settings_change(Box::new({
 +            let app = Rc::downgrade(&app);
 +            move |settings| {
 +                if let Some(app) = app.upgrade() {
-+                    app.borrow_mut().update(|cx| {
-+                        cx.set_reduce_motion(settings.reduce_motion);
-+                        cx.set_reduce_transparency(settings.reduce_transparency);
-+                    });
++                    app.borrow_mut().update(|cx| cx.follow_os_display(settings));
 +                }
 +            }
 +        }));
@@ -377,7 +450,7 @@ index e143547..6103729 100644
          platform.on_quit(Box::new({
              let cx = Rc::downgrade(&app);
              move || {
-@@ -1410,7 +1426,8 @@ impl App {
+@@ -1410,7 +1461,8 @@ impl App {
      }
  
      /// Returns whether non-essential animations (e.g. loading spinners) should
@@ -387,7 +460,14 @@ index e143547..6103729 100644
      pub fn reduce_motion(&self) -> bool {
          self.reduce_motion
      }
-@@ -1441,6 +1458,22 @@ impl App {
+@@ -1435,12 +1487,61 @@ impl App {
+     /// Sets whether non-essential animations (e.g. loading spinners) should be
+     /// rendered in a static state instead of animating.
+     pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
++        self.os_display.motion = SetBy::App;
+         if self.reduce_motion != reduce_motion {
+             self.reduce_motion = reduce_motion;
+             self.refresh_windows();
          }
      }
  
@@ -401,8 +481,40 @@ index e143547..6103729 100644
 +    /// Sets whether translucent materials (blur, glass, vibrancy) should draw
 +    /// opaque.
 +    pub fn set_reduce_transparency(&mut self, reduce_transparency: bool) {
++        self.os_display.transparency = SetBy::App;
 +        if self.reduce_transparency != reduce_transparency {
 +            self.reduce_transparency = reduce_transparency;
++            self.refresh_windows();
++        }
++    }
++
++    /// The platform's report of the OS's display settings: each setting it applies to (`os_report_applies`)
++    /// takes the OS's value, and is the OS's again.
++    fn follow_os_display(&mut self, report: AccessibilityDisplaySettings) {
++        let previous = self.os_display.last.replace(report);
++        // (the OS's last value, its value now, who set the app's, the app's): a row per followed setting.
++        let rows = [
++            (
++                previous.map(|previous| previous.reduce_motion),
++                report.reduce_motion,
++                &mut self.os_display.motion,
++                &mut self.reduce_motion,
++            ),
++            (
++                previous.map(|previous| previous.reduce_transparency),
++                report.reduce_transparency,
++                &mut self.os_display.transparency,
++                &mut self.reduce_transparency,
++            ),
++        ];
++        let mut changed = false;
++        for (previous, reported, set_by, value) in rows {
++            if os_report_applies(previous, reported, *set_by) {
++                *set_by = SetBy::Os;
++                changed |= std::mem::replace(value, reported) != reported;
++            }
++        }
++        if changed {
 +            self.refresh_windows();
 +        }
 +    }
@@ -411,10 +523,10 @@ index e143547..6103729 100644
      /// multiple times in an update cycle and still result in a single redraw.
      pub fn refresh_windows(&mut self) {
 diff --git a/gpui-pre/src/app/test_context.rs b/gpui-pre/src/app/test_context.rs
-index df3cce6..3f3f6ad 100644
+index df3cce6..c72a663 100644
 --- a/gpui-pre/src/app/test_context.rs
 +++ b/gpui-pre/src/app/test_context.rs
-@@ -1375,6 +1375,60 @@ mod tests {
+@@ -1375,6 +1375,118 @@ mod tests {
          assert_eq!(warnings.get(), 2);
      }
  
@@ -431,14 +543,27 @@ index df3cce6..3f3f6ad 100644
 +        // Each step, then the app's (reduce_motion, reduce_transparency). Extend with a row per new rule.
 +        let rows = [
 +            ("both on", Step::Os(true, true), (true, true)),
-+            ("motion off", Step::Os(false, true), (false, true)),
-+            ("app override", Step::App(true, false), (true, false)),
 +            (
-+                "OS change wins over app",
-+                Step::Os(false, false),
++                "the app turns motion off",
++                Step::App(false, true),
++                (false, true),
++            ),
++            (
++                "an OS change to transparency alone keeps the app's motion",
++                Step::Os(true, false),
 +                (false, false),
 +            ),
-+            ("transparency only", Step::Os(false, true), (false, true)),
++            ("the app turns both on", Step::App(true, true), (true, true)),
++            (
++                "an OS change to motion wins over the app's; transparency stays the app's",
++                Step::Os(false, false),
++                (false, true),
++            ),
++            (
++                "a notification that changes nothing keeps both",
++                Step::Os(false, false),
++                (false, true),
++            ),
 +        ];
 +        assert_eq!(
 +            cx.update(|cx| (cx.reduce_motion(), cx.reduce_transparency())),
@@ -472,30 +597,77 @@ index df3cce6..3f3f6ad 100644
 +        }
 +    }
 +
++    #[test]
++    fn test_os_report_applies() {
++        use crate::app::{SetBy, os_report_applies};
++        // (rule, the OS's last value, its value now, who set the app's, applies)
++        let rows = [
++            (
++                "late startup value: the OS's own",
++                None,
++                true,
++                SetBy::Os,
++                true,
++            ),
++            (
++                "late startup value: the app set its own",
++                None,
++                true,
++                SetBy::App,
++                false,
++            ),
++            (
++                "the OS's value moved: wins over the app's",
++                Some(false),
++                true,
++                SetBy::App,
++                true,
++            ),
++            ("the OS's value moved", Some(false), true, SetBy::Os, true),
++            (
++                "unchanged: keeps the app's",
++                Some(true),
++                true,
++                SetBy::App,
++                false,
++            ),
++            ("unchanged", Some(true), true, SetBy::Os, false),
++        ];
++        for (name, previous, reported, set_by, applies) in rows {
++            assert_eq!(
++                os_report_applies(previous, reported, set_by),
++                applies,
++                "{name}"
++            );
++        }
++    }
++
      #[gpui::test]
      async fn test_system_notifications_require_identity_and_replace_matching_tags(
          cx: &mut TestAppContext,
 diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index d029ce2..804e241 100644
+index d029ce2..47d73df 100644
 --- a/gpui-pre/src/platform.rs
 +++ b/gpui-pre/src/platform.rs
-@@ -555,6 +555,25 @@ pub trait Platform: 'static {
+@@ -555,6 +555,27 @@ pub trait Platform: 'static {
      /// Registers a callback invoked when the reported power mode changes.
      fn on_power_mode_change(&self, _callback: Box<dyn FnMut()>) {}
  
 +    /// The OS's reduce-motion and reduce-transparency settings now. GPUI's app reads them at startup into
 +    /// [`App::reduce_motion`](crate::App::reduce_motion) and
 +    /// [`App::reduce_transparency`](crate::App::reduce_transparency). A platform that does not read them reports
-+    /// neither.
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        AccessibilityDisplaySettings {
++    /// neither; one that reads them asynchronously returns `None` until it has, and reports them once through the
++    /// change callback, which the app takes as the startup value.
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(AccessibilityDisplaySettings {
 +            reduce_motion: false,
 +            reduce_transparency: false,
-+        }
++        })
 +    }
-+    /// Registers a callback invoked with the new settings when the user changes either one. Backends call it outside
-+    /// any GPUI borrow: where the OS may notify inside another platform callback, they defer it to the foreground
-+    /// executor.
++    /// Registers a callback invoked with the settings when the user changes one (a backend may report both when
++    /// either moves, or on a notification for another setting: the app applies only what moved). Backends call it
++    /// outside any GPUI borrow: where the OS may notify inside another platform callback, they defer it to the
++    /// foreground executor.
 +    fn on_accessibility_display_settings_change(
 +        &self,
 +        _callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
@@ -505,7 +677,7 @@ index d029ce2..804e241 100644
      /// Sets the application's process-wide identity and user-visible name.
      ///
      /// The identifier is used for platform identity mechanisms such as the
-@@ -746,6 +765,17 @@ pub struct SystemNotificationResponse {
+@@ -746,6 +767,17 @@ pub struct SystemNotificationResponse {
      pub action_id: Option<SharedString>,
  }
  

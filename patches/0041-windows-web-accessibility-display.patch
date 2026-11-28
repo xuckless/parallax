@@ -18,7 +18,7 @@ web reported neither. The platforms' message handling and listeners are private 
 Upstream PR: not filed (filing paused, patch rule 14).
 
 diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
-index ab7419e..73a3df1 100644
+index ab7419e..5d1c9c2 100644
 --- a/gpui-pre-web/src/platform.rs
 +++ b/gpui-pre-web/src/platform.rs
 @@ -10,12 +10,13 @@ use crate::window::WebWindow;
@@ -81,12 +81,12 @@ index ab7419e..73a3df1 100644
          }
      }
  
-@@ -529,6 +556,29 @@ impl Platform for WebPlatform {
+@@ -527,6 +554,29 @@ impl Platform for WebPlatform {
+         self.callbacks.borrow_mut().reopen = Some(callback);
+     }
  
-     /// The page's lifecycle (`page_lifecycle.rs`): focus, visibility, the
-     /// back/forward cache and unloading.
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        accessibility_display_settings(&self.browser_window)
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(accessibility_display_settings(&self.browser_window))
 +    }
 +
 +    fn on_accessibility_display_settings_change(
@@ -108,9 +108,9 @@ index ab7419e..73a3df1 100644
 +        *self.accessibility_display_listeners.borrow_mut() = listeners;
 +    }
 +
+     /// The page's lifecycle (`page_lifecycle.rs`): focus, visibility, the
+     /// back/forward cache and unloading.
      fn on_app_lifecycle(&self, callback: Box<dyn FnMut(AppLifecyclePhase)>) {
-         *self.lifecycle.callback.borrow_mut() = Some(callback);
-     }
 diff --git a/gpui-pre-windows/src/accessibility_display.rs b/gpui-pre-windows/src/accessibility_display.rs
 new file mode 100644
 index 0000000..04f7fef
@@ -190,7 +190,7 @@ index 8c9b847..bff01be 100644
  mod destination_list;
  mod dialog;
 diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
-index b03e414..0355fdc 100644
+index b03e414..4a370d8 100644
 --- a/gpui-pre-windows/src/platform.rs
 +++ b/gpui-pre-windows/src/platform.rs
 @@ -99,6 +99,8 @@ pub(crate) struct WindowsPlatformState {
@@ -222,8 +222,8 @@ index b03e414..0355fdc 100644
          }
      }
  
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        self.inner.state.accessibility_display.get()
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(self.inner.state.accessibility_display.get())
 +    }
 +
 +    fn on_accessibility_display_settings_change(

@@ -12,9 +12,14 @@ fill it per backend. Plan: [ROADMAP.md](../ROADMAP.md) Phase 4 follow-ups; Phase
 - `cx.reduce_motion()` / `cx.reduce_transparency()`: the OS's settings when the app started, then each change the user
   makes. Both start `false` where a platform reads nothing.
 - `cx.set_reduce_motion(..)` / `cx.set_reduce_transparency(..)`: an app override. It holds until the user next changes
-  the OS setting; then the OS wins. Either change redraws every window.
-- Backends implement `Platform::accessibility_display_settings()` (read now) and
-  `on_accessibility_display_settings_change` (call back with `AccessibilityDisplaySettings` outside any GPUI borrow).
+  that OS setting; then the OS wins. A report in which that setting did not move (the user changed the other one, or
+  macOS's one notification for every display option) keeps the override. Either change redraws every window.
+- Backends implement `Platform::accessibility_display_settings()` (read now; `None` while a late reader has not
+  answered) and `on_accessibility_display_settings_change` (call back with `AccessibilityDisplaySettings` outside any
+  GPUI borrow). A late reader's first report is the startup value: it fills only what the app has not set itself, so
+  a `set_reduce_motion` in `launch` holds. Linux's portal is the one late reader.
+- `App::follow_os_display` applies a report field by field, by `os_report_applies` (the OS's last value, its value
+  now, who set the app's: `SetBy::{Os, App}`).
 
 ## Per target
 
@@ -31,7 +36,7 @@ The pure decisions (raw values → booleans) are tables with a test each: Androi
 ([accessibility.rs](../crates/android/src/accessibility.rs), React Native's parsing: `"0"`, `"0.0"`, comma decimals,
 junk), Windows' two values (gpui_windows `accessibility_display.rs`, host-tested by
 [patch-test.sh](../scripts/patch-test.sh)'s `windows-pure` crate), the portal's two keys (gpui_linux `PortalMotion`),
-and the app's override rules (core `test_os_accessibility_display_settings`). Apple and the web read booleans.
+and the app's override rules (core `test_os_report_applies`, `test_os_accessibility_display_settings`). Apple and the web read booleans.
 
 ## Android glue
 
