@@ -5,12 +5,12 @@ drives [examples/native-view](../examples/native-view/) on the web in a headless
 
 ## Running it
 
-Build and serve the example on two ports (the second origin for the cross-origin iframe):
+Build and serve the example with [cargo-parallax](cli-web.md) (its `parallax.toml` names the page and
+`frame.html`), and serve the same site on the next port too, the second origin for the cross-origin iframe:
 
 ```sh
-wasm-pack build examples/native-view --target web --no-typescript --no-pack --dev
-python3 -m http.server 8770 --bind 127.0.0.1 --directory examples/native-view &
-python3 -m http.server 8771 --bind 127.0.0.1 --directory examples/native-view &
+(cd examples/native-view && cargo parallax run web --port 8770) &
+python3 -m http.server 8771 --bind 127.0.0.1 --directory target/parallax/web/native-view &
 node scripts/web-checks.mjs http://127.0.0.1:8770/ desktop|mobile <chromium port>|firefox native-view [scale]
 ```
 

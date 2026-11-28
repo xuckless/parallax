@@ -4,7 +4,8 @@
 #
 # Usage: scripts/record-traces.sh <android|web|ios|wayland|x11|windows> [gesture…]   (default: every gesture row)
 # Needs: android: ANDROID_HOME, one running emulator or device (ANDROID_SERIAL picks one), cargo-parallax's
-#        requirements (docs/cli.md). web: wasm-pack, Node 22+, Chromium (CHROMIUM overrides its path).
+#        requirements (docs/cli.md). web: cargo-parallax and its web requirements (docs/cli-web.md), Node 22+, Chromium
+#        (CHROMIUM overrides its path).
 #        ios: ssh host pixl-mac with the iOS simulator and idb under /Users/Shared/parallax (docs/traces.md).
 #        wayland, x11: Weston's build dependencies (scripts/build-weston.sh), Xwayland for x11; WESTON_SCALE (1 or 2)
 #        sets the output scale; WESTON_RUN prefixes the Weston commands, e.g. `podman exec <container>` where
@@ -141,8 +142,10 @@ cdp_port=${CDP_PORT:-$(free_port)}
 http_port=${HTTP_PORT:-$(free_port)}
 cdp() { node "$repo/scripts/cdp-touch.mjs" "$cdp_port" "$@"; }
 web_setup() {
-  wasm-pack build "$repo/examples/hello" --target web --no-typescript --no-pack --dev
-  python3 -m http.server "$http_port" --bind 127.0.0.1 --directory "$repo/examples/hello" >/dev/null 2>&1 &
+  # Build in the foreground (errors show), then serve; `run` rebuilds nothing and listens once wasm-bindgen is done.
+  (cd "$repo/examples/hello" && cargo parallax build web)
+  (cd "$repo/examples/hello" && exec cargo parallax run web --port "$http_port") >/dev/null 2>&1 &
+  until curl -sf -o /dev/null "http://127.0.0.1:$http_port/"; do sleep 0.5; done
   # Console messages reach the log only through Chromium's own stderr logging.
   "${CHROMIUM:-chromium-browser}" --headless=new --remote-debugging-port="$cdp_port" --user-data-dir="$work/profile" \
     --window-size=412,915 --force-device-scale-factor=1 --touch-events=enabled --enable-logging=stderr --v=0 \

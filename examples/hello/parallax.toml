@@ -1,5 +1,8 @@
-# cargo parallax reads this (docs/cli.md, docs/cli-ios.md). Every other key keeps its default.
+# cargo parallax reads this (docs/cli.md and one docs/cli-<target>.md per target). Every other key keeps its default.
 [app]
 name = "Hello"
 id = "io.github.xuckless.parallax.hello"
 icon = "../../assets/brand/parallax-app-icon.svg"
+
+[web]
+title = "Parallax hello"

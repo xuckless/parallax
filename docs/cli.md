@@ -15,6 +15,7 @@ and `(verb, target) → handler` `DISPATCH` tables),
 [templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
 Commands are rows of `COMMANDS` in [main.rs](../crates/cli/src/main.rs) (verb, target → handler). iOS
 (`run ios`, `build ios`, the `[ios]` table): [cli-ios.md](cli-ios.md).
+The web: `cargo parallax run web` / `build web`, [cli-web.md](cli-web.md).
 
 ## parallax.toml
 

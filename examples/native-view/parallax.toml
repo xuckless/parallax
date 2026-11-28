@@ -1,7 +1,12 @@
-# cargo parallax reads this (docs/cli.md, docs/cli-ios.md). Every other key keeps its default.
+# cargo parallax reads this (docs/cli.md and one docs/cli-<target>.md per target). Every other key keeps its default.
 [app]
 name = "Native views"
 id = "io.github.xuckless.parallax.nativeview"
 
 [android]
 abis = ["x86_64"]
+
+# The page makes the views' elements and the iframes load frame.html (docs/native-view-web-checks.md).
+[web]
+index = "index.html"
+assets = ["frame.html"]

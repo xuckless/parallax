@@ -18,19 +18,20 @@ warnings, plus `info` from hello; `RUST_LOG` overrides it (e.g. `RUST_LOG=debug`
 
 ## Web
 
-Single-threaded, stable Rust ([platform.md](platform.md)). Needs
-[wasm-pack](https://github.com/drager/wasm-pack); it fetches the matching `wasm-bindgen` on first use.
+Single-threaded, stable Rust ([platform.md](platform.md)). [cargo-parallax](cli-web.md) builds it, writes the
+host page from its template and serves it; it needs `wasm-bindgen-cli` at the version in `Cargo.lock` (it names the
+`cargo install` line if not).
 
 ```sh
-wasm-pack build examples/hello --target web --no-typescript --no-pack --dev
-python3 -m http.server 8765 --directory examples/hello
+cargo install --path crates/cli
+cd examples/hello && cargo parallax run web --port 8765
 ```
 
-Open <http://127.0.0.1:8765/>. `pkg/` is git-ignored. A browser gives GPUI no system fonts, so `start` loads
+Open <http://127.0.0.1:8765/>. A browser gives GPUI no system fonts, so `start` loads
 `WEB_FONTS` ([fonts/](../examples/hello/fonts/), OFL) first: Noto Sans and Noto Sans Arabic. Emoji come from the
 browser (gpui_web's Canvas fallback); CJK is not embedded (too large), so `SCRIPTS`' CJK shows missing glyphs. gpui_web tries WebGPU, then falls back to WebGL2; the console
 shows which (`Browser graphics initialized successfully with …`) and `hello: box colour …` on each click or tap.
-Drop `--dev` for an optimised build (wasm-pack then also fetches `wasm-opt`).
+`--release` builds optimised (and runs `wasm-opt` when it is on PATH).
 
 ## Android
 
