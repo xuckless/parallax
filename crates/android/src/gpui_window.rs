@@ -91,7 +91,8 @@ mod tests {
         let later_surface = reject("a later surface asks for no window");
         let nothing_open = reject("no open window to close");
         // (state, event, next state, effect): every pair, rejected ones included.
-        let rows: [(Gpui<u8>, GpuiEvent<u8>, Gpui<u8>, GpuiEffect); 12] = [
+        type Row = (Gpui<u8>, GpuiEvent<u8>, Gpui<u8>, GpuiEffect);
+        let rows: [Row; 12] = [
             (Waiting, FirstSurface, Requested, GpuiEffect::RequestWindow),
             (Waiting, Opened(1), Waiting, no_window.clone()),
             (Waiting, ClosedByApp, Waiting, nothing_open.clone()),
