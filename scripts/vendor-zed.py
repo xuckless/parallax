@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Ported from longbridge/gpui-kit script/bump-gpui.ts @ 85c05bf (the version that cut gpui-pre 0.3.14): its staging
-# step (manifests, pruning, source adaptations). Copyright the GPUI Kit authors (longbridge). Apache-2.0.
+# step (manifests, pruning, source adaptations). Copyright 2024 - 2026 Longbridge. Apache-2.0, see
+# third_party/gpui-kit/LICENSE; ledger row in third_party/gpui-kit/PORTED.md.
 """Vendor Zed's crates/gpui* as gpui-pre-* crates, the way gpui-pre builds them, for when gpui-pre stops shipping.
 
 Usage: scripts/vendor-zed.py ZED_CHECKOUT VERSION OUT_DIR
