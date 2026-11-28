@@ -30,10 +30,10 @@ then Paste replaces a selection, long press shows the loupe, taps outside the fi
 Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
-index 33ceef8..f8973f3 100644
+index 923ff13..f645433 100644
 --- a/gpui-pre-ios/Cargo.toml
 +++ b/gpui-pre-ios/Cargo.toml
-@@ -153,6 +153,7 @@ features = [
+@@ -154,6 +154,7 @@ features = [
      "UIGestureRecognizer",
      "UIPanGestureRecognizer",
      "UIScreenEdgePanGestureRecognizer",
@@ -41,7 +41,7 @@ index 33ceef8..f8973f3 100644
      "UIInterface",
      "UIKey",
      "UIKeyConstants",
-@@ -169,6 +170,7 @@ features = [
+@@ -170,6 +171,7 @@ features = [
      "UIScreen",
      "UITextInput",
      "UITextInputTraits",
@@ -50,7 +50,7 @@ index 33ceef8..f8973f3 100644
      "UITraitCollection",
      "UIView",
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d4359bc..57649b8 100644
+index d4359bc..f331b3f 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
@@ -71,7 +71,7 @@ index d4359bc..57649b8 100644
  }
  
  define_class!(
-@@ -175,9 +177,48 @@ define_class!(
+@@ -175,9 +177,49 @@ define_class!(
                  self.ivars().keyboard_desired.set(false);
                  self.ivars().keyboard_eligible.set(false);
              }
@@ -83,8 +83,9 @@ index d4359bc..57649b8 100644
 +        // gestures; the rest, and every touch while not editing, reach GPUI's view (or UIKit's selection views).
 +        #[unsafe(method_id(hitTest:withEvent:))]
 +        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
-+            let on_text = self.ivars().text_interaction.borrow().is_some()
-+                && (self.closestPositionToPoint(point).is_some() || self.near_selection_end(point));
++            let editing = self.ivars().text_interaction.borrow().is_some();
++            let on_text =
++                editing && (self.closestPositionToPoint(point).is_some() || self.near_selection_end(point));
 +            if on_text {
 +                Some(self.retain().into_super())
 +            } else {
@@ -120,7 +121,7 @@ index d4359bc..57649b8 100644
          #[unsafe(method(reconcileTextInput))]
          fn reconcile_text_input(&self) {
              self.ivars().update_pending.set(false);
-@@ -196,6 +237,7 @@ define_class!(
+@@ -196,6 +238,7 @@ define_class!(
                  self.resignFirstResponder();
                  self.ivars().reconciling_responder.set(previous);
              }
@@ -128,7 +129,7 @@ index d4359bc..57649b8 100644
              if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
                  self.reloadInputViews();
              }
-@@ -404,9 +446,10 @@ define_class!(
+@@ -404,9 +447,10 @@ define_class!(
  
      unsafe impl UITextInput for TextInputView {
          #[unsafe(method_id(textInRange:))]
@@ -141,7 +142,7 @@ index d4359bc..57649b8 100644
              self.with_handler(|handler| {
                  // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
                  let document = document_range(handler)?;
-@@ -582,7 +625,10 @@ define_class!(
+@@ -582,7 +626,10 @@ define_class!(
              let Some(range) = self.validated_range(range) else { return NSArray::new(); };
              let bounds = self.with_handler(|handler| {
                  if !allowed_range(handler, &range) { return Vec::new(); }
@@ -153,7 +154,7 @@ index d4359bc..57649b8 100644
              }).unwrap_or_default();
              let count = bounds.len();
              let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
-@@ -629,9 +675,8 @@ define_class!(
+@@ -629,9 +676,8 @@ define_class!(
          }
          #[unsafe(method_id(textInputView))]
          fn text_input_view(&self) -> Retained<UIView> {
@@ -165,7 +166,7 @@ index d4359bc..57649b8 100644
          }
      }
  
-@@ -655,6 +700,7 @@ impl TextInputView {
+@@ -655,6 +701,7 @@ impl TextInputView {
              content_changed: Cell::new(false),
              native_edit: Cell::new(false),
              temporarily_deleted_composed_character: RefCell::new(None),
@@ -173,7 +174,7 @@ index d4359bc..57649b8 100644
          });
          unsafe { msg_send![super(this), initWithFrame: frame] }
      }
-@@ -715,6 +761,45 @@ impl TextInputView {
+@@ -715,6 +762,47 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
@@ -181,22 +182,24 @@ index d4359bc..57649b8 100644
 +    /// `UITextInteraction`, made as Flutter's `-[FlutterTextInputView textInteraction]` (FlutterTextInputPlugin.mm
 +    /// @ 3.50.1) makes it. Its gestures sit on this view, which claims touches on the field's text (`hitTest:`) and
 +    /// hands GPUI the ones the gestures leave (`touches…`).
++    /// The slot is never borrowed across `addInteraction:` / `removeInteraction:`: UIKit asks this view back
++    /// (`hitTest:`) inside them, and a borrow panic there would abort in an `extern "C"` frame.
 +    fn sync_text_interaction(&self) {
-+        let mut installed = self.ivars().text_interaction.borrow_mut();
-+        match (self.isFirstResponder(), installed.take()) {
++        let installed = self.ivars().text_interaction.borrow().clone();
++        match (self.isFirstResponder(), installed) {
 +            (true, None) => {
 +                let interaction =
 +                    UITextInteraction::textInteractionForMode(UITextInteractionMode::Editable, self.mtm());
 +                // SAFETY: this view implements UITextInput, which `textInput` requires.
 +                unsafe { interaction.setTextInput(Some(self)) };
-+                *installed = Some(interaction.clone());
-+                // UIKit asks this view back (`hitTest:`) while it adds the interaction.
-+                drop(installed);
++                self.ivars().text_interaction.replace(Some(interaction.clone()));
 +                self.addInteraction(ProtocolObject::from_ref(&*interaction));
 +            }
-+            (false, Some(interaction)) => self.removeInteraction(ProtocolObject::from_ref(&*interaction)),
-+            (true, Some(interaction)) => *installed = Some(interaction),
-+            (false, None) => {}
++            (false, Some(interaction)) => {
++                self.ivars().text_interaction.replace(None);
++                self.removeInteraction(ProtocolObject::from_ref(&*interaction));
++            }
++            (true, Some(_)) | (false, None) => {}
 +        }
 +    }
 +
@@ -219,7 +222,7 @@ index d4359bc..57649b8 100644
      /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
      /// delegate, as of an app edit.
      fn action_changed(&self, content_changed: bool) {
-@@ -1187,8 +1272,17 @@ pub(super) mod tests {
+@@ -1187,8 +1275,17 @@ pub(super) mod tests {
          view.ivars().keyboard_eligible.set(true);
          assert!(view.becomeFirstResponder());
          assert!(view.isFirstResponder());
@@ -238,10 +241,10 @@ index d4359bc..57649b8 100644
              !view.ivars().keyboard_desired.get(),
              "native resignation must cancel the outstanding keyboard request"
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 1f2e099..10d3f84 100644
+index a672da5..5865795 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
-@@ -490,12 +490,14 @@ impl IosWindow {
+@@ -493,12 +493,14 @@ impl IosWindow {
          // Make the window visible
          window.makeKeyAndVisible();
  

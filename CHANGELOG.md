@@ -108,6 +108,8 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   typed "é" and lost the second e), and a key's up goes to UIKit only when its down did.
 - iOS hardware keyboard (patch 0031): holding Backspace, an arrow or a shortcut repeats it again (`KeyDown` with
   `is_held`, 500 ms then every 100 ms); it did one step since GPUI took the keys from UIKit.
+- iOS native selection (patch 0038): removing the `UITextInteraction` no longer holds its slot borrowed while UIKit
+  calls back into `hitTest:` (a borrow panic there would abort).
 - Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
   (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
   and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
