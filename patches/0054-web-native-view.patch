@@ -2,24 +2,29 @@ Show native views on the web: the app's DOM element under GPUI's canvas, its hol
 
 What:
 - gpui_web: `NativeView::new` takes a `web_sys::HtmlElement`. GPUI moves it into a slot of its own, in a layer before
-  the canvas (the canvas is raised above it, `position: relative; z-index: 1`): `<gpui-native-views>` holds a
+  the canvas (the canvas is raised above it, `position: relative; z-index: 1`, while views exist; the layer follows
+  the canvas's fractional box wherever the page puts it): `<gpui-native-views>` holds a
   `<gpui-native-view-slot>` per view (the view's bounds clipped to its content mask, `overflow: hidden`, its
   `set_background` colour) around a `<gpui-native-view>` (the view's bounds) around the element. Each frame, before
   the renderer draws, a view whose placement changed gets CSS `transform: translate(..)`, width and height, both
   boxes rounded outwards to whole device pixels (no seam at fractional scales); unchanged views are not touched, so a
   frame that places nothing writes no style. A view not painted is `display: none` (an iframe keeps its page).
-  Dropping the last handle removes the slot with the element in it.
+  Dropping the last handle removes the slot with the element in it (DOM focus inside it goes to GPUI's IME mirror);
+  the last view takes the layer and the document listeners with it and gives the canvas its own styles back.
 - Input (`NativeViewInput::View`, as macOS): a capture listener on the document decides, before any element sees a
   pointer event, whether the canvas takes the pointer (`pointer-events: auto`) or lets it through to what is under it
   (`none`), from GPUI's own hit test (`hit_test_native_view`), so an uncovered view's element gets trusted events
   (iframe clicks and wheel scrolls, text selection, video controls). Where GPUI's content takes input over a view,
   a transparent shield sits over the element (new `PlatformWindow::on_native_view_occluders`: the hitboxes inserted
   after a view's, clipped to it, asked after each frame that placed views); a press, move or wheel that lands on a
-  shield or the layer is GPUI's after all, and a copy goes to the canvas (in a microtask). The table is
-  `native_view_layout::step` (state × event → target, forward). Views that start to show take the pointer, so a
-  touch's first tap reaches the element; a touch release hands it back to them. The canvas's `pointerleave` is not
-  reported while the pointer is over a view. `set_focused_native_view` focuses the element, and its `focusin`
-  focuses the view's handle.
+  shield or the layer is GPUI's after all, and a copy goes to the canvas (in a microtask); one that lands on a
+  shield where GPUI now hit-tests the view puts every shield back and goes to the element under it. Events on the
+  rest of the page are left alone. The table is `native_view_layout::step` (state × event × what the browser hit →
+  target, copy). Views that start to show take the pointer, so a touch's first tap reaches the element; a touch
+  release hands it back to them; after a frame a still mouse over a view that moved under it gives it to the view.
+  The canvas's `pointerleave` is not reported while the pointer is over a view. `set_focused_native_view` focuses
+  the element unless focus is already inside it (an `<input>` in it), and its `focusin` focuses the view's handle.
+  Events listen in a `Phase` (bubble or capture).
 - gpui_wgpu: a WebGL2 canvas is premultiplied by its context's default whatever mode wgpu reports (only `Opaque`), so
   0047's alpha log says so there instead of warning that holes show black.
 
@@ -38,6 +43,1335 @@ private to gpui_web; the occluders need GPUI's hitboxes (rule 12).
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+index 04593d2..f53028c 100644
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -11,6 +11,7 @@ use wasm_bindgen::prelude::*;
+ use web_time::Instant;
+ 
+ use crate::ime_mirror::ImeMirror;
++use crate::native_view_layout::PointerTarget;
+ use crate::window::WebWindowInner;
+ 
+ pub struct WebEventListeners {
+@@ -27,6 +28,25 @@ pub(crate) struct EventListenerHandle {
+     target: web_sys::EventTarget,
+     event_name: &'static str,
+     closure: Closure<dyn FnMut(JsValue)>,
++    /// The phase it was registered for, which removal must match.
++    phase: Phase,
++}
++
++/// Which phase of an event's dispatch a listener runs in.
++#[derive(Clone, Copy)]
++pub(crate) enum Phase {
++    Bubble,
++    /// Before the event's target sees it (native views decide who takes the pointer there).
++    Capture,
++}
++
++impl Phase {
++    fn is_capture(self) -> bool {
++        match self {
++            Phase::Bubble => false,
++            Phase::Capture => true,
++        }
++    }
+ }
+ 
+ impl EventListenerHandle {
+@@ -43,6 +63,7 @@ impl EventListenerHandle {
+             target: target.clone(),
+             event_name,
+             closure,
++            phase: Phase::Bubble,
+         }
+     }
+ 
+@@ -54,12 +75,23 @@ impl EventListenerHandle {
+         target: &web_sys::EventTarget,
+         event_name: &'static str,
+         handler: impl FnMut(JsValue) + 'static,
++    ) -> Self {
++        Self::add_non_passive_in(target, event_name, Phase::Bubble, handler)
++    }
++
++    /// [`EventListenerHandle::add_non_passive`] in either phase.
++    pub(crate) fn add_non_passive_in(
++        target: &web_sys::EventTarget,
++        event_name: &'static str,
++        phase: Phase,
++        handler: impl FnMut(JsValue) + 'static,
+     ) -> Self {
+         let closure = Closure::<dyn FnMut(JsValue)>::new(handler);
+         let target_js: &JsValue = target.as_ref();
+         let callback_js: &JsValue = closure.as_ref();
+         let options = js_sys::Object::new();
+         js_sys::Reflect::set(&options, &"passive".into(), &false.into()).ok();
++        js_sys::Reflect::set(&options, &"capture".into(), &phase.is_capture().into()).ok();
+         if let Ok(add_fn_val) = js_sys::Reflect::get(target_js, &"addEventListener".into()) {
+             if let Ok(add_fn) = add_fn_val.dyn_into::<js_sys::Function>() {
+                 add_fn
+@@ -71,6 +103,7 @@ impl EventListenerHandle {
+             target: target.clone(),
+             event_name,
+             closure,
++            phase,
+         }
+     }
+ }
+@@ -78,9 +111,10 @@ impl EventListenerHandle {
+ impl Drop for EventListenerHandle {
+     fn drop(&mut self) {
+         self.target
+-            .remove_event_listener_with_callback(
++            .remove_event_listener_with_callback_and_bool(
+                 self.event_name,
+                 self.closure.as_ref().unchecked_ref(),
++                self.phase.is_capture(),
+             )
+             .ok();
+     }
+@@ -620,6 +654,10 @@ impl WebWindowInner {
+     fn register_pointer_leave(self: &Rc<Self>) -> EventListenerHandle {
+         let this = Rc::clone(self);
+         self.listen("pointerleave", move |event: JsValue| {
++            // The canvas let the pointer through to a native view's element: it is still over the window.
++            if this.native_views.target() == PointerTarget::Views {
++                return;
++            }
+             let event: web_sys::PointerEvent = event.unchecked_into();
+ 
+             let position = pointer_position_in_element(&event);
+diff --git a/gpui-pre-web/src/gpui_web.rs b/gpui-pre-web/src/gpui_web.rs
+index 82157d4..351d342 100644
+--- a/gpui-pre-web/src/gpui_web.rs
++++ b/gpui-pre-web/src/gpui_web.rs
+@@ -28,6 +28,10 @@ mod keyboard_inset;
+ #[cfg(target_family = "wasm")]
+ mod logging;
+ #[cfg(target_family = "wasm")]
++mod native_view_layout;
++#[cfg(target_family = "wasm")]
++mod native_views;
++#[cfg(target_family = "wasm")]
+ mod page_lifecycle;
+ #[cfg(target_family = "wasm")]
+ mod platform;
+diff --git a/gpui-pre-web/src/native_view_layout.rs b/gpui-pre-web/src/native_view_layout.rs
+new file mode 100644
+index 0000000..62703ab
+--- /dev/null
++++ b/gpui-pre-web/src/native_view_layout.rs
+@@ -0,0 +1,297 @@
++//! Native views on the web, the decisions: where a view's DOM element goes under the canvas, and whether the canvas
++//! or the element under it takes the pointer. Pure, so it is tested on any host; `native_views.rs` is the DOM shell.
++
++use gpui::{Bounds, PaintNativeView, Pixels, ScaledPixels, point, px, size};
++
++/// Where a shown view's elements go, in CSS pixels: its slot (the view's bounds clipped to its content mask, from the
++/// canvas's top left) and the view's own box inside the slot.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) struct Placement {
++    pub(crate) slot: Bounds<Pixels>,
++    pub(crate) view: Bounds<Pixels>,
++}
++
++/// Both boxes are rounded outwards to whole device pixels: the renderer's hole covers exactly the device pixels whose
++/// centres are inside the view, so an element covering every pixel the bounds touch leaves no seam at a fractional
++/// scale (the canvas hides the overhang).
++pub(crate) fn placement(native_view: &PaintNativeView, scale_factor: f32) -> Placement {
++    let outwards = |bounds: Bounds<ScaledPixels>| {
++        let left = bounds.origin.x.0.floor();
++        let top = bounds.origin.y.0.floor();
++        let right = (bounds.origin.x.0 + bounds.size.width.0).ceil();
++        let bottom = (bounds.origin.y.0 + bounds.size.height.0).ceil();
++        Bounds::new(
++            point(px(left / scale_factor), px(top / scale_factor)),
++            size(
++                px((right - left).max(0.) / scale_factor),
++                px((bottom - top).max(0.) / scale_factor),
++            ),
++        )
++    };
++    let slot = outwards(
++        native_view
++            .bounds
++            .intersect(&native_view.content_mask.bounds),
++    );
++    let view = outwards(native_view.bounds);
++    Placement {
++        slot,
++        view: Bounds::new(view.origin - slot.origin, view.size),
++    }
++}
++
++/// Who the browser hit-tests the pointer to while a view shows: GPUI's canvas, or what is under it (the canvas's
++/// `pointer-events: none`), where an uncovered view's element takes trusted events of its own (an iframe's clicks
++/// and scrolls, a video's controls) and the native view layer and its shields take the rest back for GPUI.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub(crate) enum PointerTarget {
++    /// The canvas's own `pointer-events: auto`, before any view shows.
++    #[default]
++    Canvas,
++    Views,
++}
++
++/// A pointer event seen by the document's capture listener, or a frame that placed views.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum PointerKind {
++    /// `pointermove` with no button pressed.
++    Hover,
++    /// `pointermove` with a button pressed: the press's target keeps it.
++    Drag,
++    Press,
++    Wheel,
++    /// A mouse or pen `pointerup` / `pointercancel`.
++    Release,
++    /// A touch `pointerup` / `pointercancel`: a touch has no hover to switch on, so the next one must find the
++    /// view's element, and the layer and shields send it back if it lands on GPUI's content.
++    TouchRelease,
++    /// A frame placed views while no button is pressed: content may have moved a view under a still pointer, whose
++    /// next wheel tick must already find the element.
++    Placed,
++}
++
++/// What GPUI's hit test says is at the pointer (`hit_test_native_view`).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Over {
++    /// A view with no GPUI hitbox above it there.
++    View,
++    Window,
++}
++
++/// What the browser gave the event to.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Hit {
++    Canvas,
++    /// The native view layer itself or a shield: GPUI's, standing in for the canvas.
++    Cover,
++    /// Inside a view's slot: the app's element.
++    Element,
++    /// Page content outside the window, none of GPUI's business.
++    Outside,
++}
++
++/// Where the capture listener sends a copy of the event.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Send {
++    Nothing,
++    /// GPUI's content is there, but the browser gave the event to the layer or a shield.
++    Canvas,
++    /// A view is there, but a shield from an earlier frame took the event: the shields are refreshed and the copy
++    /// goes to the element now under the pointer.
++    ElementUnder,
++}
++
++/// What the capture listener does with an event.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Step {
++    pub(crate) target: PointerTarget,
++    pub(crate) send: Send,
++}
++
++/// `current × event → step`. Every arm is explicit: extend by adding a `PointerKind`, `Over` or `Hit` and its arms.
++pub(crate) fn step(current: PointerTarget, kind: PointerKind, over: Over, hit: Hit) -> Step {
++    use PointerKind::*;
++    let to = |target, send| Step { target, send };
++    match (kind, over, hit) {
++        (
++            Drag,
++            Over::View | Over::Window,
++            Hit::Canvas | Hit::Cover | Hit::Element | Hit::Outside,
++        ) => to(current, Send::Nothing),
++        (
++            Hover | Press | Wheel | Release | TouchRelease,
++            Over::View | Over::Window,
++            Hit::Outside,
++        ) => to(current, Send::Nothing),
++        (TouchRelease, Over::View | Over::Window, Hit::Canvas | Hit::Cover | Hit::Element) => {
++            to(PointerTarget::Views, Send::Nothing)
++        }
++        (Hover | Press | Wheel | Release, Over::View, Hit::Canvas | Hit::Element) => {
++            to(PointerTarget::Views, Send::Nothing)
++        }
++        (Hover | Press | Wheel | Release, Over::View, Hit::Cover) => {
++            to(PointerTarget::Views, Send::ElementUnder)
++        }
++        (Hover | Press | Wheel, Over::Window, Hit::Cover) => {
++            to(PointerTarget::Canvas, Send::Canvas)
++        }
++        // The element keeps this one event; the canvas takes the next (the shield goes up after the frame).
++        (Hover | Press | Wheel, Over::Window, Hit::Canvas | Hit::Element) => {
++            to(PointerTarget::Canvas, Send::Nothing)
++        }
++        // A release off the canvas ends a press GPUI never had (the press's target captured it otherwise).
++        (Release, Over::Window, Hit::Canvas | Hit::Cover | Hit::Element) => {
++            to(PointerTarget::Canvas, Send::Nothing)
++        }
++        (Placed, Over::View, Hit::Canvas | Hit::Cover | Hit::Element | Hit::Outside) => {
++            to(PointerTarget::Views, Send::Nothing)
++        }
++        // A touch's views keep the pointer; a mouse over GPUI's content lands on the layer, which sends it back.
++        (Placed, Over::Window, Hit::Canvas | Hit::Cover | Hit::Element | Hit::Outside) => {
++            to(current, Send::Nothing)
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{ContentMask, HitboxId, Hsla, NativeViewId};
++
++    fn view(bounds: [f32; 4], mask: [f32; 4]) -> PaintNativeView {
++        let scaled = |[x, y, width, height]: [f32; 4]| Bounds {
++            origin: point(ScaledPixels(x), ScaledPixels(y)),
++            size: size(ScaledPixels(width), ScaledPixels(height)),
++        };
++        PaintNativeView {
++            order: 0,
++            id: NativeViewId::for_test(1),
++            hitbox_id: HitboxId::placeholder(),
++            bounds: scaled(bounds),
++            content_mask: ContentMask {
++                bounds: scaled(mask),
++            },
++            background: Hsla::default(),
++        }
++    }
++
++    fn css([x, y, width, height]: [f32; 4]) -> Bounds<Pixels> {
++        Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
++    }
++
++    #[test]
++    fn placement_of_a_view() {
++        let everything = [0., 0., 10_000., 10_000.];
++        // (row name, view bounds and content mask in device pixels, scale, slot and view in CSS pixels). Add a row
++        // per rule.
++        let rows: [(&str, [f32; 4], [f32; 4], f32, [f32; 4], [f32; 4]); 4] = [
++            (
++                "whole pixels at 1",
++                [10., 20., 300., 200.],
++                everything,
++                1.,
++                [10., 20., 300., 200.],
++                [0., 0., 300., 200.],
++            ),
++            (
++                "whole device pixels at 1.25",
++                [125., 250., 375., 250.],
++                everything,
++                1.25,
++                [100., 200., 300., 200.],
++                [0., 0., 300., 200.],
++            ),
++            (
++                "fractional device pixels round outwards",
++                [12.5, 20.4, 100., 50.],
++                everything,
++                1.25,
++                [9.6, 16., 80.8, 40.8],
++                [0., 0., 80.8, 40.8],
++            ),
++            (
++                "the content mask clips the slot, the view keeps its size",
++                [0., 0., 200., 100.],
++                [50., 0., 100., 100.],
++                1.,
++                [50., 0., 100., 100.],
++                [-50., 0., 200., 100.],
++            ),
++        ];
++        for (name, bounds, mask, scale, slot, view_box) in rows {
++            let placement = placement(&view(bounds, mask), scale);
++            let close = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
++                [
++                    (a.origin.x, b.origin.x),
++                    (a.origin.y, b.origin.y),
++                    (a.size.width, b.size.width),
++                    (a.size.height, b.size.height),
++                ]
++                .iter()
++                .all(|(a, b)| (f32::from(*a) - f32::from(*b)).abs() < 1e-4)
++            };
++            assert!(
++                close(placement.slot, css(slot)),
++                "{name}: slot {:?}",
++                placement.slot
++            );
++            assert!(
++                close(placement.view, css(view_box)),
++                "{name}: view {:?}",
++                placement.view
++            );
++        }
++    }
++
++    #[test]
++    fn pointer_target_steps() {
++        use Hit::{Canvas as OnCanvas, Cover, Element, Outside};
++        use Over::{View, Window};
++        use PointerKind::*;
++        use PointerTarget::{Canvas, Views};
++        // (row name, current, event, over, what the browser hit, next target, copy sent). One row per
++        // (state, event), rejected ones included.
++        #[rustfmt::skip]
++        let rows = [
++            ("hover onto an uncovered view", Canvas, Hover, View, OnCanvas, Views, Send::Nothing),
++            ("hover within a view's element", Views, Hover, View, Element, Views, Send::Nothing),
++            ("hover onto GPUI's content from a view", Views, Hover, Window, Cover, Canvas, Send::Canvas),
++            ("hover over GPUI's content", Canvas, Hover, Window, OnCanvas, Canvas, Send::Nothing),
++            ("hover where GPUI's content covers an element before its shield", Views, Hover, Window, Element, Canvas, Send::Nothing),
++            ("hover on a stale shield over a view", Views, Hover, View, Cover, Views, Send::ElementUnder),
++            ("drag from the canvas over a view", Canvas, Drag, Window, OnCanvas, Canvas, Send::Nothing),
++            ("drag from a view over GPUI's content", Views, Drag, Window, Cover, Views, Send::Nothing),
++            ("drag outside the window", Views, Drag, Window, Outside, Views, Send::Nothing),
++            ("press on a view the canvas still had", Canvas, Press, View, OnCanvas, Views, Send::Nothing),
++            ("press on a view's element", Views, Press, View, Element, Views, Send::Nothing),
++            ("press on a shield over a view", Views, Press, Window, Cover, Canvas, Send::Canvas),
++            ("press on a stale shield over a view", Views, Press, View, Cover, Views, Send::ElementUnder),
++            ("press on GPUI's content", Canvas, Press, Window, OnCanvas, Canvas, Send::Nothing),
++            ("wheel over a view's element", Views, Wheel, View, Element, Views, Send::Nothing),
++            ("wheel over a shield", Views, Wheel, Window, Cover, Canvas, Send::Canvas),
++            ("wheel over a stale shield", Views, Wheel, View, Cover, Views, Send::ElementUnder),
++            ("wheel over GPUI's content", Canvas, Wheel, Window, OnCanvas, Canvas, Send::Nothing),
++            ("mouse release over a view", Canvas, Release, View, OnCanvas, Views, Send::Nothing),
++            ("mouse release on a stale shield", Views, Release, View, Cover, Views, Send::ElementUnder),
++            ("mouse release on the layer", Views, Release, Window, Cover, Canvas, Send::Nothing),
++            ("mouse release on the canvas", Canvas, Release, Window, OnCanvas, Canvas, Send::Nothing),
++            ("touch release on GPUI's content", Canvas, TouchRelease, Window, OnCanvas, Views, Send::Nothing),
++            ("touch release on a view", Views, TouchRelease, View, Element, Views, Send::Nothing),
++            ("hover outside the window", Views, Hover, Window, Outside, Views, Send::Nothing),
++            ("press outside the window", Canvas, Press, Window, Outside, Canvas, Send::Nothing),
++            ("wheel outside the window", Views, Wheel, Window, Outside, Views, Send::Nothing),
++            ("mouse release outside the window", Views, Release, Window, Outside, Views, Send::Nothing),
++            ("touch release outside the window", Canvas, TouchRelease, Window, Outside, Canvas, Send::Nothing),
++            ("content moved a view under a still pointer", Canvas, Placed, View, OnCanvas, Views, Send::Nothing),
++            ("content moved over a touch's views", Views, Placed, Window, OnCanvas, Views, Send::Nothing),
++            ("a frame with the pointer on GPUI's content", Canvas, Placed, Window, OnCanvas, Canvas, Send::Nothing),
++        ];
++        for (name, current, kind, over, hit, target, send) in rows {
++            assert_eq!(
++                step(current, kind, over, hit),
++                Step { target, send },
++                "{name}"
++            );
++        }
++    }
++}
+diff --git a/gpui-pre-web/src/native_views.rs b/gpui-pre-web/src/native_views.rs
+new file mode 100644
+index 0000000..e202251
+--- /dev/null
++++ b/gpui-pre-web/src/native_views.rs
+@@ -0,0 +1,767 @@
++// `render_content`, `ensure_content_correctly_sized`, `create_slot`, `reset_anchor` and `detach_native_view` are
++// ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_views/content_manager.dart,
++// slots.dart and embedder.dart (`_resetAnchor`, `disposeView`) @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++//! Native views on the web: the app's DOM element shown under GPUI's canvas through the renderer's hole
++//! (gpui_wgpu's `native_view_hole`), placed in the frame that cuts it, with the browser giving pointer input over an
++//! uncovered view to the element itself ([`gpui::NativeViewInput::View`], as on macOS).
++//!
++//! DOM, inserted before the canvas, which is raised above it (`position: relative; z-index: 1`) while views exist:
++//!
++//! ```html
++//! <gpui-native-views>                       the canvas's box; takes the pointer the canvas lets through
++//!   <div>                                   slots, in paint order
++//!     <gpui-native-view-slot>               the view's bounds clipped to its content mask
++//!       <gpui-native-view>                  the view's bounds
++//!         <the app's element />
++//!   <div>                                   shields: where GPUI's content takes input over a view
++//! ```
++//!
++//! The canvas takes the pointer except while it is over an uncovered view (`native_view_layout::step`, decided by a
++//! capture listener on the document before any element sees the event): then it is `pointer-events: none` and the
++//! browser hit-tests what is under it. A press, move or scroll that lands on the layer or a shield is GPUI's, and a
++//! copy goes to the canvas. Events on the rest of the page are left alone.
++
++use crate::events::{EventListenerHandle, Phase};
++use crate::native_view_layout::{self, Hit, Over, Placement, PointerKind, PointerTarget, Send};
++use crate::window::WebWindowInner;
++use gpui::{Bounds, Hsla, NativeViewId, Pixels, Point, Rgba, Scene, point, px, size};
++use std::{
++    any::Any,
++    cell::{Cell, RefCell},
++    rc::{Rc, Weak},
++};
++use wasm_bindgen::{JsCast, JsValue, closure::Closure};
++
++/// gpui_ios's `CallbackSlot` (ios.rs): GPUI's callback, out of its slot while it runs, so GPUI re-entering the
++/// window finds no borrow, and not put back if GPUI replaced it meanwhile.
++struct CallbackSlot<T> {
++    value: RefCell<Option<T>>,
++    generation: Cell<u64>,
++}
++
++impl<T> Default for CallbackSlot<T> {
++    fn default() -> Self {
++        Self {
++            value: RefCell::new(None),
++            generation: Cell::new(0),
++        }
++    }
++}
++
++impl<T> CallbackSlot<T> {
++    fn set(&self, value: T) {
++        self.generation.set(self.generation.get().wrapping_add(1));
++        drop(self.value.replace(Some(value)));
++    }
++
++    fn take(&self) -> Option<T> {
++        // Even an empty take can mean the focused handler was withdrawn during a callback.
++        self.generation.set(self.generation.get().wrapping_add(1));
++        self.value.borrow_mut().take()
++    }
++
++    fn with<R>(&self, callback: impl FnOnce(&mut T) -> R) -> Option<R> {
++        let mut value = self.value.borrow_mut().take()?;
++        let generation = self.generation.get();
++        let result = callback(&mut value);
++        // Do not resurrect a handler that application code replaced or removed.
++        if self.generation.get() == generation {
++            drop(self.value.replace(Some(value)));
++        }
++        Some(result)
++    }
++}
++
++type HitTest = Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>;
++type Occluders = Box<dyn FnMut() -> Vec<Bounds<Pixels>>>;
++/// GPUI's callback that turns a platform's focus of a view into GPUI focus; the slots' `focusin` listeners share it.
++type Focused = Rc<CallbackSlot<Box<dyn FnMut(NativeViewId)>>>;
++
++#[derive(Default)]
++pub(crate) struct NativeViews {
++    /// Exists while views are attached: the canvas is raised and the document listened to only then.
++    layer: RefCell<Option<Layer>>,
++    hit_test: CallbackSlot<HitTest>,
++    occluders: CallbackSlot<Occluders>,
++    focused: Focused,
++}
++
++struct Layer {
++    root: web_sys::HtmlElement,
++    slots_element: web_sys::HtmlElement,
++    shields_element: web_sys::HtmlElement,
++    slots: Vec<Slot>,
++    /// The occluders the shields stand for, and the shield elements, one per occluder or more (spares hidden).
++    occluders_shown: Vec<Bounds<Pixels>>,
++    shields: Vec<web_sys::HtmlElement>,
++    /// A frame placed views since the shields were last updated: GPUI's hitboxes over them may have moved.
++    shields_stale: bool,
++    target: PointerTarget,
++    /// The translation and size last given to `root`, which follow the canvas's box.
++    root_box: Bounds<Pixels>,
++    /// The canvas's own values of the styles the layer changes, put back when the last view goes.
++    canvas_styles: Vec<(&'static str, String)>,
++    _listeners: Vec<EventListenerHandle>,
++}
++
++struct Slot {
++    id: NativeViewId,
++    slot: web_sys::HtmlElement,
++    wrapper: web_sys::HtmlElement,
++    content: web_sys::HtmlElement,
++    /// Where it was last placed, its rank in paint order and its background; `None` while hidden.
++    placed: Option<(Placement, usize, Hsla)>,
++    _focus: EventListenerHandle,
++}
++
++/// Removes its view's slot from the document when the last `NativeView` handle goes.
++struct Attachment {
++    id: NativeViewId,
++    window: Weak<WebWindowInner>,
++}
++
++impl Drop for Attachment {
++    fn drop(&mut self) {
++        if let Some(window) = self.window.upgrade() {
++            window.detach_native_view(self.id);
++        }
++    }
++}
++
++/// The pointer events the document's capture listener decides on, each with how it reads one. Add a row to decide on
++/// another event.
++const POINTER_EVENTS: [(&str, fn(&web_sys::MouseEvent) -> PointerKind); 5] = [
++    ("pointermove", |event| match event.buttons() {
++        0 => PointerKind::Hover,
++        _ => PointerKind::Drag,
++    }),
++    ("pointerdown", |_| PointerKind::Press),
++    ("pointerup", release_kind),
++    ("pointercancel", release_kind),
++    ("wheel", |_| PointerKind::Wheel),
++];
++
++/// The canvas styles the layer sets while views exist, and the canvas's `pointer-events`, which the layer toggles.
++const CANVAS_STYLES: [(&str, &str); 3] = [
++    ("position", "relative"),
++    ("z-index", "1"),
++    ("pointer-events", "auto"),
++];
++
++fn release_kind(event: &web_sys::MouseEvent) -> PointerKind {
++    match event
++        .dyn_ref::<web_sys::PointerEvent>()
++        .map(|event| event.pointer_type())
++        .as_deref()
++    {
++        Some("touch") => PointerKind::TouchRelease,
++        _ => PointerKind::Release,
++    }
++}
++
++fn set_styles(element: &web_sys::HtmlElement, styles: &[(&str, &str)]) {
++    let style = element.style();
++    for (property, value) in styles {
++        if let Err(error) = style.set_property(property, value) {
++            log::warn!("native views: cannot set {property}: {error:?}");
++        }
++    }
++}
++
++fn create(document: &web_sys::Document, tag: &str) -> Option<web_sys::HtmlElement> {
++    document
++        .create_element(tag)
++        .ok()
++        .and_then(|element| element.dyn_into().ok())
++}
++
++/// Flutter's `_resetAnchor`: transforms place the element from its top left.
++fn reset_anchor(element: &web_sys::HtmlElement) {
++    set_styles(
++        element,
++        &[
++            ("transform-origin", "0 0 0"),
++            ("position", "absolute"),
++            ("left", "0"),
++            ("top", "0"),
++        ],
++    );
++}
++
++fn place(element: &web_sys::HtmlElement, bounds: Bounds<Pixels>) {
++    let css = |value: Pixels| format!("{}px", f32::from(value));
++    set_styles(
++        element,
++        &[
++            (
++                "transform",
++                &format!(
++                    "translate({}, {})",
++                    css(bounds.origin.x),
++                    css(bounds.origin.y)
++                ),
++            ),
++            ("width", &css(bounds.size.width)),
++            ("height", &css(bounds.size.height)),
++        ],
++    );
++}
++
++/// Flutter's `_ensureContentCorrectlySized`: fills the slot unless the app sized the element.
++fn ensure_content_correctly_sized(content: &web_sys::HtmlElement) {
++    let style = content.style();
++    for property in ["height", "width"] {
++        if style
++            .get_property_value(property)
++            .unwrap_or_default()
++            .is_empty()
++        {
++            log::warn!(
++                "native views: {property} of the view's element is not set; defaulting to 100%"
++            );
++            set_styles(content, &[(property, "100%")]);
++        }
++    }
++}
++
++/// Dispatches a copy of `event` on `target` in a microtask, right after the listener returns: dispatching it from the
++/// listener would run that listener (a wasm-bindgen `FnMut`) inside itself, which throws. The copy is the event's
++/// own constructor with the event itself as its init dictionary, which keeps every field (pointer id, buttons,
++/// deltas).
++fn send_copy(event: &web_sys::MouseEvent, target: web_sys::EventTarget) {
++    let copy = js_sys::Reflect::get(event, &JsValue::from_str("constructor"))
++        .ok()
++        .and_then(|constructor| constructor.dyn_into::<js_sys::Function>().ok())
++        .and_then(|constructor| {
++            let arguments = js_sys::Array::of2(&JsValue::from(event.type_()), event);
++            js_sys::Reflect::construct(&constructor, &arguments).ok()
++        });
++    let queue_microtask =
++        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("queueMicrotask"))
++            .ok()
++            .and_then(|queue| queue.dyn_into::<js_sys::Function>().ok());
++    let (Some(copy), Some(queue_microtask)) = (copy, queue_microtask) else {
++        log::warn!("native views: cannot copy a {} event", event.type_());
++        return;
++    };
++    let dispatch = Closure::once_into_js(move || {
++        target.dispatch_event(copy.unchecked_ref()).ok();
++    });
++    queue_microtask.call1(&JsValue::UNDEFINED, &dispatch).ok();
++}
++
++impl NativeViews {
++    pub(crate) fn target(&self) -> PointerTarget {
++        self.layer
++            .borrow()
++            .as_ref()
++            .map_or(PointerTarget::Canvas, |layer| layer.target)
++    }
++
++    pub(crate) fn set_hit_test(&self, callback: HitTest) {
++        self.hit_test.set(callback);
++    }
++
++    pub(crate) fn set_occluders(&self, callback: Occluders) {
++        self.occluders.set(callback);
++    }
++
++    pub(crate) fn set_focused(&self, callback: Box<dyn FnMut(NativeViewId)>) {
++        self.focused.set(callback);
++    }
++
++    fn shows_views(&self) -> bool {
++        self.layer
++            .borrow()
++            .as_ref()
++            .is_some_and(|layer| layer.slots.iter().any(|slot| slot.placed.is_some()))
++    }
++
++    fn over(&self, position: Point<Pixels>) -> Over {
++        match self.hit_test.with(|hit_test| hit_test(position)).flatten() {
++            Some(_) => Over::View,
++            None => Over::Window,
++        }
++    }
++}
++
++impl Layer {
++    fn set_target(&mut self, target: PointerTarget, canvas: &web_sys::HtmlCanvasElement) {
++        if std::mem::replace(&mut self.target, target) == target {
++            return;
++        }
++        let pointer_events = match target {
++            PointerTarget::Canvas => "auto",
++            PointerTarget::Views => "none",
++        };
++        set_styles(canvas, &[("pointer-events", pointer_events)]);
++    }
++
++    /// What the browser gave an event to.
++    fn hit(
++        &self,
++        target: Option<web_sys::EventTarget>,
++        canvas: &web_sys::HtmlCanvasElement,
++    ) -> Hit {
++        let Some(node) = target.and_then(|target| target.dyn_into::<web_sys::Node>().ok()) else {
++            return Hit::Outside;
++        };
++        if js_sys::Object::is(&node, canvas) {
++            Hit::Canvas
++        } else if self
++            .slots
++            .iter()
++            .any(|slot| slot.slot.contains(Some(&node)))
++        {
++            Hit::Element
++        } else if self.root.contains(Some(&node)) {
++            Hit::Cover
++        } else {
++            Hit::Outside
++        }
++    }
++}
++
++impl WebWindowInner {
++    pub(crate) fn attach_native_view(
++        self: &Rc<Self>,
++        id: NativeViewId,
++        content: web_sys::HtmlElement,
++    ) -> Option<Box<dyn Any>> {
++        let document = self.browser_window.document()?;
++        if self.native_views.layer.borrow().is_none() {
++            let layer = self.create_layer(&document)?;
++            *self.native_views.layer.borrow_mut() = Some(layer);
++        }
++        let slot = self.render_content(&document, id, content)?;
++        self.native_views
++            .layer
++            .borrow_mut()
++            .as_mut()?
++            .slots
++            .push(slot);
++        Some(Box::new(Attachment {
++            id,
++            window: Rc::downgrade(self),
++        }))
++    }
++
++    fn create_layer(self: &Rc<Self>, document: &web_sys::Document) -> Option<Layer> {
++        let root = create(document, "gpui-native-views")?;
++        let slots_element = create(document, "div")?;
++        let shields_element = create(document, "div")?;
++        reset_anchor(&root);
++        set_styles(
++            &root,
++            &[
++                ("z-index", "0"),
++                ("overflow", "hidden"),
++                ("touch-action", "none"),
++                ("user-select", "none"),
++                ("-webkit-user-select", "none"),
++            ],
++        );
++        for (container, z_index) in [(&slots_element, "0"), (&shields_element, "1")] {
++            set_styles(
++                container,
++                &[
++                    ("position", "absolute"),
++                    ("inset", "0"),
++                    ("z-index", z_index),
++                    ("pointer-events", "none"),
++                ],
++            );
++            root.append_child(container).ok()?;
++        }
++        self.canvas
++            .parent_node()?
++            .insert_before(&root, Some(&self.canvas))
++            .ok()?;
++        let style = self.canvas.style();
++        let canvas_styles = CANVAS_STYLES
++            .iter()
++            .map(|&(property, _)| {
++                (
++                    property,
++                    style.get_property_value(property).unwrap_or_default(),
++                )
++            })
++            .collect();
++        set_styles(&self.canvas, &CANVAS_STYLES);
++
++        let listeners = POINTER_EVENTS
++            .iter()
++            .map(|&(event_name, kind)| {
++                let window = Rc::downgrade(self);
++                EventListenerHandle::add_non_passive_in(
++                    document.as_ref(),
++                    event_name,
++                    Phase::Capture,
++                    move |event| {
++                        if let Some(window) = window.upgrade() {
++                            let event: web_sys::MouseEvent = event.unchecked_into();
++                            window.decide_native_view_pointer(&event, kind(&event));
++                        }
++                    },
++                )
++            })
++            .collect();
++        Some(Layer {
++            root,
++            slots_element,
++            shields_element,
++            slots: Vec::new(),
++            occluders_shown: Vec::new(),
++            shields: Vec::new(),
++            shields_stale: false,
++            target: PointerTarget::Canvas,
++            root_box: Bounds::default(),
++            canvas_styles,
++            _listeners: listeners,
++        })
++    }
++
++    /// Flutter's `renderContent` and `createPlatformViewSlot`. Flutter's slot reveals the content through a
++    /// `<slot>` in its shadow root; the canvas here has none, so the slot holds the content's wrapper itself.
++    fn render_content(
++        &self,
++        document: &web_sys::Document,
++        id: NativeViewId,
++        content: web_sys::HtmlElement,
++    ) -> Option<Slot> {
++        let slot = create(document, "gpui-native-view-slot")?;
++        set_styles(
++            &slot,
++            &[
++                ("pointer-events", "auto"),
++                ("overflow", "hidden"),
++                ("display", "none"),
++            ],
++        );
++        reset_anchor(&slot);
++        let wrapper = create(document, "gpui-native-view")?;
++        reset_anchor(&wrapper);
++        ensure_content_correctly_sized(&content);
++        wrapper.append_child(&content).ok()?;
++        slot.append_child(&wrapper).ok()?;
++        self.native_views
++            .layer
++            .borrow()
++            .as_ref()?
++            .slots_element
++            .append_child(&slot)
++            .ok()?;
++        let focused = Rc::clone(&self.native_views.focused);
++        let focus = EventListenerHandle::add(slot.as_ref(), "focusin", move |_| {
++            focused.with(|callback| callback(id));
++        });
++        Some(Slot {
++            id,
++            slot,
++            wrapper,
++            content,
++            placed: None,
++            _focus: focus,
++        })
++    }
++
++    /// Whether DOM focus is inside `element`.
++    fn holds_focus(&self, element: &web_sys::Node) -> bool {
++        self.browser_window
++            .document()
++            .and_then(|document| document.active_element())
++            .is_some_and(|active| element.contains(Some(&active)))
++    }
++
++    /// Flutter's `clearPlatformView` / `disposeView`: the slot leaves the document with the content in it. Focus
++    /// inside it goes back to GPUI's input element (the browser would leave it on the body, where no key reaches
++    /// GPUI). The last view takes the layer with it: the canvas gets its own styles back and the document's
++    /// listeners go.
++    fn detach_native_view(&self, id: NativeViewId) {
++        let slot = {
++            let mut layer = self.native_views.layer.borrow_mut();
++            let Some(layer) = layer.as_mut() else {
++                return;
++            };
++            let Some(index) = layer.slots.iter().position(|slot| slot.id == id) else {
++                return;
++            };
++            layer.slots.remove(index)
++        };
++        // Focusing fires focus events GPUI may answer, so no borrow is held.
++        if self.holds_focus(&slot.slot) {
++            self.ime_mirror.focus();
++        }
++        slot.slot.remove();
++        let mut layer = self.native_views.layer.borrow_mut();
++        let Some(current) = layer.as_mut() else {
++            return;
++        };
++        if current.slots.is_empty() {
++            current.root.remove();
++            let restore: Vec<(&str, &str)> = current
++                .canvas_styles
++                .iter()
++                .map(|(property, value)| (*property, value.as_str()))
++                .collect();
++            set_styles(&self.canvas, &restore);
++            *layer = None;
++        } else if !current.slots.iter().any(|slot| slot.placed.is_some()) {
++            current.set_target(PointerTarget::Canvas, &self.canvas);
++        }
++    }
++
++    /// Places every view as `scene` shows it, before the scene is drawn: the DOM changes and the canvas reach the
++    /// screen in the same browser frame. A view whose placement is unchanged is not touched.
++    pub(crate) fn place_native_views(&self, scene: &Scene) {
++        let mut layer = self.native_views.layer.borrow_mut();
++        let Some(layer) = layer.as_mut() else {
++            return;
++        };
++        // The root follows the canvas's box wherever the page puts it: its translation moves by how far the two
++        // boxes are apart (fractional, as the browser lays them out), whatever the root's containing block is.
++        let canvas = self.canvas.get_bounding_client_rect();
++        let root = layer.root.get_bounding_client_rect();
++        let root_box = Bounds::new(
++            layer.root_box.origin
++                + point(
++                    px((canvas.left() - root.left()) as f32),
++                    px((canvas.top() - root.top()) as f32),
++                ),
++            size(px(canvas.width() as f32), px(canvas.height() as f32)),
++        );
++        if root_box != layer.root_box {
++            place(&layer.root, root_box);
++            layer.root_box = root_box;
++        }
++        let scale_factor = self.state.borrow().scale_factor;
++        let showed = layer.slots.iter().any(|slot| slot.placed.is_some());
++        for slot in layer.slots.iter_mut() {
++            let shown = scene
++                .native_views
++                .iter()
++                .enumerate()
++                .find(|(_, native_view)| native_view.id == slot.id)
++                .map(|(rank, native_view)| {
++                    (
++                        native_view_layout::placement(native_view, scale_factor),
++                        rank,
++                        native_view.background,
++                    )
++                });
++            if shown == slot.placed {
++                continue;
++            }
++            match shown {
++                Some((placement, rank, background)) => {
++                    place(&slot.slot, placement.slot);
++                    place(&slot.wrapper, placement.view);
++                    // `NativeView::set_background`: shows where the element has not caught up with its slot,
++                    // as a cross-origin iframe's own process does for a frame after a resize.
++                    let Rgba { r, g, b, a } = background.into();
++                    let background = format!("rgba({}, {}, {}, {a})", r * 255., g * 255., b * 255.);
++                    set_styles(
++                        &slot.slot,
++                        &[
++                            ("display", ""),
++                            ("z-index", &rank.to_string()),
++                            ("background-color", &background),
++                        ],
++                    );
++                }
++                None => set_styles(&slot.slot, &[("display", "none")]),
++            }
++            slot.placed = shown;
++        }
++        let shows = layer.slots.iter().any(|slot| slot.placed.is_some());
++        layer.shields_stale = true;
++        // Views that start to show take the pointer until it is seen over GPUI's content: a touch has no hover
++        // to switch on, so its first tap must find the element. The layer sends anything else back.
++        match (showed, shows) {
++            (false, true) => layer.set_target(PointerTarget::Views, &self.canvas),
++            (true | false, false) => layer.set_target(PointerTarget::Canvas, &self.canvas),
++            (true, true) => {}
++        }
++    }
++
++    /// After a frame that placed views, outside GPUI's update: a shield over each region of a view where GPUI's
++    /// content takes input, so the browser hit-tests the pointer there to GPUI's layer, not the view's element. Then
++    /// the pointer, if it stayed still, is decided again where the frame may have moved content under it.
++    pub(crate) fn update_native_view_shields(&self) {
++        let stale = self
++            .native_views
++            .layer
++            .borrow_mut()
++            .as_mut()
++            .is_some_and(|layer| std::mem::replace(&mut layer.shields_stale, false));
++        if !stale {
++            return;
++        }
++        self.show_shields();
++        let kind = match self.pressed_button.get() {
++            Some(_) => PointerKind::Drag,
++            None => PointerKind::Placed,
++        };
++        let position = self.state.borrow().mouse_position;
++        let over = self.native_views.over(position);
++        if let Some(layer) = self.native_views.layer.borrow_mut().as_mut() {
++            // A frame has no event target; the canvas stands in (the `Placed` rows don't read it).
++            let step = native_view_layout::step(layer.target, kind, over, Hit::Canvas);
++            layer.set_target(step.target, &self.canvas);
++        }
++    }
++
++    /// Puts a shield over every occluder GPUI's last frame has.
++    fn show_shields(&self) {
++        let Some(occluders) = self.native_views.occluders.with(|occluders| occluders()) else {
++            return;
++        };
++        let mut layer = self.native_views.layer.borrow_mut();
++        let (Some(layer), Some(document)) = (layer.as_mut(), self.browser_window.document()) else {
++            return;
++        };
++        if layer.occluders_shown == occluders {
++            return;
++        }
++        while layer.shields.len() < occluders.len() {
++            let Some(shield) = create(&document, "div") else {
++                return;
++            };
++            reset_anchor(&shield);
++            set_styles(&shield, &[("pointer-events", "auto")]);
++            if layer.shields_element.append_child(&shield).is_err() {
++                return;
++            }
++            layer.shields.push(shield);
++        }
++        for (index, shield) in layer.shields.iter().enumerate() {
++            match occluders.get(index) {
++                Some(occluder) => {
++                    place(shield, *occluder);
++                    set_styles(shield, &[("display", "")]);
++                }
++                None => set_styles(shield, &[("display", "none")]),
++            }
++        }
++        layer.occluders_shown = occluders;
++    }
++
++    /// The document's capture listener, ahead of every element: which of the canvas and what is under it takes the
++    /// pointer from now on, and whether this event is GPUI's after all.
++    fn decide_native_view_pointer(&self, event: &web_sys::MouseEvent, kind: PointerKind) {
++        // A copy sent to the canvas comes through here too, already decided.
++        if !event.is_trusted() || !self.native_views.shows_views() {
++            return;
++        }
++        let Some(hit) = self
++            .native_views
++            .layer
++            .borrow()
++            .as_ref()
++            .map(|layer| layer.hit(event.target(), &self.canvas))
++        else {
++            return;
++        };
++        let canvas = self.canvas.get_bounding_client_rect();
++        let position = point(
++            px((f64::from(event.client_x()) - canvas.left()) as f32),
++            px((f64::from(event.client_y()) - canvas.top()) as f32),
++        );
++        let over = match (kind, hit) {
++            // Off the window GPUI's pointer is not there; a drag stays with its press's target, wherever it is.
++            (_, Hit::Outside) | (PointerKind::Drag, _) => Over::Window,
++            (
++                PointerKind::Hover
++                | PointerKind::Press
++                | PointerKind::Wheel
++                | PointerKind::Release
++                | PointerKind::TouchRelease
++                | PointerKind::Placed,
++                Hit::Canvas | Hit::Cover | Hit::Element,
++            ) => {
++                self.state.borrow_mut().mouse_position = position;
++                self.native_views.over(position)
++            }
++        };
++        let step = {
++            let mut layer = self.native_views.layer.borrow_mut();
++            let Some(layer) = layer.as_mut() else {
++                return;
++            };
++            let step = native_view_layout::step(layer.target, kind, over, hit);
++            layer.set_target(step.target, &self.canvas);
++            step
++        };
++        let target: Option<web_sys::EventTarget> = match step.send {
++            Send::Nothing => return,
++            Send::Canvas => Some(self.canvas.clone().into()),
++            Send::ElementUnder => {
++                // Every shield is put back where GPUI's last frame has its occluders, changed or not.
++                if let Some(layer) = self.native_views.layer.borrow_mut().as_mut() {
++                    layer.occluders_shown.clear();
++                }
++                self.show_shields();
++                // Only an element in a slot: the layer or a shield still there would take the copy back here.
++                self.browser_window
++                    .document()
++                    .and_then(|document| {
++                        document
++                            .element_from_point(event.client_x() as f32, event.client_y() as f32)
++                    })
++                    .filter(|element| {
++                        self.native_views
++                            .layer
++                            .borrow()
++                            .as_ref()
++                            .is_some_and(|layer| {
++                                layer.hit(Some(element.clone().into()), &self.canvas)
++                                    == Hit::Element
++                            })
++                    })
++                    .map(Into::into)
++            }
++        };
++        event.prevent_default();
++        event.stop_propagation();
++        if let Some(target) = target {
++            send_copy(event, target);
++        }
++    }
++
++    /// Gives the view's element DOM focus, or takes it back to GPUI's own input element.
++    /// Focusing fires focus events GPUI may answer, so the layer is not borrowed meanwhile.
++    pub(crate) fn focus_native_view(&self, id: Option<NativeViewId>) {
++        let Some((content, root)) = self.native_views.layer.borrow().as_ref().map(|layer| {
++            let content = id.and_then(|id| {
++                layer
++                    .slots
++                    .iter()
++                    .find(|slot| slot.id == id)
++                    .map(|slot| slot.content.clone())
++            });
++            (content, layer.root.clone())
++        }) else {
++            return;
++        };
++        match (id, content) {
++            // Focus already inside the element (an `<input>` in it) stays where the user put it.
++            (Some(_), Some(content)) if self.holds_focus(&content) => {}
++            (Some(_), Some(content)) => {
++                // GPUI moved its focus; the element's `focusin` must not report it back.
++                let callback = self.native_views.focused.take();
++                content.focus().ok();
++                if let Some(callback) = callback {
++                    self.native_views.focused.set(callback);
++                }
++            }
++            (Some(_), None) => {}
++            (None, _) => {
++                if self.holds_focus(&root) {
++                    self.ime_mirror.focus();
++                }
++            }
++        }
++    }
++}
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index 3d1ba31..4d6763e 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -1,6 +1,7 @@
+ use crate::display::WebDisplay;
+ use crate::events::{ClickState, EventListenerHandle, TouchIds, WebEventListeners};
+ use crate::ime_mirror::ImeMirror;
++use crate::native_views::NativeViews;
+ use crate::platform::WebWindowLifecycle;
+ use crate::viewport::WebViewport;
+ use std::sync::Arc;
+@@ -92,6 +93,8 @@ pub(crate) struct WebWindowInner {
+     /// so the shadow above clears exactly when gpui's recognizer stops treating
+     /// the touch as a tap.
+     pub(crate) touch_slop: Cell<Pixels>,
++    /// DOM elements shown under the canvas (`NativeView`).
++    pub(crate) native_views: NativeViews,
+     mql_handle: RefCell<Option<MqlHandle>>,
+     pending_physical_size: Cell<Option<(u32, u32)>>,
+     raf_id: Cell<Option<i32>>,
+@@ -237,6 +240,7 @@ impl WebWindow {
+             gesture_start_visual_viewport_height: Cell::new(0.0),
+             touch_tap_candidate: Cell::new(None),
+             touch_slop: Cell::new(params.gesture_tuning.touch_slop),
++            native_views: NativeViews::default(),
+             mql_handle: RefCell::new(None),
+             pending_physical_size: Cell::new(None),
+             raf_id: Cell::new(None),
+@@ -406,6 +410,7 @@ impl WebWindow {
+                     })
+                 },
+             );
++            inner.update_native_view_shields();
+         })
+     }
+ }
+@@ -495,6 +500,7 @@ impl WebWindowInner {
+                     })
+                 },
+             );
++            this.update_native_view_shields();
+         });
+ 
+         let js_func: js_sys::Function =
+@@ -1095,9 +1101,39 @@ impl PlatformWindow for WebWindow {
+             drop(state);
+         }
+ 
++        self.inner.place_native_views(scene);
+         self.inner.state.borrow_mut().renderer.draw(scene);
+     }
+ 
++    unsafe fn attach_native_view(
++        &self,
++        id: gpui::NativeViewId,
++        view: std::ptr::NonNull<std::ffi::c_void>,
++    ) -> Option<Box<dyn std::any::Any>> {
++        // SAFETY: `NativeView::new`'s contract on the web: `view` points to a live `web_sys::HtmlElement`.
++        let content = unsafe { view.cast::<web_sys::HtmlElement>().as_ref() }.clone();
++        self.inner.attach_native_view(id, content)
++    }
++
++    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
++        self.inner.focus_native_view(id);
++    }
++
++    fn on_hit_test_native_view(
++        &self,
++        callback: Box<dyn FnMut(Point<Pixels>) -> Option<gpui::NativeViewId>>,
++    ) {
++        self.inner.native_views.set_hit_test(callback);
++    }
++
++    fn on_native_view_occluders(&self, callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {
++        self.inner.native_views.set_occluders(callback);
++    }
++
++    fn on_native_view_focused(&self, callback: Box<dyn FnMut(gpui::NativeViewId)>) {
++        self.inner.native_views.set_focused(callback);
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.inner.state.borrow().renderer.sprite_atlas().clone()
+     }
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
+index 1ed0f2c..4c41ee8 100644
+--- a/gpui-pre-wgpu/src/wgpu_renderer.rs
++++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
+@@ -1154,7 +1154,10 @@ impl WgpuRenderer {
+             self.shows_native_views = shows_native_views;
+             self.apply_alpha_mode();
+             if shows_native_views {
+-                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
++                native_view_hole::log_alpha_mode(
++                    self.transparent_alpha_mode,
++                    self.core().map(|core| core.adapter_info.backend),
++                );
+             }
+         }
+ 
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+index aebde2c..1468650 100644
+--- a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
++++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+@@ -30,7 +30,13 @@ pub(super) fn color_target(format: wgpu::TextureFormat) -> wgpu::ColorTargetStat
+ 
+ /// Native views need a compositor that blends the window. NVIDIA's Vulkan WSI has been
+ /// known to offer only `Opaque` on Wayland, where every hole then shows black.
+-pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode) {
++pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode, backend: Option<wgpu::Backend>) {
++    // A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to true and wgpu
++    // leaves alone, whatever surface mode wgpu reports (only `Opaque`).
++    if cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl) {
++        log::info!("native views: WebGL2 canvas, premultiplied alpha (the context's default)");
++        return;
++    }
+     match alpha_mode {
+         wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
+             log::info!("native views: window surface alpha mode {alpha_mode:?}")
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 0fba390..7510a58 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1445,6 +1445,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+         _callback: Box<dyn FnMut(Point<Pixels>) -> Option<crate::NativeViewId>>,
+     ) {
+     }
++    /// Registers the callback that gives the regions over shown native views
++    /// where the window's own content takes mouse input: elements with a
++    /// hitbox painted after a view. A platform whose views take input
++    /// themselves (the web) keeps these regions for the window. Asked after a
++    /// frame is drawn, outside any window update.
++    fn on_native_view_occluders(&self, _callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {}
+     /// Registers the callback invoked when the user moves keyboard input to
+     /// a native view through the platform, such as by clicking in it.
+     fn on_native_view_focused(&self, _callback: Box<dyn FnMut(crate::NativeViewId)>) {}
 diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
 index 0b7b157..af08002 100644
 --- a/gpui-pre/src/platform/test/window.rs
@@ -87,23 +1421,25 @@ index 0b7b157..af08002 100644
      fn on_native_view_focused(&self, callback: Box<dyn FnMut(NativeViewId)>) {
          self.0.lock().native_view_focused_callback = Some(callback);
      }
-diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
-index 0fba390..7510a58 100644
---- a/gpui-pre/src/platform.rs
-+++ b/gpui-pre/src/platform.rs
-@@ -1445,6 +1445,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
-         _callback: Box<dyn FnMut(Point<Pixels>) -> Option<crate::NativeViewId>>,
-     ) {
-     }
-+    /// Registers the callback that gives the regions over shown native views
-+    /// where the window's own content takes mouse input: elements with a
-+    /// hitbox painted after a view. A platform whose views take input
-+    /// themselves (the web) keeps these regions for the window. Asked after a
-+    /// frame is drawn, outside any window update.
-+    fn on_native_view_occluders(&self, _callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {}
-     /// Registers the callback invoked when the user moves keyboard input to
-     /// a native view through the platform, such as by clicking in it.
-     fn on_native_view_focused(&self, _callback: Box<dyn FnMut(crate::NativeViewId)>) {}
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 98dac26..249add8 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -2415,6 +2415,14 @@ impl Window {
+                     .flatten()
+             })
+         });
++        platform_window.on_native_view_occluders({
++            let mut cx = cx.to_async();
++            Box::new(move || {
++                handle
++                    .update(&mut cx, |_, window, _| window.native_view_occluders())
++                    .unwrap_or_default()
++            })
++        });
+         platform_window.on_key_down_before_native_view({
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
 index 3eee104..924b8ef 100644
 --- a/gpui-pre/src/window/native_view.rs
@@ -206,1085 +1542,3 @@ index 3eee104..924b8ef 100644
      #[gpui::test]
      fn mouse_press_on_a_native_view_reaches_nothing_behind_it(cx: &mut TestAppContext) {
          let window = open_window(cx);
-diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 98dac26..249add8 100644
---- a/gpui-pre/src/window.rs
-+++ b/gpui-pre/src/window.rs
-@@ -2415,6 +2415,14 @@ impl Window {
-                     .flatten()
-             })
-         });
-+        platform_window.on_native_view_occluders({
-+            let mut cx = cx.to_async();
-+            Box::new(move || {
-+                handle
-+                    .update(&mut cx, |_, window, _| window.native_view_occluders())
-+                    .unwrap_or_default()
-+            })
-+        });
-         platform_window.on_key_down_before_native_view({
-             let mut cx = cx.to_async();
-             Box::new(move |event| {
-diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
-index 04593d2..f572495 100644
---- a/gpui-pre-web/src/events.rs
-+++ b/gpui-pre-web/src/events.rs
-@@ -11,6 +11,7 @@ use wasm_bindgen::prelude::*;
- use web_time::Instant;
- 
- use crate::ime_mirror::ImeMirror;
-+use crate::native_view_layout::PointerTarget;
- use crate::window::WebWindowInner;
- 
- pub struct WebEventListeners {
-@@ -27,6 +28,8 @@ pub(crate) struct EventListenerHandle {
-     target: web_sys::EventTarget,
-     event_name: &'static str,
-     closure: Closure<dyn FnMut(JsValue)>,
-+    /// Registered for the capture phase, which removal must match.
-+    capture: bool,
- }
- 
- impl EventListenerHandle {
-@@ -43,6 +46,7 @@ impl EventListenerHandle {
-             target: target.clone(),
-             event_name,
-             closure,
-+            capture: false,
-         }
-     }
- 
-@@ -54,12 +58,32 @@ impl EventListenerHandle {
-         target: &web_sys::EventTarget,
-         event_name: &'static str,
-         handler: impl FnMut(JsValue) + 'static,
-+    ) -> Self {
-+        Self::add_with_options(target, event_name, false, handler)
-+    }
-+
-+    /// Registers for the capture phase, `{passive: false}`: the handler sees the event before its target does,
-+    /// and may cancel it (native views decide who takes the pointer there).
-+    pub(crate) fn add_capture(
-+        target: &web_sys::EventTarget,
-+        event_name: &'static str,
-+        handler: impl FnMut(JsValue) + 'static,
-+    ) -> Self {
-+        Self::add_with_options(target, event_name, true, handler)
-+    }
-+
-+    fn add_with_options(
-+        target: &web_sys::EventTarget,
-+        event_name: &'static str,
-+        capture: bool,
-+        handler: impl FnMut(JsValue) + 'static,
-     ) -> Self {
-         let closure = Closure::<dyn FnMut(JsValue)>::new(handler);
-         let target_js: &JsValue = target.as_ref();
-         let callback_js: &JsValue = closure.as_ref();
-         let options = js_sys::Object::new();
-         js_sys::Reflect::set(&options, &"passive".into(), &false.into()).ok();
-+        js_sys::Reflect::set(&options, &"capture".into(), &capture.into()).ok();
-         if let Ok(add_fn_val) = js_sys::Reflect::get(target_js, &"addEventListener".into()) {
-             if let Ok(add_fn) = add_fn_val.dyn_into::<js_sys::Function>() {
-                 add_fn
-@@ -71,6 +95,7 @@ impl EventListenerHandle {
-             target: target.clone(),
-             event_name,
-             closure,
-+            capture,
-         }
-     }
- }
-@@ -78,9 +103,10 @@ impl EventListenerHandle {
- impl Drop for EventListenerHandle {
-     fn drop(&mut self) {
-         self.target
--            .remove_event_listener_with_callback(
-+            .remove_event_listener_with_callback_and_bool(
-                 self.event_name,
-                 self.closure.as_ref().unchecked_ref(),
-+                self.capture,
-             )
-             .ok();
-     }
-@@ -620,6 +646,10 @@ impl WebWindowInner {
-     fn register_pointer_leave(self: &Rc<Self>) -> EventListenerHandle {
-         let this = Rc::clone(self);
-         self.listen("pointerleave", move |event: JsValue| {
-+            // The canvas let the pointer through to a native view's element: it is still over the window.
-+            if this.native_views.target() == PointerTarget::Views {
-+                return;
-+            }
-             let event: web_sys::PointerEvent = event.unchecked_into();
- 
-             let position = pointer_position_in_element(&event);
-@@ -1287,7 +1317,10 @@ pub(crate) fn is_mac_platform(os: gpui::OperatingSystem) -> bool {
- 
- /// Flutter's `operatingSystem == iOs || android` test (text_editing.rs).
- pub(crate) fn is_mobile(os: gpui::OperatingSystem) -> bool {
--    matches!(os, gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android)
-+    matches!(
-+        os,
-+        gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android
-+    )
- }
- 
- pub(crate) fn platform_info(browser_window: &web_sys::Window) -> gpui::PlatformInfo {
-diff --git a/gpui-pre-web/src/gpui_web.rs b/gpui-pre-web/src/gpui_web.rs
-index 82157d4..351d342 100644
---- a/gpui-pre-web/src/gpui_web.rs
-+++ b/gpui-pre-web/src/gpui_web.rs
-@@ -28,6 +28,10 @@ mod keyboard_inset;
- #[cfg(target_family = "wasm")]
- mod logging;
- #[cfg(target_family = "wasm")]
-+mod native_view_layout;
-+#[cfg(target_family = "wasm")]
-+mod native_views;
-+#[cfg(target_family = "wasm")]
- mod page_lifecycle;
- #[cfg(target_family = "wasm")]
- mod platform;
-diff --git a/gpui-pre-web/src/native_view_layout.rs b/gpui-pre-web/src/native_view_layout.rs
-new file mode 100644
-index 0000000..1883754
---- /dev/null
-+++ b/gpui-pre-web/src/native_view_layout.rs
-@@ -0,0 +1,230 @@
-+//! Native views on the web, the decisions: where a view's DOM element goes under the canvas, and whether the canvas
-+//! or the element under it takes the pointer. Pure, so it is tested on any host; `native_views.rs` is the DOM shell.
-+
-+use gpui::{Bounds, PaintNativeView, Pixels, ScaledPixels, point, px, size};
-+
-+/// Where a shown view's elements go, in CSS pixels: its slot (the view's bounds clipped to its content mask, from the
-+/// canvas's top left) and the view's own box inside the slot.
-+#[derive(Clone, Copy, Debug, PartialEq)]
-+pub(crate) struct Placement {
-+    pub(crate) slot: Bounds<Pixels>,
-+    pub(crate) view: Bounds<Pixels>,
-+}
-+
-+/// Both boxes are rounded outwards to whole device pixels: the renderer's hole covers exactly the device pixels whose
-+/// centres are inside the view, so an element covering every pixel the bounds touch leaves no seam at a fractional
-+/// scale (the canvas hides the overhang).
-+pub(crate) fn placement(native_view: &PaintNativeView, scale_factor: f32) -> Placement {
-+    let outwards = |bounds: Bounds<ScaledPixels>| {
-+        let left = bounds.origin.x.0.floor();
-+        let top = bounds.origin.y.0.floor();
-+        let right = (bounds.origin.x.0 + bounds.size.width.0).ceil();
-+        let bottom = (bounds.origin.y.0 + bounds.size.height.0).ceil();
-+        Bounds::new(
-+            point(px(left / scale_factor), px(top / scale_factor)),
-+            size(
-+                px((right - left).max(0.) / scale_factor),
-+                px((bottom - top).max(0.) / scale_factor),
-+            ),
-+        )
-+    };
-+    let slot = outwards(
-+        native_view
-+            .bounds
-+            .intersect(&native_view.content_mask.bounds),
-+    );
-+    let view = outwards(native_view.bounds);
-+    Placement {
-+        slot,
-+        view: Bounds::new(view.origin - slot.origin, view.size),
-+    }
-+}
-+
-+/// Who the browser hit-tests the pointer to while a view shows: GPUI's canvas, or what is under it (the canvas's
-+/// `pointer-events: none`), where an uncovered view's element takes trusted events of its own (an iframe's clicks
-+/// and scrolls, a video's controls) and the native view layer and its shields take the rest back for GPUI.
-+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-+pub(crate) enum PointerTarget {
-+    /// The canvas's own `pointer-events: auto`, before any view shows.
-+    #[default]
-+    Canvas,
-+    Views,
-+}
-+
-+/// A pointer event seen by the document's capture listener.
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum PointerKind {
-+    /// `pointermove` with no button pressed.
-+    Hover,
-+    /// `pointermove` with a button pressed: the press's target keeps it.
-+    Drag,
-+    Press,
-+    Wheel,
-+    /// A mouse or pen `pointerup` / `pointercancel`.
-+    Release,
-+    /// A touch `pointerup` / `pointercancel`: a touch has no hover to switch on, so the next one must find the
-+    /// view's element, and the layer and shields send it back if it lands on GPUI's content.
-+    TouchRelease,
-+}
-+
-+/// What GPUI's hit test says is at the pointer (`hit_test_native_view`).
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum Over {
-+    /// A view with no GPUI hitbox above it there.
-+    View,
-+    Window,
-+}
-+
-+/// What the capture listener does with an event.
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) struct Step {
-+    pub(crate) target: PointerTarget,
-+    /// Send a copy to the canvas: the browser gave the event to the layer or a shield, but GPUI's content is there.
-+    pub(crate) forward: bool,
-+}
-+
-+/// `current × event → step`. `on_canvas`: the browser gave the event to the canvas. Extend by adding a `PointerKind`
-+/// and its arm; every arm is explicit.
-+pub(crate) fn step(current: PointerTarget, kind: PointerKind, over: Over, on_canvas: bool) -> Step {
-+    let to = |target, forward| Step { target, forward };
-+    match (kind, over) {
-+        (PointerKind::Drag, Over::View | Over::Window) => to(current, false),
-+        (PointerKind::TouchRelease, Over::View | Over::Window) => to(PointerTarget::Views, false),
-+        (
-+            PointerKind::Hover | PointerKind::Press | PointerKind::Wheel | PointerKind::Release,
-+            Over::View,
-+        ) => to(PointerTarget::Views, false),
-+        (PointerKind::Hover | PointerKind::Press | PointerKind::Wheel, Over::Window) => {
-+            to(PointerTarget::Canvas, !on_canvas)
-+        }
-+        // A release off the canvas ends a press GPUI never had (the press's target captured it otherwise).
-+        (PointerKind::Release, Over::Window) => to(PointerTarget::Canvas, false),
-+    }
-+}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+    use gpui::{ContentMask, HitboxId, Hsla, NativeViewId};
-+
-+    fn view(bounds: [f32; 4], mask: [f32; 4]) -> PaintNativeView {
-+        let scaled = |[x, y, width, height]: [f32; 4]| Bounds {
-+            origin: point(ScaledPixels(x), ScaledPixels(y)),
-+            size: size(ScaledPixels(width), ScaledPixels(height)),
-+        };
-+        PaintNativeView {
-+            order: 0,
-+            id: NativeViewId::for_test(1),
-+            hitbox_id: HitboxId::placeholder(),
-+            bounds: scaled(bounds),
-+            content_mask: ContentMask {
-+                bounds: scaled(mask),
-+            },
-+            background: Hsla::default(),
-+        }
-+    }
-+
-+    fn css([x, y, width, height]: [f32; 4]) -> Bounds<Pixels> {
-+        Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
-+    }
-+
-+    #[test]
-+    fn placement_of_a_view() {
-+        let everything = [0., 0., 10_000., 10_000.];
-+        // (row name, view bounds and content mask in device pixels, scale, slot and view in CSS pixels). Add a row
-+        // per rule.
-+        let rows: [(&str, [f32; 4], [f32; 4], f32, [f32; 4], [f32; 4]); 4] = [
-+            (
-+                "whole pixels at 1",
-+                [10., 20., 300., 200.],
-+                everything,
-+                1.,
-+                [10., 20., 300., 200.],
-+                [0., 0., 300., 200.],
-+            ),
-+            (
-+                "whole device pixels at 1.25",
-+                [125., 250., 375., 250.],
-+                everything,
-+                1.25,
-+                [100., 200., 300., 200.],
-+                [0., 0., 300., 200.],
-+            ),
-+            (
-+                "fractional device pixels round outwards",
-+                [12.5, 20.4, 100., 50.],
-+                everything,
-+                1.25,
-+                [9.6, 16., 80.8, 40.8],
-+                [0., 0., 80.8, 40.8],
-+            ),
-+            (
-+                "the content mask clips the slot, the view keeps its size",
-+                [0., 0., 200., 100.],
-+                [50., 0., 100., 100.],
-+                1.,
-+                [50., 0., 100., 100.],
-+                [-50., 0., 200., 100.],
-+            ),
-+        ];
-+        for (name, bounds, mask, scale, slot, view_box) in rows {
-+            let placement = placement(&view(bounds, mask), scale);
-+            let close = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
-+                [
-+                    (a.origin.x, b.origin.x),
-+                    (a.origin.y, b.origin.y),
-+                    (a.size.width, b.size.width),
-+                    (a.size.height, b.size.height),
-+                ]
-+                .iter()
-+                .all(|(a, b)| (f32::from(*a) - f32::from(*b)).abs() < 1e-4)
-+            };
-+            assert!(
-+                close(placement.slot, css(slot)),
-+                "{name}: slot {:?}",
-+                placement.slot
-+            );
-+            assert!(
-+                close(placement.view, css(view_box)),
-+                "{name}: view {:?}",
-+                placement.view
-+            );
-+        }
-+    }
-+
-+    #[test]
-+    fn pointer_target_steps() {
-+        use Over::{View, Window};
-+        use PointerKind::*;
-+        use PointerTarget::{Canvas, Views};
-+        // (row name, current, event, over, on the canvas, next target, forwarded). One row per (state, event).
-+        #[rustfmt::skip]
-+        let rows = [
-+            ("hover onto an uncovered view", Canvas, Hover, View, true, Views, false),
-+            ("hover within a view's element", Views, Hover, View, false, Views, false),
-+            ("hover onto GPUI's content from a view", Views, Hover, Window, false, Canvas, true),
-+            ("hover over GPUI's content", Canvas, Hover, Window, true, Canvas, false),
-+            ("drag from the canvas over a view", Canvas, Drag, View, true, Canvas, false),
-+            ("drag from a view over GPUI's content", Views, Drag, Window, false, Views, false),
-+            ("press on a view the canvas still had", Canvas, Press, View, true, Views, false),
-+            ("press on a view's element", Views, Press, View, false, Views, false),
-+            ("press on a shield over a view", Views, Press, Window, false, Canvas, true),
-+            ("press on GPUI's content", Canvas, Press, Window, true, Canvas, false),
-+            ("wheel over a view's element", Views, Wheel, View, false, Views, false),
-+            ("wheel over a shield", Views, Wheel, Window, false, Canvas, true),
-+            ("wheel over GPUI's content", Canvas, Wheel, Window, true, Canvas, false),
-+            ("mouse release over a view", Canvas, Release, View, true, Views, false),
-+            ("mouse release off the canvas", Views, Release, Window, false, Canvas, false),
-+            ("mouse release on the canvas", Canvas, Release, Window, true, Canvas, false),
-+            ("touch release on GPUI's content", Canvas, TouchRelease, Window, true, Views, false),
-+            ("touch release on a view", Views, TouchRelease, View, false, Views, false),
-+        ];
-+        for (name, current, kind, over, on_canvas, target, forward) in rows {
-+            assert_eq!(
-+                step(current, kind, over, on_canvas),
-+                Step { target, forward },
-+                "{name}"
-+            );
-+        }
-+    }
-+}
-diff --git a/gpui-pre-web/src/native_views.rs b/gpui-pre-web/src/native_views.rs
-new file mode 100644
-index 0000000..63807c4
---- /dev/null
-+++ b/gpui-pre-web/src/native_views.rs
-@@ -0,0 +1,581 @@
-+// `render_content`, `ensure_content_correctly_sized`, `create_slot`, `reset_anchor` and `detach_native_view` are
-+// ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_views/content_manager.dart,
-+// slots.dart and embedder.dart (`_resetAnchor`, `disposeView`) @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
-+// Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
-+
-+//! Native views on the web: the app's DOM element shown under GPUI's canvas through the renderer's hole
-+//! (gpui_wgpu's `native_view_hole`), placed in the frame that cuts it, with the browser giving pointer input over an
-+//! uncovered view to the element itself ([`gpui::NativeViewInput::View`], as on macOS).
-+//!
-+//! DOM, inserted before the canvas, which is raised above it (`position: relative; z-index: 1`):
-+//!
-+//! ```html
-+//! <gpui-native-views>                       the canvas's box; takes the pointer the canvas lets through
-+//!   <div>                                   slots, in paint order
-+//!     <gpui-native-view-slot>               the view's bounds clipped to its content mask
-+//!       <gpui-native-view>                  the view's bounds
-+//!         <the app's element />
-+//!   <div>                                   shields: where GPUI's content takes input over a view
-+//! ```
-+//!
-+//! The canvas takes the pointer except while it is over an uncovered view (`native_view_layout::step`, decided by a
-+//! capture listener on the document before any element sees the event): then it is `pointer-events: none` and the
-+//! browser hit-tests what is under it. A press, move or scroll that lands on the layer or a shield is GPUI's, and a
-+//! copy goes to the canvas.
-+
-+use crate::events::EventListenerHandle;
-+use crate::native_view_layout::{self, Over, Placement, PointerKind, PointerTarget};
-+use crate::window::WebWindowInner;
-+use gpui::{Bounds, Hsla, NativeViewId, Pixels, Point, Rgba, Scene, point, px};
-+use std::{
-+    any::Any,
-+    cell::{Cell, RefCell},
-+    rc::{Rc, Weak},
-+};
-+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-+
-+/// GPUI's callback that turns a platform's focus of a view into GPUI focus.
-+type FocusedCallback = Rc<RefCell<Option<Box<dyn FnMut(NativeViewId)>>>>;
-+
-+#[derive(Default)]
-+pub(crate) struct NativeViews {
-+    /// Made with the first view.
-+    layer: RefCell<Option<Layer>>,
-+    slots: RefCell<Vec<Slot>>,
-+    /// The occluders the shields stand for, and the shield elements, one per occluder or more (spares hidden).
-+    occluders_shown: RefCell<Vec<Bounds<Pixels>>>,
-+    shields: RefCell<Vec<web_sys::HtmlElement>>,
-+    /// A frame placed views since the shields were last updated.
-+    shields_stale: Cell<bool>,
-+    target: Cell<PointerTarget>,
-+    hit_test: RefCell<Option<Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>>>,
-+    occluders: RefCell<Option<Box<dyn FnMut() -> Vec<Bounds<Pixels>>>>>,
-+    focused: FocusedCallback,
-+}
-+
-+struct Layer {
-+    root: web_sys::HtmlElement,
-+    slots: web_sys::HtmlElement,
-+    shields: web_sys::HtmlElement,
-+    /// The canvas's box last given to `root`.
-+    canvas_box: Cell<[i32; 4]>,
-+    _listeners: Vec<EventListenerHandle>,
-+}
-+
-+struct Slot {
-+    id: NativeViewId,
-+    slot: web_sys::HtmlElement,
-+    wrapper: web_sys::HtmlElement,
-+    content: web_sys::HtmlElement,
-+    /// Where it was last placed, its rank in paint order and its background; `None` while hidden.
-+    placed: Option<(Placement, usize, Hsla)>,
-+    _focus: EventListenerHandle,
-+}
-+
-+/// Removes its view's slot from the document when the last `NativeView` handle goes.
-+struct Attachment {
-+    id: NativeViewId,
-+    window: Weak<WebWindowInner>,
-+}
-+
-+impl Drop for Attachment {
-+    fn drop(&mut self) {
-+        if let Some(window) = self.window.upgrade() {
-+            window.detach_native_view(self.id);
-+        }
-+    }
-+}
-+
-+/// The pointer events the document's capture listener decides on, each with how it reads one. Add a row to decide on
-+/// another event.
-+const POINTER_EVENTS: [(&str, fn(&web_sys::MouseEvent) -> PointerKind); 5] = [
-+    ("pointermove", |event| match event.buttons() {
-+        0 => PointerKind::Hover,
-+        _ => PointerKind::Drag,
-+    }),
-+    ("pointerdown", |_| PointerKind::Press),
-+    ("pointerup", release_kind),
-+    ("pointercancel", release_kind),
-+    ("wheel", |_| PointerKind::Wheel),
-+];
-+
-+fn release_kind(event: &web_sys::MouseEvent) -> PointerKind {
-+    match event
-+        .dyn_ref::<web_sys::PointerEvent>()
-+        .map(|event| event.pointer_type())
-+        .as_deref()
-+    {
-+        Some("touch") => PointerKind::TouchRelease,
-+        _ => PointerKind::Release,
-+    }
-+}
-+
-+fn set_styles(element: &web_sys::HtmlElement, styles: &[(&str, &str)]) {
-+    let style = element.style();
-+    for (property, value) in styles {
-+        if let Err(error) = style.set_property(property, value) {
-+            log::warn!("native views: cannot set {property}: {error:?}");
-+        }
-+    }
-+}
-+
-+fn create(document: &web_sys::Document, tag: &str) -> Option<web_sys::HtmlElement> {
-+    document
-+        .create_element(tag)
-+        .ok()
-+        .and_then(|element| element.dyn_into().ok())
-+}
-+
-+/// Flutter's `_resetAnchor`: transforms place the element from its top left.
-+fn reset_anchor(element: &web_sys::HtmlElement) {
-+    set_styles(
-+        element,
-+        &[
-+            ("transform-origin", "0 0 0"),
-+            ("position", "absolute"),
-+            ("left", "0"),
-+            ("top", "0"),
-+        ],
-+    );
-+}
-+
-+fn place(element: &web_sys::HtmlElement, bounds: Bounds<Pixels>) {
-+    let css = |value: Pixels| format!("{}px", f32::from(value));
-+    set_styles(
-+        element,
-+        &[
-+            (
-+                "transform",
-+                &format!(
-+                    "translate({}, {})",
-+                    css(bounds.origin.x),
-+                    css(bounds.origin.y)
-+                ),
-+            ),
-+            ("width", &css(bounds.size.width)),
-+            ("height", &css(bounds.size.height)),
-+        ],
-+    );
-+}
-+
-+/// Flutter's `_ensureContentCorrectlySized`: fills the slot unless the app sized the element.
-+fn ensure_content_correctly_sized(content: &web_sys::HtmlElement) {
-+    let style = content.style();
-+    for property in ["height", "width"] {
-+        if style
-+            .get_property_value(property)
-+            .unwrap_or_default()
-+            .is_empty()
-+        {
-+            log::warn!(
-+                "native views: {property} of the view's element is not set; defaulting to 100%"
-+            );
-+            set_styles(content, &[(property, "100%")]);
-+        }
-+    }
-+}
-+
-+impl NativeViews {
-+    pub(crate) fn target(&self) -> PointerTarget {
-+        self.target.get()
-+    }
-+
-+    pub(crate) fn set_hit_test(
-+        &self,
-+        callback: Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>,
-+    ) {
-+        *self.hit_test.borrow_mut() = Some(callback);
-+    }
-+
-+    pub(crate) fn set_occluders(&self, callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {
-+        *self.occluders.borrow_mut() = Some(callback);
-+    }
-+
-+    pub(crate) fn set_focused(&self, callback: Box<dyn FnMut(NativeViewId)>) {
-+        *self.focused.borrow_mut() = Some(callback);
-+    }
-+
-+    fn shows_views(&self) -> bool {
-+        self.slots.borrow().iter().any(|slot| slot.placed.is_some())
-+    }
-+
-+    /// Takes the callback out while it runs, so GPUI re-entering the window finds no borrow.
-+    fn hit_test_at(&self, position: Point<Pixels>) -> Option<NativeViewId> {
-+        let mut callback = self.hit_test.borrow_mut().take()?;
-+        let id = callback(position);
-+        *self.hit_test.borrow_mut() = Some(callback);
-+        id
-+    }
-+
-+    fn set_target(&self, target: PointerTarget, canvas: &web_sys::HtmlCanvasElement) {
-+        if self.target.replace(target) == target {
-+            return;
-+        }
-+        let pointer_events = match target {
-+            PointerTarget::Canvas => "auto",
-+            PointerTarget::Views => "none",
-+        };
-+        set_styles(canvas, &[("pointer-events", pointer_events)]);
-+    }
-+}
-+
-+impl WebWindowInner {
-+    pub(crate) fn attach_native_view(
-+        self: &Rc<Self>,
-+        id: NativeViewId,
-+        content: web_sys::HtmlElement,
-+    ) -> Option<Box<dyn Any>> {
-+        let document = self.browser_window.document()?;
-+        if self.native_views.layer.borrow().is_none() {
-+            let layer = self.create_layer(&document)?;
-+            *self.native_views.layer.borrow_mut() = Some(layer);
-+        }
-+        let slot = self.render_content(&document, id, content)?;
-+        self.native_views.slots.borrow_mut().push(slot);
-+        Some(Box::new(Attachment {
-+            id,
-+            window: Rc::downgrade(self),
-+        }))
-+    }
-+
-+    fn create_layer(self: &Rc<Self>, document: &web_sys::Document) -> Option<Layer> {
-+        let root = create(document, "gpui-native-views")?;
-+        let slots = create(document, "div")?;
-+        let shields = create(document, "div")?;
-+        set_styles(
-+            &root,
-+            &[
-+                ("position", "absolute"),
-+                ("z-index", "0"),
-+                ("overflow", "hidden"),
-+                ("touch-action", "none"),
-+                ("user-select", "none"),
-+                ("-webkit-user-select", "none"),
-+            ],
-+        );
-+        for (container, z_index) in [(&slots, "0"), (&shields, "1")] {
-+            set_styles(
-+                container,
-+                &[
-+                    ("position", "absolute"),
-+                    ("inset", "0"),
-+                    ("z-index", z_index),
-+                    ("pointer-events", "none"),
-+                ],
-+            );
-+            root.append_child(container).ok()?;
-+        }
-+        self.canvas
-+            .parent_node()?
-+            .insert_before(&root, Some(&self.canvas))
-+            .ok()?;
-+        set_styles(&self.canvas, &[("position", "relative"), ("z-index", "1")]);
-+
-+        let listeners = POINTER_EVENTS
-+            .iter()
-+            .map(|&(event_name, kind)| {
-+                let window = Rc::downgrade(self);
-+                EventListenerHandle::add_capture(document.as_ref(), event_name, move |event| {
-+                    if let Some(window) = window.upgrade() {
-+                        let event: web_sys::MouseEvent = event.unchecked_into();
-+                        window.decide_native_view_pointer(&event, kind(&event));
-+                    }
-+                })
-+            })
-+            .collect();
-+        Some(Layer {
-+            root,
-+            slots,
-+            shields,
-+            canvas_box: Cell::new([0; 4]),
-+            _listeners: listeners,
-+        })
-+    }
-+
-+    /// Flutter's `renderContent` and `createPlatformViewSlot`. Flutter's slot reveals the content through a
-+    /// `<slot>` in its shadow root; the canvas here has none, so the slot holds the content's wrapper itself.
-+    fn render_content(
-+        &self,
-+        document: &web_sys::Document,
-+        id: NativeViewId,
-+        content: web_sys::HtmlElement,
-+    ) -> Option<Slot> {
-+        let slot = create(document, "gpui-native-view-slot")?;
-+        set_styles(
-+            &slot,
-+            &[
-+                ("pointer-events", "auto"),
-+                ("overflow", "hidden"),
-+                ("display", "none"),
-+            ],
-+        );
-+        reset_anchor(&slot);
-+        let wrapper = create(document, "gpui-native-view")?;
-+        reset_anchor(&wrapper);
-+        ensure_content_correctly_sized(&content);
-+        wrapper.append_child(&content).ok()?;
-+        slot.append_child(&wrapper).ok()?;
-+        self.native_views
-+            .layer
-+            .borrow()
-+            .as_ref()?
-+            .slots
-+            .append_child(&slot)
-+            .ok()?;
-+        let focused = Rc::clone(&self.native_views.focused);
-+        let focus = EventListenerHandle::add(slot.as_ref(), "focusin", move |_| {
-+            let callback = focused.borrow_mut().take();
-+            if let Some(mut callback) = callback {
-+                callback(id);
-+                *focused.borrow_mut() = Some(callback);
-+            }
-+        });
-+        Some(Slot {
-+            id,
-+            slot,
-+            wrapper,
-+            content,
-+            placed: None,
-+            _focus: focus,
-+        })
-+    }
-+
-+    /// Flutter's `clearPlatformView` / `disposeView`: the slot leaves the document with the content in it.
-+    fn detach_native_view(&self, id: NativeViewId) {
-+        self.native_views.slots.borrow_mut().retain(|slot| {
-+            if slot.id == id {
-+                slot.slot.remove();
-+            }
-+            slot.id != id
-+        });
-+        if !self.native_views.shows_views() {
-+            self.native_views
-+                .set_target(PointerTarget::Canvas, &self.canvas);
-+        }
-+    }
-+
-+    /// Places every view as `scene` shows it, before the scene is drawn: the DOM changes and the canvas reach the
-+    /// screen in the same browser frame. A view whose placement is unchanged is not touched.
-+    pub(crate) fn place_native_views(&self, scene: &Scene) {
-+        let mut slots = self.native_views.slots.borrow_mut();
-+        if slots.is_empty() {
-+            return;
-+        }
-+        let layer = self.native_views.layer.borrow();
-+        let Some(layer) = layer.as_ref() else {
-+            return;
-+        };
-+        let canvas_box = [
-+            self.canvas.offset_left(),
-+            self.canvas.offset_top(),
-+            self.canvas.offset_width(),
-+            self.canvas.offset_height(),
-+        ];
-+        if layer.canvas_box.replace(canvas_box) != canvas_box {
-+            let [left, top, width, height] = canvas_box.map(|value| px(value as f32));
-+            place(
-+                &layer.root,
-+                Bounds::new(point(left, top), gpui::size(width, height)),
-+            );
-+        }
-+        let scale_factor = self.state.borrow().scale_factor;
-+        let showed = slots.iter().any(|slot| slot.placed.is_some());
-+        for slot in slots.iter_mut() {
-+            let shown = scene
-+                .native_views
-+                .iter()
-+                .enumerate()
-+                .find(|(_, native_view)| native_view.id == slot.id)
-+                .map(|(rank, native_view)| {
-+                    (
-+                        native_view_layout::placement(native_view, scale_factor),
-+                        rank,
-+                        native_view.background,
-+                    )
-+                });
-+            if shown == slot.placed {
-+                continue;
-+            }
-+            match shown {
-+                Some((placement, rank, background)) => {
-+                    place(&slot.slot, placement.slot);
-+                    place(&slot.wrapper, placement.view);
-+                    // `NativeView::set_background`: shows where the element has not caught up with its slot,
-+                    // as a cross-origin iframe's own process does for a frame after a resize.
-+                    let Rgba { r, g, b, a } = background.into();
-+                    let background = format!("rgba({}, {}, {}, {a})", r * 255., g * 255., b * 255.);
-+                    set_styles(
-+                        &slot.slot,
-+                        &[
-+                            ("display", ""),
-+                            ("z-index", &rank.to_string()),
-+                            ("background-color", &background),
-+                        ],
-+                    );
-+                }
-+                None => set_styles(&slot.slot, &[("display", "none")]),
-+            }
-+            slot.placed = shown;
-+        }
-+        let shows = slots.iter().any(|slot| slot.placed.is_some());
-+        drop(slots);
-+        self.native_views.shields_stale.set(true);
-+        // Views that start to show take the pointer until it is seen over GPUI's content: a touch has no hover
-+        // to switch on, so its first tap must find the element. The layer sends anything else back.
-+        match (showed, shows) {
-+            (false, true) => self
-+                .native_views
-+                .set_target(PointerTarget::Views, &self.canvas),
-+            (true | false, false) => self
-+                .native_views
-+                .set_target(PointerTarget::Canvas, &self.canvas),
-+            (true, true) => {}
-+        }
-+    }
-+
-+    /// After a frame that placed views, outside GPUI's update: a shield over each region of a view where GPUI's
-+    /// content takes input, so the browser hit-tests the pointer there to GPUI's layer, not the view's element.
-+    pub(crate) fn update_native_view_shields(&self) {
-+        if !self.native_views.shields_stale.replace(false) {
-+            return;
-+        }
-+        let occluders = {
-+            let Some(mut callback) = self.native_views.occluders.borrow_mut().take() else {
-+                return;
-+            };
-+            let occluders = callback();
-+            *self.native_views.occluders.borrow_mut() = Some(callback);
-+            occluders
-+        };
-+        if *self.native_views.occluders_shown.borrow() == occluders {
-+            return;
-+        }
-+        let layer = self.native_views.layer.borrow();
-+        let (Some(layer), Some(document)) = (layer.as_ref(), self.browser_window.document()) else {
-+            return;
-+        };
-+        let mut shields = self.native_views.shields.borrow_mut();
-+        while shields.len() < occluders.len() {
-+            let Some(shield) = create(&document, "div") else {
-+                return;
-+            };
-+            reset_anchor(&shield);
-+            set_styles(&shield, &[("pointer-events", "auto")]);
-+            if layer.shields.append_child(&shield).is_err() {
-+                return;
-+            }
-+            shields.push(shield);
-+        }
-+        for (index, shield) in shields.iter().enumerate() {
-+            match occluders.get(index) {
-+                Some(occluder) => {
-+                    place(shield, *occluder);
-+                    set_styles(shield, &[("display", "")]);
-+                }
-+                None => set_styles(shield, &[("display", "none")]),
-+            }
-+        }
-+        drop(shields);
-+        *self.native_views.occluders_shown.borrow_mut() = occluders;
-+    }
-+
-+    /// The document's capture listener, ahead of every element: which of the canvas and what is under it takes the
-+    /// pointer from now on, and whether this event is GPUI's after all.
-+    fn decide_native_view_pointer(&self, event: &web_sys::MouseEvent, kind: PointerKind) {
-+        // A copy sent to the canvas comes through here too, already decided.
-+        if !event.is_trusted() || !self.native_views.shows_views() {
-+            return;
-+        }
-+        let canvas = self.canvas.get_bounding_client_rect();
-+        let position = point(
-+            px((f64::from(event.client_x()) - canvas.left()) as f32),
-+            px((f64::from(event.client_y()) - canvas.top()) as f32),
-+        );
-+        self.state.borrow_mut().mouse_position = position;
-+        let over = match kind {
-+            // A drag stays with its press's target, wherever it is.
-+            PointerKind::Drag => Over::Window,
-+            PointerKind::Hover
-+            | PointerKind::Press
-+            | PointerKind::Wheel
-+            | PointerKind::Release
-+            | PointerKind::TouchRelease => match self.native_views.hit_test_at(position) {
-+                Some(_) => Over::View,
-+                None => Over::Window,
-+            },
-+        };
-+        let on_canvas = event
-+            .target()
-+            .is_some_and(|target| js_sys::Object::is(&target, &self.canvas));
-+        let step = native_view_layout::step(self.native_views.target(), kind, over, on_canvas);
-+        self.native_views.set_target(step.target, &self.canvas);
-+        if !step.forward {
-+            return;
-+        }
-+        event.prevent_default();
-+        event.stop_propagation();
-+        // The copy is the event's own constructor with the event itself as its init dictionary, which keeps every
-+        // field (pointer id, buttons, deltas). It is dispatched in a microtask, right after this listener returns:
-+        // dispatching it from here would run this listener (a wasm-bindgen `FnMut`) inside itself, which throws.
-+        let copy = js_sys::Reflect::get(event, &JsValue::from_str("constructor"))
-+            .ok()
-+            .and_then(|constructor| constructor.dyn_into::<js_sys::Function>().ok())
-+            .and_then(|constructor| {
-+                let arguments = js_sys::Array::of2(&JsValue::from(event.type_()), event);
-+                js_sys::Reflect::construct(&constructor, &arguments).ok()
-+            });
-+        let queue_microtask =
-+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("queueMicrotask"))
-+                .ok()
-+                .and_then(|queue| queue.dyn_into::<js_sys::Function>().ok());
-+        let (Some(copy), Some(queue_microtask)) = (copy, queue_microtask) else {
-+            log::warn!(
-+                "native views: cannot copy a {} event to the canvas",
-+                event.type_()
-+            );
-+            return;
-+        };
-+        let canvas = self.canvas.clone();
-+        let dispatch = Closure::once_into_js(move || {
-+            canvas.dispatch_event(copy.unchecked_ref()).ok();
-+        });
-+        queue_microtask.call1(&JsValue::UNDEFINED, &dispatch).ok();
-+    }
-+
-+    /// Gives the view's element DOM focus, or takes it back to GPUI's own input element.
-+    pub(crate) fn focus_native_view(&self, id: Option<NativeViewId>) {
-+        // GPUI moved its focus; the element's `focusin` must not report it back.
-+        let callback = self.native_views.focused.borrow_mut().take();
-+        match id {
-+            Some(id) => {
-+                if let Some(slot) = self
-+                    .native_views
-+                    .slots
-+                    .borrow()
-+                    .iter()
-+                    .find(|slot| slot.id == id)
-+                {
-+                    slot.content.focus().ok();
-+                }
-+            }
-+            None => {
-+                let in_view = self
-+                    .browser_window
-+                    .document()
-+                    .and_then(|document| document.active_element())
-+                    .zip(
-+                        self.native_views
-+                            .layer
-+                            .borrow()
-+                            .as_ref()
-+                            .map(|layer| layer.root.clone()),
-+                    )
-+                    .is_some_and(|(active, root)| root.contains(Some(&active)));
-+                if in_view {
-+                    self.ime_mirror.focus();
-+                }
-+            }
-+        }
-+        *self.native_views.focused.borrow_mut() = callback;
-+    }
-+}
-diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
-index 3d1ba31..4d6763e 100644
---- a/gpui-pre-web/src/window.rs
-+++ b/gpui-pre-web/src/window.rs
-@@ -1,6 +1,7 @@
- use crate::display::WebDisplay;
- use crate::events::{ClickState, EventListenerHandle, TouchIds, WebEventListeners};
- use crate::ime_mirror::ImeMirror;
-+use crate::native_views::NativeViews;
- use crate::platform::WebWindowLifecycle;
- use crate::viewport::WebViewport;
- use std::sync::Arc;
-@@ -92,6 +93,8 @@ pub(crate) struct WebWindowInner {
-     /// so the shadow above clears exactly when gpui's recognizer stops treating
-     /// the touch as a tap.
-     pub(crate) touch_slop: Cell<Pixels>,
-+    /// DOM elements shown under the canvas (`NativeView`).
-+    pub(crate) native_views: NativeViews,
-     mql_handle: RefCell<Option<MqlHandle>>,
-     pending_physical_size: Cell<Option<(u32, u32)>>,
-     raf_id: Cell<Option<i32>>,
-@@ -237,6 +240,7 @@ impl WebWindow {
-             gesture_start_visual_viewport_height: Cell::new(0.0),
-             touch_tap_candidate: Cell::new(None),
-             touch_slop: Cell::new(params.gesture_tuning.touch_slop),
-+            native_views: NativeViews::default(),
-             mql_handle: RefCell::new(None),
-             pending_physical_size: Cell::new(None),
-             raf_id: Cell::new(None),
-@@ -406,6 +410,7 @@ impl WebWindow {
-                     })
-                 },
-             );
-+            inner.update_native_view_shields();
-         })
-     }
- }
-@@ -495,6 +500,7 @@ impl WebWindowInner {
-                     })
-                 },
-             );
-+            this.update_native_view_shields();
-         });
- 
-         let js_func: js_sys::Function =
-@@ -1095,9 +1101,39 @@ impl PlatformWindow for WebWindow {
-             drop(state);
-         }
- 
-+        self.inner.place_native_views(scene);
-         self.inner.state.borrow_mut().renderer.draw(scene);
-     }
- 
-+    unsafe fn attach_native_view(
-+        &self,
-+        id: gpui::NativeViewId,
-+        view: std::ptr::NonNull<std::ffi::c_void>,
-+    ) -> Option<Box<dyn std::any::Any>> {
-+        // SAFETY: `NativeView::new`'s contract on the web: `view` points to a live `web_sys::HtmlElement`.
-+        let content = unsafe { view.cast::<web_sys::HtmlElement>().as_ref() }.clone();
-+        self.inner.attach_native_view(id, content)
-+    }
-+
-+    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
-+        self.inner.focus_native_view(id);
-+    }
-+
-+    fn on_hit_test_native_view(
-+        &self,
-+        callback: Box<dyn FnMut(Point<Pixels>) -> Option<gpui::NativeViewId>>,
-+    ) {
-+        self.inner.native_views.set_hit_test(callback);
-+    }
-+
-+    fn on_native_view_occluders(&self, callback: Box<dyn FnMut() -> Vec<Bounds<Pixels>>>) {
-+        self.inner.native_views.set_occluders(callback);
-+    }
-+
-+    fn on_native_view_focused(&self, callback: Box<dyn FnMut(gpui::NativeViewId)>) {
-+        self.inner.native_views.set_focused(callback);
-+    }
-+
-     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-         self.inner.state.borrow().renderer.sprite_atlas().clone()
-     }
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-index aebde2c..1468650 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-@@ -30,7 +30,13 @@ pub(super) fn color_target(format: wgpu::TextureFormat) -> wgpu::ColorTargetStat
- 
- /// Native views need a compositor that blends the window. NVIDIA's Vulkan WSI has been
- /// known to offer only `Opaque` on Wayland, where every hole then shows black.
--pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode) {
-+pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode, backend: Option<wgpu::Backend>) {
-+    // A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to true and wgpu
-+    // leaves alone, whatever surface mode wgpu reports (only `Opaque`).
-+    if cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl) {
-+        log::info!("native views: WebGL2 canvas, premultiplied alpha (the context's default)");
-+        return;
-+    }
-     match alpha_mode {
-         wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
-             log::info!("native views: window surface alpha mode {alpha_mode:?}")
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
-index 1ed0f2c..4c41ee8 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
-@@ -1154,7 +1154,10 @@ impl WgpuRenderer {
-             self.shows_native_views = shows_native_views;
-             self.apply_alpha_mode();
-             if shows_native_views {
--                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
-+                native_view_hole::log_alpha_mode(
-+                    self.transparent_alpha_mode,
-+                    self.core().map(|core| core.adapter_info.backend),
-+                );
-             }
-         }
- 
