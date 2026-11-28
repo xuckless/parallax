@@ -140,6 +140,7 @@ const playwright = async (engine) => {
     const context = await instance.newContext({ viewport: { width, height }, deviceScaleFactor, ...touch });
     page = await context.newPage();
     page.on("console", (message) => logs.push(message.text()));
+    page.on("pageerror", (error) => logs.push(`page error: ${error.message}`));
   };
   await open(412, 915, Number(scale));
   return {
@@ -165,6 +166,12 @@ const playwright = async (engine) => {
     close: () => instance.close(),
   };
 };
+
+// Waits up to 30 s for the app's "window open"; without it, the page's last console lines say why (no WebGL, a panic).
+async function started() {
+  for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
+  if (!logs.some((line) => line.includes("window open"))) console.log(`no "window open"; the page logged:\n${logs.slice(-20).join("\n")}`);
+}
 
 const driver = ["firefox", "webkit"].includes(browser) ? await playwright(browser) : await chromium(browser);
 const { js } = driver;
@@ -199,7 +206,7 @@ if (suite === "native-view") {
 }
 
 await driver.navigate(url);
-for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
+await started();
 // "window open" comes before the first frame; a tap before it hits nothing.
 await sleep(3000);
 
@@ -356,7 +363,7 @@ async function nativeViewChecks() {
     await driver.viewport(900, 700);
     logs.length = 0;
     await driver.navigate(`${url}${query}`);
-    for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
+    await started();
     await sleep(2500);
   };
   const press = (x, y) => (mode === "mobile" ? driver.tap(x, y) : driver.click(x, y));
