@@ -65,19 +65,4 @@ Each view reports its own density and touch slop. A moved slop calls the facade'
 Activity's window (`None` before it opens): the app's tuning (for windows opened later) and that window's own are
 retuned.
 
-## Check it
-
-On an emulator with API 33+ (split screen through the WM shell; `hello` logs `window open, N in all` and
-`Activity N destroyed: its window closes`, and `lifecycle …` lines once per phase, not once per window):
-
-1. `cargo parallax run android --device <serial>` in `examples/hello`, then `adb shell input keyevent KEYCODE_HOME`.
-2. A second instance in its own task (the template's `singleTop` only reuses the shown one):
-   `adb shell am start -n io.github.xuckless.parallax.hello/io.github.xuckless.parallax.ParallaxActivity -f 0x18000000`
-   (`NEW_TASK | MULTIPLE_TASK`).
-3. `adb shell am stack list` for the two task ids, then split them:
-   `adb shell dumpsys activity service SystemUIService WMShell splitscreen moveToSideStage <first task> 1`.
-4. Tap each half's box and field, type into each; rotate (`settings put system user_rotation 1`); press Back in one
-   half: the other goes full screen and keeps its state.
-
-Checked on API 35 (Gboard 14.2, GL): both halves draw, take taps and text, rotate with their state, and a destroyed
-half's window closes while the other keeps drawing.
+Checking it on an emulator: [android-multi-window-check.md](android-multi-window-check.md).
