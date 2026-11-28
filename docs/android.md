@@ -41,6 +41,8 @@
 - **Touch.** `onTouchEvent` → Flutter's `AndroidTouchProcessor` (ported Java) packs a pointer data packet →
   `nativeDispatchPointerDataPacket` → [pointer.rs](../crates/android/src/pointer.rs) decodes it into upstream
   `TouchEvent`s for `Callbacks::input`; upstream turns a tap into a click. Details: [android-touch.md](android-touch.md).
+- **Native views.** The app's `View` or `SurfaceControl` under GPUI's surface, through the renderer's hole:
+  [native-view-android.md](native-view-android.md).
 - **Fonts.** At startup the platform reads `/system/etc/fonts.xml`, memory-maps the system fonts into upstream's
   `CosmicTextSystem` and orders CJK by the app's current locales. Details: [android-fonts.md](android-fonts.md).
 - **Keys.** `dispatchKeyEvent` → Flutter's `KeyboardManager` and `KeyEmbedderResponder` (ported Java) →

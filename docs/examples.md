@@ -76,3 +76,10 @@ and keys over it go to the page, which posts its events and frame rate back to t
 [examples/native-view-apple](../examples/native-view-apple/): a native view (`NSView` on macOS, `UIView` on iOS)
 that recolours itself every frame under a GPUI div, with a GPUI frame counter; macOS and iOS only (other targets
 print a line and exit). What it shows and how to run it: [native-view-apple.md](native-view-apple.md#the-example).
+
+## native-view-android
+
+[examples/native-view-android](../examples/native-view-android/) (Android only): a surface the app fills every frame
+from its own thread, with a GPUI div over it, and a WebView with forwarded touches, both under GPUI's surface.
+`cargo parallax run android` in its directory; extras `--es surface view`, `--ez animate true`. Logcat says
+`gpui frames/s N, surface frames/s M` once a second. See [native-view-android.md](native-view-android.md).

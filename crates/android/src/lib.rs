@@ -35,6 +35,10 @@ mod lifecycle;
 )]
 mod metrics;
 #[cfg(target_os = "android")]
+mod native_view;
+#[cfg(any(target_os = "android", test))]
+mod native_view_placement;
+#[cfg(target_os = "android")]
 mod platform;
 #[cfg(any(target_os = "android", test))]
 mod pointer;
@@ -54,6 +58,8 @@ pub use host::{TouchSlopChanged, on_load};
 #[doc(hidden)]
 #[cfg(target_os = "android")]
 pub use jni;
+#[cfg(target_os = "android")]
+pub use native_view::{TouchForwarding, forward_touches, with_activity};
 
 /// Declares the app's entry point on Android. Write it once in the app's `cdylib` crate:
 ///
@@ -129,6 +135,8 @@ pub enum Error {
     NoBackend,
     #[error("renderer: {0}")]
     Renderer(String),
+    #[error("the object is not one of this window's native views")]
+    NotANativeView,
     #[error("{0} is not yet on Android")]
     NotYet(&'static str),
     #[error("pointer data packet of {0} bytes is not whole records (36 fields of 8 bytes each)")]

@@ -1,0 +1,7 @@
+# cargo parallax run android reads this (docs/cli.md). Every other key keeps its default.
+[app]
+name = "Native views"
+id = "io.github.xuckless.parallax.nativeview"
+
+[android]
+abis = ["x86_64"]

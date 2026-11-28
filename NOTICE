@@ -30,7 +30,9 @@ parallax-gpui-ios reads the reduce-motion and reduce-transparency settings as Re
 packages/react-native/React/CoreModules/RCTAccessibilityManager.mm v0.88.1 does (patch 0040), and
 parallax-android ports React Native's
 packages/react-native/ReactAndroid/src/main/java/com/facebook/react/modules/accessibilityinfo/AccessibilityInfoModule.kt
-v0.88.1, its reduce-motion reading (AccessibilityInfoModule.java, accessibility.rs), both licensed under the MIT
+v0.88.1, its reduce-motion reading (AccessibilityInfoModule.java, accessibility.rs), and
+packages/react-native/ReactAndroid/src/main/java/com/facebook/react/uimanager/JSTouchDispatcher.kt v0.88.1, its
+gesture tracking (NativeViewTouchDispatcher.java), all licensed under the MIT
 License (LICENSE-REACT-NATIVE in parallax-gpui-ios and parallax-android, third_party/react-native/LICENSE).
 Copyright (c) Meta Platforms, Inc. and affiliates.
 

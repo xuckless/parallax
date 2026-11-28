@@ -10,9 +10,9 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, DevicePixels, DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas,
-    PlatformInput, PlatformInputHandler, RequestFrameOptions, Size, WindowInsets, WindowVisibility,
-    point, px,
+    AnyWindowHandle, DevicePixels, DispatchEventResult, Edges, Haptic, NativeViewId, Pixels,
+    PlatformAtlas, PlatformInput, PlatformInputHandler, Point, RequestFrameOptions, Size,
+    WindowInsets, WindowVisibility, point, px,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::objects::GlobalRef;
@@ -25,6 +25,7 @@ use crate::{
     haptics, keys,
     lifecycle::ActivityId,
     metrics::Metrics,
+    native_view::NativeViews,
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
@@ -95,6 +96,8 @@ pub(crate) struct Callbacks {
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
     pub(crate) active_status: Slot<dyn FnMut(bool)>,
     pub(crate) visibility: Slot<dyn FnMut(WindowVisibility)>,
+    /// GPUI's hit test for a native view at a point: which view a touch down there forwards to.
+    pub(crate) hit_test_native_view: Slot<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>,
     /// Run once, when the Activity is destroyed: GPUI removes the window.
     pub(crate) close: RefCell<Option<Box<dyn FnOnce()>>>,
 }
@@ -140,6 +143,8 @@ pub(crate) struct ActivityWindow {
     /// The Activity's Java `PlatformPlugin` (Flutter's, ported): the clipboard goes through it (platform.rs). Freed
     /// with the window, so a destroyed Activity is not kept alive.
     pub(crate) platform_plugin: GlobalRef,
+    /// The app's native views under GPUI's surface (docs/native-view-android.md).
+    pub(crate) native_views: NativeViews,
 }
 
 impl ActivityWindow {
@@ -164,6 +169,7 @@ impl ActivityWindow {
             text_input: RefCell::new(text_input::Session::default()),
             haptics: RefCell::new(Vec::new()),
             first_frame: Cell::new(FirstFrame::Pending),
+            native_views: NativeViews::default(),
         }
     }
 
@@ -269,6 +275,7 @@ impl ActivityWindow {
             insets_changed,
             active_status,
             visibility,
+            hit_test_native_view,
             close,
         } = &self.callbacks;
         request_frame.clear();
@@ -277,6 +284,7 @@ impl ActivityWindow {
         insets_changed.clear();
         active_status.clear();
         visibility.clear();
+        hit_test_native_view.clear();
         close.borrow_mut().take();
         effect
     }
@@ -331,6 +339,7 @@ impl ActivityWindow {
                 match attached {
                     Ok(()) => {
                         self.first_frame.set(FirstFrame::Pending);
+                        self.native_views.surface_replaced();
                         self.resized();
                     }
                     Err(error) => {
@@ -441,6 +450,17 @@ impl ActivityWindow {
 
     /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
     /// so the window can read modifiers during dispatch.
+    /// The native view a touch down at `(x, y)` view pixels forwards to ([`NativeViews::forwarded`]), or -1.
+    pub(crate) fn native_view_at(&self, x: f32, y: f32) -> i32 {
+        let density = self.metrics.get().density;
+        let hit = self
+            .callbacks
+            .hit_test_native_view
+            .with(|hit_test| hit_test(point(px(x / density), px(y / density))))
+            .flatten();
+        self.native_views.forwarded(hit)
+    }
+
     pub(crate) fn key(&self, packet: &[u8], extras: keys::KeyEventExtras) -> bool {
         let data = match keys::decode(packet) {
             Ok(data) => data,

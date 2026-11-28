@@ -40,6 +40,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   cropped from the app's buffer, as on the other platforms; the new `NativeView::set_buffer_size` tells GPUI the
   buffer size the crop needs (does nothing elsewhere; fork patch 0049, docs/native-view-wayland.md#clipped-views).
   `scripts/wayland-native-view-checks.sh --mesa-compositor` runs the checks with the compositor on Mesa too.
+- Android: `NativeView` shows an app's `SurfaceControl` (API 29+, under GPUI's buffer, placed with GPUI's frame) or
+  any `View` (WebView, SurfaceView; laid out under GPUI's translucent surface), with no GPUI frame for the view's own;
+  `parallax_android::with_activity` builds views, `forward_touches` sends gestures that start on a view to it too
+  (React Native's `JSTouchDispatcher`, ported). Example: `examples/native-view-android` (docs/native-view-android.md).
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

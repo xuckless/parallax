@@ -66,6 +66,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
+| [native-view-android.md](native-view-android.md) | `NativeView` on Android: a `SurfaceControl` under GPUI's buffer or a `View` under its translucent surface, placement per frame, touch forwarding, the example and its emulator checks |
 | [native-view-apple.md](native-view-apple.md) | Patches 0051–0052: `NativeView` on macOS (upstream) and iOS: where the view goes, who takes input over it, presenting in step, the alpha log, the native-view-apple example and its simulator checks |
 | [ios-keyboard.md](ios-keyboard.md) | Patches 0031–0033: iOS hardware keyboard presses → GPUI key events (Flutter's key responder, GPUI first then UIKit's text system), the keyboard inset's docked-frame maths and animation, layout-change notifications, the host tables and simulator checks |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
