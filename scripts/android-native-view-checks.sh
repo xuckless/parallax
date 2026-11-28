@@ -37,6 +37,10 @@ top=e0c020
 bottom=e03030
 # Screenshots per moving-slot run, pixels a colour needs to count as shown, and the edge ring the gap check leaves
 # out: a growing SurfaceControl shows the underlay there for up to one producer frame (docs/native-view-android.md).
+# The slot's right edge moves at most 0.15 * 1.3 + 0.2 * 0.9 = 0.375 half-widths a second (src/android.rs), 389 px/s
+# on the emulator's 1038 px half; in 120 shots under these screenshots' load (producer 37-44 frames/s) the strip was
+# at most 7 px. The ring is measured from the box of the view and the div: the view's own box only while the div stays
+# inside the view (src/android.rs, its cover's comment).
 frames=12
 shown=2000
 ring=8

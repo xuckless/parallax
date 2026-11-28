@@ -28,10 +28,13 @@ pub const TARGET: Target = Target {
         // Where the surface has not caught up with its slot: nothing else on screen is this.
         underlay: 0xff00ff,
         fill: None,
+        // Inside the surface at its narrowest (0.4 of a 395 dp half: 158 dp), so the box of view and div that the
+        // checks measure their edge ring from is the view's. At 16 + 150 dp it stuck out of the narrowest slot by
+        // 8 dp, and a one-frame growing strip there counted as a gap (scripts/android-native-view-checks.sh).
         cover: Cover {
             edge: Edge::Left,
             at: [16., 16.],
-            size: [150., 70.],
+            size: [120., 70.],
             colour: 0x2050d0,
         },
         layout: Layout::Halves(0x404040),

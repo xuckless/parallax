@@ -34,7 +34,10 @@ is hidden. Touches forwarded to a clipped `View` are not clipped: GPUI's hit tes
 
 A `SurfaceControl` gets its new buffer size at once, but the producer's next buffer has it: while the slot grows,
 the new strip shows the underlay for up to one producer frame. Moves and shrinks are exact. The answer is
-`NativeView::set_background`: a colour close to the content (a video's black) hides the strip.
+`NativeView::set_background`: a colour close to the content (a video's black) hides the strip. A producer that keeps
+its queue full shows the strip longer: buffers queued at the old size reach the screen before the new size. Paced to
+exactly 60 frames/s by a deadline, the example's producer gave strips up to 34 px in 120 emulator screenshots, against
+7 px with its sleep of 16 ms after each frame (37–44 frames/s there; [checks](native-view-android-checks.md)).
 
 ## GL and Vulkan
 
