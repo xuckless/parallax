@@ -48,6 +48,9 @@ const EMOJI_GRID: [std::ops::Range<u32>; 2] = [0x1F600..0x1F650, 0x1F680..0x1F69
 /// Emoji per grid row.
 const GRID_COLUMNS: usize = 10;
 
+/// The guide lines' text: dimmer than the rest, a colour none of the checks look for.
+const GUIDE_TEXT: u32 = 0x9399b2;
+
 /// The "Record touches" button: a colour nothing else on screen has, so scripts/record-traces.sh finds it on a
 /// screenshot.
 const RECORD_BUTTON: u32 = 0xa855f7;
@@ -253,7 +256,24 @@ impl Render for Hello {
                     }))
                     .into_any_element(),
             })
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .text_color(rgb(GUIDE_TEXT))
+                    .text_center()
+                    .child(shown.guide()),
+            )
             .into_any_element()
+    }
+}
+
+impl Shown {
+    /// The on-screen line under it: what to try. Short enough for one line on a phone.
+    fn guide(self) -> &'static str {
+        match self {
+            Shown::Box => "Tap: next colour · Pinch: resize · Hold: its colour",
+            Shown::EmojiGrid => "Swipe past an edge to overscroll · Tap a row",
+        }
     }
 }
 
@@ -284,9 +304,17 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
+        .flex_col()
+        .gap(px(8.))
         .bg(rgb(0x11111b))
         .text_color(rgb(0xcdd6f4))
         .child("Recording touches")
+        .child(
+            div()
+                .text_size(px(14.))
+                .text_color(rgb(GUIDE_TEXT))
+                .child("Each touch is logged · Relaunch to leave"),
+        )
         .on_touch(cx.listener(|this, event: &TouchEvent, _, cx| {
             let at = event
                 .time_stamp

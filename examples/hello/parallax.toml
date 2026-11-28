@@ -1,5 +1,11 @@
-# cargo parallax run android reads this (docs/cli.md). Every other key keeps its default.
+# cargo parallax reads this on every target (docs/getting-started.md; keys: docs/cli.md). Every other key keeps its
+# default. Per developer, not committed here: [ios] team = "<Apple team id>" for `cargo parallax run ios --device`;
+# [android.release] for signed store builds (docs/cli-android-release.md). [macos] touch_native = true sends a
+# Sidecar iPad's or touchscreen's touches only as TouchEvents (docs/getting-started-macos.md).
 [app]
 name = "Hello"
 id = "io.github.xuckless.parallax.hello"
 icon = "../../assets/brand/parallax-app-icon.svg"
+
+[web]
+title = "Parallax hello"
