@@ -6,6 +6,23 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.11)
+
+### Added
+
+- `cargo parallax run|build macos [--release]`: builds the app crate's bin and wraps it in a real `.app`
+  (flutter_tools' Info.plist template, `AppIcon.icns` rendered from `app.icon`, ad-hoc `codesign`), then runs it
+  from inside the bundle with its logs in the terminal. New `[macos]` keys: `touch_native` (`NSIsTouchNative`,
+  default `false`), `archs` (default `["arm64"]`; two make a universal binary with `lipo`), `codesign` (default
+  `true`). docs/cli-desktop.md.
+- `cargo parallax run|build linux|windows [--release]`: `cargo run` / `cargo build` of the app crate, so every target
+  has one entry point; `cargo parallax run` with no target picks this machine's desktop.
+
+### Changed
+
+- `cargo-parallax` is now `Apache-2.0 AND BSD-3-Clause` and ships `LICENSE-FLUTTER` (its Android manifest settings
+  and macOS Info.plist template are ported from Flutter's flutter_tools).
+
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 
 Wave 15 (Phase: NativeView, issue #1), fork `parallax-gpui*` 0.3.14-parallax.12 (patches 0047–0072). The NativeView

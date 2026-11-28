@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::android::{ABIS, Abi};
 use crate::error::CliError;
+use crate::macos::{ARCHS, Arch};
 
 /// Lowest `min_sdk` Parallax supports (AGENTS.md, Minimum OS: Android API 28).
 const LOWEST_MIN_SDK: u32 = 28;
@@ -18,6 +19,22 @@ const ANDROID_DEFAULTS: AndroidDefaults = AndroidDefaults {
     // No app.icon → Android's default launcher icon.
     icon: None,
 };
+
+/// `[macos]` defaults. To add a key: add it here, to `MacosToml`, `Macos` and docs/cli-desktop.md.
+const MACOS_DEFAULTS: MacosDefaults = MacosDefaults {
+    // AppKit's emulation (tap → click, pan → scroll) unless the app opts into raw touches
+    // (docs/desktop-touch-macos-emulation.md).
+    touch_native: false,
+    archs: &["arm64"],
+    // Ad-hoc signature, so the bundle launches without Gatekeeper's "damaged" prompt.
+    codesign: true,
+};
+
+struct MacosDefaults {
+    touch_native: bool,
+    archs: &'static [&'static str],
+    codesign: bool,
+}
 
 struct AndroidDefaults {
     min_sdk: u32,
@@ -33,6 +50,8 @@ struct ConfigToml {
     app: AppToml,
     #[serde(default)]
     android: AndroidToml,
+    #[serde(default)]
+    macos: MacosToml,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +70,14 @@ struct AndroidToml {
     abis: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct MacosToml {
+    touch_native: Option<bool>,
+    archs: Option<Vec<String>>,
+    codesign: Option<bool>,
+}
+
 /// `parallax.toml` with defaults filled in and every value checked.
 #[derive(Debug, PartialEq)]
 pub struct Config {
@@ -61,6 +88,7 @@ pub struct Config {
     /// Launcher icon SVG, relative to `parallax.toml`.
     pub icon: Option<PathBuf>,
     pub android: Android,
+    pub macos: Macos,
 }
 
 #[derive(Debug, PartialEq)]
@@ -69,6 +97,16 @@ pub struct Android {
     /// Also the `compileSdk`.
     pub target_sdk: u32,
     pub abis: Vec<&'static Abi>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Macos {
+    /// `NSIsTouchNative` in Info.plist: touches reach GPUI only as `TouchEvent`s, AppKit makes no mouse copies.
+    pub touch_native: bool,
+    /// One arch is copied into the bundle; several are joined with `lipo` into a universal binary.
+    pub archs: Vec<&'static Arch>,
+    /// Ad-hoc `codesign --sign -` of the finished bundle.
+    pub codesign: bool,
 }
 
 impl Config {
@@ -113,6 +151,22 @@ impl Config {
                     .ok_or_else(|| CliError::UnknownAbi(n.clone()))
             })
             .collect::<Result<_, _>>()?;
+        let arch_names = raw
+            .macos
+            .archs
+            .unwrap_or_else(|| MACOS_DEFAULTS.archs.iter().map(|s| s.to_string()).collect());
+        if arch_names.is_empty() {
+            return Err(CliError::NoArchs);
+        }
+        let archs = arch_names
+            .iter()
+            .map(|n| {
+                ARCHS
+                    .iter()
+                    .find(|a| a.name == n)
+                    .ok_or_else(|| CliError::UnknownArch(n.clone()))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Config {
             name: raw.app.name,
             id: raw.app.id,
@@ -126,6 +180,14 @@ impl Config {
                 min_sdk,
                 target_sdk,
                 abis,
+            },
+            macos: Macos {
+                touch_native: raw
+                    .macos
+                    .touch_native
+                    .unwrap_or(MACOS_DEFAULTS.touch_native),
+                archs,
+                codesign: raw.macos.codesign.unwrap_or(MACOS_DEFAULTS.codesign),
             },
         })
     }
@@ -149,6 +211,16 @@ mod tests {
     const ARMV7: &Abi = &ABIS[1];
     const X86: &Abi = &ABIS[2];
     const X86_64: &Abi = &ABIS[3];
+    const ARM64_MAC: &Arch = &ARCHS[0];
+    const X86_64_MAC: &Arch = &ARCHS[1];
+
+    fn macos(touch_native: bool, archs: &[&'static Arch], codesign: bool) -> Macos {
+        Macos {
+            touch_native,
+            archs: archs.to_vec(),
+            codesign,
+        }
+    }
 
     fn config(min_sdk: u32, target_sdk: u32, abis: &[&'static Abi]) -> Config {
         Config {
@@ -160,6 +232,7 @@ mod tests {
                 target_sdk,
                 abis: abis.to_vec(),
             },
+            macos: macos(false, &[ARM64_MAC], true),
         }
     }
 
@@ -257,6 +330,44 @@ mod tests {
                 "empty abis",
                 format!("{APP}[android]\nabis = []\n"),
                 Err("NoAbis"),
+            ),
+            (
+                "[macos] every key set",
+                format!(
+                    "{APP}[macos]\ntouch_native = true\narchs = [\"arm64\", \"x86_64\"]\ncodesign = false\n"
+                ),
+                Ok(Config {
+                    macos: macos(true, &[ARM64_MAC, X86_64_MAC], false),
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "[macos] touch_native only, rest default",
+                format!("{APP}[macos]\ntouch_native = true\n"),
+                Ok(Config {
+                    macos: macos(true, &[ARM64_MAC], true),
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "[macos] unknown key",
+                format!("{APP}[macos]\nsign = true\n"),
+                Err("ConfigSyntax"),
+            ),
+            (
+                "[macos] touch_native not a bool",
+                format!("{APP}[macos]\ntouch_native = \"yes\"\n"),
+                Err("ConfigSyntax"),
+            ),
+            (
+                "[macos] empty archs",
+                format!("{APP}[macos]\narchs = []\n"),
+                Err("NoArchs"),
+            ),
+            (
+                "[macos] unknown arch",
+                format!("{APP}[macos]\narchs = [\"aarch64\"]\n"),
+                Err("UnknownArch"),
             ),
             (
                 "unknown abi",

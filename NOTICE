@@ -61,7 +61,7 @@ wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the wi
 
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER
-in the parallax-android, parallax-platform, parallax-ext, parallax-gpui, parallax-gpui-ios, parallax-gpui-macos,
+in the parallax-android, parallax-platform, parallax-ext, cargo-parallax, parallax-gpui, parallax-gpui-ios, parallax-gpui-macos,
 parallax-gpui-web and parallax-gpui-windows packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.

@@ -1,13 +1,13 @@
 [package]
 name = "cargo-parallax"
-description = "cargo parallax: build and run GPUI apps on Android from parallax.toml (iOS and web later)."
+description = "cargo parallax: build and run GPUI apps on Android, macOS, Linux and Windows from parallax.toml."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0 AND BSD-3-Clause"
 repository.workspace = true
 readme = "README.md"
-keywords = ["gpui", "android", "cargo", "cli", "mobile"]
+keywords = ["gpui", "android", "macos", "cargo", "cli"]
 categories = ["development-tools::cargo-plugins", "command-line-utilities"]
 # templates/ (Gradle project and wrapper jar) are compiled in with include_str!/include_bytes!, so they ship too.
 
@@ -16,6 +16,8 @@ workspace = true
 
 [dependencies]
 anyhow = "1"
+# AppIcon.icns for the macOS bundle (MIT); PNG elements only.
+icns = { version = "0.5.0", default-features = false, features = ["pngio"] }
 # Same version GPUI uses; tiny-skia's default `png-format` encodes the launcher PNGs.
 resvg = { version = "0.46.0", default-features = false }
 serde = { version = "1", features = ["derive"] }

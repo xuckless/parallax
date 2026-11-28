@@ -1,15 +1,19 @@
 # cargo-parallax
 
 `cargo parallax run android [--release] [--device <serial>]` builds the app crate in the current directory, wraps it
-in a generated Gradle project, installs the APK and launches it. Source: [main.rs](../crates/cli/src/main.rs) (args),
+in a generated Gradle project, installs the APK and launches it. `cargo parallax run|build macos|linux|windows
+[--release]`, or `run` with no target for this machine's desktop: [cli-desktop.md](cli-desktop.md) (a real `.app` on
+macOS, `cargo run` on Linux and Windows). Source: [main.rs](../crates/cli/src/main.rs) (args: the `VERBS`, `TARGETS`
+and `(verb, target) → handler` `DISPATCH` tables),
 [config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (the run),
 [icon.rs](../crates/cli/src/icon.rs) (launcher icon), [error.rs](../crates/cli/src/error.rs) (every failure and its fix),
 [templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
 
 ## parallax.toml
 
-Next to the app's `Cargo.toml`. Unknown keys and tables are errors. Defaults are one table, `ANDROID_DEFAULTS` in
-[config.rs](../crates/cli/src/config.rs).
+Next to the app's `Cargo.toml`. Unknown keys and tables are errors. Defaults are one table per target,
+`ANDROID_DEFAULTS` and `MACOS_DEFAULTS` in [config.rs](../crates/cli/src/config.rs); the `[macos]` keys are in
+[cli-desktop.md](cli-desktop.md#macos-a-real-app).
 
 | Key | Required | Default | Meaning |
 |---|---|---|---|

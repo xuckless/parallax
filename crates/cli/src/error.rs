@@ -3,11 +3,36 @@
 use std::path::PathBuf;
 
 use crate::android::{ABIS, HOSTS};
+use crate::macos::ARCHS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("usage: cargo parallax run android [--release] [--device <serial>]\n{0}")]
+    #[error(
+        "usage: cargo parallax <run|build> [android|macos|linux|windows] [--release] [--device <serial> (android)]\nNo target: this machine's desktop.\n{0}"
+    )]
     Usage(String),
+    #[error(
+        "cargo parallax builds {target} apps only on {needed} (host is {host}); desktop targets are not cross-built"
+    )]
+    WrongHost {
+        target: &'static str,
+        needed: &'static str,
+        host: String,
+    },
+    #[error("no desktop target for host OS {0:?}; name a target: cargo parallax run android")]
+    NoHostDesktop(String),
+    #[error("parallax.toml: macos.archs is empty; list at least one arch")]
+    NoArchs,
+    #[error("parallax.toml: unknown macOS arch {0:?}; supported: {supported}", supported = ARCHS.map(|a| a.name).join(", "))]
+    UnknownArch(String),
+    #[error(
+        "package {0} has no bin target to put in the .app. Add src/main.rs or a [[bin]] to its Cargo.toml"
+    )]
+    NoBin(String),
+    #[error(
+        "package {package} has several bin targets {bins:?}; a .app holds one. Move the others to examples/"
+    )]
+    SeveralBins { package: String, bins: Vec<String> },
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
     )]

@@ -1,4 +1,5 @@
-//! `app.icon`: the app's SVG rendered to Android's launcher icon, legacy PNGs plus an adaptive icon. docs/cli.md.
+//! `app.icon`: the app's SVG, parsed once and rendered square at any size. Android's launcher icon (legacy PNGs plus an
+//! adaptive icon, docs/cli.md) is here; macOS's AppIcon.icns is in macos.rs.
 
 use std::path::Path;
 
@@ -60,26 +61,35 @@ const ADAPTIVE_ICON: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 /// Background colour when the SVG's top-left pixel is not opaque (no full-bleed tile).
 const NO_TILE_BACKGROUND: [u8; 3] = [0xFF, 0xFF, 0xFF];
 
-/// Reads and renders `app.icon`: (path under the Gradle project, file bytes) for every launcher icon file.
-pub fn launcher_icon(svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
-    let svg = std::fs::read(svg_path).map_err(|source| CliError::IconRead {
-        path: svg_path.to_path_buf(),
-        source,
-    })?;
-    render_icon(&svg, svg_path)
+/// `app.icon` parsed, with its path for error messages.
+pub struct Svg {
+    tree: usvg::Tree,
+    path: std::path::PathBuf,
 }
 
-fn render_icon(svg: &[u8], svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
-    let invalid = |reason: String| CliError::IconInvalid {
-        path: svg_path.to_path_buf(),
-        reason,
-    };
-    let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
-        .map_err(|e| invalid(e.to_string()))?;
-    let render = |canvas_px: u32, share: f32| -> Result<tiny_skia::Pixmap, CliError> {
+impl Svg {
+    pub fn read(path: &Path) -> Result<Svg, CliError> {
+        let bytes = std::fs::read(path).map_err(|source| CliError::IconRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Svg::parse(&bytes, path)
+    }
+
+    pub fn parse(bytes: &[u8], path: &Path) -> Result<Svg, CliError> {
+        let tree = usvg::Tree::from_data(bytes, &usvg::Options::default())
+            .map_err(|e| invalid(path, e.to_string()))?;
+        Ok(Svg {
+            tree,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The SVG centred on a transparent `canvas_px` square, its longer side `share` of the canvas.
+    pub fn render(&self, canvas_px: u32, share: f32) -> Result<tiny_skia::Pixmap, CliError> {
         let mut pixmap = tiny_skia::Pixmap::new(canvas_px, canvas_px)
-            .ok_or_else(|| invalid(format!("cannot make a {canvas_px}px canvas")))?;
-        let size = tree.size();
+            .ok_or_else(|| invalid(&self.path, format!("cannot make a {canvas_px}px canvas")))?;
+        let size = self.tree.size();
         let scale = canvas_px as f32 * share / size.width().max(size.height());
         let offset = |side: f32| (canvas_px as f32 - side * scale) / 2.0;
         let transform = tiny_skia::Transform::from_row(
@@ -90,10 +100,31 @@ fn render_icon(svg: &[u8], svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, Cl
             offset(size.width()),
             offset(size.height()),
         );
-        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        resvg::render(&self.tree, transform, &mut pixmap.as_mut());
         Ok(pixmap)
-    };
-    let png = |pixmap: tiny_skia::Pixmap| pixmap.encode_png().map_err(|e| invalid(e.to_string()));
+    }
+
+    pub fn invalid(&self, reason: String) -> CliError {
+        invalid(&self.path, reason)
+    }
+}
+
+fn invalid(path: &Path, reason: String) -> CliError {
+    CliError::IconInvalid {
+        path: path.to_path_buf(),
+        reason,
+    }
+}
+
+/// Reads and renders `app.icon`: (path under the Gradle project, file bytes) for every launcher icon file.
+pub fn launcher_icon(svg_path: &Path) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    render_icon(&Svg::read(svg_path)?)
+}
+
+fn render_icon(svg: &Svg) -> Result<Vec<(String, Vec<u8>)>, CliError> {
+    let render = |canvas_px: u32, share: f32| svg.render(canvas_px, share);
+    let png =
+        |pixmap: tiny_skia::Pixmap| pixmap.encode_png().map_err(|e| svg.invalid(e.to_string()));
 
     let background = match render(DENSITIES[0].legacy_px, 1.0)?
         .pixel(0, 0)
@@ -167,7 +198,7 @@ mod tests {
             ("no tile falls back to white", untiled, "#FFFFFF"),
         ];
         for (name, svg, colour) in cases {
-            let files = render_icon(svg, Path::new("icon.svg"))?;
+            let files = render_icon(&Svg::parse(svg, Path::new("icon.svg"))?)?;
             let file = |path: &str| {
                 files
                     .iter()
@@ -214,7 +245,7 @@ mod tests {
         ];
         for (name, path, svg, want) in cases {
             let got = match svg {
-                Some(svg) => render_icon(svg, Path::new(path)),
+                Some(svg) => Svg::parse(svg, Path::new(path)).and_then(|svg| render_icon(&svg)),
                 None => launcher_icon(Path::new(path)),
             }
             .map(|_| ())
