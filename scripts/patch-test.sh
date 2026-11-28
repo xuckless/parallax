@@ -65,7 +65,7 @@ done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
 
-# gpui_windows and gpui_ios build only on their own OS and gpui_web only on wasm32, so their pure decision modules
+# gpui_windows, gpui_ios and gpui_apple build only on their own OS and gpui_web only on wasm32, so their pure decision modules
 # (plain values, no `windows`, objc2 or `web_sys` crate) are tested here as one host crate per backend on
 # parallax-gpui, members of the scratch workspace.
 # One row per backend: "scratch crate:fork crate:modules", each module its path under the crate's src/ without
@@ -74,7 +74,8 @@ done
 pure_crates=(
     "windows-pure:parallax-gpui-windows:pointer accessibility_display native_views"
     "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
-    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation ios/native_view_placement"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
+    "apple-pure:parallax-gpui-apple:native_view_placement"
 )
 for row in "${pure_crates[@]}"; do
     IFS=: read -r name backend modules <<<"$row"
