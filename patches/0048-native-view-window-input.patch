@@ -1,0 +1,405 @@
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 47d73df..a1913ef 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1420,6 +1420,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     ) -> Option<Box<dyn std::any::Any>> {
+         None
+     }
++    /// Where pointer input over this window's native views goes.
++    fn native_view_input(&self) -> crate::NativeViewInput {
++        crate::NativeViewInput::Platform
++    }
+     /// Gives keyboard input to the native view, or back to the window's own
+     /// content for `None`.
+     fn set_focused_native_view(&self, _id: Option<crate::NativeViewId>) {}
+diff --git a/gpui-pre/src/platform/test/window.rs b/gpui-pre/src/platform/test/window.rs
+index 90f7467..aa87743 100644
+--- a/gpui-pre/src/platform/test/window.rs
++++ b/gpui-pre/src/platform/test/window.rs
+@@ -1,6 +1,6 @@
+ use crate::{
+     AnyWindowHandle, Bounds, Decorations, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs,
+-    HeadlessAtlas, KeyDownEvent, NativeViewId, Pixels, Platform, PlatformAtlas, PlatformDisplay,
++    HeadlessAtlas, KeyDownEvent, NativeViewId, NativeViewInput, Pixels, Platform, PlatformAtlas, PlatformDisplay,
+     PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+     PromptButton, RequestFrameOptions, Scene, Size, TestDisplay, TestPlatform,
+     TextInputConfiguration, TextInputStateChange, WindowAppearance, WindowBackgroundAppearance,
+@@ -34,6 +34,7 @@ pub(crate) struct TestWindowState {
+     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
+     attached_native_views: Rc<Cell<usize>>,
+     focused_native_view: Option<NativeViewId>,
++    native_view_input: NativeViewInput,
+     hit_test_native_view_callback: Option<Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>>,
+     native_view_focused_callback: Option<Box<dyn FnMut(NativeViewId)>>,
+     key_down_before_native_view_callback: Option<Box<dyn FnMut(KeyDownEvent) -> bool>>,
+@@ -134,6 +135,7 @@ impl TestWindow {
+             appearance_change_callback: None,
+             attached_native_views: Rc::new(Cell::new(0)),
+             focused_native_view: None,
++            native_view_input: NativeViewInput::Platform,
+             hit_test_native_view_callback: None,
+             native_view_focused_callback: None,
+             key_down_before_native_view_callback: None,
+@@ -283,6 +285,12 @@ impl TestWindow {
+     }
+ 
+     /// How many native views are attached to the window.
++    /// Makes native views attached from now on take pointer input as `input`
++    /// says, as Wayland's do with [`NativeViewInput::Window`].
++    pub fn set_native_view_input(&self, input: NativeViewInput) {
++        self.0.lock().native_view_input = input;
++    }
++
+     pub fn attached_native_view_count(&self) -> usize {
+         self.0.lock().attached_native_views.get()
+     }
+@@ -670,6 +678,10 @@ impl PlatformWindow for TestWindow {
+         Some(Box::new(Attachment(attached_native_views)))
+     }
+ 
++    fn native_view_input(&self) -> NativeViewInput {
++        self.0.lock().native_view_input
++    }
++
+     fn set_focused_native_view(&self, id: Option<NativeViewId>) {
+         self.0.lock().focused_native_view = id;
+     }
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index adc27c0..79d2743 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -78,7 +78,7 @@ mod prompts;
+ 
+ pub use a11y::A11ySubtreeBuilder;
+ use native_view::NativeViewState;
+-pub use native_view::{NativeView, NativeViewId};
++pub use native_view::{NativeView, NativeViewId, NativeViewInput};
+ 
+ use self::a11y::A11y;
+ #[cfg(not(target_family = "wasm"))]
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 06287b4..329fdb3 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -1,4 +1,4 @@
+-use crate::{Action, KeyBinding, KeyDownEvent, PlatformInput};
++use crate::{Action, KeyBinding, KeyDownEvent, PlatformInput, prelude::FluentBuilder as _};
+ use crate::{
+     AnyWindowHandle, App, Bounds, Element, ElementId, FocusHandle, FocusId, Focusable,
+     GlobalElementId, Hitbox, HitboxBehavior, HitboxId, Hsla, InspectorElementId,
+@@ -27,10 +27,29 @@ impl NativeViewId {
+     }
+ }
+ 
++/// Where pointer input over a native view goes, which is up to the platform.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub enum NativeViewInput {
++    /// The platform's toolkit delivers it to the view, as AppKit does to an
++    /// `NSView`.
++    Platform,
++    /// It reaches the window, as on Wayland, where the view's surface takes no
++    /// input, and is dispatched to the view's own element.
++    Window,
++}
++
+ /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
+ ///
+-/// Only macOS shows native views so far, where the view is an `NSView`.
+-/// [`NativeView::new`] fails on every other platform.
++/// macOS shows an `NSView`, and Wayland a `wl_surface` the app created on
++/// GPUI's own connection. [`NativeView::new`] fails on every other platform.
++///
++/// On a platform whose native views take no input of their own
++/// ([`NativeViewInput::Window`], Wayland), pointer input over the view, where
++/// no element painted after it takes that input, goes to the element this
++/// handle becomes, so listeners added to it (`view.into_element().on_mouse_move(…)`)
++/// hear it and nothing behind the view does. Keys pressed while the view's
++/// [`FocusHandle`] is focused are dispatched from that element like any other
++/// key press, so the app forwards the ones it wants to the view.
+ ///
+ /// The view is composited beneath the window's GPUI content and shows through
+ /// wherever this handle is used as an element, so elements painted after it
+@@ -76,6 +95,7 @@ pub(crate) struct NativeViewState {
+     /// The hitbox of the occurrence that shows the view, which is the one
+     /// painted first in a frame that paints the view more than once.
+     shown_hitbox: Cell<Option<HitboxId>>,
++    input: NativeViewInput,
+     reserved_actions: RefCell<HashSet<TypeId>>,
+     _attachment: Box<dyn Any>,
+ }
+@@ -92,7 +112,10 @@ impl NativeView {
+     ///
+     /// `view` must point to a live view of the kind the window's platform
+     /// embeds, which is an `NSView` on macOS, and that view must not be in
+-    /// another view hierarchy.
++    /// another view hierarchy. On Wayland it is a `wl_proxy` of a `wl_surface`
++    /// made on the window's own `wl_display`, with no role, no `wp_viewport`
++    /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
++    /// and places it, and the app attaches and commits its buffers.
+     ///
+     /// GPUI retains the view and puts it inside a view of its own, until the
+     /// last clone of the returned handle is dropped. Until then GPUI decides the
+@@ -111,6 +134,7 @@ impl NativeView {
+             focus_handle: cx.focus_handle(),
+             background: Cell::new(Hsla::transparent_black()),
+             shown_hitbox: Cell::new(None),
++            input: window.platform_window.native_view_input(),
+             reserved_actions: RefCell::default(),
+             _attachment: attachment,
+         });
+@@ -139,6 +163,22 @@ impl NativeView {
+         });
+     }
+ 
++    /// Where the view showed in the frame last drawn, in window coordinates,
++    /// which turns a pointer position into one relative to the view.
++    pub fn bounds(&self, window: &Window) -> Option<Bounds<Pixels>> {
++        let frame = &window.rendered_frame;
++        let shown = frame
++            .scene
++            .native_views
++            .iter()
++            .find(|native_view| native_view.id == self.0.id)?;
++        frame
++            .hitboxes
++            .iter()
++            .find(|hitbox| hitbox.id == shown.hitbox_id)
++            .map(|hitbox| hitbox.bounds)
++    }
++
+     /// Makes key bindings for `A` apply before the view sees the key.
+     ///
+     /// The view otherwise sees every key first and can keep any of them, so
+@@ -163,9 +203,16 @@ impl IntoElement for NativeView {
+     type Element = crate::Div;
+ 
+     fn into_element(self) -> Self::Element {
++        // Where the window gets the view's input, this element takes it, and
++        // keeps it from what is behind the view.
++        let occludes = match self.0.input {
++            NativeViewInput::Platform => false,
++            NativeViewInput::Window => true,
++        };
+         div()
+             .track_focus(&self.0.focus_handle)
+             .size_full()
++            .when(occludes, |this| this.occlude())
+             .child(NativeViewElement(self))
+     }
+ }
+@@ -225,10 +272,11 @@ impl Element for NativeViewElement {
+                 .any(|hitbox| hitbox.id == shown)
+         });
+         let shows_view = is_visible && !is_shown_elsewhere;
+-        let behavior = if shows_view {
+-            HitboxBehavior::BlockMouse
+-        } else {
+-            HitboxBehavior::Normal
++        // Where the window gets the view's input, it goes to the occluding
++        // element around this one, so this hitbox must not block it.
++        let behavior = match (shows_view, state.input) {
++            (true, NativeViewInput::Platform) => HitboxBehavior::BlockMouse,
++            (true, NativeViewInput::Window) | (false, _) => HitboxBehavior::Normal,
+         };
+         let hitbox = window.insert_hitbox(bounds, behavior);
+         if shows_view {
+@@ -399,8 +447,9 @@ mod tests {
+     use super::*;
+     use crate::{
+         Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
+-        Render, ScaledPixels, TestAppContext, UTF16Selection, VisualTestContext, WindowHandle,
+-        canvas, point, prelude::*, px, rgb,
++        MouseDownEvent, MouseMoveEvent, Render, ScaledPixels, ScrollDelta, ScrollEvent,
++        TestAppContext, UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*,
++        px, rgb,
+     };
+     use std::ops::Range;
+ 
+@@ -689,6 +738,7 @@ mod tests {
+             actions: Vec::new(),
+             keys: Vec::new(),
+             presses: Vec::new(),
++            view_events: Vec::new(),
+             paints_native_view_twice: false,
+             unmark_count: 0,
+         });
+@@ -725,6 +775,96 @@ mod tests {
+         assert_eq!(unmark_count, 1);
+     }
+ 
++    /// Where the window gets a native view's input, as on Wayland, the view's
++    /// own element hears it with view-relative positions, and what is behind
++    /// the view hears nothing. The view's container is at (0, 10).
++    #[gpui::test]
++    fn window_input_over_a_native_view_reaches_its_element(cx: &mut TestAppContext) {
++        cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-r", Reserved, None)]));
++        let window = open_window(cx);
++        cx.test_window(window.into())
++            .set_native_view_input(NativeViewInput::Window);
++        window
++            .update(cx, |view, window, cx| {
++                view.native_view = new_native_view(window, cx);
++                view.native_view.reserve_action::<Reserved>();
++                window.focus(&view.native_view.focus_handle(cx), cx);
++            })
++            .unwrap();
++        cx.run_until_parked();
++        let mut cx = VisualTestContext::from_window(window.into(), cx);
++        let uncovered = point(px(75.), px(75.));
++        let covered = point(px(25.), px(25.));
++        let scroll = ScrollEvent {
++            position: uncovered,
++            delta: ScrollDelta::Pixels(point(px(0.), px(10.))),
++            ..Default::default()
++        };
++
++        type Input = Box<dyn Fn(&mut VisualTestContext)>;
++        // (row name, input, what the view's element hears, presses heard elsewhere). The
++        // press on the cover moves focus to it, so it comes last.
++        let rows: [(&str, Input, &[&str], &[&str]); 6] = [
++            (
++                "a key while the view is focused",
++                Box::new(|cx| cx.simulate_keystrokes("a")),
++                &["key a"],
++                &[],
++            ),
++            (
++                "a reserved key while the view is focused",
++                Box::new(|cx| cx.simulate_keystrokes("cmd-r")),
++                &[],
++                &[],
++            ),
++            (
++                "a press on the uncovered view",
++                Box::new(move |cx| {
++                    cx.simulate_mouse_down(uncovered, MouseButton::Left, Modifiers::default())
++                }),
++                &["down 75 65"],
++                &["outside cover"],
++            ),
++            (
++                "a move over the uncovered view",
++                Box::new(move |cx| cx.simulate_mouse_move(uncovered, None, Modifiers::default())),
++                &["move 75 65"],
++                &[],
++            ),
++            (
++                "a scroll over the uncovered view",
++                Box::new(move |cx| cx.simulate_event(scroll.clone())),
++                &["scroll 75 65"],
++                &[],
++            ),
++            (
++                "a press on the element painted over the view",
++                Box::new(move |cx| {
++                    cx.simulate_mouse_down(covered, MouseButton::Left, Modifiers::default())
++                }),
++                &[],
++                &[],
++            ),
++        ];
++        for (name, input, view_events, presses) in rows {
++            input(&mut cx);
++            let (heard_by_view, heard_elsewhere) = window
++                .update(&mut cx, |view, _, _| {
++                    (
++                        std::mem::take(&mut view.view_events),
++                        std::mem::take(&mut view.presses),
++                    )
++                })
++                .unwrap();
++            assert_eq!(heard_by_view, view_events, "{name}: the view's element");
++            assert_eq!(heard_elsewhere, presses, "{name}: the rest of the window");
++        }
++        let actions = window
++            .update(&mut cx, |view, _, _| std::mem::take(&mut view.actions))
++            .unwrap();
++        assert_eq!(actions, ["reserved"]);
++    }
++
+     actions!(native_view_tests, [Reserved, Ordinary]);
+ 
+     struct TestView {
+@@ -734,6 +874,9 @@ mod tests {
+         /// The key presses dispatched to the window's content.
+         keys: Vec<String>,
+         presses: Vec<&'static str>,
++        /// The input the native view's own element hears, with positions
++        /// relative to the view.
++        view_events: Vec<String>,
+         paints_native_view_twice: bool,
+         /// How many times the input handler of the "cover" element was told to
+         /// end its composition.
+@@ -752,7 +895,7 @@ mod tests {
+                 .child(
+                     div()
+                         .absolute()
+-                        .top_0()
++                        .top(px(10.))
+                         .left_0()
+                         .size(px(100.))
+                         .bg(rgb(0xff0000))
+@@ -760,7 +903,30 @@ mod tests {
+                             MouseButton::Left,
+                             cx.listener(|this, _, _, _| this.presses.push("behind view")),
+                         )
+-                        .child(self.native_view.clone()),
++                        .child(
++                            self.native_view
++                                .clone()
++                                .into_element()
++                                .on_mouse_down(
++                                    MouseButton::Left,
++                                    cx.listener(|this, event: &MouseDownEvent, window, _| {
++                                        this.view_event("down", event.position, window)
++                                    }),
++                                )
++                                .on_mouse_move(cx.listener(
++                                    |this, event: &MouseMoveEvent, window, _| {
++                                        this.view_event("move", event.position, window)
++                                    },
++                                ))
++                                .on_scroll(cx.listener(
++                                    |this, event: &ScrollEvent, window, _| {
++                                        this.view_event("scroll", event.position, window)
++                                    },
++                                ))
++                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
++                                    this.view_events.push(format!("key {}", event.keystroke.key))
++                                })),
++                        ),
+                 )
+                 .when(self.paints_native_view_twice, |this| {
+                     this.child(
+@@ -806,6 +972,22 @@ mod tests {
+         }
+     }
+ 
++    impl TestView {
++        fn view_event(&mut self, kind: &str, position: Point<Pixels>, window: &Window) {
++            let origin = self
++                .native_view
++                .bounds(window)
++                .expect("the view hears input only where it shows")
++                .origin;
++            let position = position - origin;
++            self.view_events.push(format!(
++                "{kind} {} {}",
++                f32::from(position.x),
++                f32::from(position.y)
++            ));
++        }
++    }
++
+     /// Reaches its view as an element's input handler does, by updating it.
+     struct TestInput {
+         view: Entity<TestView>,
+@@ -884,6 +1066,7 @@ mod tests {
+             actions: Vec::new(),
+             keys: Vec::new(),
+             presses: Vec::new(),
++            view_events: Vec::new(),
+             paints_native_view_twice: false,
+             unmark_count: 0,
+         })
