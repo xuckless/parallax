@@ -448,8 +448,6 @@ impl ActivityWindow {
         }
     }
 
-    /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
-    /// so the window can read modifiers during dispatch.
     /// The native view a touch down at `(x, y)` view pixels forwards to ([`NativeViews::forwarded`]), or -1.
     pub(crate) fn native_view_at(&self, x: f32, y: f32) -> i32 {
         let density = self.metrics.get().density;
@@ -461,6 +459,8 @@ impl ActivityWindow {
         self.native_views.forwarded(hit)
     }
 
+    /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,
+    /// so the window can read modifiers during dispatch.
     pub(crate) fn key(&self, packet: &[u8], extras: keys::KeyEventExtras) -> bool {
         let data = match keys::decode(packet) {
             Ok(data) => data,
