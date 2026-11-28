@@ -12,7 +12,7 @@ scripts/patch-test.sh
 scripts/android-smoke.sh            # with one emulator or device running
 cargo package -p cargo-parallax
 scripts/publish-fork.sh --dry-run
-scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax
+scripts/publish-fork.sh --published && cargo package -p parallax-android -p parallax-platform -p parallax-ext -p parallax
 cargo check --workspace --target wasm32-unknown-unknown
 ```
 

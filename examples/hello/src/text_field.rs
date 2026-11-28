@@ -17,12 +17,12 @@ use parallax::gpui::{
     UnderlineStyle, Window, actions, canvas, div, fill, hsla, point, prelude::*, px, relative, rgb,
     rgba, size,
 };
-use parallax::parallax_platform::behaviour::current_behaviour;
-use parallax_ext::text_selection::{
+use parallax::parallax_ext::text_selection::{
     Affinity, Clipboard, Field, Handle, HandleGeometry, HandleType, Input, Lines,
     MagnifierGeometry, Selection, TextLayout, TextSelection, TextVisibility, ToolbarButton,
     toolbar_origin,
 };
+use parallax::parallax_platform::behaviour::current_behaviour;
 use unicode_segmentation::UnicodeSegmentation;
 
 // `actions!` expands to paths through a crate named `gpui`; through the facade it is `parallax::gpui`.

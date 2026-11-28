@@ -1,6 +1,7 @@
 # Text selection (Android and touch desktops)
 
-Flutter's text selection behaviour, ported as a pure state machine in `parallax-ext`
+Flutter's text selection behaviour, ported as a pure state machine in `parallax-ext` (published, and re-exported by
+the facade as `parallax::parallax_ext`)
 ([text_selection/mod.rs](../crates/ext/src/text_selection/mod.rs), geometry in
 [geometry.rs](../crates/ext/src/text_selection/geometry.rs)). Pointer input in; the new selection and the overlay
 (handles, toolbar anchors, magnifier) out, as plain values. The app draws the overlay itself; there is no Material or

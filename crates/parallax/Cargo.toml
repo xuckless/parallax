@@ -17,4 +17,5 @@ workspace = true
 gpui.workspace = true
 log = "0.4"
 parallax-android.workspace = true
+parallax-ext.workspace = true
 parallax-platform.workspace = true
