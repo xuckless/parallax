@@ -1,0 +1,140 @@
+Fall back to WebGL2 when a browser's WebGPU canvases show nothing.
+
+What: gpui_web's automatic backend choice (`WebBackendPreference::Auto`) gets one more WebGPU check after the device is
+made: `webgpu_canvas_shows_drawing` clears a detached 4x4 WebGPU canvas to red and reads it back through a 2D
+`OffscreenCanvas` in the same task. Anything but opaque red counts as WebGPU failing, so the existing fallback runs:
+the canvas is replaced, `WebGPU initialization failed; falling back to WebGL2: WebGPU draws nothing to a canvas here`
+is logged, and the window draws with WebGL2. An app that asks for WebGPU explicitly is not probed.
+
+Why: Chromium 158 (Fedora's build) on NVIDIA's proprietary Linux driver (RTX 5060, Wayland) gives a working NVIDIA
+WebGPU adapter whose canvases composite black whenever Chromium's Vulkan feature is on (`--enable-features=Vulkan`,
+with `--use-angle=vulkan`, headed or headless), and its default flags give a SwiftShader adapter that does the same:
+a ten-line page clearing a WebGPU canvas red shows black, and drawImage of it reads 0,0,0,0. GPUI then showed an
+all-black window (seen on the owner's desktop, 2026-11-28). The same read gives 255,0,0,255 where WebGPU works
+(`--use-angle=gl`). The choice is private to gpui_web's platform (no extension point).
+
+Tests: in a browser (docs/native-view-web.md, WebGPU): with `--enable-features=Vulkan --use-angle=vulkan` hello and
+native-view-web log the fallback and draw with WebGL2; with `--use-angle=gl` they keep WebGPU.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
+--- a/gpui-pre-web/src/platform.rs
++++ b/gpui-pre-web/src/platform.rs
+@@ -282,6 +282,18 @@
+                     "browser WebGPU probe did not return a usable adapter"
+                 ))
+             };
++            // A browser can hand out a working WebGPU device whose canvases never show what it draws (Chromium
++            // 158 with its Vulkan feature on NVIDIA's Linux driver: every WebGPU canvas composites black). Only
++            // reading a canvas back tells, so a test clear decides before the window commits to WebGPU.
++            let webgpu_result = webgpu_result.and_then(|prepared| {
++                if webgpu_canvas_shows_drawing(&prepared.context) {
++                    Ok(prepared)
++                } else {
++                    Err(anyhow::anyhow!(
++                        "WebGPU draws nothing to a canvas here (a test clear read back blank)"
++                    ))
++                }
++            });
+             match webgpu_result {
+                 Ok(PreparedWebGraphics { context, surface }) => {
+                     return Ok((webgpu_canvas, context, surface));
+@@ -341,6 +353,97 @@
+     }
+ }
+ 
++/// Clears a detached 4x4 WebGPU canvas to red and reads it back through a 2D canvas in the same task, while the
++/// clear is still the canvas's current texture. False when the read gives anything but opaque red.
++fn webgpu_canvas_shows_drawing(context: &WgpuContext) -> bool {
++    const SIZE: u32 = 4;
++    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
++        return false;
++    };
++    let Some(canvas) = document
++        .create_element("canvas")
++        .ok()
++        .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
++    else {
++        return false;
++    };
++    canvas.set_width(SIZE);
++    canvas.set_height(SIZE);
++    let Ok(surface) = context
++        .instance
++        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
++    else {
++        return false;
++    };
++    let Some(format) = surface
++        .get_capabilities(&context.adapter)
++        .formats
++        .first()
++        .copied()
++    else {
++        return false;
++    };
++    surface.configure(
++        &context.device,
++        &wgpu::SurfaceConfiguration {
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
++            format,
++            color_space: wgpu::SurfaceColorSpace::Auto,
++            width: SIZE,
++            height: SIZE,
++            present_mode: wgpu::PresentMode::Fifo,
++            desired_maximum_frame_latency: 2,
++            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
++            view_formats: Vec::new(),
++        },
++    );
++    let wgpu::CurrentSurfaceTexture::Success(frame) = surface.get_current_texture() else {
++        return false;
++    };
++    let view = frame
++        .texture
++        .create_view(&wgpu::TextureViewDescriptor::default());
++    let mut encoder = context
++        .device
++        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
++    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++        label: Some("webgpu_canvas_probe"),
++        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++            view: &view,
++            depth_slice: None,
++            resolve_target: None,
++            ops: wgpu::Operations {
++                load: wgpu::LoadOp::Clear(wgpu::Color::RED),
++                store: wgpu::StoreOp::Store,
++            },
++        })],
++        ..Default::default()
++    }));
++    context.queue.submit([encoder.finish()]);
++    context.queue.present(frame);
++    let Some(reader) = web_sys::OffscreenCanvas::new(SIZE, SIZE)
++        .ok()
++        .and_then(|reader| reader.get_context("2d").ok().flatten())
++        .and_then(|reader| {
++            reader
++                .dyn_into::<web_sys::OffscreenCanvasRenderingContext2d>()
++                .ok()
++        })
++    else {
++        return false;
++    };
++    if reader
++        .draw_image_with_html_canvas_element(&canvas, 0.0, 0.0)
++        .is_err()
++    {
++        return false;
++    }
++    reader
++        .get_image_data(1.0, 1.0, 1.0, 1.0)
++        .map(|pixel| matches!(pixel.data().0.as_slice(), [200..=255, 0..=40, 0..=40, 255]))
++        .unwrap_or(false)
++}
++
+ impl Platform for WebPlatform {
+     fn platform_info(&self) -> gpui::PlatformInfo {
+         self.platform_info

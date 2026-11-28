@@ -53,6 +53,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 - Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
   scale 1 and drew at the square of the scale (fork patch 0055).
+- Web: where a browser's WebGPU canvases show nothing (Chromium 158 with its Vulkan feature on NVIDIA's Linux driver
+  drew GPUI's window all black), GPUI detects it with a test clear read back at startup and draws with WebGL2,
+  logging why (fork patch 0057, docs/web-webgpu.md).
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

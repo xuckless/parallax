@@ -68,9 +68,9 @@ Checked 2026-11-28, every check passing (16 desktop, 12 mobile, where wheel, dra
 
 The toggle costs about 0.03 ms per move on a desktop and 0.2 ms on the throttled phone profile. A WebGL2 canvas is
 premultiplied with or without views, so the views' cost per frame (about 1 ms, 6 % on the phone profile) is the
-DOM slots and their compositing, not transparency. Not run here: WebGPU. Headless Chromium's SwiftShader WebGPU
-loses its device when it presents and the GPU process crashes on this NVIDIA host, so the WebGPU path, and with it
-the opaque/premultiplied switch's cost, is owed in a desktop browser. Also owed: Safari, and an iframe's
+DOM slots and their compositing, not transparency. WebGPU (alpha `PreMultiplied` while views show): every check
+passes in headless Chromium with `--use-angle=gl`; with Vulkan on NVIDIA, Chromium shows WebGPU canvases black and
+GPUI falls back to WebGL2 ([web-webgpu.md](web-webgpu.md)). Also owed: Safari, and an iframe's
 cross-origin process lagging its slot by a frame after a resize (one device pixel, filled by `set_background`).
 
 ## Tests
