@@ -4,13 +4,14 @@ A `NativeView` shows an OS-native view (a browser page, video, map) under GPUI's
 paints. The view's own frames reach the screen through the OS compositor and draw no GPUI frame
 ([ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview), issue #1). Upstream GPUI has it on macOS only; this
 page is what every target shares. Per target: [native-view-wayland.md](native-view-wayland.md),
-[native-view-windows.md](native-view-windows.md), [native-view-apple.md](native-view-apple.md).
+[native-view-windows.md](native-view-windows.md), [native-view-apple.md](native-view-apple.md),
+[native-view-android.md](native-view-android.md).
 
 ## One API
 
 `NativeView::new(view, window, cx)` takes the platform's own view as a pointer, as upstream's macOS one takes an
 `NSView`: a `UIView` on iOS, DirectComposition content on Windows, the app's `wl_surface` on Wayland (owner
-decision, 2026-11-27). The handle is an element: paint it
+decision, 2026-11-27), a JNI reference to a `View` or `SurfaceControl` on Android. The handle is an element: paint it
 where the view goes, and elements painted after it cover it. `NativeView::bounds(window)` gives where it showed in the
 last frame.
 
@@ -40,7 +41,7 @@ every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
 | `NativeViewInput` | Targets | Pointer input over the view |
 |---|---|---|
 | `View` | macOS | the view (AppKit hit-tests it); the view's element blocks the mouse from everything behind |
-| `Window` | Wayland, Windows, iOS | GPUI: the view's element occludes like a solid element (`HitboxBehavior::BlockMouseExceptAncestors`), so it and its ancestors hear the input, elements painted before it don't, elements painted after it keep theirs |
+| `Window` | Wayland, Windows, iOS, Android | GPUI: the view's element occludes like a solid element (`HitboxBehavior::BlockMouseExceptAncestors`), so it and its ancestors hear the input, elements painted before it don't, elements painted after it keep theirs |
 
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract
 `view.bounds(window)`'s origin for view-relative positions. The hit test skips every hitbox behind the view whose
@@ -52,7 +53,8 @@ forwards the rest to the view.
 
 A frame that moves, resizes, shows or hides a view must place the view in the same compositor transaction as the hole
 (`places_views()`): Core Animation's transaction on Apple, `wl_subsurface.set_sync` on Wayland, GPUI's own
-DirectComposition `Commit` on Windows. Every other frame leaves the view alone, so its own frames never wait for
+DirectComposition `Commit` on Windows, the transaction applied with GPUI's next buffer on Android (a `SurfaceControl`,
+API 34+; a `View` moves with the window's own frame). Every other frame leaves the view alone, so its own frames never wait for
 GPUI.
 
 ## Tests

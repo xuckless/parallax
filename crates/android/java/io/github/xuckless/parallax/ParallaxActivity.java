@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 /**
  * Hosts a Parallax app: loads the app's native library, then shows one {@link ParallaxSurfaceView}
@@ -48,7 +49,12 @@ public class ParallaxActivity extends Activity {
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
     view = new ParallaxSurfaceView(this, activity, platformPlugin);
-    setContentView(view);
+    ParallaxSurfaceView.nativeViewCreated(activity, view.nativeViews);
+    // The app's native views sit under GPUI's view, which takes every touch (docs/native-view-android.md).
+    FrameLayout content = new FrameLayout(this);
+    content.addView(view.nativeViews.underlay);
+    content.addView(view);
+    setContentView(content);
   }
 
   @Override
