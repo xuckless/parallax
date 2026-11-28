@@ -131,14 +131,16 @@ impl Example {
     }
 }
 
-/// The view's size in device pixels, as GPUI snaps its edges.
-fn device_size([width, height]: [f32; 2], scale: f32) -> [u32; 2] {
+/// The view's edges in device pixels, `[left, top, right, bottom]`, rounded as GPUI snaps them.
+fn device_edges([x, y]: [f32; 2], [width, height]: [f32; 2], scale: f32) -> [f32; 4] {
     let edge = |logical: f32| (logical * scale).round();
-    let [x, y] = VIEW_ORIGIN;
-    [
-        (edge(x + width) - edge(x)) as u32,
-        (edge(y + height) - edge(y)) as u32,
-    ]
+    [edge(x), edge(y), edge(x + width), edge(y + height)]
+}
+
+/// The view's size in device pixels, what its swap chain is made at.
+fn device_size(size: [f32; 2], scale: f32) -> [u32; 2] {
+    let [left, top, right, bottom] = device_edges(VIEW_ORIGIN, size, scale);
+    [(right - left) as u32, (bottom - top) as u32]
 }
 
 impl Render for Example {
@@ -146,17 +148,10 @@ impl Render for Example {
         let [x, y] = VIEW_ORIGIN;
         let [width, height] = VIEW_SIZES[self.size_index];
         let frames = self.frames.clone();
-        if let Some(bounds) = self.view.bounds(window) {
-            let scale = window.scale_factor();
-            let edge = |logical: Pixels| (f32::from(logical) * scale).round();
-            log::info!(
-                "view placement: device {} {} {} {}",
-                edge(bounds.left()),
-                edge(bounds.top()),
-                edge(bounds.right()),
-                edge(bounds.bottom())
-            );
-        }
+        // Where this frame lays the view out: what the checks expect the composed screen to show.
+        let [left, top, right, bottom] =
+            device_edges([x + self.offset, y], [width, height], window.scale_factor());
+        log::info!("view placement: device {left} {top} {right} {bottom}");
         let button = |id: &'static str, top: f32| {
             div()
                 .id(id)
