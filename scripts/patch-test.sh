@@ -74,7 +74,7 @@ done
 pure_crates=(
     "windows-pure:parallax-gpui-windows:pointer accessibility_display native_views"
     "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset native_view_layout"
-    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation ios/native_view_state"
     "apple-pure:parallax-gpui-apple:native_view_placement"
 )
 for row in "${pure_crates[@]}"; do
