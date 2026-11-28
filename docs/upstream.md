@@ -38,6 +38,7 @@ Cadence: see the "Sync cadence" decision in [AGENTS.md](../AGENTS.md).
 ```sh
 scripts/sync-upstream.sh          # latest gpui-pre on crates.io
 scripts/sync-upstream.sh 0.3.15   # a specific version
+scripts/sync-upstream.sh --zed 11e4141   # fallback if gpui-pre stops: vendor Zed's tree (vendor-zed.md)
 ```
 
 [`scripts/sync-upstream.sh`](../scripts/sync-upstream.sh):
@@ -67,9 +68,11 @@ The sync leaves `upstream/` and `Cargo.toml` on the new version and lists the fa
 
 1. **Merged upstream?** If Zed took the change, delete the patch (AGENTS.md: patches are deleted once upstream
    merges them).
-2. **Code moved?** Rebase it: copy `upstream/` somewhere scratch, apply the earlier patches, redo the change,
-   and regenerate the patch with `diff -ru` (paths relative to `upstream/`). Keep its header and number.
+2. **Code moved?** [`scripts/rebase-patches.sh`](../scripts/rebase-patches.sh) applies them in order in
+   `build/rebase/`, regenerates fuzzed ones and stops at a conflict for you to fix (header and number kept).
 3. **No longer needed or wrong now?** Fix or drop it, and note why in `ROADMAP.md` "Upstream notes".
 
-Rerun `scripts/sync-upstream.sh <version>` until it ends with `synced to gpui-pre <version>`. Upstream behaviour that
+Patches that apply can still drift: [`scripts/patch-drift.sh`](../scripts/patch-drift.sh) lists, per patch, the files
+Zed changed under it; read those diffs. Rerun `scripts/sync-upstream.sh <version>` until it ends with `synced to gpui-pre
+<version>`. Lessons from a rehearsal: [upstream-rehearsal.md](upstream-rehearsal.md). Upstream behaviour that
 surprised you goes under "Upstream notes" in [ROADMAP.md](../ROADMAP.md) with the Zed commit.
