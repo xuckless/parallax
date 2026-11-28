@@ -30,8 +30,11 @@ confirms it.
   view resigns. One `Option` holds it; `reconcileTextInput` and `resignFirstResponder` call the sync.
 - **Where touches go.** UIKit puts the interaction's gestures on the text input's own view and only works when that
   view is the `textInputView`. So the view now covers GPUI's view (the window sizes it) and is its own
-  `textInputView`; `hitTest:withEvent:` claims a touch only while editing and only on the field's text (a closest
-  position) or within 22 pt (half of Apple's 44 pt target) of a selection end, where the handle knobs are. Every
+  `textInputView`; `hitTest:withEvent:` claims a touch only while editing and only on the field's text (inside the
+  app's `selectionRectsForRange:` rects for the whole document) or within 22 pt (half of Apple's 44 pt target) of a
+  selection end, where the handle knobs are. Not `closestPositionToPoint:`: an app may clamp
+  `character_index_for_point` to the nearest character for any point (upstream's examples/input.rs does), which
+  would claim every touch on the screen. Every
   other touch falls through to GPUI's view. Touches it claims but the gestures leave are forwarded to GPUI's view
   (Flutter's `touchesBegan:` … forwarding); a recognized gesture cancels them there.
 - **Geometry** comes from the app's input handler, as for the IME: `caretRectForPosition:`, `firstRectForRange:`,

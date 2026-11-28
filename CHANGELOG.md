@@ -112,6 +112,9 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   calls back into `hitTest:` (a borrow panic there would abort).
 - iOS native selection (patch 0038): the selection UI also comes when UIKit itself makes the text input view first
   responder (`becomeFirstResponder` installs it), not only when GPUI focuses a field.
+- iOS native selection (patch 0038): while a field edits, the text input view claims only touches on the field's
+  text (the app's rects for the whole document) or a selection handle; an app whose `character_index_for_point`
+  clamps no longer has every touch on the screen taken by UIKit.
 - Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
   (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
   and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).

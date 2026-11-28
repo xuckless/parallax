@@ -11,9 +11,10 @@ Paste, Delete, Select All, AutoFill; on iOS 16+ UIKit presents it through UIEdit
 patch 0036's actions. It leaves when the view resigns.
 - The interaction's gestures go on the text input's own view (its `textInputView`), so the view now covers GPUI's
   view (the window sizes it, autoresizing) instead of a hidden 1-point frame, and is its own `textInputView`.
-- `hitTest:withEvent:` claims a touch only while editing and only on the field's text (a closest position) or
-  within half of Apple's 44 pt touch target of a selection end (a handle knob); every other touch reaches GPUI's
-  view as before. Touches it claims but UIKit's gestures leave are forwarded to GPUI's view (Flutter's
+- `hitTest:withEvent:` claims a touch only while editing and only on the field's text (inside the app's selection
+  rects for the whole document: an app's `character_index_for_point` may clamp any point to a character, as
+  upstream's examples/input.rs does) or within half of Apple's 44 pt touch target of a selection end (a handle
+  knob); every other touch reaches GPUI's view as before. Touches it claims but UIKit's gestures leave are forwarded to GPUI's view (Flutter's
   `touchesBegan:` … `touchesCancelled:`), so the app still sees them; a recognized gesture cancels them.
 - `selectionRectsForRange:` falls back to the app's first rect when the app gives no selection rects (UIKit draws
   no highlight or handles without them); one-line fields need nothing more.
@@ -25,7 +26,8 @@ Why: AGENTS.md "iOS text selection": native `UITextInteraction` on iOS. The beha
 Test: the native protocol smoke test checks the interaction comes with the responder and goes with it; patch
 0028's table still passes. Checked by hand in Parallax's hello on the iPhone 17 Pro and iPad Pro 11-inch
 simulators (iOS 26.5): double tap selects a word with handles and the edit menu, a handle drag extends it, Copy
-then Paste replaces a selection, long press shows the loupe, taps outside the field reach GPUI.
+then Paste replaces a selection, long press shows the loupe, taps outside the field reach GPUI, also when hello's
+`character_index_for_point` is made to clamp (Show emoji toggles while the field edits).
 
 Upstream PR: not filed yet.
 
@@ -50,7 +52,7 @@ index 923ff13..f645433 100644
      "UITraitCollection",
      "UIView",
 diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
-index d4359bc..cb1b368 100644
+index d4359bc..fdb3de2 100644
 --- a/gpui-pre-ios/src/ios/text_input.rs
 +++ b/gpui-pre-ios/src/ios/text_input.rs
 @@ -9,7 +9,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
@@ -88,7 +90,7 @@ index d4359bc..cb1b368 100644
          #[unsafe(method(resignFirstResponder))]
          fn resign_first_responder(&self) -> bool {
              let was_first_responder = self.isFirstResponder();
-@@ -175,9 +187,49 @@ define_class!(
+@@ -175,9 +187,50 @@ define_class!(
                  self.ivars().keyboard_desired.set(false);
                  self.ivars().keyboard_eligible.set(false);
              }
@@ -98,11 +100,12 @@ index d4359bc..cb1b368 100644
  
 +        // This view covers GPUI's view. While editing, touches on the field's text hit it, for UITextInteraction's
 +        // gestures; the rest, and every touch while not editing, reach GPUI's view (or UIKit's selection views).
++        // The text is where the app's rects for the whole document are (`selectionRectsForRange:`), not wherever
++        // `character_index_for_point` answers: an app may clamp that to the nearest character for any point.
 +        #[unsafe(method_id(hitTest:withEvent:))]
 +        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
 +            let editing = self.ivars().text_interaction.borrow().is_some();
-+            let on_text =
-+                editing && (self.closestPositionToPoint(point).is_some() || self.near_selection_end(point));
++            let on_text = editing && (self.on_text(point) || self.near_selection_end(point));
 +            if on_text {
 +                Some(self.retain().into_super())
 +            } else {
@@ -138,7 +141,7 @@ index d4359bc..cb1b368 100644
          #[unsafe(method(reconcileTextInput))]
          fn reconcile_text_input(&self) {
              self.ivars().update_pending.set(false);
-@@ -196,6 +248,7 @@ define_class!(
+@@ -196,6 +249,7 @@ define_class!(
                  self.resignFirstResponder();
                  self.ivars().reconciling_responder.set(previous);
              }
@@ -146,7 +149,7 @@ index d4359bc..cb1b368 100644
              if self.ivars().configuration_changed.replace(false) && self.isFirstResponder() {
                  self.reloadInputViews();
              }
-@@ -404,9 +457,10 @@ define_class!(
+@@ -404,9 +458,10 @@ define_class!(
  
      unsafe impl UITextInput for TextInputView {
          #[unsafe(method_id(textInRange:))]
@@ -159,7 +162,7 @@ index d4359bc..cb1b368 100644
              self.with_handler(|handler| {
                  // Sanitize the range to prevent going out of bounds: UIKit keeps ranges across app edits.
                  let document = document_range(handler)?;
-@@ -582,7 +636,10 @@ define_class!(
+@@ -582,7 +637,10 @@ define_class!(
              let Some(range) = self.validated_range(range) else { return NSArray::new(); };
              let bounds = self.with_handler(|handler| {
                  if !allowed_range(handler, &range) { return Vec::new(); }
@@ -171,7 +174,7 @@ index d4359bc..cb1b368 100644
              }).unwrap_or_default();
              let count = bounds.len();
              let rectangles = bounds.into_iter().enumerate().map(|(index, bounds)| {
-@@ -629,9 +686,8 @@ define_class!(
+@@ -629,9 +687,8 @@ define_class!(
          }
          #[unsafe(method_id(textInputView))]
          fn text_input_view(&self) -> Retained<UIView> {
@@ -183,7 +186,7 @@ index d4359bc..cb1b368 100644
          }
      }
  
-@@ -655,6 +711,7 @@ impl TextInputView {
+@@ -655,6 +712,7 @@ impl TextInputView {
              content_changed: Cell::new(false),
              native_edit: Cell::new(false),
              temporarily_deleted_composed_character: RefCell::new(None),
@@ -191,7 +194,7 @@ index d4359bc..cb1b368 100644
          });
          unsafe { msg_send![super(this), initWithFrame: frame] }
      }
-@@ -715,6 +772,47 @@ impl TextInputView {
+@@ -715,6 +773,50 @@ impl TextInputView {
          self.with_handler(document_range).flatten()
      }
  
@@ -224,22 +227,38 @@ index d4359bc..cb1b368 100644
 +    /// end's caret, so a knob drawn outside the text still takes its drag.
 +    fn near_selection_end(&self, point: CGPoint) -> bool {
 +        const HALF_TOUCH_TARGET: f64 = 22.;
-+        let near = |caret: CGRect| {
-+            caret != CGRect::ZERO
-+                && (caret.origin.x - HALF_TOUCH_TARGET..=caret.origin.x + caret.size.width + HALF_TOUCH_TARGET)
-+                    .contains(&point.x)
-+                && (caret.origin.y - HALF_TOUCH_TARGET..=caret.origin.y + caret.size.height + HALF_TOUCH_TARGET)
-+                    .contains(&point.y)
-+        };
++        let near = |caret: CGRect| caret != CGRect::ZERO && within(caret, HALF_TOUCH_TARGET, point);
 +        self.selectedTextRange().is_some_and(|range| {
 +            near(self.caretRectForPosition(&range.start())) || near(self.caretRectForPosition(&range.end()))
 +        })
 +    }
 +
++    /// Whether `point` is on the field's text: inside one of the rects the app gives for its whole document, the
++    /// ones UIKit highlights for Select All. An empty field has none; its caret is `near_selection_end`.
++    fn on_text(&self, point: CGPoint) -> bool {
++        self.textRangeFromPosition_toPosition(&self.beginningOfDocument(), &self.endOfDocument())
++            .is_some_and(|document| {
++                self.selectionRectsForRange(&document).iter().any(|rect| within(rect.rect(), 0., point))
++            })
++    }
++
      /// An edit action is UIKit's call but not the keyboard's edit: UIKit's selection UI learns of it from the input
      /// delegate, as of an app edit.
      fn action_changed(&self, content_changed: bool) {
-@@ -1187,8 +1285,16 @@ pub(super) mod tests {
+@@ -885,6 +987,12 @@ fn native_rect(bounds: gpui::Bounds<gpui::Pixels>) -> CGRect {
+     )
+ }
+ 
++/// Whether `point` is inside `rect` grown by `slack` on every side.
++fn within(rect: CGRect, slack: f64, point: CGPoint) -> bool {
++    (rect.origin.x - slack..=rect.origin.x + rect.size.width + slack).contains(&point.x)
++        && (rect.origin.y - slack..=rect.origin.y + rect.size.height + slack).contains(&point.y)
++}
++
+ fn nonempty_caret_rect(mut rect: CGRect) -> CGRect {
+     // GPUI can report a zero-width insertion location; UIKit needs a visible caret.
+     rect.size.width = rect.size.width.max(1.);
+@@ -1187,8 +1295,16 @@ pub(super) mod tests {
          view.ivars().keyboard_eligible.set(true);
          assert!(view.becomeFirstResponder());
          assert!(view.isFirstResponder());
