@@ -465,8 +465,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
       # binaryen: wasm-opt, which `--release` runs. Playwright: Firefox (web-checks.mjs drives Chromium over CDP).
-      # Mesa: the software GL Firefox's WebGL2 runs on without a GPU.
-      - run: sudo apt-get update && sudo apt-get install -y binaryen libgl1-mesa-dri libegl1
+      # Mesa and Xvfb: headless Firefox finds no GL without a display, so it runs on Xvfb with llvmpipe.
+      - run: sudo apt-get update && sudo apt-get install -y binaryen libgl1-mesa-dri libegl1 xvfb
       - run: |
           mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR" && npm init -y >/dev/null
           npm install playwright@1.56.1
@@ -500,9 +500,9 @@ jobs:
           failed=0
           for mode in desktop mobile; do
             chrome 412,915 http://127.0.0.1:8765/ $mode || failed=1
-            node scripts/web-checks.mjs http://127.0.0.1:8765/ $mode firefox || failed=1
+            xvfb-run -a node scripts/web-checks.mjs http://127.0.0.1:8765/ $mode firefox || failed=1
             SUITE=native-view chrome 900,700 http://127.0.0.1:8770/ $mode || failed=1
-            node scripts/web-checks.mjs http://127.0.0.1:8770/ $mode firefox native-view || failed=1
+            xvfb-run -a node scripts/web-checks.mjs http://127.0.0.1:8770/ $mode firefox native-view || failed=1
           done
           exit $failed
       # `--release`: wasm-opt must run (no "wasm-opt not found"), and the optimised hello passes the checks.
