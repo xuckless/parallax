@@ -2,15 +2,19 @@
 
 gpui_web picks WebGPU first and WebGL2 when WebGPU fails (`WebBackendPreference::Auto`). A browser can give a working
 WebGPU device whose canvases show nothing, so patch [0057](../patches/0057-web-webgpu-canvas-probe.patch) adds one
-check before a window commits to WebGPU: `webgpu_canvas_shows_drawing` clears a detached 4x4 WebGPU canvas to red and
-reads it back through a 2D `OffscreenCanvas` in the same task. Anything but opaque red falls back to WebGL2 and logs
+check before a window commits to WebGPU: `webgpu_canvas_probe::shows_drawing` (its own file, one hook in
+platform.rs) clears a detached 4x4 WebGPU canvas to red and reads it back through a 2D `OffscreenCanvas` in the same
+task. Anything but opaque red tries WebGL2 and logs
 
 ```
 WebGPU initialization failed; falling back to WebGL2: WebGPU draws nothing to a canvas here (a test clear read back blank)
 ```
 
-An app that asks for `WebBackendPreference::WebGpu` explicitly is not probed. The probe costs one 4x4 clear at
-startup.
+The WebGPU device is kept until WebGL2 works. If WebGL2 fails too (its `webglcontextcreationerror` status messages
+are in the log), the window still opens on WebGPU, logged as an error (`WebGL2 initialization failed too (..);
+staying on WebGPU, whose canvas test read back blank: this window may show nothing`): a window that may show nothing
+beats no window. An app that asks for `WebBackendPreference::WebGpu` explicitly is not probed. The probe costs one 4x4
+clear at startup.
 
 ## What the probe catches (2026-11-28)
 
@@ -33,8 +37,11 @@ to initialize vulkan surface"), so screenshots there are not usable.
 ## Checks
 
 - [web-checks.mjs](../scripts/web-checks.mjs)' `native-view` suite under WebGPU (headless, `--use-angle=gl`, alpha
-  mode logged `PreMultiplied`): 16/16 at 1 and 1.25 ([native-view-web.md](native-view-web.md)).
-- The suite's pixel checks look for the page's gap colour, so a black canvas passes them: they cannot tell a canvas
-  that presents nothing. The probe is what catches it.
+  mode logged `PreMultiplied`): 34/34 ([native-view-web-checks.md](native-view-web-checks.md)). Its content checks
+  (GPUI's background, the divs, each view's colour) fail on a canvas that presents nothing.
+- Headless `--enable-features=Vulkan --use-angle=vulkan` on NVIDIA: the probe logs the fallback and native-view-web
+  opens on WebGL2; with the page's WebGL2 contexts made to fail (an init script returning `null` from
+  `getContext("webgl2")` after firing `webglcontextcreationerror`), it logs both failures, the event's status
+  message among them, and the window opens on WebGPU.
 - Owed to the owner: a short look at native-view-web in a headed Chromium with the flags in the table's first row,
   which should now log the fallback and draw with WebGL2.
