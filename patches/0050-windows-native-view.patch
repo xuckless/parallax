@@ -1,0 +1,988 @@
+Show native views on Windows: the app's composition content under GPUI's swap chain, through DirectComposition.
+
+What: `WindowsWindow::attach_native_view` takes any COM object `IDCompositionVisual::SetContent` takes (usually a
+composition swap chain the app presents to on its own device and thread) and returns an attachment whose drop takes
+it out again; `native_view_input` is 0048's `Window`, as a DirectComposition visual takes no input. The renderer's
+DirectComposition tree becomes, back to front under one root visual: a background visual, a container of one
+subtree per native view (a clip visual holding a content visual, after Chromium's `VisualSubtree`), and GPUI's own
+swap chain visual. Each frame, after `Present`, `NativeViewTree::place_views` (named after macOS's
+`Layout::places_views`) compares the scene's views
+(`native_views.rs`: placement in whole device pixels, back-to-front order, background colour) with what the tree
+shows, restacks only when the views or their order change, places only the views that moved, and calls
+`Commit` only then, so the hole and the views' placement reach the same composition frame and a frame that moves
+no view commits nothing (Chromium's `DCLayerTree::CommitAndClearPendingOverlays` order: present, then build and
+commit the tree). `PrimitiveBatch::NativeViews` draws a hole: a `native_view` shader writing transparent black with
+blending off, at the batch's fixed depth with the depth test on, so opaque quads painted after the view (drawn
+first by the opaque pass) keep their pixels and everything painted before it is erased, as Metal's
+`native_view_fragment` does. The composition swap chain's alpha mode is one table (`AlphaMode::new`): `Ignore` for an
+opaque window with no native view shown, `Premultiplied` otherwise; a change recreates the swap chain, logged at
+info, and its first frame is presented before the commit that shows it. `NativeView::set_background`'s colour (black
+by default, as on macOS) fills a 1×1 swap chain stretched under the views, shown only for an opaque window while a
+view is shown, where a view's content hasn't caught up with its element. A lost device rebuilds every view's
+visuals from the content the app gave. The code is in two new files, `native_views.rs` (pure decisions) and
+`directx_renderer/native_view_tree.rs` (the visual tree, the hole pipeline, the attachment); `directx_renderer.rs`
+and `window.rs` get only hooks (a field, a call per stage, the alpha mode parameter, the shader module row).
+
+Why: issue #1 (NativeView on every desktop). GPUI on Windows already presents through DirectComposition, so the
+app's content is one more visual in the same tree: no child window (no airspace problem: GPUI's window keeps all
+input), no copy of the app's frames, and the app's presents reach the screen without GPUI drawing or committing
+(DWM picks up a composition swap chain's present by itself). Only a frame that moves, shows, hides or restacks a view
+costs a `Commit`; an opaque window blends only while it shows a view. Upstream's `PrimitiveBatch::NativeViews` arm was
+a no-op. Modelled on Chromium's ui/gl/dc_layer_tree.cc @ 4fc26f32cd03f0e8443c4aa11d6859a901d90659 (BSD-3-Clause,
+third_party/chromium/PORTED.md); WebView2's visual hosting (`CreateCoreWebView2CompositionController`) is the same
+shape, a visual in the host's tree.
+
+Test: `native_views.rs`'s tables (placement per layout and scale, alpha mode per appearance, frame stacking and
+background) run on any host through `scripts/patch-test.sh` (windows-pure). Live: `scripts/windows-native-view-checks.sh`
+on CI's Windows runner reads the composed screen back at 100 and 125 %: the hole shows the view, the div over it
+covers it, one device pixel past each edge is GPUI's, no gap colour while moving and after a resize; input over the
+view reaches its element with positions in the view; 0 GPUI frames per second while only the view presents; the alpha
+mode is logged (docs/native-view-windows.md).
+
+Upstream: not filed (patch rule 14).
+
+diff --git a/gpui-pre-windows/build.rs b/gpui-pre-windows/build.rs
+index 4b5c3d6..b29b426 100644
+--- a/gpui-pre-windows/build.rs
++++ b/gpui-pre-windows/build.rs
+@@ -40,6 +40,7 @@ mod shader_compilation {
+             "monochrome_sprite",
+             "subpixel_sprite",
+             "polychrome_sprite",
++            "native_view",
+         ];
+ 
+         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
+diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
+index 5ab9167..4a61785 100644
+--- a/gpui-pre-windows/src/directx_renderer.rs
++++ b/gpui-pre-windows/src/directx_renderer.rs
+@@ -20,8 +20,12 @@ use windows::{
+     core::{HSTRING, Interface},
+ };
+ 
++use crate::directx_renderer::native_view_tree::{NativeViewHole, NativeViewTree, NativeViews};
+ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
++use crate::native_views::AlphaMode;
+ use crate::*;
++
++mod native_view_tree;
+ use gpui::*;
+ 
+ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
+@@ -43,6 +47,7 @@ pub(crate) struct DirectXRenderer {
+     globals: DirectXGlobalElements,
+     pipelines: DirectXRenderPipelines,
+     direct_composition: Option<DirectComposition>,
++    native_views: NativeViews,
+     font_info: &'static FontInfo,
+ 
+     width: u32,
+@@ -90,6 +95,7 @@ struct DirectXRenderPipelines {
+     mono_sprites: PipelineState<MonochromeSprite>,
+     subpixel_sprites: PipelineState<SubpixelSprite>,
+     poly_sprites: PipelineState<PolychromeSprite>,
++    native_view_holes: PipelineState<NativeViewHole>,
+ }
+ 
+ struct DirectXGlobalElements {
+@@ -113,10 +119,13 @@ impl Drop for Annotation<'_> {
+     }
+ }
+ 
++/// Under the target's root visual: the native views' visuals, then GPUI's own swap chain visual above them.
+ struct DirectComposition {
+     comp_device: IDCompositionDevice,
+-    comp_target: IDCompositionTarget,
++    /// Holds the tree on the window; never read once its root is set.
++    _comp_target: IDCompositionTarget,
+     comp_visual: IDCompositionVisual,
++    view_tree: NativeViewTree,
+ }
+ 
+ impl DirectXRendererDevices {
+@@ -164,8 +173,16 @@ impl DirectXRenderer {
+             .context("Creating DirectX devices")?;
+         let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
+ 
+-        let resources = DirectXResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
+-            .context("Creating DirectX resources")?;
++        let native_views = NativeViews::new();
++        let resources = DirectXResources::new(
++            &devices,
++            1,
++            1,
++            hwnd,
++            disable_direct_composition,
++            native_views.alpha_mode,
++        )
++        .context("Creating DirectX resources")?;
+         let globals = DirectXGlobalElements::new(&devices.device)
+             .context("Creating DirectX global elements")?;
+         let pipelines = DirectXRenderPipelines::new(&devices.device)
+@@ -190,6 +207,7 @@ impl DirectXRenderer {
+             globals,
+             pipelines,
+             direct_composition,
++            native_views,
+             font_info: Self::get_font_info(),
+             width: 1,
+             height: 1,
+@@ -313,6 +331,7 @@ impl DirectXRenderer {
+             self.height,
+             self.hwnd,
+             disable_direct_composition,
++            self.native_views.alpha_mode,
+         )
+         .context("Creating DirectX resources")?;
+         let globals = DirectXGlobalElements::new(&devices.device)
+@@ -323,9 +342,10 @@ impl DirectXRenderer {
+         let direct_composition = if disable_direct_composition {
+             None
+         } else {
+-            let composition =
++            let mut composition =
+                 DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), self.hwnd)?;
+             composition.set_swap_chain(&resources.swap_chain)?;
++            composition.reattach_native_views(&self.native_views)?;
+             Some(composition)
+         };
+ 
+@@ -357,8 +377,10 @@ impl DirectXRenderer {
+             // and so likely do not have the textures anymore that are required for drawing
+             return Ok(());
+         }
++        let native_views = self.prepare_native_views(scene, background_appearance)?;
+         self.render(scene, background_appearance)?;
+-        self.present()
++        self.present()?;
++        self.commit_native_views(native_views)
+     }
+ 
+     /// Clear the render target for `background_appearance` and encode every
+@@ -438,8 +460,7 @@ impl DirectXRenderer {
+                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
+                 }
+                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+-                // Native views are only composited on macOS.
+-                PrimitiveBatch::NativeViews(_) => Ok(()),
++                PrimitiveBatch::NativeViews(range) => self.draw_native_view_holes(range),
+             }
+             .with_context(|| {
+                 format!(
+@@ -697,7 +718,7 @@ impl DirectXRenderer {
+             )?;
+         }
+ 
+-        Ok(())
++        self.upload_native_view_holes(scene)
+     }
+ 
+     fn draw_shadows(&mut self, start: usize, len: usize) -> Result<()> {
+@@ -906,6 +927,7 @@ impl DirectXResources {
+         height: u32,
+         hwnd: HWND,
+         disable_direct_composition: bool,
++        alpha_mode: AlphaMode,
+     ) -> Result<Self> {
+         let swap_chain = if disable_direct_composition {
+             create_swap_chain(&devices.dxgi_factory, &devices.device, hwnd, width, height)?
+@@ -915,6 +937,7 @@ impl DirectXResources {
+                 &devices.device,
+                 width,
+                 height,
++                alpha_mode,
+             )?
+         };
+ 
+@@ -1014,6 +1037,7 @@ impl DirectXRenderPipelines {
+             create_blend_state(device)?,
+         )?;
+         let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
++        let native_view_holes = native_view_tree::hole_pipeline(device)?;
+ 
+         Ok(Self {
+             shadow_pipeline,
+@@ -1026,6 +1050,7 @@ impl DirectXRenderPipelines {
+             mono_sprites,
+             subpixel_sprites,
+             poly_sprites,
++            native_view_holes,
+         })
+     }
+ }
+@@ -1034,19 +1059,26 @@ impl DirectComposition {
+     pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
+         let comp_device = get_comp_device(dxgi_device)?;
+         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, false) }?;
++        let root_visual = unsafe { comp_device.CreateVisual() }?;
++        let view_tree = NativeViewTree::new(&comp_device, &root_visual)?;
+         let comp_visual = unsafe { comp_device.CreateVisual() }?;
++        unsafe {
++            // Inserting with no reference visual and insertAbove false puts it above every sibling.
++            root_visual.AddVisual(&comp_visual, false, None)?;
++            comp_target.SetRoot(&root_visual)?;
++        }
+ 
+         Ok(Self {
+             comp_device,
+-            comp_target,
++            _comp_target: comp_target,
+             comp_visual,
++            view_tree,
+         })
+     }
+ 
+     pub fn set_swap_chain(&self, swap_chain: &IDXGISwapChain1) -> Result<()> {
+         unsafe {
+             self.comp_visual.SetContent(swap_chain)?;
+-            self.comp_target.SetRoot(&self.comp_visual)?;
+             self.comp_device.Commit()?;
+         }
+         Ok(())
+@@ -1344,6 +1376,7 @@ fn create_swap_chain_for_composition(
+     device: &ID3D11Device,
+     width: u32,
+     height: u32,
++    alpha_mode: AlphaMode,
+ ) -> Result<IDXGISwapChain1> {
+     let desc = DXGI_SWAP_CHAIN_DESC1 {
+         Width: width,
+@@ -1359,7 +1392,11 @@ fn create_swap_chain_for_composition(
+         // Composition SwapChains only support the DXGI_SCALING_STRETCH Scaling.
+         Scaling: DXGI_SCALING_STRETCH,
+         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+-        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
++        // (mode → DXGI), a row per AlphaMode variant.
++        AlphaMode: match alpha_mode {
++            AlphaMode::Ignore => DXGI_ALPHA_MODE_IGNORE,
++            AlphaMode::Premultiplied => DXGI_ALPHA_MODE_PREMULTIPLIED,
++        },
+         Flags: 0,
+     };
+     Ok(unsafe { dxgi_factory.CreateSwapChainForComposition(device, &desc, None)? })
+@@ -1741,6 +1778,7 @@ pub(crate) mod shader_resources {
+         MonochromeSprite,
+         SubpixelSprite,
+         PolychromeSprite,
++        NativeView,
+     }
+ 
+     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+@@ -1814,6 +1852,10 @@ pub(crate) mod shader_resources {
+                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                 },
++                ShaderModule::NativeView => match target {
++                    ShaderTarget::Vertex => NATIVE_VIEW_VERTEX_BYTES,
++                    ShaderTarget::Fragment => NATIVE_VIEW_FRAGMENT_BYTES,
++                },
+             };
+             Self { inner: bytes }
+         }
+@@ -1894,6 +1936,7 @@ pub(crate) mod shader_resources {
+                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                 ShaderModule::SubpixelSprite => "subpixel_sprite",
+                 ShaderModule::PolychromeSprite => "polychrome_sprite",
++                ShaderModule::NativeView => "native_view",
+             }
+         }
+     }
+diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+new file mode 100644
+index 0000000..33a15bd
+--- /dev/null
++++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+@@ -0,0 +1,383 @@
++//! Native views in the renderer's DirectComposition tree (docs/native-view-windows.md in Parallax). Each view is the
++//! app's content (a composition swap chain or anything `IDCompositionVisual::SetContent` takes) in a subtree under
++//! GPUI's own swap chain visual, shown through a hole the renderer clears in paint order. What to show is decided on
++//! plain values in `crate::native_views`; this file applies it.
++//!
++//! Modelled on Chromium's ui/gl/dc_layer_tree.cc @ 4fc26f32cd03f0e8443c4aa11d6859a901d90659 (`VisualTree::BuildTree`,
++//! `VisualSubtree::Update`, `CommitAndClearPendingOverlays`). Copyright 2019 The Chromium Authors. BSD-3-Clause, see
++//! LICENSE-CHROMIUM.
++
++use std::{
++    any::Any,
++    ops::Range,
++    rc::{Rc, Weak},
++};
++
++use anyhow::{Context as _, Result};
++use gpui::{Bounds, NativeViewId, ScaledPixels, Scene, WindowBackgroundAppearance};
++use gpui_util::ResultExt as _;
++use windows::{
++    Win32::Graphics::{
++        Direct3D11::ID3D11Device,
++        DirectComposition::{
++            DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCOMPOSITION_BORDER_MODE_HARD,
++            IDCompositionDevice, IDCompositionRectangleClip, IDCompositionVisual,
++        },
++        Dxgi::{DXGI_PRESENT, IDXGISwapChain1},
++    },
++    core::IUnknown,
++};
++
++use super::{
++    DirectComposition, DirectXRenderer, DirectXRendererDevices, DirectXResources, PipelineState,
++    create_opaque_blend_state, create_render_target_and_its_view,
++    create_swap_chain_for_composition, shader_resources::ShaderModule,
++};
++use crate::WindowsWindowInner;
++use crate::native_views::{AlphaMode, Frame, Placement};
++
++/// What the renderer keeps of its native views across devices.
++pub(super) struct NativeViews {
++    /// The content of every attached view, as the app gave it; a lost device's new composition device shows it again.
++    contents: Vec<(NativeViewId, IUnknown)>,
++    /// How the composition swap chain blends now: [`AlphaMode::new`].
++    pub(super) alpha_mode: AlphaMode,
++}
++
++impl NativeViews {
++    pub(super) fn new() -> Self {
++        Self {
++            contents: Vec::new(),
++            // Most windows are opaque and show no native view; their first frame keeps this.
++            alpha_mode: AlphaMode::Ignore,
++        }
++    }
++}
++
++/// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
++/// renderer's `native_views` pipeline does, so elements painted after the view still cover it.
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub(super) struct NativeViewHole {
++    bounds: Bounds<ScaledPixels>,
++    content_mask: Bounds<ScaledPixels>,
++}
++
++/// Writes with blending off at the batch's fixed depth, the depth test on, as every non-quad batch draws.
++pub(super) fn hole_pipeline(device: &ID3D11Device) -> Result<PipelineState<NativeViewHole>> {
++    PipelineState::new(
++        device,
++        "native_view_hole_pipeline",
++        ShaderModule::NativeView,
++        4,
++        create_opaque_blend_state(device)?,
++    )
++}
++
++/// How far the 1×1 background swap chain is stretched: past any window's size, so it never needs resizing.
++const BACKGROUND_SCALE: f32 = 32768.;
++
++/// The views' part of the window's visual tree, under GPUI's swap chain visual: a background visual at the bottom,
++/// then a container of one subtree per view, back to front.
++pub(super) struct NativeViewTree {
++    views_visual: IDCompositionVisual,
++    /// Shows [`Frame::background`] under the views: a 1×1 swap chain cleared to the colour and stretched over the
++    /// window, as Chromium's `VisualSubtree` fills a background colour from a small solid colour surface.
++    background_visual: IDCompositionVisual,
++    background: Option<IDXGISwapChain1>,
++    views: Vec<(NativeViewId, ViewVisuals)>,
++    /// What the tree shows now; a frame that shows the same changes nothing and commits nothing.
++    shown: Frame,
++}
++
++/// One view's subtree, after Chromium's `VisualSubtree`: the clip sits on an untransformed parent, and the content
++/// visual is offset to the view's origin, so the app's content shows 1:1 in device pixels.
++struct ViewVisuals {
++    clip_visual: IDCompositionVisual,
++    clip: IDCompositionRectangleClip,
++    content_visual: IDCompositionVisual,
++    /// Where the visuals were last placed; kept while the view is hidden, so showing it again in place sets nothing.
++    placement: Option<Placement>,
++}
++
++impl NativeViewTree {
++    /// Adds the views' visuals to the bottom of `root`, below whatever is added after.
++    pub(super) fn new(comp_device: &IDCompositionDevice, root: &IDCompositionVisual) -> Result<Self> {
++        // SAFETY: both visuals are created on `comp_device`, as `root` was, and each is added to it once.
++        unsafe {
++            let background_visual = comp_device.CreateVisual()?;
++            let views_visual = comp_device.CreateVisual()?;
++            // Each above the one before it, the first at the bottom, as Chromium's BuildTree stacks its subtrees.
++            root.AddVisual(&background_visual, true, None)?;
++            root.AddVisual(&views_visual, true, &background_visual)?;
++            background_visual.SetTransform2(&windows_numerics::Matrix3x2::scale(
++                BACKGROUND_SCALE,
++                BACKGROUND_SCALE,
++            ))?;
++            background_visual
++                .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR)?;
++            background_visual.SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD)?;
++            Ok(Self {
++                views_visual,
++                background_visual,
++                background: None,
++                views: Vec::new(),
++                shown: Frame::default(),
++            })
++        }
++    }
++
++    fn attach(&mut self, comp_device: &IDCompositionDevice, id: NativeViewId, content: &IUnknown) -> Result<()> {
++        // SAFETY: the visuals and clip are created on this device; `content` is a live COM object the caller holds.
++        let visuals = unsafe {
++            let clip_visual = comp_device.CreateVisual()?;
++            let clip = comp_device.CreateRectangleClip()?;
++            let content_visual = comp_device.CreateVisual()?;
++            clip_visual.SetClip(&clip)?;
++            clip_visual.AddVisual(&content_visual, false, None)?;
++            content_visual
++                .SetContent(content)
++                .context("the native view's content is not something DirectComposition shows")?;
++            ViewVisuals {
++                clip_visual,
++                clip,
++                content_visual,
++                placement: None,
++            }
++        };
++        self.views.push((id, visuals));
++        Ok(())
++    }
++
++    /// Takes the view out of the tree at once, as a dropped `NSView` leaves its window, without waiting for a frame.
++    fn detach(&mut self, comp_device: &IDCompositionDevice, id: NativeViewId) -> Result<()> {
++        let Some(index) = self.views.iter().position(|(view, _)| *view == id) else {
++            return Ok(());
++        };
++        let (_, visuals) = self.views.remove(index);
++        // SAFETY: the visuals belong to this device; a shown view's clip visual is a child of `views_visual`.
++        unsafe {
++            if self.shown.stacking().any(|shown| shown == id) {
++                self.shown.views.retain(|(view, _)| *view != id);
++                self.views_visual.RemoveVisual(&visuals.clip_visual)?;
++            }
++            visuals.content_visual.SetContent(None)?;
++            comp_device.Commit()?;
++        }
++        Ok(())
++    }
++
++    /// Changes the tree to show `frame`, after Chromium's `VisualTree::BuildTree`: restacks only when the views or
++    /// their order change and places only the views that moved. Returns whether the frame places views (moves,
++    /// resizes, shows, hides or restacks one, as macOS's `Layout::places_views`) and so needs a commit.
++    fn place_views(&mut self, frame: Frame, devices: &DirectXRendererDevices) -> Result<bool> {
++        if frame == self.shown {
++            return Ok(false);
++        }
++        if frame.background != self.shown.background {
++            self.set_background(frame.background, devices)?;
++        }
++        if !frame.stacking().eq(self.shown.stacking()) {
++            // SAFETY: the clip visuals belong to this device and are added to `views_visual` once each.
++            unsafe { self.views_visual.RemoveAllVisuals() }?;
++            let mut below: Option<&IDCompositionVisual> = None;
++            for id in frame.stacking() {
++                let Some((_, visuals)) = self.views.iter().find(|(view, _)| *view == id) else {
++                    continue;
++                };
++                unsafe { self.views_visual.AddVisual(&visuals.clip_visual, true, below) }?;
++                below = Some(&visuals.clip_visual);
++            }
++        }
++        for (id, placement) in &frame.views {
++            let Some((_, visuals)) = self.views.iter_mut().find(|(view, _)| view == id) else {
++                continue;
++            };
++            if visuals.placement == Some(*placement) {
++                continue;
++            }
++            let [left, top, right, bottom] = placement.clip;
++            let [x, y] = placement.origin;
++            // SAFETY: the clip and visual belong to this device.
++            unsafe {
++                visuals.clip.SetLeft2(left)?;
++                visuals.clip.SetTop2(top)?;
++                visuals.clip.SetRight2(right)?;
++                visuals.clip.SetBottom2(bottom)?;
++                visuals.content_visual.SetOffsetX2(x)?;
++                visuals.content_visual.SetOffsetY2(y)?;
++            }
++            visuals.placement = Some(*placement);
++        }
++        log::debug!("native views: showing {:?}", frame.views);
++        self.shown = frame;
++        Ok(true)
++    }
++
++    fn set_background(&mut self, color: Option<[f32; 3]>, devices: &DirectXRendererDevices) -> Result<()> {
++        let Some([r, g, b]) = color else {
++            // SAFETY: the visual belongs to this device.
++            unsafe { self.background_visual.SetContent(None) }?;
++            self.background = None;
++            return Ok(());
++        };
++        let swap_chain = match self.background.take() {
++            Some(swap_chain) => swap_chain,
++            None => create_swap_chain_for_composition(&devices.dxgi_factory, &devices.device, 1, 1, AlphaMode::Ignore)?,
++        };
++        let (_, render_target_view) = create_render_target_and_its_view(&swap_chain, &devices.device)?;
++        // SAFETY: the view is of this swap chain's current back buffer, on GPUI's device and context.
++        unsafe {
++            devices.device_context.ClearRenderTargetView(
++                render_target_view
++                    .as_ref()
++                    .context("missing background render target view")?,
++                &[r, g, b, 1.],
++            );
++            swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
++            self.background_visual.SetContent(&swap_chain)?;
++        }
++        self.background = Some(swap_chain);
++        Ok(())
++    }
++}
++
++impl DirectComposition {
++    /// Shows every attached view's content again, on a new device after the old one was lost.
++    pub(super) fn reattach_native_views(&mut self, native_views: &NativeViews) -> Result<()> {
++        for (id, content) in &native_views.contents {
++            self.view_tree.attach(&self.comp_device, *id, content)?;
++        }
++        Ok(())
++    }
++}
++
++/// Keeps a native view in its window's visual tree; dropping it takes the view out and releases its content.
++struct NativeViewAttachment {
++    window: Weak<WindowsWindowInner>,
++    id: NativeViewId,
++}
++
++impl Drop for NativeViewAttachment {
++    fn drop(&mut self) {
++        let Some(window) = self.window.upgrade() else {
++            return;
++        };
++        // The renderer is only borrowed while the window draws, which never runs app code that drops a view.
++        if let Ok(mut renderer) = window.state.renderer.try_borrow_mut() {
++            renderer.detach_native_view(self.id).log_err();
++        }
++    }
++}
++
++impl DirectXRenderer {
++    /// Shows `content` under the window's GPUI content once a scene paints the native view `id`. The attachment
++    /// returned keeps it there.
++    pub(crate) fn attach_native_view(
++        &mut self,
++        id: NativeViewId,
++        content: IUnknown,
++        window: &Rc<WindowsWindowInner>,
++    ) -> Result<Box<dyn Any>> {
++        let composition = self
++            .direct_composition
++            .as_mut()
++            .context("native views need DirectComposition, which GPUI_DISABLE_DIRECT_COMPOSITION turned off")?;
++        composition.view_tree.attach(&composition.comp_device, id, &content)?;
++        self.native_views.contents.push((id, content));
++        Ok(Box::new(NativeViewAttachment {
++            window: Rc::downgrade(window),
++            id,
++        }))
++    }
++
++    fn detach_native_view(&mut self, id: NativeViewId) -> Result<()> {
++        self.native_views.contents.retain(|(view, _)| *view != id);
++        let Some(composition) = &mut self.direct_composition else {
++            return Ok(());
++        };
++        composition.view_tree.detach(&composition.comp_device, id)
++    }
++
++    /// Before a frame renders: what it shows of the native views, after making the swap chain blend as that needs
++    /// (recreating it, as the Metal renderer turns its layer's `opaque` off while a view shows). The bool says the
++    /// swap chain is new, to be committed after its first present so it never shows empty.
++    pub(super) fn prepare_native_views(
++        &mut self,
++        scene: &Scene,
++        appearance: WindowBackgroundAppearance,
++    ) -> Result<(Frame, bool)> {
++        let frame = Frame::new(&scene.native_views, appearance);
++        let alpha_mode = AlphaMode::new(appearance, !frame.views.is_empty());
++        let Some(composition) = &self.direct_composition else {
++            return Ok((frame, false));
++        };
++        if self.native_views.alpha_mode == alpha_mode {
++            return Ok((frame, false));
++        }
++        log::info!("native views: composition swap chain alpha mode {alpha_mode:?}");
++        let devices = self.devices.as_ref().context("devices missing")?;
++        // SAFETY: unbinding the render target before its swap chain is released.
++        unsafe { devices.device_context.OMSetRenderTargets(None, None) };
++        self.resources.take();
++        let resources = DirectXResources::new(devices, self.width, self.height, self.hwnd, false, alpha_mode)
++            .context("Recreating the swap chain for a new alpha mode")?;
++        // SAFETY: the visual belongs to this device and the swap chain is live.
++        unsafe { composition.comp_visual.SetContent(&resources.swap_chain) }?;
++        self.resources = Some(resources);
++        self.native_views.alpha_mode = alpha_mode;
++        Ok((frame, true))
++    }
++
++    /// After a frame presents: Chromium's DCLayerTree presents its swap chains, then changes the visual tree and
++    /// commits it, so the hole in this frame and the views' new placement reach the same composition frame. A frame
++    /// that moves no view commits nothing, and the views' own presents never need GPUI: DWM picks up a swap chain's
++    /// present by itself.
++    pub(super) fn commit_native_views(&mut self, (frame, swapped): (Frame, bool)) -> Result<()> {
++        let Some(composition) = &mut self.direct_composition else {
++            return Ok(());
++        };
++        let devices = self.devices.as_ref().context("devices missing")?;
++        if composition.view_tree.place_views(frame, devices)? || swapped {
++            // SAFETY: plain call on a live device.
++            unsafe { composition.comp_device.Commit() }?;
++        }
++        Ok(())
++    }
++
++    pub(super) fn upload_native_view_holes(&mut self, scene: &Scene) -> Result<()> {
++        if scene.native_views.is_empty() {
++            return Ok(());
++        }
++        let devices = self.devices.as_ref().context("devices missing")?;
++        let holes: Vec<_> = scene
++            .native_views
++            .iter()
++            .map(|native_view| NativeViewHole {
++                bounds: native_view.bounds,
++                content_mask: native_view.content_mask.bounds,
++            })
++            .collect();
++        self.pipelines
++            .native_view_holes
++            .update_buffer(&devices.device, &devices.device_context, &holes)
++    }
++
++    /// Opaque quads painted after the view, which the opaque pass drew first, are nearer than the batch's depth and
++    /// keep their pixels; everything painted before it is erased.
++    pub(super) fn draw_native_view_holes(&mut self, range: Range<usize>) -> Result<()> {
++        if range.is_empty() {
++            return Ok(());
++        }
++        let devices = self.devices.as_ref().context("devices missing")?;
++        self.pipelines.native_view_holes.draw_range(
++            &devices.device_context,
++            self.globals
++                .batch_params_buffer
++                .as_ref()
++                .context("batch params buffer missing")?,
++            range.start as u32,
++            range.len() as u32,
++        )
++    }
++}
+diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
+index bff01be..150a617 100644
+--- a/gpui-pre-windows/src/gpui_windows.rs
++++ b/gpui-pre-windows/src/gpui_windows.rs
+@@ -14,6 +14,7 @@ mod display;
+ mod events;
+ mod keyboard;
+ mod platform;
++mod native_views;
+ mod pointer;
+ mod system_notifications;
+ mod system_settings;
+diff --git a/gpui-pre-windows/src/native_views.rs b/gpui-pre-windows/src/native_views.rs
+new file mode 100644
+index 0000000..dd5507a
+--- /dev/null
++++ b/gpui-pre-windows/src/native_views.rs
+@@ -0,0 +1,223 @@
++//! What DirectComposition shows of a window's native views, decided on plain values so it is tested on any host
++//! (Parallax's `scripts/patch-test.sh` builds this file on its own); `directx_renderer.rs` applies it to the visual
++//! tree. Modelled on Chromium's `ui/gl/dc_layer_tree.cc` (`VisualTree::BuildTree`, `VisualSubtree::Update`): every
++//! view is a clip visual holding a content visual, stacked back to front under GPUI's own swap chain visual, and the
++//! tree is changed and committed only when a frame moves, shows, hides or restacks a view.
++
++use gpui::{Bounds, NativeViewId, PaintNativeView, Rgba, ScaledPixels, WindowBackgroundAppearance};
++
++/// Where one native view's visuals sit, in whole device pixels from the window's top left.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) struct Placement {
++    /// The content visual's offset: the view's top left, so its content shows 1:1 from there.
++    pub(crate) origin: [f32; 2],
++    /// The clip visual's clip, `[left, top, right, bottom]`: the part of the view its content mask leaves.
++    pub(crate) clip: [f32; 4],
++}
++
++impl Placement {
++    /// `None` when the content mask leaves none of the view.
++    ///
++    /// The bounds are already snapped to device pixels by the element, and the hole is drawn from the same bounds, so
++    /// rounding to whole pixels here puts the visuals exactly where the rasterizer cleared the hole, at any scale.
++    pub(crate) fn new(
++        bounds: Bounds<ScaledPixels>,
++        content_mask: Bounds<ScaledPixels>,
++    ) -> Option<Self> {
++        let visible = bounds.intersect(&content_mask);
++        let edges = |bounds: Bounds<ScaledPixels>| {
++            let corner = bounds.bottom_right();
++            [
++                bounds.origin.x.0.round(),
++                bounds.origin.y.0.round(),
++                corner.x.0.round(),
++                corner.y.0.round(),
++            ]
++        };
++        let clip = edges(visible);
++        if clip[0] >= clip[2] || clip[1] >= clip[3] {
++            return None;
++        }
++        let [x, y, ..] = edges(bounds);
++        Some(Self {
++            origin: [x, y],
++            clip,
++        })
++    }
++}
++
++/// How DXGI composes GPUI's swap chain over what is under it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum AlphaMode {
++    /// Every pixel opaque: DWM skips blending the window.
++    Ignore,
++    /// Pixels blend over what is under them: the native views, or the desktop behind a transparent window.
++    Premultiplied,
++}
++
++impl AlphaMode {
++    /// An opaque window blends only while it shows a native view, so a window without one costs what it did before.
++    pub(crate) fn new(appearance: WindowBackgroundAppearance, shows_native_views: bool) -> Self {
++        // (appearance, shows a view) → mode. Every appearance but Opaque lets the desktop show through.
++        match (appearance, shows_native_views) {
++            (WindowBackgroundAppearance::Opaque, false) => Self::Ignore,
++            (WindowBackgroundAppearance::Opaque, true)
++            | (WindowBackgroundAppearance::Transparent, _)
++            | (WindowBackgroundAppearance::Blurred, _)
++            | (WindowBackgroundAppearance::MicaBackdrop, _)
++            | (WindowBackgroundAppearance::MicaAltBackdrop, _) => Self::Premultiplied,
++        }
++    }
++}
++
++/// What one frame shows of the window's native views.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub(crate) struct Frame {
++    /// The views shown, back to front, each with its placement.
++    pub(crate) views: Vec<(NativeViewId, Placement)>,
++    /// The opaque color under every view, shown where a view's content doesn't reach (its content hasn't caught up
++    /// with a resize yet). `None` for a window whose backdrop is meant to show through, or with no view shown.
++    pub(crate) background: Option<[f32; 3]>,
++}
++
++impl Frame {
++    /// The scene's native views are sorted by draw order and painted once each, so the ones painted later, which
++    /// belong in front, come last. An opaque window shows black under its views unless one asks for a color, the
++    /// view painted last winning, as on macOS.
++    pub(crate) fn new(native_views: &[PaintNativeView], appearance: WindowBackgroundAppearance) -> Self {
++        let views: Vec<_> = native_views
++            .iter()
++            .filter_map(|view| {
++                Placement::new(view.bounds, view.content_mask.bounds).map(|placement| (view.id, placement))
++            })
++            .collect();
++        let background = (appearance == WindowBackgroundAppearance::Opaque && !views.is_empty()).then(|| {
++            let Rgba { r, g, b, .. } = native_views
++                .iter()
++                .rev()
++                .map(|view| Rgba::from(view.background))
++                .find(|color| color.a > 0.)
++                .unwrap_or(Rgba { r: 0., g: 0., b: 0., a: 1. });
++            [r, g, b]
++        });
++        Self { views, background }
++    }
++
++    pub(crate) fn stacking(&self) -> impl Iterator<Item = NativeViewId> + '_ {
++        self.views.iter().map(|(id, _)| *id)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{ContentMask, DrawOrder, HitboxId, Hsla, hsla, point, size};
++
++    fn device_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
++        Bounds {
++            origin: point(ScaledPixels(x), ScaledPixels(y)),
++            size: size(ScaledPixels(width), ScaledPixels(height)),
++        }
++    }
++
++    #[test]
++    fn placement_of_a_view() {
++        // (name, bounds, content mask, placement). Extend with a row per layout case DirectComposition must match.
++        let rows: [(&str, [f32; 4], [f32; 4], Option<Placement>); 5] = [
++            (
++                "unclipped view shows whole at its origin",
++                [10., 20., 100., 50.],
++                [0., 0., 800., 600.],
++                Some(Placement { origin: [10., 20.], clip: [10., 20., 110., 70.] }),
++            ),
++            (
++                "content mask clips the view, origin stays",
++                [10., 20., 100., 50.],
++                [0., 40., 60., 600.],
++                Some(Placement { origin: [10., 20.], clip: [10., 40., 60., 70.] }),
++            ),
++            (
++                // At scale 1.25 an element at 9.6 logical px is snapped to device px 12.
++                "1.25 scale: snapped bounds stay on whole pixels",
++                [12., 25., 125., 62.5],
++                [0., 0., 1000., 750.],
++                Some(Placement { origin: [12., 25.], clip: [12., 25., 137., 88.] }),
++            ),
++            ("clipped away entirely is hidden", [10., 20., 100., 50.], [200., 0., 50., 50.], None),
++            ("zero sized is hidden", [10., 20., 0., 50.], [0., 0., 800., 600.], None),
++        ];
++        for (name, [x, y, w, h], [mx, my, mw, mh], expected) in rows {
++            let placement = Placement::new(device_bounds(x, y, w, h), device_bounds(mx, my, mw, mh));
++            assert_eq!(placement, expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn alpha_mode_per_appearance() {
++        // (appearance, shows a native view, mode). One row per WindowBackgroundAppearance variant and view state.
++        let rows = [
++            (WindowBackgroundAppearance::Opaque, false, AlphaMode::Ignore),
++            (WindowBackgroundAppearance::Opaque, true, AlphaMode::Premultiplied),
++            (WindowBackgroundAppearance::Transparent, false, AlphaMode::Premultiplied),
++            (WindowBackgroundAppearance::Transparent, true, AlphaMode::Premultiplied),
++            (WindowBackgroundAppearance::Blurred, false, AlphaMode::Premultiplied),
++            (WindowBackgroundAppearance::MicaBackdrop, false, AlphaMode::Premultiplied),
++            (WindowBackgroundAppearance::MicaAltBackdrop, true, AlphaMode::Premultiplied),
++        ];
++        for (appearance, shows, expected) in rows {
++            assert_eq!(AlphaMode::new(appearance, shows), expected, "{appearance:?}, shows {shows}");
++        }
++    }
++
++    #[test]
++    fn frame_of_a_scene() {
++        let view = |id: u64, x: f32, background: Hsla| PaintNativeView {
++            order: 0 as DrawOrder,
++            id: NativeViewId::for_test(id),
++            hitbox_id: HitboxId::placeholder(),
++            bounds: device_bounds(x, 0., 10., 10.),
++            content_mask: ContentMask { bounds: device_bounds(0., 0., 100., 100.) },
++            background,
++        };
++        let clear = Hsla::transparent_black();
++        let red = hsla(0., 1., 0.5, 1.);
++        let at = |x: f32| Placement { origin: [x, 0.], clip: [x, 0., x + 10., 10.] };
++        // (name, scene views, appearance, frame). Extend with a row per stacking or background rule.
++        let rows = [
++            ("no views, no background", vec![], WindowBackgroundAppearance::Opaque, Frame::default()),
++            (
++                "back to front in paint order, black when no view asks for a color",
++                vec![view(2, 0., clear), view(1, 20., clear)],
++                WindowBackgroundAppearance::Opaque,
++                Frame {
++                    views: vec![(NativeViewId::for_test(2), at(0.)), (NativeViewId::for_test(1), at(20.))],
++                    background: Some([0., 0., 0.]),
++                },
++            ),
++            (
++                "the last view asking for a color wins",
++                vec![view(1, 0., red), view(2, 20., clear)],
++                WindowBackgroundAppearance::Opaque,
++                Frame {
++                    views: vec![(NativeViewId::for_test(1), at(0.)), (NativeViewId::for_test(2), at(20.))],
++                    background: Some([1., 0., 0.]),
++                },
++            ),
++            (
++                "a transparent window keeps its backdrop",
++                vec![view(1, 0., red)],
++                WindowBackgroundAppearance::Transparent,
++                Frame { views: vec![(NativeViewId::for_test(1), at(0.))], background: None },
++            ),
++            (
++                "a clipped-away view is hidden and asks for no background",
++                vec![view(1, 200., red)],
++                WindowBackgroundAppearance::Opaque,
++                Frame::default(),
++            ),
++        ];
++        for (name, views, appearance, expected) in rows {
++            assert_eq!(Frame::new(&views, appearance), expected, "{name}");
++        }
++    }
++}
+diff --git a/gpui-pre-windows/src/shaders.hlsl b/gpui-pre-windows/src/shaders.hlsl
+index e849773..bdc868a 100644
+--- a/gpui-pre-windows/src/shaders.hlsl
++++ b/gpui-pre-windows/src/shaders.hlsl
+@@ -1370,3 +1370,29 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
+     color.a *= input.opacity * saturate(0.5 - distance);
+     return color;
+ }
++
++/*
++**
++**              Native views
++**
++*/
++
++struct NativeViewHole {
++    Bounds bounds;
++    Bounds content_mask;
++};
++
++StructuredBuffer<NativeViewHole> native_view_holes: register(t1);
++
++float4 native_view_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID): SV_Position {
++    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
++    NativeViewHole hole = native_view_holes[batch_start_index + instance_id];
++    ClippedVertex vertex = clip_to_mask(unit_vertex, hole.bounds, hole.content_mask);
++    return to_device_position_impl(vertex.position);
++}
++
++// The pipeline does not blend, so this erases what was drawn beneath the view, as the Metal renderer's
++// native_view_fragment does.
++float4 native_view_fragment(float4 position: SV_Position): SV_Target {
++    return float4(0.0, 0.0, 0.0, 0.0);
++}
+diff --git a/gpui-pre-windows/src/window.rs b/gpui-pre-windows/src/window.rs
+index 175a9e7..5688de9 100644
+--- a/gpui-pre-windows/src/window.rs
++++ b/gpui-pre-windows/src/window.rs
+@@ -1033,6 +1033,29 @@ impl PlatformWindow for WindowsWindow {
+             .set(Some(callback));
+     }
+ 
++    /// `view` is any COM object `IDCompositionVisual::SetContent` takes, usually a composition swap chain the app
++    /// presents to on its own device; it shows under GPUI's content through DirectComposition, never a child window.
++    unsafe fn attach_native_view(
++        &self,
++        id: NativeViewId,
++        view: std::ptr::NonNull<std::ffi::c_void>,
++    ) -> Option<Box<dyn std::any::Any>> {
++        let raw = view.as_ptr();
++        // SAFETY: the caller guarantees `view` is a live COM object; the clone is a reference of our own.
++        let content = unsafe { IUnknown::from_raw_borrowed(&raw) }?.clone();
++        self.state
++            .renderer
++            .borrow_mut()
++            .attach_native_view(id, content, &self.0)
++            .context("attaching a native view")
++            .log_err()
++    }
++
++    /// A DirectComposition visual takes no input: the window's own messages carry the mouse over it.
++    fn native_view_input(&self) -> NativeViewInput {
++        NativeViewInput::Window
++    }
++
+     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
+         self.0
+             .state

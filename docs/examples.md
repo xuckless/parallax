@@ -53,3 +53,10 @@ own thread; a blue GPUI div covers part of it. Once a second it logs `gpui frame
 0 while only the page changes), and it logs the alpha mode GPUI chose and every pointer event over the view with its
 view-relative position. Flags: `--fps N` (page rate), `--animate` (the view moves and resizes every GPUI frame),
 `--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds).
+
+## native-view-windows
+
+[examples/native-view-windows](../examples/native-view-windows/): a `NativeView` on Windows, the app's own composition
+swap chain presented every vsync from its own thread, under an orange div; "move" and "resize" buttons; logs GPUI
+frames and view presents per second and the input its element hears. A platform-specific check, so it does nothing
+on other targets (it still builds there). `cargo run -p native-view-windows`; checks: [native-view-windows.md](native-view-windows.md).

@@ -6,7 +6,7 @@ checks [patch 0021](desktop-touch-windows.md) at run time. Three pieces, all dev
 
 | Piece | What |
 |---|---|
-| [touch-inject](../crates/touch-inject/src/main.rs) | Rust tool on Microsoft's synthetic pointer device (`CreateSyntheticPointerDevice` / `InjectSyntheticPointerInput`, Windows 10 1809+) for touch and pen, `SendInput` for mouse clicks; also launches hello, raises, screenshots and measures its window, parks the cursor and sets the display's resolution and scale. Never published |
+| [touch-inject](../crates/touch-inject/src/main.rs) | Rust tool on Microsoft's synthetic pointer device (`CreateSyntheticPointerDevice` / `InjectSyntheticPointerInput`, Windows 10 1809+) for touch and pen, `SendInput` for mouse clicks and the wheel, `SetCursorPos` for mouse moves; also launches hello, raises, screenshots and measures its window, parks the cursor and sets the display's resolution and scale. Never published |
 | [record-traces.sh](../scripts/record-traces.sh) `windows` | the gesture table and frame builders shared with Android, a `windows_frames` sink into touch-inject ([traces.md](traces.md)) |
 | [windows-touch-checks.sh](../scripts/windows-touch-checks.sh) | sources record-traces.sh, runs its `checks` table: one relaunch, command and log assertions per row |
 

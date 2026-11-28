@@ -72,7 +72,7 @@ done
 # ".rs", space-separated. To add a module, add its path to its backend's row. A module listed must use only `gpui`
 # and `std`.
 pure_crates=(
-    "windows-pure:parallax-gpui-windows:pointer accessibility_display"
+    "windows-pure:parallax-gpui-windows:pointer accessibility_display native_views"
     "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
     "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
 )

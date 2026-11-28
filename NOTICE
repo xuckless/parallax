@@ -47,6 +47,12 @@ its Wayland subsurface handling (patch 0049, ui/ozone/platform/wayland/host/wayl
 wayland_frame_manager.cc, wayland/window/native_view.rs), licensed under the BSD 3-Clause License
 (LICENSE-CHROMIUM in parallax-gpui-linux, third_party/chromium/LICENSE). Copyright The Chromium Authors.
 
+parallax-gpui-windows includes code adapted from Chromium (https://chromium.googlesource.com/chromium/src)
+@ 4fc26f32cd03f0e8443c4aa11d6859a901d90659: its DirectComposition overlay tree (ui/gl/dc_layer_tree.cc) and
+underlay hole punch (components/viz/service/display/dc_layer_overlay.cc), for native views (patch 0050),
+licensed under the BSD 3-Clause License. See third_party/chromium/LICENSE (LICENSE-CHROMIUM in
+parallax-gpui-windows) and third_party/chromium/PORTED.md. Copyright The Chromium Authors.
+
 parallax-gpui-linux includes code ported from winit (https://github.com/rust-windowing/winit)
 v0.30.13, licensed under the Apache License 2.0: its Wayland touch handling (patch 0022,
 wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the winit contributors.
