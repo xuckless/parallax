@@ -3,22 +3,32 @@
 //! resizes it within `ZOOM`, showing the zoom and the pinch's rotation; hovering or long-pressing it shows its colour
 //! as a tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
 //! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long
-//! the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as a
+//! the frame that draws the grid took; tapping a grid row logs it. Another swaps the whole window for a trace pad that logs every touch as a
 //! `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
 //! of the keyboard inset and of the OS's reduce-motion and reduce-transparency settings (docs/os-settings.md).
+//! Ctrl-W closes the window `CLOSE_DELAY` later (on Android its Activity finishes, docs/android-multi-window.md).
 //! `launch` and `open_window` run on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
 
 use parallax::gpui::{
-    AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity,
+    AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity, KeyBinding,
     KeyboardType, MouseButton, PinchEvent, Pixels, TextInputAction, TextInputConfiguration,
     TouchEvent, TouchPhase, TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     rgb, size,
 };
-use web_time::Instant;
+use web_time::{Duration, Instant};
 
 use text_field::TextField;
+
+// `actions!` expands to paths through a crate named `gpui`; through the facade it is `parallax::gpui`.
+use parallax::gpui;
+
+gpui::actions!(hello, [CloseWindow]);
+
+/// How long after Ctrl-W the window closes: time to send the app to the background first, so the Android check
+/// closes a window whose Activity is stopped (docs/android-multi-window-check.md).
+const CLOSE_DELAY: Duration = Duration::from_secs(3);
 
 /// The box shows these in order, wrapping around. Add a row to add a colour.
 const COLOURS: [u32; 4] = [0x3b82f6, 0xef4444, 0x22c55e, 0xeab308];
@@ -180,11 +190,13 @@ impl Render for Hello {
                         .h(px(300.))
                         .overflow_y_scroll()
                         .text_size(px(28.))
-                        .children(
-                            emoji
-                                .chunks(GRID_COLUMNS)
-                                .map(|row| row.iter().collect::<String>()),
-                        )
+                        .children(emoji.chunks(GRID_COLUMNS).enumerate().map(|(index, row)| {
+                            // A tap picks from the row; a swipe (sideways too) never does (docs/touch-drag.md).
+                            div()
+                                .id(("emoji-row", index))
+                                .child(row.iter().collect::<String>())
+                                .on_click(move |_, _, _| log::info!("emoji row {index} tapped"))
+                        }))
                         .into_any_element()
                 }
                 Shown::Box => div()
@@ -318,6 +330,20 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
 /// (docs/android-multi-window.md).
 pub fn launch(cx: &mut App) {
     text_field::bind_keys(cx);
+    cx.bind_keys([KeyBinding::new("ctrl-w", CloseWindow, None)]);
+    cx.on_action(|_: &CloseWindow, cx| {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        log::info!("closing the window in {CLOSE_DELAY:?}");
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(CLOSE_DELAY).await;
+            if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
+                log::error!("cannot close the window: {error:#}");
+            }
+        })
+        .detach();
+    });
     cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
         .detach();
     cx.activate(true);

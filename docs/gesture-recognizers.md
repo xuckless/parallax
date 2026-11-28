@@ -40,7 +40,7 @@ their time. Run it with `scripts/patch-test.sh recognizer` ([patch-tests.md](pat
 
 Flutter's arena maps to claims: a drag recognizer alone in its arena wins at the down event (a claimed `TouchDrag`);
 one competing with a tap waits for the slop (a pan, `Scroll`). `Compete(kind)` and `LongPressAndCompete(kind)` rows
-(patch 0042, `tap_and_drag_test.dart`) compete for the drag instead: [touch-drag.md](touch-drag.md).
+(patch 0044, `tap_and_drag_test.dart`) compete for the drag instead: [touch-drag.md](touch-drag.md).
 
 ## Trace format
 

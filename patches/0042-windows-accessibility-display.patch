@@ -1,4 +1,4 @@
-Windows and web reduce-motion and reduce-transparency settings.
+Windows reduce-motion and reduce-transparency settings, for 0039's platform hook.
 
 What (needs 0039):
 - gpui_windows: `accessibility_display.rs` (new, pure): `SPI_GETCLIENTAREAANIMATION` off (Settings > Accessibility >
@@ -9,111 +9,14 @@ What (needs 0039):
   window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_USER + 11`) first, as for display
   changes, and calls the app back only when the settings moved. Table test runs on the host through
   scripts/patch-test.sh's `windows-pure` crate.
-- gpui_web: `matchMedia('(prefers-reduced-motion: reduce)')` and `('(prefers-reduced-transparency: reduce)')`, read at
-  startup and on each query's `change` event (both read again). Browsers without the transparency query never match.
 
-Why: 0039 gives GPUI a platform hook for the OS's reduce-motion and reduce-transparency settings; Windows and the
-web reported neither. The platforms' message handling and listeners are private to their crates.
+Why: 0039 gives GPUI a platform hook for the OS's reduce-motion and reduce-transparency settings; Windows reported
+neither. The platform's message handling is private to gpui_windows.
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
-diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
-index ab7419e..73a3df1 100644
---- a/gpui-pre-web/src/platform.rs
-+++ b/gpui-pre-web/src/platform.rs
-@@ -10,12 +10,13 @@ use crate::window::WebWindow;
- use anyhow::Result;
- use futures::channel::oneshot;
- use gpui::{
--    Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardEntry,
--    ClipboardItem, ClipboardReadError, ClipboardString, CursorStyle, DummyKeyboardMapper,
--    ForegroundExecutor, GestureTuning, Image, ImageFormat, Keymap, Menu, MenuItem,
--    PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
--    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState,
--    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
-+    AccessibilityDisplaySettings, Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase,
-+    BackgroundExecutor, ClipboardEntry, ClipboardItem, ClipboardReadError, ClipboardString,
-+    CursorStyle, DummyKeyboardMapper, ForegroundExecutor, GestureTuning, Image, ImageFormat,
-+    Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay, PlatformGestures,
-+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow,
-+    ScrollPhysics, Task, ThermalState, WindowAppearance, WindowKind, WindowParams,
-+    popup::PopupNotSupportedError,
- };
- use gpui_wgpu::{PreparedWebGraphics, WebBackendPreference, WgpuContext, wgpu};
- use std::{
-@@ -49,6 +50,31 @@ pub struct WebPlatform {
-     _cursor_restore_listeners: Vec<EventListenerHandle>,
-     lifecycle: Rc<WebLifecycle>,
-     _lifecycle_listeners: Vec<EventListenerHandle>,
-+    /// `change` on each of [`ACCESSIBILITY_DISPLAY_QUERIES`], once the app asks.
-+    accessibility_display_listeners: RefCell<Vec<EventListenerHandle>>,
-+}
-+
-+/// The CSS media queries that carry the OS's settings: (reduce motion, reduce transparency). Browsers without
-+/// `prefers-reduced-transparency` (Firefox, Safari in 2026) never match it.
-+const ACCESSIBILITY_DISPLAY_QUERIES: [&str; 2] = [
-+    "(prefers-reduced-motion: reduce)",
-+    "(prefers-reduced-transparency: reduce)",
-+];
-+
-+fn accessibility_display_settings(
-+    browser_window: &web_sys::Window,
-+) -> AccessibilityDisplaySettings {
-+    let [reduce_motion, reduce_transparency] = ACCESSIBILITY_DISPLAY_QUERIES.map(|query| {
-+        browser_window
-+            .match_media(query)
-+            .ok()
-+            .flatten()
-+            .is_some_and(|media_query| media_query.matches())
-+    });
-+    AccessibilityDisplaySettings {
-+        reduce_motion,
-+        reduce_transparency,
-+    }
- }
- 
- /// Gesture feel for the browser, chosen so touch scrolling matches the host
-@@ -220,6 +246,7 @@ impl WebPlatform {
-             _cursor_restore_listeners: cursor_restore_listeners,
-             lifecycle,
-             _lifecycle_listeners: lifecycle_listeners,
-+            accessibility_display_listeners: RefCell::new(Vec::new()),
-         }
-     }
- 
-@@ -529,6 +556,29 @@ impl Platform for WebPlatform {
- 
-     /// The page's lifecycle (`page_lifecycle.rs`): focus, visibility, the
-     /// back/forward cache and unloading.
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        accessibility_display_settings(&self.browser_window)
-+    }
-+
-+    fn on_accessibility_display_settings_change(
-+        &self,
-+        callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
-+    ) {
-+        // The browser fires `change` from its event loop, never inside a GPUI call, so the callback runs at once.
-+        let callback = Rc::new(RefCell::new(callback));
-+        let listeners = ACCESSIBILITY_DISPLAY_QUERIES
-+            .iter()
-+            .filter_map(|query| self.browser_window.match_media(query).ok().flatten())
-+            .map(|media_query| {
-+                let (callback, browser_window) = (callback.clone(), self.browser_window.clone());
-+                EventListenerHandle::add(media_query.as_ref(), "change", move |_event: JsValue| {
-+                    (callback.borrow_mut())(accessibility_display_settings(&browser_window))
-+                })
-+            })
-+            .collect();
-+        *self.accessibility_display_listeners.borrow_mut() = listeners;
-+    }
-+
-     fn on_app_lifecycle(&self, callback: Box<dyn FnMut(AppLifecyclePhase)>) {
-         *self.lifecycle.callback.borrow_mut() = Some(callback);
-     }
 diff --git a/gpui-pre-windows/src/accessibility_display.rs b/gpui-pre-windows/src/accessibility_display.rs
 new file mode 100644
-index 0000000..04f7fef
 --- /dev/null
 +++ b/gpui-pre-windows/src/accessibility_display.rs
 @@ -0,0 +1,49 @@
@@ -167,10 +70,9 @@ index 0000000..04f7fef
 +    }
 +}
 diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
-index 8ba7b5c..e5af292 100644
 --- a/gpui-pre-windows/src/events.rs
 +++ b/gpui-pre-windows/src/events.rs
-@@ -64,6 +64,7 @@ pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
+@@ -64,6 +64,7 @@
  pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
  pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
  pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
@@ -179,7 +81,6 @@ index 8ba7b5c..e5af292 100644
  const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
  
 diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
-index 8c9b847..bff01be 100644
 --- a/gpui-pre-windows/src/gpui_windows.rs
 +++ b/gpui-pre-windows/src/gpui_windows.rs
 @@ -1,5 +1,6 @@
@@ -190,10 +91,9 @@ index 8c9b847..bff01be 100644
  mod destination_list;
  mod dialog;
 diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
-index b03e414..0355fdc 100644
 --- a/gpui-pre-windows/src/platform.rs
 +++ b/gpui-pre-windows/src/platform.rs
-@@ -99,6 +99,8 @@ pub(crate) struct WindowsPlatformState {
+@@ -99,6 +99,8 @@
      pub(crate) draw_coordinator: Rc<DrawCoordinator>,
      directx_devices: RefCell<Option<DirectXDevices>>,
      low_power_mode_enabled: Cell<bool>,
@@ -202,7 +102,7 @@ index b03e414..0355fdc 100644
  }
  
  #[derive(Default)]
-@@ -114,6 +116,7 @@ struct PlatformCallbacks {
+@@ -114,6 +116,7 @@
      system_wake: Cell<Option<Box<dyn FnMut()>>>,
      low_power_mode_change: Cell<Option<Box<dyn FnMut()>>>,
      displays_changed: Cell<Option<Box<dyn FnMut()>>>,
@@ -210,7 +110,7 @@ index b03e414..0355fdc 100644
  }
  
  impl WindowsPlatformState {
-@@ -130,6 +133,7 @@ impl WindowsPlatformState {
+@@ -130,6 +133,7 @@
              draw_coordinator: Rc::new(DrawCoordinator::new()),
              directx_devices: RefCell::new(directx_devices),
              low_power_mode_enabled: Cell::new(false),
@@ -218,12 +118,12 @@ index b03e414..0355fdc 100644
              menus: RefCell::new(Vec::new()),
          }
      }
-@@ -876,6 +880,21 @@ impl Platform for WindowsPlatform {
+@@ -876,6 +880,21 @@
          }
      }
  
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        self.inner.state.accessibility_display.get()
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(self.inner.state.accessibility_display.get())
 +    }
 +
 +    fn on_accessibility_display_settings_change(
@@ -240,7 +140,7 @@ index b03e414..0355fdc 100644
      fn on_power_mode_change(&self, callback: Box<dyn FnMut()>) {
          self.inner
              .state
-@@ -1216,8 +1235,10 @@ impl WindowsPlatformInner {
+@@ -1216,8 +1235,10 @@
              | WM_GPUI_DOCK_MENU_ACTION
              | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
              | WM_GPUI_DISPLAYS_CHANGED
@@ -251,7 +151,7 @@ index b03e414..0355fdc 100644
              WM_DISPLAYCHANGE => self.handle_display_change(handle),
              WM_QUERYENDSESSION => Some(1),
              WM_ENDSESSION if wparam.0 != 0 => self.handle_end_session(),
-@@ -1244,6 +1265,7 @@ impl WindowsPlatformInner {
+@@ -1244,6 +1265,7 @@
              WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
              WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
              WM_GPUI_DISPLAYS_CHANGED => self.handle_displays_changed(),
@@ -259,7 +159,7 @@ index b03e414..0355fdc 100644
              WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
              _ => unreachable!(),
          }
-@@ -1264,6 +1286,33 @@ impl WindowsPlatformInner {
+@@ -1264,6 +1286,33 @@
          Some(0)
      }
  
@@ -293,7 +193,7 @@ index b03e414..0355fdc 100644
      fn handle_displays_changed(&self) -> Option<isize> {
          self.with_callback(
              |callbacks| &callbacks.displays_changed,
-@@ -1629,6 +1678,26 @@ fn file_open_dialog(
+@@ -1629,6 +1678,26 @@
      Ok(Some(paths))
  }
  

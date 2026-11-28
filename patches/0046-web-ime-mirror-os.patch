@@ -1,0 +1,243 @@
+Read the browser's OS once per web window, and let clicks on the IME mirror's pixel reach the canvas.
+
+What: `WebWindowInner` keeps the `gpui::OperatingSystem` that `platform_info` reads (`os`) instead of upstream's
+`is_mac` and 0035's `is_ios`, and `ImeMirror` keeps it instead of 0034's `mobile`. Each is derived where it is read:
+`events::is_mac_platform(os)` (upstream's rule, now on the stored value), `events::is_mobile(os)` (Flutter's
+`operatingSystem == iOs || android`, which gates `enterkeyhint`) and `os == Ios` (iOS measures the keyboard only while
+editing). The mirror element gets `pointer-events: none`; `ImeMirror::swap` already copies `style`, so the
+password element keeps it.
+
+Why: three bools stood for one fact (Caveman Code: explicit state), and two of them read the user agent again.
+0034 places the mirror (a 1 x 1 px, transparent, `position: fixed` textarea) on the caret's top-left, above the
+canvas, so a click on exactly that pixel went to the textarea and the canvas's mouse listeners missed it. Focus is
+set from code (`focus_element`), which `pointer-events: none` does not stop.
+
+Test: `scripts/web-checks.mjs`: "the caret's pixel is the canvas's" (desktop) and "the password element lets clicks
+through"; 0034's attribute rows and 0035's keyboard inset checks run on the derived values.
+
+Upstream: not filed (patch rule 14).
+
+diff --git a/gpui-pre-web/src/events.rs b/gpui-pre-web/src/events.rs
+--- a/gpui-pre-web/src/events.rs
++++ b/gpui-pre-web/src/events.rs
+@@ -287,7 +287,7 @@
+             }
+ 
+             let button = dom_mouse_button_to_gpui(event.button());
+-            let modifiers = modifiers_from_mouse_event(&event, this.is_mac);
++            let modifiers = modifiers_from_mouse_event(&event, is_mac_platform(this.os));
+             let time = js_sys::Date::now();
+ 
+             this.pressed_button.set(Some(button));
+@@ -375,7 +375,7 @@
+             }
+ 
+             let button = dom_mouse_button_to_gpui(event.button());
+-            let modifiers = modifiers_from_mouse_event(&event, this.is_mac);
++            let modifiers = modifiers_from_mouse_event(&event, is_mac_platform(this.os));
+ 
+             this.pressed_button.set(None);
+             let click_count = this.click_state.borrow().current_count;
+@@ -600,7 +600,7 @@
+                 return;
+             }
+ 
+-            let modifiers = modifiers_from_mouse_event(&event, this.is_mac);
++            let modifiers = modifiers_from_mouse_event(&event, is_mac_platform(this.os));
+             let current_pressed = this.pressed_button.get();
+ 
+             {
+@@ -623,7 +623,7 @@
+             let event: web_sys::PointerEvent = event.unchecked_into();
+ 
+             let position = pointer_position_in_element(&event);
+-            let modifiers = modifiers_from_mouse_event(&event, this.is_mac);
++            let modifiers = modifiers_from_mouse_event(&event, is_mac_platform(this.os));
+             let current_pressed = this.pressed_button.get();
+ 
+             {
+@@ -654,7 +654,7 @@
+ 
+             let mouse_event: &web_sys::MouseEvent = event.as_ref();
+             let position = mouse_position_in_element(mouse_event);
+-            let modifiers = modifiers_from_wheel_event(mouse_event, this.is_mac);
++            let modifiers = modifiers_from_wheel_event(mouse_event, is_mac_platform(this.os));
+ 
+             let delta_mode = event.delta_mode();
+             let delta = if delta_mode == 1 {
+@@ -713,7 +713,7 @@
+         self.listen_input("keydown", move |event: JsValue| {
+             let event: web_sys::KeyboardEvent = event.unchecked_into();
+ 
+-            let modifiers = modifiers_from_keyboard_event(&event, this.is_mac);
++            let modifiers = modifiers_from_keyboard_event(&event, is_mac_platform(this.os));
+             let capslock = capslock_from_keyboard_event(&event);
+ 
+             if this.update_modifiers(modifiers, capslock) {
+@@ -776,7 +776,7 @@
+                 return;
+             }
+ 
+-            if keystroke_inserts_text(&modifiers, this.is_mac)
++            if keystroke_inserts_text(&modifiers, is_mac_platform(this.os))
+                 && let Some(text) = key_char
+             {
+                 this.with_input_handler(|handler| {
+@@ -797,7 +797,7 @@
+         self.listen_input("keyup", move |event: JsValue| {
+             let event: web_sys::KeyboardEvent = event.unchecked_into();
+ 
+-            let modifiers = modifiers_from_keyboard_event(&event, this.is_mac);
++            let modifiers = modifiers_from_keyboard_event(&event, is_mac_platform(this.os));
+             let capslock = capslock_from_keyboard_event(&event);
+ 
+             if this.update_modifiers(modifiers, capslock) {
+@@ -1278,12 +1278,16 @@
+     }
+ }
+ 
+-pub(crate) fn is_mac_platform(browser_window: &web_sys::Window) -> bool {
++// What the browser's OS decides, each from the one `os` a window reads (`platform_info`). To add a rule: a function
++// here.
++pub(crate) fn is_mac_platform(os: gpui::OperatingSystem) -> bool {
+     // iOS hardware keyboards also use Option for text composition.
+-    matches!(
+-        platform_info(browser_window).os,
+-        gpui::OperatingSystem::Mac | gpui::OperatingSystem::Ios
+-    )
++    matches!(os, gpui::OperatingSystem::Mac | gpui::OperatingSystem::Ios)
++}
++
++/// Flutter's `operatingSystem == iOs || android` test (text_editing.rs).
++pub(crate) fn is_mobile(os: gpui::OperatingSystem) -> bool {
++    matches!(os, gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android)
+ }
+ 
+ pub(crate) fn platform_info(browser_window: &web_sys::Window) -> gpui::PlatformInfo {
+diff --git a/gpui-pre-web/src/ime_mirror.rs b/gpui-pre-web/src/ime_mirror.rs
+--- a/gpui-pre-web/src/ime_mirror.rs
++++ b/gpui-pre-web/src/ime_mirror.rs
+@@ -178,9 +178,9 @@
+     /// selection has moved; a rejected import means no import is coming,
+     /// so the next sync must reassert the app's state instead of waiting.
+     selection_import_rejected: Cell<bool>,
+-    /// Whether the browser runs on iOS or Android, where Flutter sets
+-    /// `enterkeyhint` (desktop keyboards have no action key).
+-    mobile: bool,
++    /// The browser's OS: on iOS and Android Flutter sets `enterkeyhint`
++    /// (desktop keyboards have no action key).
++    os: gpui::OperatingSystem,
+     /// The `inputmode` the configuration's keyboard type asks for, written
+     /// whenever the virtual keyboard is enabled.
+     input_mode: Cell<&'static str>,
+@@ -191,7 +191,7 @@
+         document: &web_sys::Document,
+         body: &web_sys::HtmlElement,
+         touch_input: bool,
+-        mobile: bool,
++        os: gpui::OperatingSystem,
+     ) -> anyhow::Result<Self> {
+         let container: web_sys::HtmlElement = document
+             .create_element("div")
+@@ -212,6 +212,9 @@
+         style.set_property("width", "1px").ok();
+         style.set_property("height", "1px").ok();
+         style.set_property("opacity", "0").ok();
++        // Placed on the caret, over the canvas: a click there must reach the
++        // canvas. Programmatic focus still works.
++        style.set_property("pointer-events", "none").ok();
+         // Android Chrome zooms the visual viewport onto a focused text input
+         // whose font is smaller than 16px; with page zoom disabled the user
+         // can never zoom back out, so keep the hidden IME input at 16px.
+@@ -242,7 +245,7 @@
+             window_hint: Cell::new(0),
+             sync_scheduled: Cell::new(false),
+             selection_import_rejected: Cell::new(false),
+-            mobile,
++            os,
+             input_mode: Cell::new(text_editing::input_mode(Default::default())),
+         };
+         // Until an input handler asks otherwise, the element is an IME
+@@ -265,7 +268,7 @@
+         let replaced = kind != current && self.replace_element(kind);
+         let element = self.element.borrow();
+         let element = element.html();
+-        for (name, value) in text_editing::attributes(configuration, self.mobile) {
++        for (name, value) in text_editing::attributes(configuration, crate::events::is_mobile(self.os)) {
+             match value {
+                 Some(value) => element.set_attribute(name, value).ok(),
+                 None => element.remove_attribute(name).ok(),
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -1,7 +1,5 @@
+ use crate::display::WebDisplay;
+-use crate::events::{
+-    ClickState, EventListenerHandle, TouchIds, WebEventListeners, is_mac_platform,
+-};
++use crate::events::{ClickState, EventListenerHandle, TouchIds, WebEventListeners};
+ use crate::ime_mirror::ImeMirror;
+ use crate::platform::WebWindowLifecycle;
+ use crate::viewport::WebViewport;
+@@ -58,9 +56,9 @@
+     pub(crate) ime_mirror: ImeMirror,
+     pub(crate) viewport: RefCell<WebViewport>,
+     pub(crate) has_device_pixel_support: bool,
+-    pub(crate) is_mac: bool,
+-    /// iOS measures the keyboard only while editing (`keyboard_inset`).
+-    pub(crate) is_ios: bool,
++    /// The browser's OS, read once (`platform_info`): Mac keyboards, iOS's keyboard measuring and the IME mirror's
++    /// mobile attributes are all derived from it.
++    pub(crate) os: gpui::OperatingSystem,
+     pub(crate) touch_input: bool,
+     /// The insets `on_insets_changed` last reported.
+     pub(crate) reported_insets: RefCell<WindowInsets>,
+@@ -186,14 +184,14 @@
+             .flatten()
+             .is_some_and(|query| query.matches());
+         let os = crate::events::platform_info(&browser_window).os;
+-        let mobile = matches!(
+-            os,
+-            gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android
+-        );
+-        let is_ios = os == gpui::OperatingSystem::Ios;
+-        let ime_mirror = ImeMirror::new(&document, &body, touch_input, mobile)?;
++        let ime_mirror = ImeMirror::new(&document, &body, touch_input, os)?;
+         let mut viewport = WebViewport::new(&document)?;
+-        viewport.update(&browser_window, &canvas, is_ios, false)?;
++        viewport.update(
++            &browser_window,
++            &canvas,
++            os == gpui::OperatingSystem::Ios,
++            false,
++        )?;
+ 
+         let display: Rc<dyn PlatformDisplay> = Rc::new(WebDisplay::new(browser_window.clone()));
+ 
+@@ -218,16 +216,13 @@
+             capslock: Capslock::default(),
+         };
+ 
+-        let is_mac = is_mac_platform(&browser_window);
+-
+         let inner = Rc::new(WebWindowInner {
+             browser_window,
+             canvas,
+             ime_mirror,
+             viewport: RefCell::new(viewport),
+             has_device_pixel_support,
+-            is_mac,
+-            is_ios,
++            os,
+             touch_input,
+             reported_insets: RefCell::new(WindowInsets::default()),
+             state: RefCell::new(mutable_state),
+@@ -422,7 +417,7 @@
+         match self.viewport.borrow_mut().update(
+             &self.browser_window,
+             &self.canvas,
+-            self.is_ios,
++            self.os == gpui::OperatingSystem::Ios,
+             is_editing_on_mobile,
+         ) {
+             Ok(changed) => changed,

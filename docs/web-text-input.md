@@ -29,7 +29,9 @@ carry over; the next sync writes the text afresh) and writes the attributes in o
 `<input>` strips newlines, so only secure fields get one. Flutter's `AutofillInfo` resets a secure `<input>` to
 `type=text` when its hint lacks "password"; GPUI keeps `password`. Apps get the placement by calling
 `Window::invalidate_character_coordinates` after a paint that moved the caret, as [hello's text field](../examples/hello/src/text_field.rs) does: GPUI runs
-the query at the next frame, before its layout, so asking earlier reads the old caret.
+the query at the next frame, before its layout, so asking earlier reads the old caret. [Patch 0046](../patches/0046-web-ime-mirror-os.patch)
+gives the mirror `pointer-events: none`, so the canvas keeps the clicks on the caret's pixel, and keeps the browser's
+OS once per window (`os`; mobile, Mac and iOS rules derive from it).
 
 ## The tests
 

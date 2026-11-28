@@ -18,8 +18,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 log = "0.4"
 parallax = { path = "../../crates/parallax" }
-# Flutter's text selection gestures and overlay for the text field (src/text_field.rs).
-parallax-ext = { path = "../../crates/ext" }
 # Grapheme boundaries for the text field's cursor moves and deletes (src/text_field.rs).
 unicode-segmentation = "1"
 # Names GPUI's clock type (the executor's `now()`), which works in the browser too: the trace pad times touches by it.

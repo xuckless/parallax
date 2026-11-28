@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live checks of hello's text field selection under Weston's headless backend (Wayland): mouse clicks, multi-clicks,
 # drags and shift-clicks, and a touch long press and handle drag, sent through Weston's test plugin (weston-touch.py),
-# then the field's last `text field selection: base..extent` log line checked (docs/text-selection.md#live-checks).
+# then the field's last `text field selection: base..extent` log line checked (docs/text-selection-tests.md#live-checks).
 # Each check relaunches hello, types the text into its first field and finds the glyphs on screen; logs land in
 # target/record-traces/wayland/selection/.
 #

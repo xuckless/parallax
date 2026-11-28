@@ -27,7 +27,7 @@ licensed under the MIT License (LICENSE-REACT-NATIVE in parallax-gpui-ios, third
 Copyright (c) Meta Platforms, Inc. and affiliates.
 
 parallax-gpui-ios reads the reduce-motion and reduce-transparency settings as React Native's
-packages/react-native/React/CoreModules/RCTAccessibilityManager.mm v0.88.1 does (patch 0039), and
+packages/react-native/React/CoreModules/RCTAccessibilityManager.mm v0.88.1 does (patch 0040), and
 parallax-android ports React Native's
 packages/react-native/ReactAndroid/src/main/java/com/facebook/react/modules/accessibilityinfo/AccessibilityInfoModule.kt
 v0.88.1, its reduce-motion reading (AccessibilityInfoModule.java, accessibility.rs), both licensed under the MIT
@@ -48,7 +48,7 @@ wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the wi
 
 This product includes code ported from Flutter (https://github.com/flutter/flutter),
 licensed under the BSD 3-Clause License. See third_party/flutter/LICENSE (LICENSE-FLUTTER
-in the parallax-android, parallax-platform, parallax-gpui, parallax-gpui-ios, parallax-gpui-macos,
+in the parallax-android, parallax-platform, parallax-ext, parallax-gpui, parallax-gpui-ios, parallax-gpui-macos,
 parallax-gpui-web and parallax-gpui-windows packages).
 Copyright 2014 The Flutter Authors. All rights reserved.
 Parallax is not affiliated with or endorsed by Google or the Flutter project.

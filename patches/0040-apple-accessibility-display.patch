@@ -1,0 +1,317 @@
+macOS and iOS reduce-motion and reduce-transparency settings, for 0039's platform hook.
+
+What (needs 0039):
+- gpui_apple: `process_info::observe_notification`, the process info observers' deferred, drop-removed observer for
+  a notification from any sender (`with_center` takes the sender to observe).
+- macOS: `NSWorkspace` `accessibilityDisplayShouldReduceMotion` / `…ShouldReduceTransparency`, followed through
+  `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification` on the workspace's notification center
+  (objc2-app-kit feature `NSAccessibility`).
+- iOS: `UIAccessibilityIsReduceMotionEnabled` / `UIAccessibilityIsReduceTransparencyEnabled` and their two
+  did-change notifications, as React Native's RCTAccessibilityManager.mm reads and observes them (objc2-ui-kit
+  feature `UIAccessibility`). Flutter's FlutterViewController.mm observes the same notifications for its
+  accessibility features. Both backends defer the callback to the foreground executor.
+
+Why: 0039 gives GPUI a platform hook for the OS's reduce-motion and reduce-transparency settings; macOS and iOS
+reported neither. The platforms and their notification observers are private to their crates.
+
+Ported from facebook/react-native packages/react-native/React/CoreModules/RCTAccessibilityManager.mm @ v0.88.1
+(c30b7f86850d47422637a64c70508e7411dbd8ea), Copyright (c) Meta Platforms, Inc. and affiliates, MIT (the two reads and
+notifications, iOS).
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-apple/src/process_info.rs b/gpui-pre-apple/src/process_info.rs
+--- a/gpui-pre-apple/src/process_info.rs
++++ b/gpui-pre-apple/src/process_info.rs
+@@ -1,7 +1,10 @@
+ use block2::RcBlock;
+ use futures::{StreamExt, channel::mpsc};
+ use gpui::{ForegroundExecutor, PowerMode, Task, ThermalState};
+-use objc2::{rc::Retained, runtime::ProtocolObject};
++use objc2::{
++    rc::Retained,
++    runtime::{AnyObject, ProtocolObject},
++};
+ use objc2_foundation::{
+     NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSProcessInfo,
+     NSProcessInfoPowerStateDidChangeNotification, NSProcessInfoThermalState,
+@@ -67,6 +70,17 @@
+     )
+ }
+ 
++/// Runs `callback` on `executor` after each `name` notification `center` posts, from any sender: UIKit's and
++/// AppKit's accessibility settings notifications. Deferred and removed on drop, as the process info observers.
++pub fn observe_notification(
++    center: Retained<NSNotificationCenter>,
++    name: &NSNotificationName,
++    executor: &ForegroundExecutor,
++    callback: Box<dyn FnMut()>,
++) -> ProcessInfoObserver {
++    ProcessInfoObserver::with_center(center, name, None, executor, callback)
++}
++
+ pub struct ProcessInfoObserver {
+     center: Retained<NSNotificationCenter>,
+     observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+@@ -82,14 +96,17 @@
+         Self::with_center(
+             NSNotificationCenter::defaultCenter(),
+             name,
++            Some(&NSProcessInfo::processInfo()),
+             executor,
+             callback,
+         )
+     }
+ 
++    /// `object`: the sender to observe, `None` for any.
+     fn with_center(
+         center: Retained<NSNotificationCenter>,
+         name: &NSNotificationName,
++        object: Option<&AnyObject>,
+         executor: &ForegroundExecutor,
+         mut callback: Box<dyn FnMut()>,
+     ) -> Self {
+@@ -102,12 +119,7 @@
+             }
+         });
+         let observer = unsafe {
+-            center.addObserverForName_object_queue_usingBlock(
+-                Some(name),
+-                Some(&NSProcessInfo::processInfo()),
+-                None,
+-                &block,
+-            )
++            center.addObserverForName_object_queue_usingBlock(Some(name), object, None, &block)
+         };
+         let task = executor.spawn(async move {
+             while receiver.next().await.is_some() {
+@@ -163,6 +175,7 @@
+         let observer = ProcessInfoObserver::with_center(
+             center.clone(),
+             name,
++            Some(&NSProcessInfo::processInfo()),
+             &cx.foreground_executor,
+             Box::new({
+                 let calls = calls.clone();
+diff --git a/gpui-pre-ios/Cargo.toml b/gpui-pre-ios/Cargo.toml
+--- a/gpui-pre-ios/Cargo.toml
++++ b/gpui-pre-ios/Cargo.toml
+@@ -139,6 +139,7 @@
+     "objc2-quartz-core",
+     "objc2-core-foundation",
+     "NSText",
++    "UIAccessibility",
+     "UIApplication",
+     "UICommand",
+     "UICornerConfiguration",
+diff --git a/gpui-pre-ios/src/ios/platform.rs b/gpui-pre-ios/src/ios/platform.rs
+--- a/gpui-pre-ios/src/ios/platform.rs
++++ b/gpui-pre-ios/src/ios/platform.rs
+@@ -17,10 +17,11 @@
+     channel::{mpsc, oneshot},
+ };
+ use gpui::{
+-    Action, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardItem, CursorStyle,
+-    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
+-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+-    PlatformWindow, PowerMode, Result, Task, ThermalState, WindowAppearance, WindowParams,
++    AccessibilityDisplaySettings, Action, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor,
++    ClipboardItem, CursorStyle, DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem,
++    PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper,
++    PlatformTextSystem, PlatformWindow, PowerMode, Result, Task, ThermalState, WindowAppearance,
++    WindowParams,
+ };
+ use gpui_apple::{
+     AppleDispatcher, keychain, main_thread_marker,
+@@ -31,9 +32,11 @@
+     NSBundle, NSDictionary, NSNotification, NSNotificationCenter, NSObjectProtocol, NSString, NSURL,
+ };
+ use objc2_ui_kit::{
+-    UIApplication, UIPasteboard, UIScreenModeDidChangeNotification,
+-    UITextInputCurrentInputModeDidChangeNotification, UITraitEnvironment, UIUserInterfaceStyle,
+-    UIViewController,
++    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityIsReduceTransparencyEnabled,
++    UIAccessibilityReduceMotionStatusDidChangeNotification,
++    UIAccessibilityReduceTransparencyStatusDidChangeNotification, UIApplication, UIPasteboard,
++    UIScreenModeDidChangeNotification, UITextInputCurrentInputModeDidChangeNotification,
++    UITraitEnvironment, UIUserInterfaceStyle, UIViewController,
+ };
+ #[allow(deprecated)]
+ // Match UIScreen enumeration, including displays without a connected scene.
+@@ -54,6 +57,8 @@
+     text_system: Arc<dyn PlatformTextSystem>,
+     thermal_observer: RefCell<Option<ProcessInfoObserver>>,
+     power_mode_observer: RefCell<Option<ProcessInfoObserver>>,
++    /// Observe the reduce-motion and reduce-transparency settings, one notification each.
++    accessibility_display_observers: RefCell<Vec<ProcessInfoObserver>>,
+     display_observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
+     display_task: RefCell<Option<Task<()>>>,
+     displays_changed_callback: CallbackSlot<Box<dyn FnMut()>>,
+@@ -80,6 +85,7 @@
+             text_system,
+             thermal_observer: RefCell::new(None),
+             power_mode_observer: RefCell::new(None),
++            accessibility_display_observers: RefCell::new(Vec::new()),
+             display_observers: RefCell::new(Vec::new()),
+             display_task: RefCell::new(None),
+             displays_changed_callback: CallbackSlot::default(),
+@@ -460,6 +466,39 @@
+             .spawn(async move { Ok(keychain::delete_credentials(&url)?) })
+     }
+ 
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(accessibility_display_settings())
++    }
++
++    fn on_accessibility_display_settings_change(
++        &self,
++        callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
++    ) {
++        // React Native's RCTAccessibilityManager observes the same two notifications and reads the same two
++        // functions. Each observer defers to the foreground executor: UIKit may post inside another callback.
++        let callback = Rc::new(RefCell::new(callback));
++        // SAFETY: UIKit's notification names, immutable statics.
++        let names = unsafe {
++            [
++                UIAccessibilityReduceMotionStatusDidChangeNotification,
++                UIAccessibilityReduceTransparencyStatusDidChangeNotification,
++            ]
++        };
++        let observers = names
++            .into_iter()
++            .map(|name| {
++                let callback = callback.clone();
++                process_info::observe_notification(
++                    NSNotificationCenter::defaultCenter(),
++                    name,
++                    &self.0.foreground_executor,
++                    Box::new(move || (callback.borrow_mut())(accessibility_display_settings())),
++                )
++            })
++            .collect();
++        *self.0.accessibility_display_observers.borrow_mut() = observers;
++    }
++
+     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
+         // The user switching keyboard (another layout or language, from the globe key or a hardware keyboard's
+         // shortcut) posts UIKit's input-mode notification. It can arrive inside a UIKit text callback, so GPUI runs
+@@ -514,6 +553,17 @@
+     }
+ }
+ 
++/// Settings > Accessibility > Motion > Reduce Motion, and Display & Text Size > Reduce Transparency.
++// Ported from facebook/react-native packages/react-native/React/CoreModules/RCTAccessibilityManager.mm @ v0.88.1
++// (c30b7f86850d47422637a64c70508e7411dbd8ea), its `_isReduceMotionEnabled` / `_isReduceTransparencyEnabled` reads.
++// Copyright (c) Meta Platforms, Inc. and affiliates. MIT, see LICENSE-REACT-NATIVE.
++fn accessibility_display_settings() -> AccessibilityDisplaySettings {
++    AccessibilityDisplaySettings {
++        reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
++        reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
++    }
++}
++
+ impl Drop for IosPlatformState {
+     fn drop(&mut self) {
+         for observer in self
+diff --git a/gpui-pre-macos/Cargo.toml b/gpui-pre-macos/Cargo.toml
+--- a/gpui-pre-macos/Cargo.toml
++++ b/gpui-pre-macos/Cargo.toml
+@@ -146,6 +146,7 @@
+ [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
+ version = "0.3.2"
+ features = [
++    "NSAccessibility",
+     "NSAlert",
+     "NSAppearance",
+     "NSApplication",
+diff --git a/gpui-pre-macos/src/platform.rs b/gpui-pre-macos/src/platform.rs
+--- a/gpui-pre-macos/src/platform.rs
++++ b/gpui-pre-macos/src/platform.rs
+@@ -11,12 +11,12 @@
+ use dispatch2::DispatchQueue;
+ use futures::channel::oneshot;
+ use gpui::{
+-    Action, ActivationPolicy, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem,
+-    CursorStyle, ForegroundExecutor, GraphicalEnvironment, KeyContext, Keymap, Menu, MenuItem,
+-    OsMenu, OwnedMenu, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
+-    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, PowerMode, Result, SystemMenuType,
+-    Task, ThermalState, WindowAppearance, WindowKind, WindowParams, WindowingRequest,
+-    popup::PopupNotSupportedError,
++    AccessibilityDisplaySettings, Action, ActivationPolicy, ActivityGuard, AnyWindowHandle,
++    BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor, GraphicalEnvironment,
++    KeyContext, Keymap, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
++    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
++    PlatformWindow, PowerMode, Result, SystemMenuType, Task, ThermalState, WindowAppearance,
++    WindowKind, WindowParams, WindowingRequest, popup::PopupNotSupportedError,
+ };
+ use gpui_apple::{
+     keychain,
+@@ -35,7 +35,8 @@
+     NSAppearanceNameVibrantLight, NSApplication, NSApplicationActivationPolicy,
+     NSApplicationOcclusionState, NSControlStateValueOn, NSCursor, NSDocumentController,
+     NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponse, NSModalResponseOK, NSOpenPanel,
+-    NSSavePanel, NSScroller, NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification,
++    NSSavePanel, NSScroller, NSScrollerStyle, NSWorkspace,
++    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification, NSWorkspaceDidWakeNotification,
+     NSWorkspaceWillSleepNotification,
+ };
+ use objc2_foundation::{
+@@ -180,6 +181,7 @@
+     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
+     thermal_observer: Option<ProcessInfoObserver>,
+     power_mode_observer: Option<ProcessInfoObserver>,
++    accessibility_display_observer: Option<ProcessInfoObserver>,
+     on_displays_changed: Option<Box<dyn FnMut()>>,
+     on_system_sleep: Option<Box<dyn FnMut()>>,
+     on_system_wake: Option<Box<dyn FnMut()>>,
+@@ -258,6 +260,7 @@
+             on_keyboard_layout_change: None,
+             thermal_observer: None,
+             power_mode_observer: None,
++            accessibility_display_observer: None,
+             on_displays_changed: None,
+             on_system_sleep: None,
+             on_system_wake: None,
+@@ -1079,6 +1082,26 @@
+         self.0.lock().power_mode_observer = Some(observer);
+     }
+ 
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(accessibility_display_settings())
++    }
++
++    fn on_accessibility_display_settings_change(
++        &self,
++        mut callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
++    ) {
++        // AppKit posts one notification on NSWorkspace's own center for any display option (System Settings >
++        // Accessibility > Display), so both settings are read again on each.
++        let observer = process_info::observe_notification(
++            NSWorkspace::sharedWorkspace().notificationCenter(),
++            // SAFETY: AppKit's notification name, an immutable static.
++            unsafe { NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification },
++            &self.foreground_executor(),
++            Box::new(move || callback(accessibility_display_settings())),
++        );
++        self.0.lock().accessibility_display_observer = Some(observer);
++    }
++
+     fn on_system_wake(&self, callback: Box<dyn FnMut()>) {
+         self.0.lock().on_system_wake = Some(callback);
+         self.ensure_system_power_observers();
+@@ -1396,6 +1419,15 @@
+     }
+ }
+ 
++/// System Settings > Accessibility > Display: Reduce motion, Reduce transparency.
++fn accessibility_display_settings() -> AccessibilityDisplaySettings {
++    let workspace = NSWorkspace::sharedWorkspace();
++    AccessibilityDisplaySettings {
++        reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
++        reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
++    }
++}
++
+ /// `observer` must be the app delegate, whose class declares `onSystemSleep:`
+ /// and `onSystemWake:` (see `build_classes`).
+ fn register_system_power_observers(observer: &AnyObject) {

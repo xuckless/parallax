@@ -19,7 +19,7 @@ env:
   LINUX_PACKAGES: libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
   # The library crates published to crates.io. `cargo package` builds each from its packaged tarball against the
   # parallax-gpui* fork crates on crates.io, without the workspace [patch] (docs/ci.md). Add a row when a crate goes public.
-  PUBLISHED_LIBS: -p parallax-android -p parallax-platform -p parallax
+  PUBLISHED_LIBS: -p parallax-android -p parallax-platform -p parallax-ext -p parallax
 
 defaults:
   run:

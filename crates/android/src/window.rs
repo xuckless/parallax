@@ -15,6 +15,7 @@ use raw_window_handle as rwh;
 
 use crate::{
     activity_window::{ActivityWindow, FirstFrame},
+    gpui_window::GpuiEffect,
     host::Shell,
     platform::AndroidDisplay,
 };
@@ -28,10 +29,16 @@ pub(crate) struct AndroidWindow {
 
 /// GPUI drops a window it closed, and dropping a platform window closes the native one, as upstream's macOS and iOS
 /// windows do: here the Activity's window, so the Activity finishes rather than stay on screen empty
-/// ([`ActivityWindow::closed_by_app`]).
+/// ([`ActivityWindow::closed_by_app`]). This is the one `Drop` in Parallax that does more than free a resource
+/// (AGENTS.md, "No hidden behaviour"): it keeps upstream's contract that closing a window closes it on screen, so an
+/// app's `window.remove_window()` works here as on desktop. It finishes the Activity at once, even when it is paused
+/// or stopped (docs/android-multi-window.md#closing-a-window).
 impl Drop for AndroidWindow {
     fn drop(&mut self) {
-        self.window.closed_by_app();
+        match self.window.closed_by_app() {
+            GpuiEffect::FinishActivity => self.shell.finish_activity(&self.window),
+            GpuiEffect::Nothing | GpuiEffect::RequestWindow | GpuiEffect::Reject { .. } => {}
+        }
     }
 }
 

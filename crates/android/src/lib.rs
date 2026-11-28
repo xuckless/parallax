@@ -16,6 +16,8 @@ mod emoji;
 #[cfg(any(target_os = "android", test))]
 mod fonts;
 #[cfg(any(target_os = "android", test))]
+mod gpui_window;
+#[cfg(any(target_os = "android", test))]
 mod haptics;
 #[cfg(target_os = "android")]
 mod host;

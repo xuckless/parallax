@@ -2,8 +2,10 @@
 // widgets/text_selection.dart (TextSelectionGestureDetectorBuilder, _TextSelectionGestureDetectorState,
 // TextSelectionOverlay's handle drags, SelectionOverlay.showMagnifier and selectionEndpoints' haptic),
 // rendering/editable.dart (selectPositionAt, selectWordsInRange, getWordAtOffset), widgets/editable_text.dart
-// (showToolbar, hideToolbar, toggleToolbar, _handleSelectionChanged's keyboard request) and material/text_field.dart
-// (_shouldShowSelectionHandles, _handleSelectionChanged's desktop toolbar rule).
+// (showToolbar, hideToolbar, toggleToolbar, _handleSelectionChanged's keyboard request, cutEnabled, copyEnabled,
+// pasteEnabled, selectAllEnabled, getEditableButtonItems), widgets/text_selection.dart's _SelectionHandleOverlay
+// (its tap and pan recognizers) and material/text_field.dart (_shouldShowSelectionHandles, _handleSelectionChanged's
+// desktop toolbar rule, _handleSelectionHandleTapped).
 // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 
 //! Flutter's text selection behaviour for Android and touch desktops, as one state machine: pointer input in, the
@@ -17,13 +19,11 @@ mod tests;
 
 use std::ops::Range;
 
-use gpui::{
-    Bounds, Haptic, Pixels, Point, PointerDevice, TouchDragKind, constants::kTouchSlop, point,
-    slops,
-};
+use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, TouchDragKind, point, slops};
 use parallax_platform::behaviour::{
-    Behaviour, HandleDrag, LongPressSelects, MagnifierKind, SecondaryTap, SelectionRules,
-    ShiftSelect, TapCount, TapEdge, TextBoundaryKind, TextSelectionControls, TouchDragSelects,
+    Behaviour, DragToolbar, HandleDrag, LongPressSelects, MagnifierKind, SecondaryTap,
+    SelectAllButton, SelectionRules, ShiftSelect, TapCount, TapEdge, TextBoundaryKind,
+    TextSelectionControls, TouchDragSelects,
 };
 
 pub use geometry::{
@@ -76,8 +76,10 @@ pub trait TextLayout {
     fn line_at(&self, offset: usize) -> Range<usize>;
     /// `ParagraphBoundary`: the paragraph (up to a line break) holding `offset`.
     fn paragraph_at(&self, offset: usize) -> Range<usize>;
-    /// `getLocalRectForCaret`: the caret at `offset`, a line high.
-    fn caret_rect(&self, offset: usize) -> Bounds<Pixels>;
+    /// `getLocalRectForCaret`: the caret at `offset`, a line high. At a soft line wrap one offset has two carets:
+    /// `Upstream` is the end of the line before the wrap, `Downstream` the start of the line after it (Flutter's
+    /// `TextAffinity`); elsewhere both are the same.
+    fn caret_rect(&self, offset: usize, affinity: Affinity) -> Bounds<Pixels>;
     /// `preferredLineHeight`.
     fn preferred_line_height(&self) -> Pixels;
     /// The field's text area (`paintBounds`).
@@ -90,6 +92,7 @@ pub struct Field {
     pub selection: Selection,
     pub focused: bool,
     pub lines: Lines,
+    pub text: TextVisibility,
     /// The window's area the magnifier must stay in.
     pub screen: Bounds<Pixels>,
 }
@@ -101,11 +104,43 @@ pub enum Lines {
     Multi,
 }
 
+/// `obscureText`: a password field's text is one word (`getWordAtOffset`) and can't be copied or cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextVisibility {
+    Plain,
+    Obscured,
+}
+
+/// Flutter's `TextAffinity`: which caret an offset at a soft line wrap means (see [`TextLayout::caret_rect`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Affinity {
+    Upstream,
+    Downstream,
+}
+
+/// Flutter's `ContextMenuButtonType`, the buttons of the selection toolbar this engine offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolbarButton {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+/// Whether the clipboard holds something to paste (Flutter's `ClipboardStatus`, without its `unknown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clipboard {
+    Pasteable,
+    NotPasteable,
+}
+
 /// Pointer input over the field, in window coordinates. `tap_count` is GPUI's click count (Flutter's
-/// `consecutiveTapCount`). A touch tap arrives as `Down` then `Up` (GPUI recognizes it on release); a long press
-/// as `LongPress*` (GPUI only long-presses touches, as Flutter's recognizer only takes them).
+/// `consecutiveTapCount`). A touch tap arrives as `Down` then `Up` (GPUI recognizes it on release), a finger drag
+/// GPUI's recognizer let the field win as `DragWon`, a long press as `LongPress*` (GPUI only long-presses touches,
+/// as Flutter's recognizer only takes them), a touch on a handle as `Handle*`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Input {
+    /// A mouse press (and a touch tap's press, on release).
     Down {
         position: Point<Pixels>,
         device: PointerDevice,
@@ -115,10 +150,21 @@ pub enum Input {
         /// drag by (Flutter's `DeviceGestureSettings.touchSlop`, which its tap-and-drag recognizers use too).
         touch_slop: Pixels,
     },
+    /// The pressed pointer moved: a mouse drag, or a won drag's move.
     Move {
         position: Point<Pixels>,
     },
     Up,
+    /// GPUI's recognizer let the field's competing drag win (`TouchDragStart::PastSlop`): it went down at `origin`
+    /// and won at `position`. The tap-and-drag recognizer's `_checkTapDown`, `_checkDragStart` and first update.
+    DragWon {
+        origin: Point<Pixels>,
+        position: Point<Pixels>,
+        device: PointerDevice,
+    },
+    /// The pointer's gesture was cancelled (the touch was): the tap-and-drag recognizer's `onCancel`, a long
+    /// press's `onSingleLongTapCancel`, a handle pan's end. A cancelled press never places the caret.
+    Cancel,
     SecondaryTap {
         position: Point<Pixels>,
         device: PointerDevice,
@@ -130,15 +176,17 @@ pub enum Input {
         position: Point<Pixels>,
     },
     LongPressEnd,
-    LongPressCancel,
-    HandleDragStart {
+    /// A touch went down on a handle (the app claims it). The handle's tap and pan recognizers then compete: a
+    /// release within `touch_slop` taps the handle, a move past it drags the handle.
+    HandleDown {
         handle: Handle,
         position: Point<Pixels>,
+        touch_slop: Pixels,
     },
-    HandleDragUpdate {
+    HandleMove {
         position: Point<Pixels>,
     },
-    HandleDragEnd,
+    HandleUp,
     /// The text changed from the keyboard or IME (`SelectionChangedCause.keyboard`): the overlay hides.
     Typed,
     /// The field lost focus: the overlay goes away.
@@ -215,15 +263,17 @@ struct Press {
     /// The effective tap count (`_getEffectiveConsecutiveTapCount`).
     tap_count: usize,
     shift: bool,
-    touch_slop: Pixels,
 }
 
 /// The gesture in progress: one per field, its data on the variant that owns it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Gesture {
     Idle,
-    /// Down, not yet past the drag slop: an `Up` is a tap.
-    Pressed(Press),
+    /// Down, not yet past the drag slop (judged by the device's `touch_slop`): an `Up` is a tap.
+    Pressed {
+        press: Press,
+        touch_slop: Pixels,
+    },
     /// `onDragSelection*`; `start_selection` is `_dragStartSelection`.
     Dragging {
         press: Press,
@@ -233,6 +283,12 @@ enum Gesture {
     LongPress {
         origin: Point<Pixels>,
         without_focus: bool,
+    },
+    /// A touch on a handle, within `touch_slop` of `origin`: its tap recognizer can still win.
+    HandlePress {
+        handle: Handle,
+        origin: Point<Pixels>,
+        touch_slop: Pixels,
     },
     /// `TextSelectionOverlay._handleSelection{Start,End}HandleDrag*`: `drag_position` and `drag_target` are its
     /// `_*HandleDragPosition` and `_*HandleDragTarget`, `start_selection` its `_dragStartSelection`.
@@ -291,7 +347,7 @@ impl TextSelection {
         };
         let next = match (step.engine.gesture, input) {
             (
-                Gesture::Idle | Gesture::Pressed(_),
+                Gesture::Idle | Gesture::Pressed { .. },
                 Input::Down {
                     position,
                     device,
@@ -305,23 +361,34 @@ impl TextSelection {
                     device,
                     tap_count: step.effective_tap_count(tap_count),
                     shift,
-                    touch_slop,
                 };
                 step.tap_down(press);
-                Gesture::Pressed(press)
+                Gesture::Pressed { press, touch_slop }
             }
-            (Gesture::Pressed(press), Input::Move { position }) => {
-                if step.past_drag_slop(press, position) {
-                    let start_selection = step.field.selection;
-                    step.drag_start(press);
-                    step.drag_update(press, start_selection, position);
-                    Gesture::Dragging {
-                        press,
-                        start_selection,
-                    }
+            (Gesture::Pressed { press, touch_slop }, Input::Move { position }) => {
+                if step.past_drag_slop(press, touch_slop, position) {
+                    step.drag_start_and_update(press, position)
                 } else {
-                    Gesture::Pressed(press)
+                    Gesture::Pressed { press, touch_slop }
                 }
+            }
+            (
+                Gesture::Idle,
+                Input::DragWon {
+                    origin,
+                    position,
+                    device,
+                },
+            ) => {
+                // GPUI judged the slop: the press, its drag start and the move that won, all at once.
+                let press = Press {
+                    origin,
+                    device,
+                    tap_count: 1,
+                    shift: false,
+                };
+                step.tap_down(press);
+                step.drag_start_and_update(press, position)
             }
             (
                 Gesture::Dragging {
@@ -336,7 +403,7 @@ impl TextSelection {
                     start_selection,
                 }
             }
-            (Gesture::Pressed(press), Input::Up) => {
+            (Gesture::Pressed { press, .. }, Input::Up) => {
                 step.tap_up(press);
                 Gesture::Idle
             }
@@ -344,13 +411,18 @@ impl TextSelection {
                 step.drag_end(press);
                 Gesture::Idle
             }
-            (Gesture::Idle | Gesture::Pressed(_), Input::SecondaryTap { position, device }) => {
+            // onCancel: no tap up, no drag end; the magnifier a finger drag showed goes.
+            (Gesture::Pressed { .. } | Gesture::Dragging { .. }, Input::Cancel) => {
+                step.engine.magnifier = None;
+                Gesture::Idle
+            }
+            (Gesture::Idle | Gesture::Pressed { .. }, Input::SecondaryTap { position, device }) => {
                 step.secondary_tap(position, device);
                 Gesture::Idle
             }
             // GPUI recognizes a long press from a touch that never became a tap, so it starts from any state but a
             // drag of the field or a handle.
-            (Gesture::Idle | Gesture::Pressed(_), Input::LongPressStart { position }) => {
+            (Gesture::Idle | Gesture::Pressed { .. }, Input::LongPressStart { position }) => {
                 step.long_press_start(position)
             }
             (
@@ -373,13 +445,48 @@ impl TextSelection {
                 }
                 Gesture::Idle
             }
-            (Gesture::LongPress { .. }, Input::LongPressCancel) => {
+            (Gesture::LongPress { .. }, Input::Cancel) => {
                 step.long_press_end_or_cancel();
                 Gesture::Idle
             }
-            (Gesture::Idle | Gesture::Pressed(_), Input::HandleDragStart { handle, position }) => {
-                step.handle_drag_start(handle, position)
+            (
+                Gesture::Idle | Gesture::Pressed { .. },
+                Input::HandleDown {
+                    handle,
+                    position,
+                    touch_slop,
+                },
+            ) => Gesture::HandlePress {
+                handle,
+                origin: position,
+                touch_slop,
+            },
+            (
+                Gesture::HandlePress {
+                    handle,
+                    origin,
+                    touch_slop,
+                },
+                Input::HandleMove { position },
+            ) => {
+                // Past the tap's slop the tap recognizer rejects, and the pan, alone in the handle's arena, wins
+                // (DragStartBehavior.start: the drag starts where it was accepted).
+                let moved = position - origin;
+                if moved.x.as_f32().hypot(moved.y.as_f32()) > touch_slop.as_f32() {
+                    step.handle_drag_start(handle, position)
+                } else {
+                    Gesture::HandlePress {
+                        handle,
+                        origin,
+                        touch_slop,
+                    }
+                }
             }
+            (Gesture::HandlePress { .. }, Input::HandleUp) => {
+                step.handle_tapped();
+                Gesture::Idle
+            }
+            (Gesture::HandlePress { .. }, Input::Cancel) => Gesture::Idle,
             (
                 Gesture::HandleDrag {
                     handle,
@@ -387,7 +494,7 @@ impl TextSelection {
                     drag_target,
                     start_selection,
                 },
-                Input::HandleDragUpdate { position },
+                Input::HandleMove { position },
             ) => {
                 let drag_position = step.handle_drag_update(
                     handle,
@@ -403,33 +510,44 @@ impl TextSelection {
                     start_selection,
                 }
             }
-            (Gesture::HandleDrag { .. }, Input::HandleDragEnd) => {
+            // A pan's cancel ends it, as its release does (DragGestureRecognizer `_checkEnd`).
+            (Gesture::HandleDrag { .. }, Input::HandleUp | Input::Cancel) => {
                 step.handle_drag_end();
                 Gesture::Idle
             }
-            (_, Input::Typed | Input::Blurred) => {
+            (
+                Gesture::Idle
+                | Gesture::Pressed { .. }
+                | Gesture::Dragging { .. }
+                | Gesture::LongPress { .. }
+                | Gesture::HandlePress { .. }
+                | Gesture::HandleDrag { .. },
+                Input::Typed | Input::Blurred,
+            ) => {
                 step.hide_toolbar(HideHandles::Yes);
                 Gesture::Idle
             }
             // Rejected: input that doesn't belong to the gesture in progress (a stray move, a second long press,
-            // a handle update with no handle drag) changes nothing.
+            // a handle move with no handle touch) changes nothing.
             (
                 gesture @ (Gesture::Idle
-                | Gesture::Pressed(_)
+                | Gesture::Pressed { .. }
                 | Gesture::Dragging { .. }
                 | Gesture::LongPress { .. }
+                | Gesture::HandlePress { .. }
                 | Gesture::HandleDrag { .. }),
                 Input::Down { .. }
                 | Input::Move { .. }
                 | Input::Up
+                | Input::DragWon { .. }
+                | Input::Cancel
                 | Input::SecondaryTap { .. }
                 | Input::LongPressStart { .. }
                 | Input::LongPressMove { .. }
                 | Input::LongPressEnd
-                | Input::LongPressCancel
-                | Input::HandleDragStart { .. }
-                | Input::HandleDragUpdate { .. }
-                | Input::HandleDragEnd,
+                | Input::HandleDown { .. }
+                | Input::HandleMove { .. }
+                | Input::HandleUp,
             ) => gesture,
         };
         let effects = step.effects;
@@ -449,6 +567,35 @@ impl TextSelection {
             toolbar: shown(self.toolbar).then(|| toolbar_anchors(layout, field.selection)),
             magnifier: self.magnifier,
         }
+    }
+
+    /// The toolbar's buttons, in order (`EditableText.getEditableButtonItems` with `cutEnabled`, `copyEnabled`,
+    /// `pasteEnabled` and `selectAllEnabled`): nothing obscured is cut or copied. Dropped: read-only fields, Share,
+    /// Look Up, Search Web, Live Text and text processing actions.
+    pub fn toolbar_buttons(
+        &self,
+        field: &Field,
+        layout: &impl TextLayout,
+        clipboard: Clipboard,
+    ) -> Vec<ToolbarButton> {
+        let selection = field.selection;
+        let copyable = field.text == TextVisibility::Plain && !selection.is_collapsed();
+        let select_all = match self.rules.select_all {
+            SelectAllButton::UnlessAllSelected => {
+                !layout.is_empty() && !(selection.start() == 0 && selection.end() == layout.len())
+            }
+            SelectAllButton::Never => false,
+        };
+        // (button, enabled), in Flutter's order.
+        [
+            (ToolbarButton::Cut, copyable),
+            (ToolbarButton::Copy, copyable),
+            (ToolbarButton::Paste, clipboard == Clipboard::Pasteable),
+            (ToolbarButton::SelectAll, select_all),
+        ]
+        .into_iter()
+        .filter_map(|(button, enabled)| enabled.then_some(button))
+        .collect()
     }
 }
 
@@ -486,8 +633,8 @@ impl<L: TextLayout> Step<'_, L> {
 
     /// `_hasSufficientGlobalDistanceToAccept` of the recognizer the platform uses, with the device's slops
     /// (`computeHitSlop` / `computePanSlop` of its `gestureSettings`), so the drag starts where GPUI's won.
-    fn past_drag_slop(&self, press: Press, position: Point<Pixels>) -> bool {
-        let slop = slops(press.device, Some(press.touch_slop));
+    fn past_drag_slop(&self, press: Press, touch_slop: Pixels, position: Point<Pixels>) -> bool {
+        let slop = slops(press.device, Some(touch_slop));
         let moved = position - press.origin;
         match self.engine.rules.drag_recognizer {
             TouchDragKind::Horizontal => moved.x.abs() > slop.hit,
@@ -498,7 +645,7 @@ impl<L: TextLayout> Step<'_, L> {
     /// `_TextSelectionGestureDetectorState._handleTapDown`: `onTapDown`, then `onDoubleTapDown` or
     /// `onTripleTapDown` by the count.
     fn tap_down(&mut self, press: Press) {
-        self.on_tap_down(press);
+        self.on_tap_down(press.origin, press.device, press.shift);
         match press.tap_count {
             2 => self.on_double_tap_down(press.origin),
             3 => self.on_triple_tap_down(press.origin),
@@ -506,19 +653,19 @@ impl<L: TextLayout> Step<'_, L> {
         }
     }
 
-    fn on_tap_down(&mut self, press: Press) {
+    fn on_tap_down(&mut self, origin: Point<Pixels>, device: PointerDevice, shift: bool) {
         // The overlay shows only for a finger or stylus, never a mouse.
-        self.engine.controls = Controls::of(press.device);
+        self.engine.controls = Controls::of(device);
         match self.engine.rules.tap_selects_on {
             // On mobile platforms the selection is set on tap up.
             TapEdge::Up => {}
             TapEdge::Down => {
                 self.hide_toolbar(HideHandles::Yes);
-                if press.shift {
-                    return self.shift_select(press.origin, Cause::Tap);
+                if shift {
+                    return self.shift_select(origin, Cause::Tap);
                 }
                 // A tap or click places the caret precisely.
-                self.select_position_at(press.origin, None, Cause::Tap);
+                self.select_position_at(origin, None, Cause::Tap);
             }
         }
     }
@@ -578,9 +725,9 @@ impl<L: TextLayout> Step<'_, L> {
 
     fn secondary_tap(&mut self, position: Point<Pixels>, device: PointerDevice) {
         // onSecondaryTapDown: the toolbar always, the handles for a finger or stylus.
-        self.engine.controls = match Controls::of(device) {
-            Controls::Touch => Controls::Touch,
-            Controls::Pointer | Controls::SecondaryPointer => Controls::SecondaryPointer,
+        self.engine.controls = match device {
+            PointerDevice::Touch | PointerDevice::Pen => Controls::Touch,
+            PointerDevice::Mouse => Controls::SecondaryPointer,
         };
         match self.engine.rules.secondary_tap {
             SecondaryTap::AppleSelectWord => {
@@ -604,14 +751,7 @@ impl<L: TextLayout> Step<'_, L> {
 
     /// `onSingleLongTapStart`, after the `onTapDown` Flutter's recognizer runs first for the touch.
     fn long_press_start(&mut self, position: Point<Pixels>) -> Gesture {
-        self.on_tap_down(Press {
-            origin: position,
-            device: PointerDevice::Touch,
-            tap_count: 1,
-            shift: false,
-            // A long press never becomes this press's drag; the slop goes unread.
-            touch_slop: kTouchSlop,
-        });
+        self.on_tap_down(position, PointerDevice::Touch, false);
         let without_focus = match self.engine.rules.long_press {
             LongPressSelects::AppleCaretWhenFocused if self.field.focused => {
                 self.select_position_at(position, None, Cause::LongPress);
@@ -652,6 +792,17 @@ impl<L: TextLayout> Step<'_, L> {
 
     fn long_press_end_or_cancel(&mut self) {
         self.engine.magnifier = None;
+    }
+
+    /// `onDragSelectionStart` then the `onDragSelectionUpdate` of the move that started the drag.
+    fn drag_start_and_update(&mut self, press: Press, position: Point<Pixels>) -> Gesture {
+        let start_selection = self.field.selection;
+        self.drag_start(press);
+        self.drag_update(press, start_selection, position);
+        Gesture::Dragging {
+            press,
+            start_selection,
+        }
     }
 
     /// `onDragSelectionStart`, at the press's origin (`DragStartBehavior.down`).
@@ -864,6 +1015,13 @@ impl<L: TextLayout> Step<'_, L> {
         self.select(selection, Cause::Drag);
     }
 
+    /// `onSelectionHandleTapped`: Material's `_handleSelectionHandleTapped` toggles the toolbar of a caret.
+    fn handle_tapped(&mut self) {
+        if self.field.selection.is_collapsed() {
+            self.toggle_toolbar();
+        }
+    }
+
     /// `TextSelectionOverlay._handleAnyDragEnd`.
     fn handle_drag_end(&mut self) {
         self.engine.magnifier = None;
@@ -974,16 +1132,24 @@ impl<L: TextLayout> Step<'_, L> {
         );
     }
 
-    /// `RenderEditable.getWordAtOffset`: past the end of the text, a collapsed caret.
+    /// `RenderEditable.getWordAtOffset`: past the end of the text, a collapsed caret; obscured text is one word.
     fn word_at_offset(&self, offset: usize) -> Selection {
         let len = self.layout.len();
-        if offset >= len {
-            return Selection::collapsed(len);
-        }
-        let word = self.layout.word_boundary(offset);
-        Selection {
-            base: word.start,
-            extent: word.end,
+        match (offset >= len, self.field.text) {
+            // When long-pressing past the end of the text, we want a collapsed cursor.
+            (true, _) => Selection::collapsed(len),
+            // If text is obscured, the entire sentence should be treated as one word.
+            (false, TextVisibility::Obscured) => Selection {
+                base: 0,
+                extent: len,
+            },
+            (false, TextVisibility::Plain) => {
+                let word = self.layout.word_boundary(offset);
+                Selection {
+                    base: word.start,
+                    extent: word.end,
+                }
+            }
         }
     }
 
@@ -1078,8 +1244,10 @@ impl<L: TextLayout> Step<'_, L> {
         } else {
             Visibility::Hidden
         };
-        if self.engine.rules.drag_hides_toolbar && cause == Cause::Drag {
-            self.engine.toolbar = Visibility::Hidden;
+        match (self.engine.rules.drag_toolbar, cause) {
+            (DragToolbar::Hides, Cause::Drag) => self.engine.toolbar = Visibility::Hidden,
+            (DragToolbar::Hides, Cause::Tap | Cause::DoubleTap | Cause::LongPress)
+            | (DragToolbar::Keeps, _) => {}
         }
     }
 }

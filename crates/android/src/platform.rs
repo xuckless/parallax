@@ -274,8 +274,8 @@ impl Platform for AndroidPlatform {
         self.shell.callbacks.memory_warning.set(callback);
     }
 
-    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-        self.shell.accessibility_display.get()
+    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
+        Some(self.shell.accessibility_display.get())
     }
 
     fn on_accessibility_display_settings_change(

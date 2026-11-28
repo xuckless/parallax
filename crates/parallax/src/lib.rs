@@ -3,6 +3,7 @@
 
 pub use gpui;
 pub use parallax_android;
+pub use parallax_ext;
 pub use parallax_platform;
 
 use parallax_platform::behaviour::{TuningSource, current_behaviour};

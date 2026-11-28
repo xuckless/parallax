@@ -24,8 +24,9 @@ use jni::{
 
 use crate::{
     Error,
-    activity_window::{ActivityWindow, Gpui, Slot},
+    activity_window::{ActivityWindow, Slot},
     backend::Device,
+    gpui_window::{GpuiEffect, GpuiEvent},
     keys,
     lifecycle::{ActivityEvent, ActivityId, Callback, Effect, Lifecycle},
     renderer::{self, NativeWindow},
@@ -181,11 +182,11 @@ impl MainThreadHost {
         rescaled.density_moved
     }
 
-    /// Asks the app for `window`'s Activity's GPUI window, on its first surface: the app's `open_window`, after
-    /// starting GPUI and running its `launch` for the first Activity (once per process, as on desktop).
+    /// Asks the app for `window`'s Activity's GPUI window, on its first surface (`Waiting → Requested`): the app's
+    /// `open_window`, after starting GPUI and running its `launch` for the first Activity (once per process, as on
+    /// desktop).
     /// [`Shell::open_window`] binds the window it opens.
     fn request_window(&self, window: &ActivityWindow, locales: &[String]) {
-        *window.gpui.borrow_mut() = Gpui::Requested;
         // Cloned so the borrow ends before GPUI runs: the app's code may reach `self.app` again.
         let running = match &*self.app.borrow() {
             AppState::NotStarted => None,
@@ -376,8 +377,7 @@ extern "system" fn surface_created(
             size,
         });
         host.follow_locales(&locales);
-        let waiting = matches!(*window.gpui.borrow(), Gpui::Waiting);
-        if waiting {
+        if window.gpui_step(GpuiEvent::FirstSurface) == GpuiEffect::RequestWindow {
             host.request_window(window, &locales);
         }
     });
@@ -703,8 +703,9 @@ pub(crate) struct Shell {
     gpu: GpuContext,
     /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
     device: Device,
-    /// Each live Activity's window: added on `onCreate`, removed (and its GPUI window closed) on `onDestroy`. The
-    /// lifecycle's live Activities and these keys change together, in [`Shell::lifecycle`] only.
+    /// Each live Activity's window. Its keys are derived from `lifecycle` after every transition, in
+    /// [`Shell::lifecycle`] only: the live Activity a `Create` adds gets a window, one the lifecycle no longer holds
+    /// loses its window (and its GPUI window closes).
     windows: RefCell<BTreeMap<ActivityId, Rc<ActivityWindow>>>,
     pub(crate) callbacks: AppCallbacks,
     /// As Java last sent them; GPUI's app reads them when it starts, after the first Activity's create.
@@ -732,6 +733,37 @@ impl Shell {
             self.callbacks
                 .accessibility_display_change
                 .with(|callback| callback(settings));
+        }
+    }
+
+    /// Finishes `window`'s Activity through its Java `PlatformPlugin.popSystemNavigator` (Flutter's, ported), now:
+    /// the app closed its window. A synchronous JNI call on the main thread, as the clipboard's are; `finish` only
+    /// schedules the Activity's destruction, so nothing re-enters GPUI.
+    pub(crate) fn finish_activity(&self, window: &ActivityWindow) {
+        let finished = self.vm.get_env().and_then(|mut env| {
+            let result = env.with_local_frame(4, |env| {
+                env.call_method(
+                    window.platform_plugin.as_obj(),
+                    "popSystemNavigator",
+                    "()V",
+                    &[],
+                )
+                .map(drop)
+            });
+            if result.is_err() && env.exception_check()? {
+                env.exception_clear()?;
+            }
+            result
+        });
+        match finished {
+            Ok(()) => log::info!(
+                "parallax: the app closed Activity {}'s window: it finishes",
+                window.activity.0
+            ),
+            Err(error) => log::error!(
+                "parallax: cannot finish Activity {}: {error}",
+                window.activity.0
+            ),
         }
     }
 
@@ -789,14 +821,15 @@ impl Shell {
         let (next, effect) = before.next(event);
         log::info!("parallax: lifecycle {event:?}: {next:?}, {effect:?}");
         let now = id.map(|id| (next.is_active(id), next.visibility(id)));
-        let (created, gone) = match (event, id) {
-            (ActivityEvent::Create, _) => (next.newest(), None),
-            (ActivityEvent::From(..), Some(id)) => (None, (!next.contains(id)).then_some(id)),
-            (ActivityEvent::From(..), None) => (None, None),
-        };
         let runs_frames = id.is_some_and(|id| next.runs_frames(id));
+        // Only `Create` brings a `PlatformPlugin`, and only it adds a live Activity: the newest.
+        let created = platform_plugin.and_then(|platform_plugin| {
+            let newest = next.newest()?;
+            (next.contains(newest) && self.window(newest).is_none())
+                .then_some((newest, platform_plugin))
+        });
         *self.lifecycle.borrow_mut() = next;
-        if let (Some(created), Some(platform_plugin)) = (created, platform_plugin) {
+        if let Some((created, platform_plugin)) = created {
             let window =
                 ActivityWindow::new(created, self.gpu.clone(), self.device, platform_plugin);
             self.windows.borrow_mut().insert(created, Rc::new(window));
@@ -822,12 +855,23 @@ impl Shell {
                     .with(|callback| callback(visibility));
             }
         }
-        if let Some(gone) = gone {
-            let closed = self.windows.borrow_mut().remove(&gone);
-            if let Some(closed) = closed {
-                log::info!("parallax: Activity {} destroyed: its window closes", gone.0);
-                closed.close();
-            }
+        // After the callbacks above, so a destroyed Activity's window hears it went inactive and hidden.
+        let gone: Vec<Rc<ActivityWindow>> = {
+            let lifecycle = self.lifecycle.borrow();
+            let mut windows = self.windows.borrow_mut();
+            let ids: Vec<ActivityId> = windows
+                .keys()
+                .copied()
+                .filter(|id| !lifecycle.contains(*id))
+                .collect();
+            ids.iter().filter_map(|id| windows.remove(id)).collect()
+        };
+        for closed in gone {
+            log::info!(
+                "parallax: Activity {} destroyed: its window closes",
+                closed.activity.0
+            );
+            closed.close();
         }
         match effect {
             Effect::Phases(phases) => {

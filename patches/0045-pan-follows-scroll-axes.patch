@@ -1,0 +1,1205 @@
+Make GPUI's touch pan follow the scroll containers under a touch, as Flutter's scrollables each add their drag
+recognizer, and keep taps and long presses to Flutter's touch slop.
+
+What (needs 0044): a div that scrolls reports its axes while the touch's `Started` is dispatched
+(`Window::scroll_container_under_touch`, next to `hold_scroll`), the touch route joins them (`PanAxes`: no container,
+one axis, both), and the recognizer's pending touch accepts its pan by them. Only containers on one axis: the travel
+along that axis past the hit slop, monodrag.dart's `VerticalDragGestureRecognizer` /
+`HorizontalDragGestureRecognizer._hasSufficientGlobalDistanceToAccept`, and the pan locks to that axis. No container,
+a two-axis one or both kinds: the pan rule as before (any direction past the touch slop, locked to the dominant axis).
+`list()` reports its one axis, y, the same way (it scrolls only vertically). Since a pending touch no longer means
+"within the slop", it keeps Flutter's tap and long-press slop apart from the pan's acceptance (`PressSlop`:
+`PrimaryPointerGestureRecognizer`'s `preAcceptSlopTolerance`, `kTouchSlop`): once it strays past the touch slop from
+where it went down it can no longer tap or long-press (and a double tap's first tap is dropped), while the on-axis pan
+or a competing drag can still win it.
+
+Why: without the containers' axes the pan took every move past 18 px in any direction, so a field's competing drag
+(0044) lost sideways moves to the list it sits in: on desktop rows a `TouchDragKind::Pan` drag (36 px pan slop)
+never won inside a vertical list. With them a pending touch no longer means "within the slop", so without
+`PressSlop` a sideways swipe in a vertical list ended as a tap on its row.
+
+Test: `gestures::recognizer_tests::flutter_recognizer_tests_pass`: rows gain a `container` (a canvas that reports a
+scroll axis, as a scrolling div does): the tap_and_drag_test.dart rows run in a vertical container (their
+`VerticalDragGestureRecognizer`), with "TapAndPanGestureRecognizer beats VerticalDragGestureRecognizer on a
+horizontal pan", which needs it; drag_test.dart's horizontal-drag-with-competitor rows in a horizontal one; 2
+monodrag rows (a one-axis container's pan accepts only on its axis), a GPUI row (a Pan-kind field drag in a vertical
+list wins a horizontal drag) and 3 press-slop rows (in a vertical container 40 px sideways then release is no tap,
+held past the deadline is no long press; a stray within the slop still taps). `gestures::tests::pan_axes_join_…`
+tables how containers combine; `elements::list::test::test_list_scrolls_on_y_so_a_row_wins_a_sideways_drag`. Run:
+`scripts/patch-test.sh recognizer`.
+
+Upstream: not filed (patch rule 14).
+
+diff --git a/gpui-pre/src/elements/div.rs b/gpui-pre/src/elements/div.rs
+--- a/gpui-pre/src/elements/div.rs
++++ b/gpui-pre/src/elements/div.rs
+@@ -2851,6 +2851,7 @@
+                                             self.paint_mouse_listeners(
+                                                 global_id,
+                                                 hitbox,
++                                                style.overflow,
+                                                 element_state.as_mut(),
+                                                 window,
+                                                 cx,
+@@ -3022,6 +3023,7 @@
+         &mut self,
+         global_id: Option<&GlobalElementId>,
+         hitbox: &Hitbox,
++        overflow: Point<Overflow>,
+         element_state: Option<&mut InteractiveElementState>,
+         window: &mut Window,
+         cx: &mut App,
+@@ -3058,6 +3060,11 @@
+         } else if handles_gestures || pinch_owner.is_some() {
+             let (hitbox, pinch_owner) = (hitbox.clone(), pinch_owner.clone());
+             let overscroll_position = self.overscroll_position.clone();
++            // A scroll container's axes: its pan accepts only on them.
++            let scroll_axes = self
++                .scroll_offset
++                .is_some()
++                .then_some((overflow.x == Overflow::Scroll, overflow.y == Overflow::Scroll));
+             window.on_mouse_event(move |event: &TouchEvent, phase, window, _| {
+                 if phase == DispatchPhase::Bubble
+                     && event.phase == TouchPhase::Started
+@@ -3073,6 +3080,9 @@
+                     {
+                         window.hold_scroll(event.id);
+                     }
++                    if let Some((horizontal, vertical)) = scroll_axes {
++                        window.scroll_container_under_touch(event.id, horizontal, vertical);
++                    }
+                 }
+             })
+         }
+diff --git a/gpui-pre/src/elements/list.rs b/gpui-pre/src/elements/list.rs
+--- a/gpui-pre/src/elements/list.rs
++++ b/gpui-pre/src/elements/list.rs
+@@ -11,7 +11,7 @@
+     Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ContentMask, DispatchPhase, Edges,
+     Element, EntityId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
+     Overflow, Pixels, Point, ScrollDelta, ScrollEvent, Size, Style, StyleRefinement, Styled,
+-    Window, point, px, size,
++    TouchEvent, TouchPhase, Window, point, px, size,
+ };
+ use collections::VecDeque;
+ use refineable::Refineable as _;
+@@ -1627,6 +1627,20 @@
+         let scroll_top = prepaint.layout.scroll_top;
+         let hitbox_id = prepaint.hitbox.id;
+         let mut accumulated_scroll_delta = ScrollDelta::default();
++        // A list scrolls on y: like a div that scrolls, it reports its axis while
++        // a touch on it starts, so GPUI's pan accepts only vertical travel and a
++        // horizontal drag competing in a row can win
++        // (`Window::scroll_container_under_touch`).
++        let hitbox = prepaint.hitbox.clone();
++        window.on_mouse_event(move |event: &TouchEvent, phase, window, _| {
++            if phase == DispatchPhase::Bubble
++                && event.phase == TouchPhase::Started
++                && hitbox.is_hovered(window)
++            {
++                window.leave_touch_to_gestures(event.id);
++                window.scroll_container_under_touch(event.id, false, true);
++            }
++        });
+         window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
+                 accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
+@@ -1953,6 +1967,87 @@
+         assert_eq!(offset.offset_in_item, px(0.));
+     }
+ 
++    #[gpui::test]
++    fn test_list_scrolls_on_y_so_a_row_wins_a_sideways_drag(cx: &mut TestAppContext) {
++        use crate::{
++            DispatchPhase, PointerDevice, TouchDragEvent, TouchDragKind, TouchDragStart,
++            TouchEvent, TouchId, TouchPhase,
++        };
++        let state = ListState::new(5, crate::ListAlignment::Top, px(10.));
++        let won = Rc::new(Cell::new(false));
++
++        struct TestView {
++            state: ListState,
++            won: Rc<Cell<bool>>,
++        }
++        impl Render for TestView {
++            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++                let won = self.won.clone();
++                list(self.state.clone(), move |_, _, _| {
++                    let won = won.clone();
++                    // A row that competes for horizontal drags, as a text field does.
++                    canvas(
++                        |_, _, _| {},
++                        move |_, _, window, _| {
++                            let won = won.clone();
++                            window.on_mouse_event(
++                                move |event: &TouchDragEvent, phase, window, _| match (
++                                    phase,
++                                    event.start,
++                                    event.phase,
++                                ) {
++                                    (
++                                        DispatchPhase::Bubble,
++                                        TouchDragStart::Down,
++                                        TouchPhase::Started,
++                                    ) => window.compete_for_touch_drag(TouchDragKind::Horizontal),
++                                    (
++                                        DispatchPhase::Bubble,
++                                        TouchDragStart::PastSlop(_),
++                                        TouchPhase::Started,
++                                    ) => won.set(true),
++                                    _ => {}
++                                },
++                            );
++                        },
++                    )
++                    .h(px(20.))
++                    .w_full()
++                    .into_any()
++                })
++                .w_full()
++                .h_full()
++            }
++        }
++
++        // The list is the window's root view: a touch's dispatch may redraw it.
++        let (_, cx) = cx.add_window_view(|_, _| TestView {
++            state: state.clone(),
++            won: won.clone(),
++        });
++        cx.run_until_parked();
++
++        // 19 px from the start but 12 px down: a pan in any direction would take it here; the list's pan takes only
++        // vertical travel, so the row's drag wins once it is 35 px sideways.
++        for (phase, x, y) in [
++            (TouchPhase::Started, 10., 10.),
++            (TouchPhase::Moved, 25., 22.),
++            (TouchPhase::Moved, 45., 22.),
++            (TouchPhase::Ended, 45., 22.),
++        ] {
++            cx.simulate_event(TouchEvent {
++                id: TouchId(1),
++                phase,
++                position: point(px(x), px(y)),
++                predicted_position: None,
++                force: None,
++                device: PointerDevice::Touch,
++                time_stamp: None,
++            });
++        }
++        assert!(won.get(), "the row's horizontal drag should win in a list");
++    }
++
+     #[gpui::test]
+     fn test_item_viewport_queries_return_none_before_layout(_cx: &mut TestAppContext) {
+         let state = ListState::new(5, crate::ListAlignment::Top, px(10.)).measure_all();
+diff --git a/gpui-pre/src/gestures.rs b/gpui-pre/src/gestures.rs
+--- a/gpui-pre/src/gestures.rs
++++ b/gpui-pre/src/gestures.rs
+@@ -398,6 +398,62 @@
+     }
+ }
+ 
++/// The scroll axes of the containers under a touch: which travel lets GPUI's
++/// pan, standing in for their drag recognizers, accept the touch. Every
++/// scroll container under the touch joins in while its `Started` is
++/// dispatched (`Window::scroll_container_under_touch`).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum PanAxes {
++    /// No scroll container: the pan accepts in any direction.
++    NoContainer,
++    /// Only containers scrolling on this axis: Flutter's
++    /// `VerticalDragGestureRecognizer` or `HorizontalDragGestureRecognizer`.
++    One(Axis),
++    /// Containers on both axes, or one that scrolls on both: the pan
++    /// accepts in any direction, as Flutter's `PanGestureRecognizer`.
++    Both,
++}
++
++impl PanAxes {
++    /// A container that scrolls on x (`horizontal`) and on y (`vertical`).
++    pub(crate) fn of(horizontal: bool, vertical: bool) -> Self {
++        match (horizontal, vertical) {
++            (false, false) => PanAxes::NoContainer,
++            (true, false) => PanAxes::One(Axis::Horizontal),
++            (false, true) => PanAxes::One(Axis::Vertical),
++            (true, true) => PanAxes::Both,
++        }
++    }
++
++    /// The axes once another container under the touch joins.
++    pub(crate) fn join(self, other: PanAxes) -> Self {
++        match (self, other) {
++            (PanAxes::NoContainer, joined) | (joined, PanAxes::NoContainer) => joined,
++            (PanAxes::One(axis), PanAxes::One(other)) if axis == other => PanAxes::One(axis),
++            (PanAxes::One(_) | PanAxes::Both, PanAxes::One(_) | PanAxes::Both) => PanAxes::Both,
++        }
++    }
++
++    /// The axis the pan locks to once `accumulated` (the travel since the
++    /// touch started) passes `touch_slop`; `None` while it has not. One axis:
++    /// monodrag.dart's `_hasSufficientGlobalDistanceToAccept`, the travel
++    /// along that axis past the hit slop. Otherwise any direction, locked to
++    /// the dominant axis.
++    fn accepts(self, accumulated: Point<Pixels>, touch_slop: Pixels) -> Option<Axis> {
++        match self {
++            PanAxes::One(axis @ Axis::Vertical) => {
++                (accumulated.y.abs() > touch_slop).then_some(axis)
++            }
++            PanAxes::One(axis @ Axis::Horizontal) => {
++                (accumulated.x.abs() > touch_slop).then_some(axis)
++            }
++            PanAxes::NoContainer | PanAxes::Both => (accumulated.magnitude()
++                > f64::from(touch_slop))
++            .then(|| dominant_axis(accumulated)),
++        }
++    }
++}
++
+ impl Sealed for TouchDragEvent {}
+ impl InputEvent for TouchDragEvent {
+     fn to_platform_input(self) -> PlatformInput {
+@@ -567,13 +623,15 @@
+ 
+ enum TouchGestureState {
+     Idle,
+-    /// The touch is still within `touch_slop` of where it started: it can
+-    /// still resolve into either a tap or a pan.
++    /// No pan or drag has accepted the touch yet: it can still resolve into a
++    /// pan, a drag, or (while `press_slop` is `Within`) a tap or long press.
+     Pending {
+         touch: ActiveTouch,
+         deadline: Instant,
+         long_press_offered: bool,
+         touch_drag: TouchDragOffer,
++        pan_axes: PanAxes,
++        press_slop: PressSlop,
+     },
+     /// The touch exceeded `touch_slop`: it is a pan until it ends, and its
+     /// movement flows out as scroll events.
+@@ -592,6 +650,17 @@
+     },
+ }
+ 
++/// Whether a pending touch is still a tap or long press to be: Flutter's
++/// `PrimaryPointerGestureRecognizer` rejects both once the touch strays past
++/// `preAcceptSlopTolerance` (`kTouchSlop`) from where it went down, whatever
++/// the drag recognizers do. A one-axis container's pan or a competing drag can
++/// still win an `Exceeded` touch.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum PressSlop {
++    Within,
++    Exceeded,
++}
++
+ /// A pending touch's drag offer: the touch-down dispatch offers it once.
+ #[derive(Clone, Copy)]
+ enum TouchDragOffer {
+@@ -777,6 +846,8 @@
+                             deadline: now + self.tuning.long_press_duration,
+                             long_press_offered: false,
+                             touch_drag: TouchDragOffer::NotOffered,
++                            pan_axes: PanAxes::NoContainer,
++                            press_slop: PressSlop::Within,
+                         };
+                     }
+                 }
+@@ -787,6 +858,8 @@
+                     deadline,
+                     long_press_offered,
+                     mut touch_drag,
++                    pan_axes,
++                    press_slop,
+                 } if touch.id == event.id => {
+                     let moved = event.position - touch.last_position;
+                     touch
+@@ -794,11 +867,18 @@
+                         .add_position(sampled_at, event.position);
+                     touch.last_position = event.position;
+                     let accumulated = event.position - touch.start_position;
++                    let press_slop = match press_slop {
++                        PressSlop::Within
++                            if accumulated.magnitude() > f64::from(self.tuning.touch_slop) =>
++                        {
++                            PressSlop::Exceeded
++                        }
++                        kept => kept,
++                    };
+                     // A competing drag sees the move before the pan does, as
+                     // the deeper recognizer's route runs first in Flutter: on
+                     // a move both accept, the drag wins.
+-                    let pan_axis = (accumulated.magnitude() > f64::from(self.tuning.touch_slop))
+-                        .then(|| dominant_axis(accumulated));
++                    let pan_axis = pan_axes.accepts(accumulated, self.tuning.touch_slop);
+                     let drag_won = match &mut touch_drag {
+                         TouchDragOffer::Competing {
+                             kind,
+@@ -849,6 +929,8 @@
+                             deadline,
+                             long_press_offered,
+                             touch_drag,
++                            pan_axes,
++                            press_slop,
+                         };
+                     }
+                 }
+@@ -919,7 +1001,20 @@
+                 other => self.state = other,
+             },
+             TouchPhase::Ended => match mem::replace(&mut self.state, TouchGestureState::Idle) {
+-                TouchGestureState::Pending { touch, .. } if touch.id == event.id => {
++                TouchGestureState::Pending {
++                    touch,
++                    press_slop: PressSlop::Exceeded,
++                    ..
++                } if touch.id == event.id => {
++                    // Strayed past the tap's slop: no tap, and a double tap's
++                    // first tap is rejected with it (multitap.dart `_reject`).
++                    self.last_tap = None;
++                }
++                TouchGestureState::Pending {
++                    touch,
++                    press_slop: PressSlop::Within,
++                    ..
++                } if touch.id == event.id => {
+                     // Ported from flutter/flutter packages/flutter/lib/src/gestures/multitap.dart
+                     // @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7)
+                     // (DoubleTapGestureRecognizer.addAllowedPointer, _TapTracker).
+@@ -1090,6 +1185,7 @@
+             touch,
+             deadline,
+             long_press_offered: false,
++            press_slop: PressSlop::Within,
+             ..
+         } = &self.state
+         else {
+@@ -1106,6 +1202,7 @@
+         let TouchGestureState::Pending {
+             touch,
+             long_press_offered,
++            press_slop: PressSlop::Within,
+             ..
+         } = &mut self.state
+         else {
+@@ -1156,6 +1253,18 @@
+         }
+     }
+ 
++    /// After the touch's `Started` dispatch: the scroll axes under it, which
++    /// decide when its pan accepts.
++    pub(crate) fn set_pan_axes(&mut self, id: TouchId, axes: PanAxes) {
++        if let TouchGestureState::Pending {
++            touch, pan_axes, ..
++        } = &mut self.state
++            && touch.id == id
++        {
++            *pan_axes = axes;
++        }
++    }
++
+     pub(crate) fn offer_touch_drag(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
+         let TouchGestureState::Pending {
+             touch,
+@@ -1291,6 +1400,24 @@
+     use super::*;
+     use crate::point;
+ 
++    #[test]
++    fn pan_axes_join_the_containers_under_a_touch() {
++        use Axis::{Horizontal, Vertical};
++        use PanAxes::{Both, NoContainer, One};
++        // (name, axes so far, the joining container, joined)
++        let rows = [
++            ("a first container sets the axes", NoContainer, One(Vertical), One(Vertical)),
++            ("no container joins nothing", One(Vertical), NoContainer, One(Vertical)),
++            ("the same axis stays one axis", One(Vertical), One(Vertical), One(Vertical)),
++            ("a vertical list in a horizontal pager pans both ways", One(Horizontal), One(Vertical), Both),
++            ("a two-axis container pans both ways", One(Vertical), Both, Both),
++            ("both stay both", Both, One(Horizontal), Both),
++        ];
++        for (name, axes, joining, joined) in rows {
++            assert_eq!(axes.join(joining), joined, "{name}");
++        }
++    }
++
+     #[test]
+     fn ongoing_scroll_locks_to_dominant_axis() {
+         let now = Instant::now();
+diff --git a/gpui-pre/src/gestures/recognizer_tests.rs b/gpui-pre/src/gestures/recognizer_tests.rs
+--- a/gpui-pre/src/gestures/recognizer_tests.rs
++++ b/gpui-pre/src/gestures/recognizer_tests.rs
+@@ -1,5 +1,6 @@
+ // Ported from flutter/flutter packages/flutter/test/gestures/tap_test.dart, double_tap_test.dart,
+-// long_press_test.dart, drag_test.dart and tap_and_drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
++// long_press_test.dart, drag_test.dart and tap_and_drag_test.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7),
++// with rows for packages/flutter/lib/src/gestures/monodrag.dart's `_hasSufficientGlobalDistanceToAccept`.
+ // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
+ 
+ //! Flutter's recognizer tests as the oracle for the touch recognizer, driven
+@@ -13,7 +14,7 @@
+ use scheduler::Instant;
+ 
+ use crate::{
+-    App, Bounds, Context, DispatchPhase, GestureTuning, HitboxBehavior, InputEvent as _,
++    App, Axis, Bounds, Context, DispatchPhase, GestureTuning, HitboxBehavior, InputEvent as _,
+     IntoElement, LongPressEvent, MouseDownEvent, Pixels, PointerDevice, Render, ScrollDelta,
+     ScrollEvent, TestAppContext, TouchDragEvent, TouchDragKind, TouchDragStart, TouchEvent,
+     TouchId, TouchPhase, Window, canvas, point, px, size,
+@@ -71,10 +72,21 @@
+     LongPressAndCompete(TouchDragKind),
+ }
+ 
++/// The scroll container the element sits in, standing in for the drag
++/// recognizer a Flutter test adds next to the one under test:
++/// `VerticalDragGestureRecognizer` for a vertical one. `None`: no container,
++/// GPUI's pan accepts in any direction.
++#[derive(Clone, Copy)]
++enum Container {
++    None,
++    Scrolls(Axis),
++}
++
+ struct Row<'a> {
+     name: &'static str,
+     tuning: GestureTuning,
+     claim: Claim,
++    container: Container,
+     /// Hitboxes the element inserts: what a tap lands on (none: every tap
+     /// lands on nothing, the same target).
+     targets: &'a [Bounds<Pixels>],
+@@ -87,6 +99,7 @@
+ 
+ struct Recorder {
+     claim: Claim,
++    container: Container,
+     targets: Vec<Bounds<Pixels>>,
+     started_at: Instant,
+     seen: Rc<RefCell<Vec<(u64, Seen)>>>,
+@@ -95,6 +108,7 @@
+ impl Render for Recorder {
+     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+         let (seen, started_at, claim) = (self.seen.clone(), self.started_at, self.claim);
++        let container = self.container;
+         let targets = self.targets.clone();
+         let record = move |cx: &App, gesture| {
+             let at = cx.background_executor().now().duration_since(started_at);
+@@ -107,6 +121,19 @@
+                 }
+             },
+             move |_, _, window, _| {
++                // What a scroll container's div does when a touch starts on it.
++                if let Container::Scrolls(axis) = container {
++                    window.on_mouse_event(move |event: &TouchEvent, phase, window, _| {
++                        if phase == DispatchPhase::Bubble && event.phase == Started {
++                            window.leave_touch_to_gestures(event.id);
++                            window.scroll_container_under_touch(
++                                event.id,
++                                axis == Axis::Horizontal,
++                                axis == Axis::Vertical,
++                            );
++                        }
++                    });
++                }
+                 let on_tap = record.clone();
+                 window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                     if phase == DispatchPhase::Bubble {
+@@ -171,10 +198,11 @@
+     let started_at = cx.executor().now();
+     let window = cx.add_window({
+         let seen = seen.clone();
+-        let claim = row.claim;
++        let (claim, container) = (row.claim, row.container);
+         let targets = row.targets.to_vec();
+         move |_, _| Recorder {
+             claim,
++            container,
+             targets,
+             started_at,
+             seen,
+@@ -229,6 +257,7 @@
+             name: "Should recognize tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 11., 9.)],
+             until_ms: 0,
+@@ -239,6 +268,7 @@
+             name: "No duplicate tap events",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -253,6 +283,7 @@
+             name: "Should not recognize two overlapping taps (FIFO)",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -267,6 +298,7 @@
+             name: "Should not recognize two overlapping taps (FILO)",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -282,6 +314,7 @@
+             name: "Distance cancels tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 3, Started, 10., 10.),
+@@ -296,6 +329,7 @@
+             name: "Short distance does not cancel tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 4, Started, 10., 10.),
+@@ -309,6 +343,7 @@
+             name: "Timeout does not cancel tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -321,6 +356,7 @@
+             name: "PointerCancelEvent cancels tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -333,6 +369,7 @@
+             name: "PointerCancelEvent after exceeding deadline cancels tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -345,6 +382,7 @@
+             name: "losing tap gesture recognizer does not send onTapCancel",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 3, Started, 10., 10.), touch(0, 3, Moved, 25., 25.)],
+             until_ms: 0,
+@@ -354,6 +392,7 @@
+             name: "non-primary pointers does not trigger timeout",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -368,6 +407,7 @@
+             name: "A second tap after rejection is ignored",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 0., 0.),
+@@ -384,6 +424,7 @@
+             name: "Should recognize double tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -398,6 +439,7 @@
+             name: "Inter-tap distance cancels double tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -412,6 +454,7 @@
+             name: "Intra-tap distance cancels double tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 4, Started, 10., 10.),
+@@ -431,6 +474,7 @@
+             name: "Inter-tap delay cancels double tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -445,6 +489,7 @@
+             name: "Inter-tap delay resets double tap, allowing third tap to be a double-tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -461,6 +506,7 @@
+             name: "Intra-tap delay does not cancel double tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -475,6 +521,7 @@
+             name: "Should not recognize two overlapping taps",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -489,6 +536,7 @@
+             name: "Should recognize one tap of group followed by second tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -505,6 +553,7 @@
+             name: "Should not recognize two over-rapid taps",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -519,6 +568,7 @@
+             name: "Over-rapid taps resets double tap, allowing third tap to be a double-tap",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -536,6 +586,7 @@
+             name: "Long press: Should recognize long press",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.)],
+             until_ms: 1000,
+@@ -548,6 +599,7 @@
+                 ..flutter
+             },
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.)],
+             until_ms: 100,
+@@ -558,6 +610,7 @@
+             name: "Long press: Up cancels long press",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -570,6 +623,7 @@
+             name: "Long press: Moving before accept cancels",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -586,6 +640,7 @@
+             name: "Long press: Moving after accept is ok",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -603,6 +658,7 @@
+             name: "Long press: Should recognize long press up",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -618,6 +674,7 @@
+             name: "long press drag: Should recognize long press down",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.)],
+             until_ms: 1000,
+@@ -627,6 +684,7 @@
+             name: "long press drag: Short up cancels long press",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -639,6 +697,7 @@
+             name: "long press drag: Moving before accept cancels",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -655,6 +714,7 @@
+             name: "long press drag: Moving after accept does not cancel",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -672,6 +732,7 @@
+             name: "A primary long press recognizer forms competition with a primary tap recognizer",
+             tuning: flutter,
+             claim: Claim::LongPress,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Ended, 11., 9.)],
+             until_ms: 0,
+@@ -686,6 +747,7 @@
+             name: "Should recognize pan",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -705,6 +767,7 @@
+             name: "Should report most recent point to onStart by default",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Horizontal),
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
+             until_ms: 0,
+@@ -714,6 +777,7 @@
+             name: "Should report most recent point to onStart with a start configuration",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Horizontal),
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
+             until_ms: 0,
+@@ -724,6 +788,7 @@
+             name: "Should report initial down point to onStart with a down configuration",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Horizontal),
+             targets: &[],
+             trace: &[touch(0, 5, Started, 10., 10.), touch(0, 5, Moved, 30., 0.)],
+             until_ms: 0,
+@@ -733,6 +798,7 @@
+             name: "Should recognize drag (line 137)",
+             tuning: flutter,
+             claim: Claim::TouchDrag,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -752,6 +818,7 @@
+             name: "DragGestureRecognizer.onStart behavior test (no competing)",
+             tuning: flutter,
+             claim: Claim::TouchDrag,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(100, 5, Started, 10., 10.),
+@@ -771,6 +838,7 @@
+             name: "DragGestureRecognizer.onStart behavior test (with competing)",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(600, 5, Started, 10., 10.),
+@@ -787,6 +855,7 @@
+             name: "Should report original timestamps",
+             tuning: flutter,
+             claim: Claim::TouchDrag,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(100, 5, Started, 10., 10.),
+@@ -804,6 +873,7 @@
+             name: "Should recognize drag (line 1603)",
+             tuning: flutter,
+             claim: Claim::TouchDrag,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -823,6 +893,7 @@
+             name: "Should recognize drag (line 1665)",
+             tuning: flutter,
+             claim: Claim::TouchDrag,
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -842,6 +913,7 @@
+             name: "A primary pan recognizer forms competition with a primary tap recognizer",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 10., 10.)],
+             until_ms: 0,
+@@ -849,13 +921,14 @@
+         },
+         // tap_and_drag_test.dart: the element competes for the drag
+         // (`Window::compete_for_touch_drag`), as Flutter's tap-and-drag
+-        // recognizers do; GPUI's pan, accepting in any direction, stands in for
+-        // the VerticalDragGestureRecognizer or PanGestureRecognizer the test
++        // recognizers do; GPUI's pan stands in for the VerticalDragGestureRecognizer
++        // (in a vertical container) or PanGestureRecognizer (in none) the test
+         // adds. The drag starts where it wins.
+         Row {
+             name: "TapAndHorizontalDragGestureRecognizer beats VerticalDragGestureRecognizer on a horizontal drag",
+             tuning: flutter,
+             claim: Claim::Compete(TouchDragKind::Horizontal),
++            container: Container::Scrolls(Axis::Vertical),
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -872,6 +945,7 @@
+             name: "TapAndHorizontalDragGestureRecognizer loses to VerticalDragGestureRecognizer on a vertical drag",
+             tuning: flutter,
+             claim: Claim::Compete(TouchDragKind::Horizontal),
++            container: Container::Scrolls(Axis::Vertical),
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -890,6 +964,7 @@
+             name: "TapAndPanGestureRecognizer loses to VerticalDragGestureRecognizer on a vertical drag",
+             tuning: flutter,
+             claim: Claim::Compete(TouchDragKind::Pan),
++            container: Container::Scrolls(Axis::Vertical),
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -904,10 +979,28 @@
+                 (0, Scroll(Ended, 0., 0.)),
+             ],
+         },
++        Row {
++            name: "TapAndPanGestureRecognizer beats VerticalDragGestureRecognizer on a horizontal pan",
++            tuning: flutter,
++            claim: Claim::Compete(TouchDragKind::Pan),
++            container: Container::Scrolls(Axis::Vertical),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(0, 5, Moved, 45., 25.),
++                touch(0, 5, Ended, 45., 25.),
++            ],
++            until_ms: 0,
++            expected: &[
++                (0, TouchDrag(Started, 45., 25.)),
++                (0, TouchDrag(Ended, 45., 25.)),
++            ],
++        },
+         Row {
+             name: "Recognizer declares self-victory in a non-empty arena when pointer travels minimum distance to be considered a drag",
+             tuning: flutter,
+             claim: Claim::Compete(TouchDragKind::Pan),
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -924,18 +1017,127 @@
+             name: "Recognizer detects tap gesture when pointer does not move past tap tolerance",
+             tuning: flutter,
+             claim: Claim::Compete(TouchDragKind::Pan),
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 1, Started, 10., 10.), touch(0, 1, Ended, 11., 9.)],
+             until_ms: 0,
+             expected: &[(0, Tap(1))],
+         },
++        // Not Flutter tests: monodrag.dart's `_hasSufficientGlobalDistanceToAccept`.
++        // In a container scrolling on one axis the pan, as Flutter's
++        // VerticalDragGestureRecognizer, accepts only on that axis' travel.
++        Row {
++            // 30 px sideways is no vertical drag; 20 px down is.
++            name: "A vertical container's pan accepts only past the hit slop along y",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Vertical),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 40., 10.),
++                touch(20, 5, Moved, 40., 30.),
++                touch(30, 5, Ended, 40., 30.),
++            ],
++            until_ms: 30,
++            expected: &[
++                (20, Scroll(Started, 0., 20.)),
++                (30, Scroll(Ended, 0., 0.)),
++            ],
++        },
++        Row {
++            name: "A horizontal container's pan accepts only past the hit slop along x",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 10., 40.),
++                touch(20, 5, Moved, 30., 40.),
++                touch(30, 5, Ended, 30., 40.),
++            ],
++            until_ms: 30,
++            expected: &[
++                (20, Scroll(Started, 20., 0.)),
++                (30, Scroll(Ended, 0., 0.)),
++            ],
++        },
++        // Not Flutter tests: tap.dart and long_press.dart reject past
++        // `kTouchSlop` (PrimaryPointerGestureRecognizer's
++        // `preAcceptSlopTolerance`) whatever the drag recognizers do, so a
++        // cross-axis move in a one-axis container is neither.
++        Row {
++            name: "A vertical container: 40 px sideways then release is no tap",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Vertical),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 50., 10.),
++                touch(20, 5, Ended, 50., 10.),
++            ],
++            until_ms: 20,
++            expected: &[],
++        },
++        Row {
++            name: "A vertical container: 40 px sideways held past the deadline is no long press",
++            tuning: flutter,
++            claim: Claim::LongPress,
++            container: Container::Scrolls(Axis::Vertical),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(100, 5, Moved, 50., 10.),
++                touch(700, 5, Ended, 50., 10.),
++            ],
++            until_ms: 700,
++            expected: &[],
++        },
++        Row {
++            name: "A horizontal container: a sideways stray within the slop still taps",
++            tuning: flutter,
++            claim: Claim::Nothing,
++            container: Container::Scrolls(Axis::Horizontal),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 10., 25.),
++                touch(20, 5, Ended, 10., 25.),
++            ],
++            until_ms: 20,
++            expected: &[(20, Tap(1))],
++        },
+         // Not Flutter tests: a text field's pair (a claimed long press and a
+         // competing drag) against GPUI's tap and pan.
++        Row {
++            // A desktop field in a vertical list: 25 px sideways would win a
++            // pan in any direction, but the list only takes vertical travel;
++            // the field's pan wins past the 36 px pan slop along its path.
++            name: "A Pan-kind field drag in a vertical list wins a horizontal drag past the pan slop",
++            tuning: flutter,
++            claim: Claim::LongPressAndCompete(TouchDragKind::Pan),
++            container: Container::Scrolls(Axis::Vertical),
++            targets: &[],
++            trace: &[
++                touch(0, 5, Started, 10., 10.),
++                touch(10, 5, Moved, 35., 10.),
++                touch(20, 5, Moved, 50., 12.),
++                touch(30, 5, Ended, 50., 12.),
++            ],
++            until_ms: 30,
++            expected: &[
++                (20, TouchDrag(Started, 50., 12.)),
++                (30, TouchDrag(Ended, 50., 12.)),
++            ],
++        },
+         Row {
+             // `_globalDistanceMoved` adds each move's dx: 10, then 19 > 18.
+             name: "A horizontal drag wins once its travel along x passes the hit slop",
+             tuning: flutter,
+             claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -956,6 +1158,7 @@
+             name: "The pan takes a diagonal move before the horizontal drag's slop",
+             tuning: flutter,
+             claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -972,6 +1175,7 @@
+             name: "A competing drag leaves the tap",
+             tuning: flutter,
+             claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            container: Container::None,
+             targets: &[],
+             trace: &[touch(0, 1, Started, 10., 10.), touch(50, 1, Ended, 11., 9.)],
+             until_ms: 50,
+@@ -981,6 +1185,7 @@
+             name: "A long press held past its deadline beats the competing drag",
+             tuning: flutter,
+             claim: Claim::LongPressAndCompete(TouchDragKind::Horizontal),
++            container: Container::None,
+             targets: &[],
+             trace: &[
+                 touch(0, 5, Started, 10., 10.),
+@@ -1001,6 +1206,7 @@
+             name: "Double tap on one target counts 2",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[BUTTON_A, BUTTON_B],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+@@ -1015,6 +1221,7 @@
+             name: "A tap on another target starts a new count",
+             tuning: flutter,
+             claim: Claim::Nothing,
++            container: Container::None,
+             targets: &[BUTTON_A, BUTTON_B],
+             trace: &[
+                 touch(0, 1, Started, 10., 10.),
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -28,7 +28,8 @@
+ };
+ 
+ use crate::gestures::{
+-    BackGestureSource, PinchArena, PinchChange, RecognizedTouchGesture, TouchGestureRecognizer,
++    BackGestureSource, PanAxes, PinchArena, PinchChange, RecognizedTouchGesture,
++    TouchGestureRecognizer,
+ };
+ use crate::interactive::{
+     PinchEvent, PointerDevice, PointerSource, TouchEvent, TouchId, TouchPhase,
+@@ -1662,9 +1663,12 @@
+     /// and the pinches of the elements that joined it, deepest first
+     /// ([`Window::join_pinch`]). `holds_scroll`: it landed on a scroll
+     /// container its overscroll physics is moving ([`Window::hold_scroll`]).
++    /// `pan_axes`: the scroll axes of the containers it landed on
++    /// ([`Window::scroll_container_under_touch`]).
+     Gestures {
+         pinch: SmallVec<[GlobalElementId; 1]>,
+         holds_scroll: bool,
++        pan_axes: PanAxes,
+     },
+     /// The element that claimed it: every later phase goes to its touch
+     /// listeners wherever it is drawn now, and no events are synthesized.
+@@ -3890,6 +3894,7 @@
+             TouchRoute::Gestures {
+                 pinch: SmallVec::new(),
+                 holds_scroll: false,
++                pan_axes: PanAxes::NoContainer,
+             },
+         );
+     }
+@@ -3905,6 +3910,24 @@
+         }
+     }
+ 
++    /// While a touch's [`TouchPhase::Started`] is dispatched, after the touch
++    /// was left to gestures: it landed on a scroll container that scrolls on
++    /// x (`horizontal`) and on y (`vertical`). As in Flutter's arena, where
++    /// every scrollable under the touch adds its drag recognizer, a touch
++    /// only on containers of one axis pans once it travels along that axis,
++    /// so a deeper drag competing on the other axis can still win
++    /// ([`Window::compete_for_touch_drag`]).
++    pub(crate) fn scroll_container_under_touch(
++        &mut self,
++        touch: TouchId,
++        horizontal: bool,
++        vertical: bool,
++    ) {
++        if let Some(TouchRoute::Gestures { pan_axes, .. }) = self.touch_routes.get_mut(&touch) {
++            *pan_axes = pan_axes.join(PanAxes::of(horizontal, vertical));
++        }
++    }
++
+     /// Adds a touch to `owner`'s pinch while the touch's
+     /// [`TouchPhase::Started`] is dispatched, and leaves its taps and pans to
+     /// the gesture recognizer as [`Window::leave_touch_to_gestures`] does,
+@@ -3921,6 +3944,7 @@
+             TouchRoute::Gestures {
+                 pinch: smallvec::smallvec![owner.clone()],
+                 holds_scroll: false,
++                pan_axes: PanAxes::NoContainer,
+             },
+         );
+     }
+@@ -3939,6 +3963,7 @@
+                 TouchRoute::Gestures {
+                     pinch: joins,
+                     holds_scroll: _,
++                    pan_axes: _,
+                 },
+             ) => pinch.extend(joins),
+             (TouchRoute::Gestures { .. } | TouchRoute::Claimed(_), _) => {}
+@@ -6560,13 +6585,16 @@
+             self.mouse_position = mouse_position;
+             self.leave_touch_to_gestures(event.id);
+         }
+-        let (claimed, pinch, holds_scroll) = match self.touch_routes.get(&event.id) {
+-            Some(TouchRoute::Claimed(_)) => (true, SmallVec::new(), false),
++        let (claimed, pinch, holds_scroll, pan_axes) = match self.touch_routes.get(&event.id) {
++            Some(TouchRoute::Claimed(_)) => (true, SmallVec::new(), false, PanAxes::NoContainer),
+             Some(TouchRoute::Gestures {
+                 pinch,
+                 holds_scroll,
+-            }) => (false, pinch.clone(), *holds_scroll),
+-            Some(TouchRoute::Deciding) | None => (false, SmallVec::new(), false),
++                pan_axes,
++            }) => (false, pinch.clone(), *holds_scroll, *pan_axes),
++            Some(TouchRoute::Deciding) | None => {
++                (false, SmallVec::new(), false, PanAxes::NoContainer)
++            }
+         };
+         if claimed && event.phase != TouchPhase::Started {
+             self.dispatch_mouse_event(event, cx);
+@@ -6615,6 +6643,9 @@
+         let mut recognized_gestures =
+             self.touch_gestures
+                 .handle_event(&event, cx.background_executor().now(), target);
++        if event.phase == crate::TouchPhase::Started {
++            self.touch_gestures.set_pan_axes(event.id, pan_axes);
++        }
+         if event.phase == crate::TouchPhase::Started
+             && holds_scroll
+             && let Some(hold) = self.touch_gestures.hold(event.id)

@@ -21,6 +21,7 @@ use serde_json::Value;
 use crate::{
     Error,
     backend::Device,
+    gpui_window::{Gpui, GpuiEffect, GpuiEvent},
     haptics, keys,
     lifecycle::ActivityId,
     metrics::Metrics,
@@ -107,26 +108,11 @@ pub(crate) enum FirstFrame {
     Drawn,
 }
 
-/// Where the Activity's GPUI window is. One per Activity; the renderer lives only in `Open`. Transitions:
-/// `Waiting → Requested` (host.rs, the first surface), `Requested → Open` ([`ActivityWindow::open`]),
-/// `Open → Closed` ([`ActivityWindow::closed_by_app`]), `Closed → Finishing` ([`ActivityWindow::framework_calls`]).
-pub(crate) enum Gpui {
-    /// No GPUI window yet: the Activity's first surface asks the app for one.
-    Waiting,
-    /// The app was asked for this Activity's window (its `open_window`, `android_main!`);
-    /// the window it opens (`Platform::open_window`) binds here.
-    Requested,
-    /// GPUI's window for this Activity, drawn by its renderer.
-    Open {
-        handle: AnyWindowHandle,
-        /// Boxed: a renderer is large, and the other states hold nothing.
-        renderer: Box<WgpuRenderer>,
-    },
-    /// The app closed its window (GPUI dropped it): the renderer is gone, and Java is to finish the Activity with
-    /// the next framework calls.
-    Closed,
-    /// Java was told to finish the Activity (Flutter's `SystemNavigator.pop`); its `onDestroy` follows.
-    Finishing,
+/// GPUI's window for an Activity, while it is open ([`Gpui::Open`]).
+pub(crate) struct OpenWindow {
+    handle: AnyWindowHandle,
+    /// Boxed: a renderer is large, and the other states hold nothing.
+    renderer: Box<WgpuRenderer>,
 }
 
 /// One Activity's window. Main thread only.
@@ -138,7 +124,8 @@ pub(crate) struct ActivityWindow {
     gpu: GpuContext,
     /// Picks the renderer's backend order ([`crate::backend`]); `ro.hardware` never changes, so it is read once.
     device: Device,
-    pub(crate) gpui: RefCell<Gpui>,
+    /// Changed only by [`ActivityWindow::gpui_step`].
+    gpui: RefCell<Gpui<OpenWindow>>,
     pub(crate) callbacks: Callbacks,
     pub(crate) pointers: RefCell<pointer::Pointers>,
     pub(crate) keyboard: RefCell<keys::Keyboard>,
@@ -183,16 +170,16 @@ impl ActivityWindow {
     /// GPUI's handle for this Activity's window, once open.
     pub(crate) fn gpui_handle(&self) -> Option<AnyWindowHandle> {
         match &*self.gpui.borrow() {
-            Gpui::Open { handle, .. } => Some(*handle),
-            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => None,
+            Gpui::Open(open) => Some(open.handle),
+            Gpui::Waiting | Gpui::Requested | Gpui::Finishing => None,
         }
     }
 
     /// Runs `call` on the renderer; `None` before GPUI opens the window.
     pub(crate) fn with_renderer<R>(&self, call: impl FnOnce(&mut WgpuRenderer) -> R) -> Option<R> {
         match &mut *self.gpui.borrow_mut() {
-            Gpui::Open { renderer, .. } => Some(call(renderer)),
-            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => None,
+            Gpui::Open(open) => Some(call(&mut open.renderer)),
+            Gpui::Waiting | Gpui::Requested | Gpui::Finishing => None,
         }
     }
 
@@ -234,8 +221,22 @@ impl ActivityWindow {
     pub(crate) fn is_requested(&self) -> bool {
         match &*self.gpui.borrow() {
             Gpui::Requested => true,
-            Gpui::Waiting | Gpui::Open { .. } | Gpui::Closed | Gpui::Finishing => false,
+            Gpui::Waiting | Gpui::Open(_) | Gpui::Finishing => false,
         }
+    }
+
+    /// Runs one event through the window's state ([`Gpui::next`]) and returns the effect for the caller to carry out.
+    pub(crate) fn gpui_step(&self, event: GpuiEvent<OpenWindow>) -> GpuiEffect {
+        let state = self.gpui.replace(Gpui::Waiting);
+        let (next, effect) = state.next(event);
+        *self.gpui.borrow_mut() = next;
+        if let GpuiEffect::Reject { why } = effect {
+            log::debug!(
+                "parallax: Activity {} window event ignored: {why}",
+                self.activity.0
+            );
+        }
+        effect
     }
 
     /// Opens this Activity's GPUI window: creates the renderer on the ready surface and returns its atlas.
@@ -243,22 +244,23 @@ impl ActivityWindow {
         let window = self.current_window().ok_or(Error::NoSurface)?;
         let renderer = renderer::create(&self.gpu, self.device, &window, self.metrics.get().size)?;
         let atlas: Arc<dyn PlatformAtlas> = renderer.sprite_atlas().clone();
-        *self.gpui.borrow_mut() = Gpui::Open {
+        let opened = GpuiEvent::Opened(OpenWindow {
             handle,
             renderer: Box::new(renderer),
-        };
-        Ok(atlas)
+        });
+        match self.gpui_step(opened) {
+            GpuiEffect::Nothing => Ok(atlas),
+            GpuiEffect::Reject { .. } | GpuiEffect::RequestWindow | GpuiEffect::FinishActivity => {
+                Err(Error::NoActivityForWindow)
+            }
+        }
     }
 
-    /// The app closed this Activity's GPUI window (GPUI dropped it, [`crate::window`]): `Open → Closed`, dropping the
-    /// renderer; the Activity finishes with the next framework calls. A window the Activity's own destruction closed
-    /// is no longer the shell's, so nobody asks. GPUI's callbacks go with the window.
-    pub(crate) fn closed_by_app(&self) {
-        let mut gpui = self.gpui.borrow_mut();
-        match &*gpui {
-            Gpui::Open { .. } => *gpui = Gpui::Closed,
-            Gpui::Waiting | Gpui::Requested | Gpui::Closed | Gpui::Finishing => {}
-        }
+    /// The app closed this Activity's GPUI window (GPUI dropped it, [`crate::window`]): `Open → Finishing`, dropping
+    /// the renderer; [`GpuiEffect::FinishActivity`] tells the caller to finish the Activity. A window the Activity's
+    /// own destruction closed is no longer the shell's, so nobody asks. GPUI's callbacks go with the window.
+    pub(crate) fn closed_by_app(&self) -> GpuiEffect {
+        let effect = self.gpui_step(GpuiEvent::ClosedByApp);
         // The callbacks were the dropped window's: input, insets or lifecycle until onDestroy would reach nothing.
         let Callbacks {
             request_frame,
@@ -276,6 +278,7 @@ impl ActivityWindow {
         active_status.clear();
         visibility.clear();
         close.borrow_mut().take();
+        effect
     }
 
     /// The Activity was destroyed: GPUI closes its window (on its next turn) and drops the renderer with it.
@@ -535,24 +538,9 @@ impl ActivityWindow {
 
     /// GPUI's pending calls for Java, emptied: a JSON object of Flutter channel → its calls, with only the channels
     /// that have some (`flutter/textinput`: [`Self::text_input_calls`]; `flutter/platform`: the haptics,
-    /// [`haptics::platform_calls`], then `SystemNavigator.pop` once the app closed the window, `Closed → Finishing`);
-    /// `None` when none has.
+    /// [`haptics::platform_calls`]); `None` when none has.
     pub(crate) fn framework_calls(&self) -> Option<Value> {
-        let mut platform = haptics::platform_calls(&self.haptics.take());
-        let finishes = {
-            let mut gpui = self.gpui.borrow_mut();
-            match &*gpui {
-                Gpui::Closed => {
-                    *gpui = Gpui::Finishing;
-                    true
-                }
-                Gpui::Waiting | Gpui::Requested | Gpui::Open { .. } | Gpui::Finishing => false,
-            }
-        };
-        if finishes {
-            // Java's ported PlatformPlugin.popSystemNavigator finishes the Activity, as Flutter's does.
-            platform.push(serde_json::json!({"method": "SystemNavigator.pop", "args": null}));
-        }
+        let platform = haptics::platform_calls(&self.haptics.take());
         let channels = [
             ("flutter/textinput", self.text_input_calls()),
             (

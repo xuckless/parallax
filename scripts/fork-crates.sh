@@ -3,7 +3,7 @@
 # plus a workspace manifest there so publish-fork.sh can package them together. apply-patches.sh runs this last; run it
 # alone after editing build/gpui-patched/ while making a patch (docs/patches.md). build/ is generated: never edit it.
 # Each crate keeps upstream's code, [lib] name, licence and metadata; only its name, version, inter-crate deps,
-# description, repository and README change, plus the licence of a crate patches port Flutter code into. Version: scripts/fork-version.sh. See docs/gpui-fork-crates.md.
+# description, repository and README change, plus the licence of a crate patches port code into (`ported` below). Version: scripts/fork-version.sh. See docs/gpui-fork-crates.md.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,20 +17,16 @@ die() { echo "fork-crates: $*" >&2; exit 1; }
 # The one naming rule: gpui-pre → parallax-gpui, gpui-pre-<x> → parallax-gpui-<x>.
 fork_name() { echo "parallax-gpui${1#gpui-pre}"; }
 
-# Vendored crates our patches port Flutter code into (BSD-3-Clause, third_party/flutter/PORTED.md). Each ships
-# Flutter's licence as LICENSE-FLUTTER, is licensed "Apache-2.0 AND BSD-3-Clause" and credits Flutter in its README.
-# A patch that ports Flutter code into another crate adds its row.
-flutter_crates=(gpui-pre gpui-pre-apple gpui-pre-ios gpui-pre-web gpui-pre-windows gpui-pre-macos)
-# Vendored crates our patches port React Native code into (MIT, third_party/react-native/LICENSE: the keyboard spring
-# Flutter took from React Native). Each ships it as LICENSE-REACT-NATIVE, adds "AND MIT" to its licence and credits
-# React Native in its README. A patch that ports React Native code into another crate adds its row.
-react_native_crates=(gpui-pre-ios)
-# Vendored crates our patches port winit code into (Apache-2.0, as GPUI: the licence stays). Each credits winit in its
-# README; NOTICE credits it too. A patch that ports winit code into another crate adds its row.
-winit_crates=(gpui-pre-windows gpui-pre-linux)
-# Vendored crates our patches port GoogleChromeLabs/page-lifecycle code into (Apache-2.0). Each credits it in its
-# README; NOTICE credits it too.
-page_lifecycle_crates=(gpui-pre-web)
+# Code our patches port into vendored crates, one row per source, fields split by "|": the crates it lands in, the
+# term their licence gains (none when it is Apache-2.0, as GPUI's), the licence file each ships (source:name, none if
+# none) and the credit each README gets. A patch that ports a listed source into another crate adds the crate to its
+# row; one that ports a new source adds a row (and a NOTICE credit, AGENTS.md porting rule 5).
+ported=(
+    "gpui-pre gpui-pre-apple gpui-pre-ios gpui-pre-web gpui-pre-windows gpui-pre-macos|BSD-3-Clause|third_party/flutter/LICENSE:LICENSE-FLUTTER|Some patches port code from [Flutter](https://github.com/flutter/flutter) (Copyright 2014 The Flutter Authors), under the BSD 3-Clause License (see LICENSE-FLUTTER); each ported file names its source. Parallax is not affiliated with or endorsed by Google or the Flutter project."
+    "gpui-pre-ios|MIT|third_party/react-native/LICENSE:LICENSE-REACT-NATIVE|Some patches port code from [React Native](https://github.com/facebook/react-native) (Copyright Meta Platforms, Inc. and affiliates), under the MIT License (see LICENSE-REACT-NATIVE); each ported file names its source."
+    "gpui-pre-windows gpui-pre-linux|||Some patches port code from [winit](https://github.com/rust-windowing/winit) (Copyright the winit contributors), under the Apache License 2.0; each ported file names its source."
+    "gpui-pre-web|||Some patches port code from [page-lifecycle](https://github.com/GoogleChromeLabs/page-lifecycle) (Copyright 2018 Google Inc.), under the Apache License 2.0; each ported file names its source."
+)
 
 fork_check
 upstream_version="$(fork_upstream_version)"
@@ -63,32 +59,16 @@ for dir in "$in"/gpui-pre*/; do
     [[ -f $dest/LICENSE-APACHE ]] || die "$crate has no LICENSE-APACHE"
     zed_crate="$(sed -n 's/^zed-crate = "\(.*\)"$/\1/p' "$dest/Cargo.toml")"
     [[ -n $zed_crate ]] || die "$crate has no [package.metadata.gpui-pre] zed-crate"
-    license="" flutter_credit="" react_native_credit="" winit_credit="" page_lifecycle_credit=""
-    if [[ " ${flutter_crates[*]} " == *" $crate "* ]]; then
-        license="Apache-2.0 AND BSD-3-Clause"
-        cp third_party/flutter/LICENSE "$dest/LICENSE-FLUTTER"
-        flutter_credit="
-Some patches port code from [Flutter](https://github.com/flutter/flutter) (Copyright 2014 The Flutter Authors), under
-the BSD 3-Clause License (see LICENSE-FLUTTER); each ported file names its source. Parallax is not affiliated with or
-endorsed by Google or the Flutter project."
-    fi
-    if [[ " ${react_native_crates[*]} " == *" $crate "* ]]; then
-        license="${license:-Apache-2.0} AND MIT"
-        cp third_party/react-native/LICENSE "$dest/LICENSE-REACT-NATIVE"
-        react_native_credit="
-Some patches port code from [React Native](https://github.com/facebook/react-native) (Copyright Meta Platforms, Inc.
-and affiliates), under the MIT License (see LICENSE-REACT-NATIVE); each ported file names its source."
-    fi
-    if [[ " ${winit_crates[*]} " == *" $crate "* ]]; then
-        winit_credit="
-Some patches port code from [winit](https://github.com/rust-windowing/winit) (Copyright the winit contributors), under
-the Apache License 2.0; each ported file names its source."
-    fi
-    if [[ " ${page_lifecycle_crates[*]} " == *" $crate "* ]]; then
-        page_lifecycle_credit="
-Some patches port code from [page-lifecycle](https://github.com/GoogleChromeLabs/page-lifecycle) (Copyright 2018
-Google Inc.), under the Apache License 2.0; each ported file names its source."
-    fi
+    # The rows of `ported` this crate is in: its licence terms, licence files and README credits.
+    terms="" credits=""
+    for row in "${ported[@]}"; do
+        IFS='|' read -r crates term licence_file credit <<<"$row"
+        [[ " $crates " == *" $crate "* ]] || continue
+        [[ -z $term ]] || terms+=" AND $term"
+        [[ -z $licence_file ]] || cp "${licence_file%%:*}" "$dest/${licence_file##*:}"
+        credits+=$'\n'"$credit"
+    done
+    license="${terms:+Apache-2.0$terms}"
 
     # Manifests are crates.io-normalized: one key per line, every gpui-pre dep its own table holding `package`.
     # Per table: in [package] set name, version, description, repository, readme; in a gpui-pre dep table set the
@@ -150,7 +130,7 @@ $patch_list
 The library name is upstream's, so code uses it unchanged. Version $version: the upstream version, then the patch
 revision. Generated by [fork-crates.sh](https://github.com/xuckless/parallax/blob/main/scripts/fork-crates.sh).
 
-GPUI is by Zed Industries, Apache-2.0 (see LICENSE-APACHE). Parallax is not affiliated with or endorsed by Zed Industries.$flutter_credit$react_native_credit$winit_credit$page_lifecycle_credit
+GPUI is by Zed Industries, Apache-2.0 (see LICENSE-APACHE). Parallax is not affiliated with or endorsed by Zed Industries.$credits
 README
     members+=("$fork")
 done

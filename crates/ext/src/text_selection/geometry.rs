@@ -21,7 +21,7 @@ use std::time::Duration;
 use gpui::{Bounds, Pixels, Point, Size, point, px, size};
 use parallax_platform::behaviour::kMinInteractiveDimension;
 
-use super::{Selection, TextLayout};
+use super::{Affinity, Selection, TextLayout};
 
 /// Which handle a drag or a rect belongs to: the selection's start or end (a collapsed selection has only `Start`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,17 +50,26 @@ pub struct HandleGeometry {
 }
 
 /// `getEndpointsForSelection`: the bottom of the line at each end, `[start, end]`; a collapsed selection's both
-/// ends are its caret's. `_paintHandleLayers` keeps them inside the field.
+/// ends are its caret's. A range's ends come from its selection boxes: the first box starts after a soft wrap
+/// (downstream), the last ends before one (upstream). `_paintHandleLayers` keeps them inside the field.
 pub fn selection_endpoints(layout: &impl TextLayout, selection: Selection) -> [Point<Pixels>; 2] {
     let bounds = layout.bounds();
-    let endpoint = |offset| {
-        let caret = layout.caret_rect(offset);
+    let endpoint = |offset, affinity| {
+        let caret = layout.caret_rect(offset, affinity);
         point(
             clamp_double(caret.left(), bounds.left(), bounds.right()),
             clamp_double(caret.bottom(), bounds.top(), bounds.bottom()),
         )
     };
-    [endpoint(selection.start()), endpoint(selection.end())]
+    let end_affinity = if selection.is_collapsed() {
+        Affinity::Downstream
+    } else {
+        Affinity::Upstream
+    };
+    [
+        endpoint(selection.start(), Affinity::Downstream),
+        endpoint(selection.end(), end_affinity),
+    ]
 }
 
 /// The handles a selection shows (`TextSelectionOverlay._updateSelectionOverlay`, `SelectionOverlay._build*Handle`):
@@ -237,10 +246,15 @@ pub fn magnifier_info(
     MagnifierInfo {
         field_bounds: layout.bounds(),
         gesture_position,
-        caret_rect: layout.caret_rect(offset),
+        caret_rect: layout.caret_rect(offset, Affinity::Downstream),
+        // The line's end is upstream: at a soft wrap the downstream caret is the next line's start.
         current_line_boundaries: Bounds::from_corners(
-            layout.caret_rect(line.start).top_center(),
-            layout.caret_rect(line.end).bottom_center(),
+            layout
+                .caret_rect(line.start, Affinity::Downstream)
+                .top_center(),
+            layout
+                .caret_rect(line.end, Affinity::Upstream)
+                .bottom_center(),
         ),
     }
 }

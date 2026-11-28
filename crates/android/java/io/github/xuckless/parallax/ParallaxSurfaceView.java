@@ -333,8 +333,8 @@ final class ParallaxSurfaceView extends SurfaceView
   }
 
   // The `flutter/platform` calls GPUI makes, played as PlatformChannel's handler plays
-  // `HapticFeedback.vibrate` and `SystemNavigator.pop` (the app closed this Activity's window; an
-  // unknown call or haptic type is logged, as its result.error).
+  // `HapticFeedback.vibrate` (an unknown call or haptic type is logged, as its result.error). The
+  // app closing this Activity's window calls PlatformPlugin.popSystemNavigator from Rust directly.
   private void runPlatformCalls(JSONArray calls) throws JSONException {
     for (int i = 0; i < calls.length(); i++) {
       JSONObject call = calls.getJSONObject(i);
@@ -348,9 +348,6 @@ final class ParallaxSurfaceView extends SurfaceView
           } catch (NoSuchFieldException exception) {
             Log.e(TAG, exception.getMessage());
           }
-          break;
-        case "SystemNavigator.pop":
-          platformPlugin.popSystemNavigator();
           break;
         default:
           Log.e(TAG, "unknown flutter/platform call " + method);

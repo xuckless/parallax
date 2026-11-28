@@ -2199,7 +2199,6 @@ dependencies = [
  "env_logger",
  "log",
  "parallax",
- "parallax-ext",
  "parallax-gpui",
  "unicode-segmentation",
  "wasm-bindgen",
@@ -3600,6 +3599,7 @@ version = "0.1.8"
 dependencies = [
  "log",
  "parallax-android",
+ "parallax-ext",
  "parallax-gpui",
  "parallax-platform",
 ]

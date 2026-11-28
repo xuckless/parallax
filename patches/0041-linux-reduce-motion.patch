@@ -4,13 +4,15 @@ What (gpui_linux, needs 0039):
 - The desktop portal listener (`xdg_desktop_portal.rs`, already GPUI's ashpd `Settings` client) reads and follows
   two more settings: `org.freedesktop.appearance` `reduced-motion` (xdg-desktop-portal 1.20's standard key, 0 no
   preference, 1 reduced) and `org.gnome.desktop.interface` `enable-animations` (GNOME's Reduce Animation switch,
-  which older portals expose). Each arrives as `Event::Motion(MotionSetting)`.
+  which older portals expose). The startup read of both arrives once as `Event::Motion(MotionReport::Read(..))`,
+  each later change as `MotionReport::Changed(MotionSetting)`.
 - `PortalMotion` (pure, in platform.rs): the two values as last read; either asking for less motion reduces it.
   There is no portal setting for reduced transparency: it stays off.
-- `LinuxCommon::handle_portal_motion`: both clients (Wayland, X11) hand it the event; it runs the app's
-  `on_accessibility_display_settings_change` callback, without `common` borrowed, only when the outcome moved.
-  `accessibility_display_settings()` reports the latest outcome (none before the portal answers; the change callback
-  then brings the first value).
+- `PortalMotion::follow` (pure) and `LinuxCommon::handle_portal_motion`: both clients (Wayland, X11) hand it the
+  report; it runs the app's `on_accessibility_display_settings_change` callback, without `common` borrowed, for the
+  startup read always and for a change only when the outcome moved. `accessibility_display_settings()` is `None`
+  until the startup read arrives, so the app takes that read as its startup value (0039), not as a change that would
+  undo a `set_reduce_motion` its launch made.
 - Table tests: the portal values → reduce motion, and when the callback runs.
 
 Why: 0039 gives GPUI a platform hook for the OS's reduce-motion setting; Linux reported none. The portal client is
@@ -19,7 +21,7 @@ private to gpui_linux, so a Parallax crate cannot listen on it.
 Upstream PR: not filed (filing paused, patch rule 14).
 
 diff --git a/gpui-pre-linux/src/linux/platform.rs b/gpui-pre-linux/src/linux/platform.rs
-index c9bbd2d..eb0e1ea 100644
+index c9bbd2d..4c7f3c2 100644
 --- a/gpui-pre-linux/src/linux/platform.rs
 +++ b/gpui-pre-linux/src/linux/platform.rs
 @@ -36,11 +36,12 @@ use crate::linux::{
@@ -40,7 +42,7 @@ index c9bbd2d..eb0e1ea 100644
  };
  #[cfg(any(feature = "wayland", feature = "x11"))]
  use gpui::{Pixels, Point, px};
-@@ -73,6 +74,56 @@ pub(crate) struct PlatformHandlers {
+@@ -73,6 +74,93 @@ pub(crate) struct PlatformHandlers {
      pub(crate) system_wake: Option<Box<dyn FnMut()>>,
      pub(crate) power_mode_change: Option<Box<dyn FnMut()>>,
      pub(crate) displays_changed: Option<Box<dyn FnMut()>>,
@@ -58,6 +60,19 @@ index c9bbd2d..eb0e1ea 100644
 +    ReducedMotion(u32),
 +    /// `org.gnome.desktop.interface` `enable-animations`: GNOME's Accessibility > Reduce Animation switch, inverted.
 +    EnableAnimations(bool),
++}
++
++/// What the desktop portal reports about motion ([`LinuxCommon::handle_portal_motion`]).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(
++    not(all(target_os = "linux", any(feature = "wayland", feature = "x11"))),
++    allow(dead_code)
++)]
++pub(crate) enum MotionReport {
++    /// Its startup read of every motion key, once: the app's startup value, though it arrives after the app ran.
++    Read(PortalMotion),
++    /// One key changed.
++    Changed(MotionSetting),
 +}
 +
 +/// The desktop portal's motion settings as last read: `None` until it reports one, or where its desktop has none.
@@ -94,45 +109,70 @@ index c9bbd2d..eb0e1ea 100644
 +            reduce_transparency: false,
 +        }
 +    }
- }
- 
- /// A system power change, forwarded from D-Bus to the client's event loop.
-@@ -108,6 +159,7 @@ pub(crate) struct LinuxCommon {
-     power_mode: PowerMode,
-     #[cfg(any(feature = "wayland", feature = "x11"))]
-     power_mode_listener: Option<Task<()>>,
-+    portal_motion: PortalMotion,
-     /// Runs after each foreground runnable registered by [`LinuxCommon::register_sources`].
-     ///
-     /// X11 uses this to handle events that a runnable's requests read into xcb's queue, where
-@@ -153,6 +205,7 @@ impl LinuxCommon {
-             power_sender,
-             power_listener_started: false,
-             power_mode: PowerMode::Unknown,
-+            portal_motion: PortalMotion::default(),
-             #[cfg(any(feature = "wayland", feature = "x11"))]
-             power_mode_listener: None,
-             after_runnable: None,
-@@ -223,6 +276,38 @@ impl LinuxCommon {
-         Ok(())
-     }
- 
-+    /// Follows one desktop portal motion setting. When the outcome moved, runs the app's callback without `common`
-+    /// borrowed, since the callback can call back into the platform.
++
++    /// One report: the portal's motion now, and what the app hears. The startup read is always reported (the app
++    /// takes it as its startup value, below any `set_reduce_motion` its launch made); a change only when the
++    /// outcome moved.
 +    #[cfg_attr(
 +        not(all(target_os = "linux", any(feature = "wayland", feature = "x11"))),
 +        allow(dead_code)
 +    )]
-+    pub(crate) fn handle_portal_motion(common: &RefCell<Self>, setting: MotionSetting) {
-+        let (before, after) = {
-+            let mut common = common.borrow_mut();
-+            let before = common.portal_motion.settings();
-+            common.portal_motion = common.portal_motion.with(setting);
-+            (before, common.portal_motion.settings())
-+        };
-+        if before == after {
-+            return;
++    pub(crate) fn follow(
++        portal_motion: Option<Self>,
++        report: MotionReport,
++    ) -> (Self, Option<AccessibilityDisplaySettings>) {
++        match report {
++            MotionReport::Read(read) => (read, Some(read.settings())),
++            MotionReport::Changed(setting) => {
++                let before = portal_motion.unwrap_or_default();
++                let after = before.with(setting);
++                (
++                    after,
++                    (before.settings() != after.settings()).then_some(after.settings()),
++                )
++            }
 +        }
++    }
+ }
+ 
+ /// A system power change, forwarded from D-Bus to the client's event loop.
+@@ -108,6 +196,8 @@ pub(crate) struct LinuxCommon {
+     power_mode: PowerMode,
+     #[cfg(any(feature = "wayland", feature = "x11"))]
+     power_mode_listener: Option<Task<()>>,
++    /// `None` until the portal's startup read arrives.
++    portal_motion: Option<PortalMotion>,
+     /// Runs after each foreground runnable registered by [`LinuxCommon::register_sources`].
+     ///
+     /// X11 uses this to handle events that a runnable's requests read into xcb's queue, where
+@@ -153,6 +243,7 @@ impl LinuxCommon {
+             power_sender,
+             power_listener_started: false,
+             power_mode: PowerMode::Unknown,
++            portal_motion: None,
+             #[cfg(any(feature = "wayland", feature = "x11"))]
+             power_mode_listener: None,
+             after_runnable: None,
+@@ -223,6 +314,38 @@ impl LinuxCommon {
+         Ok(())
+     }
+ 
++    /// Follows one desktop portal motion report ([`PortalMotion::follow`]). When the app hears it, runs the app's
++    /// callback without `common` borrowed, since the callback can call back into the platform.
++    #[cfg_attr(
++        not(all(target_os = "linux", any(feature = "wayland", feature = "x11"))),
++        allow(dead_code)
++    )]
++    pub(crate) fn handle_portal_motion(common: &RefCell<Self>, report: MotionReport) {
++        let heard = {
++            let mut common = common.borrow_mut();
++            let (portal_motion, heard) = PortalMotion::follow(common.portal_motion, report);
++            common.portal_motion = Some(portal_motion);
++            heard
++        };
++        let Some(after) = heard else {
++            return;
++        };
 +        let callback = common
 +            .borrow_mut()
 +            .callbacks
@@ -152,12 +192,12 @@ index c9bbd2d..eb0e1ea 100644
      /// Runs the app's power callback, without `common` borrowed, since the callback
      /// can call back into the platform.
      fn handle_system_power_event(common: &RefCell<Self>, event: SystemPowerEvent) {
-@@ -604,6 +689,17 @@ impl Platform for LinuxPlatform {
+@@ -604,6 +727,17 @@ impl Platform for LinuxPlatform {
          ThermalState::Nominal
      }
  
-+    fn accessibility_display_settings(&self) -> AccessibilityDisplaySettings {
-+        self.with_common(|common| common.portal_motion.settings())
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        self.with_common(|common| common.portal_motion.map(PortalMotion::settings))
 +    }
 +
 +    fn on_accessibility_display_settings_change(
@@ -170,7 +210,7 @@ index c9bbd2d..eb0e1ea 100644
      fn power_mode(&self) -> PowerMode {
          self.with_common(|common| common.power_mode)
      }
-@@ -1795,6 +1891,82 @@ mod tests {
+@@ -1795,6 +1929,93 @@ mod tests {
          Ok(())
      }
  
@@ -221,6 +261,7 @@ index c9bbd2d..eb0e1ea 100644
 +
 +    #[test]
 +    fn portal_motion_calls_back_when_the_outcome_moves() -> anyhow::Result<()> {
++        use MotionReport::{Changed, Read};
 +        use MotionSetting::{EnableAnimations, ReducedMotion};
 +        let event_loop = EventLoop::<()>::try_new()?;
 +        let (common, _, _) = LinuxCommon::new(event_loop.get_signal());
@@ -230,21 +271,31 @@ index c9bbd2d..eb0e1ea 100644
 +            let calls = calls.clone();
 +            move |settings| calls.borrow_mut().push(settings.reduce_motion)
 +        }));
-+        // Each setting, then the callback's new reduce_motion, `None` when the outcome did not move.
++        assert_eq!(
++            common.borrow().portal_motion,
++            None,
++            "before the portal answers, the app reads no startup value"
++        );
++        // Each report, then the callback's new reduce_motion, `None` when the app hears nothing.
 +        let rows = [
-+            ("GNOME on: still not reduced", EnableAnimations(true), None),
-+            ("GNOME off", EnableAnimations(false), Some(true)),
-+            ("freedesktop reduced: still reduced", ReducedMotion(1), None),
++            (
++                "the startup read is the app's startup value, even when nothing is reduced",
++                Read(PortalMotion::default().with(EnableAnimations(true))),
++                Some(false),
++            ),
++            ("GNOME on: still not reduced", Changed(EnableAnimations(true)), None),
++            ("GNOME off", Changed(EnableAnimations(false)), Some(true)),
++            ("freedesktop reduced: still reduced", Changed(ReducedMotion(1)), None),
 +            (
 +                "GNOME on: freedesktop still reduced",
-+                EnableAnimations(true),
++                Changed(EnableAnimations(true)),
 +                None,
 +            ),
-+            ("freedesktop no preference", ReducedMotion(0), Some(false)),
++            ("freedesktop no preference", Changed(ReducedMotion(0)), Some(false)),
 +        ];
-+        for (name, setting, call) in rows {
++        for (name, report, call) in rows {
 +            calls.borrow_mut().clear();
-+            LinuxCommon::handle_portal_motion(&common, setting);
++            LinuxCommon::handle_portal_motion(&common, report);
 +            assert_eq!(*calls.borrow(), Vec::from_iter(call), "{name}");
 +        }
 +        Ok(())
@@ -254,46 +305,46 @@ index c9bbd2d..eb0e1ea 100644
      #[test]
      fn rejects_null_xkb_context() {
 diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
-index a2d9ed0..527c6cd 100644
+index a2d9ed0..b221464 100644
 --- a/gpui-pre-linux/src/linux/wayland/client.rs
 +++ b/gpui-pre-linux/src/linux/wayland/client.rs
 @@ -1201,6 +1201,12 @@ impl WaylandConnection {
                              client.cursor.set_size(size);
                          }
                      }
-+                    XDPEvent::Motion(setting) => {
++                    XDPEvent::Motion(report) => {
 +                        if let Some(client) = client.0.upgrade() {
 +                            let common = client.borrow().common.clone();
-+                            LinuxCommon::handle_portal_motion(&common, setting);
++                            LinuxCommon::handle_portal_motion(&common, report);
 +                        }
 +                    }
                  }
              }),
              "failed to register desktop portal source",
 diff --git a/gpui-pre-linux/src/linux/x11/client.rs b/gpui-pre-linux/src/linux/x11/client.rs
-index dad4435..c0ba0dc 100644
+index dad4435..60a9cd5 100644
 --- a/gpui-pre-linux/src/linux/x11/client.rs
 +++ b/gpui-pre-linux/src/linux/x11/client.rs
 @@ -628,6 +628,10 @@ impl X11Client {
                          XDPEvent::CursorTheme(_) | XDPEvent::CursorSize(_) => {
                              // noop, X11 manages this for us.
                          }
-+                        XDPEvent::Motion(setting) => {
++                        XDPEvent::Motion(report) => {
 +                            let common = client.0.borrow().common.clone();
-+                            LinuxCommon::handle_portal_motion(&common, setting);
++                            LinuxCommon::handle_portal_motion(&common, report);
 +                        }
                      }
                  }
              })
 diff --git a/gpui-pre-linux/src/linux/xdg_desktop_portal.rs b/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
-index 9b06836..6264b31 100644
+index 9b06836..16d48a2 100644
 --- a/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
 +++ b/gpui-pre-linux/src/linux/xdg_desktop_portal.rs
 @@ -10,6 +10,8 @@ use smol::stream::StreamExt;
  
  use gpui::{BackgroundExecutor, Task, WindowAppearance};
  
-+use crate::linux::MotionSetting;
++use crate::linux::{MotionReport, MotionSetting, PortalMotion};
 +
  pub enum Event {
      WindowAppearance(WindowAppearance),
@@ -302,31 +353,34 @@ index 9b06836..6264b31 100644
      #[cfg_attr(feature = "x11", allow(dead_code))]
      CursorSize(u32),
      ButtonLayout(String),
-+    Motion(MotionSetting),
++    Motion(MotionReport),
  }
  
  /// Forwards desktop settings from the portal to the event loop.
-@@ -73,6 +76,19 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
+@@ -73,6 +76,22 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
          sender.send(Event::ButtonLayout(initial_layout))?;
      }
  
++    // Both motion keys in one startup report, sent even when the portal has neither.
++    let mut motion = PortalMotion::default();
 +    if let Ok(initial) = settings
 +        .read::<u32>("org.freedesktop.appearance", "reduced-motion")
 +        .await
 +    {
-+        sender.send(Event::Motion(MotionSetting::ReducedMotion(initial)))?;
++        motion = motion.with(MotionSetting::ReducedMotion(initial));
 +    }
 +    if let Ok(initial) = settings
 +        .read::<bool>("org.gnome.desktop.interface", "enable-animations")
 +        .await
 +    {
-+        sender.send(Event::Motion(MotionSetting::EnableAnimations(initial)))?;
++        motion = motion.with(MotionSetting::EnableAnimations(initial));
 +    }
++    sender.send(Event::Motion(MotionReport::Read(motion)))?;
 +
      // Each listener runs until its stream or the channel closes. They're joined rather than
      // spawned, so that cancelling this future cancels them all.
      let mut listeners: Vec<BoxFuture<'_, anyhow::Result<()>>> = Vec::new();
-@@ -116,6 +132,35 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
+@@ -116,6 +135,39 @@ async fn listen(sender: Sender<Event>) -> anyhow::Result<()> {
          }));
      }
  
@@ -337,7 +391,9 @@ index 9b06836..6264b31 100644
 +        let sender = sender.clone();
 +        listeners.push(Box::pin(async move {
 +            while let Some(value) = reduced_motion_changed.next().await {
-+                sender.send(Event::Motion(MotionSetting::ReducedMotion(value?)))?;
++                sender.send(Event::Motion(MotionReport::Changed(
++                    MotionSetting::ReducedMotion(value?),
++                )))?;
 +            }
 +            anyhow::Ok(())
 +        }));
@@ -353,7 +409,9 @@ index 9b06836..6264b31 100644
 +        let sender = sender.clone();
 +        listeners.push(Box::pin(async move {
 +            while let Some(value) = enable_animations_changed.next().await {
-+                sender.send(Event::Motion(MotionSetting::EnableAnimations(value?)))?;
++                sender.send(Event::Motion(MotionReport::Changed(
++                    MotionSetting::EnableAnimations(value?),
++                )))?;
 +            }
 +            anyhow::Ok(())
 +        }));

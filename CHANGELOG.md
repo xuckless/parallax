@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to the published crates (`parallax`, `parallax-platform`, `parallax-android`,
+All notable changes to the published crates (`parallax`, `parallax-platform`, `parallax-android`, `parallax-ext`,
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
 ## [Unreleased] (0.1.9)
 
-Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0042).
+Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0046).
 
 Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
 window; `android_main!` takes a required `open_window` next to `launch`.
@@ -44,24 +44,34 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   (docs/web-lifecycle.md).
 - Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
   viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
-- OS reduce-motion and reduce-transparency settings on every target (patches 0039–0041, `parallax-android`):
+- OS reduce-motion and reduce-transparency settings on every target (patches 0039–0043, `parallax-android`):
   `App::reduce_motion` now starts as the OS setting and follows changes (iOS, macOS, Android's Remove animations,
   Windows' Animation effects, Linux's desktop portal, the web's `prefers-reduced-motion`), so GPUI's animations,
   animated SVGs and images stop moving when the user asks; new `App::reduce_transparency` /
-  `set_reduce_transparency` likewise (iOS, macOS, Windows, Chromium), for translucent materials
-  ([docs/os-settings.md](docs/os-settings.md)).
+  `set_reduce_transparency` likewise (iOS, macOS, Windows, Chromium), for translucent materials. An app's own
+  `set_reduce_*` holds until the user changes that setting: an OS report in which it did not move keeps it, and
+  Linux's late portal read never undoes one made in `launch` ([docs/os-settings.md](docs/os-settings.md)).
 - Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
-  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves.
+  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves. The element
+  lets clicks through to the canvas (patch 0046).
 - Web secure fields (patch 0034): while a `secure` field is focused the hidden IME element is an
   `<input type=password>`, so browsers and keyboards neither show nor learn what is typed; Enter in it submits on
   touch keyboards too. hello gains a password field.
-- A finger drag moves the caret on Android (patch 0042): `Window::compete_for_touch_drag(kind)` lets an element win
+- A finger drag moves the caret on Android (patch 0044): `Window::compete_for_touch_drag(kind)` lets an element win
   a touch drag once the touch passes the drag's slop, as Flutter's tap-and-drag recognizers do, so a text field keeps
   its taps and long presses. `TouchDragEvent` gains `start` (`TouchDragStart::Down` or `PastSlop(kind)`);
   `TextSelection::touch_drag_kind` gives the field's kind; hello's text field uses it ([docs/touch-drag.md](docs/touch-drag.md)).
 - Touch pans in a scroll container that scrolls on one axis start only on that axis' travel, as Flutter's
-  `VerticalDragGestureRecognizer` / `HorizontalDragGestureRecognizer` do (patch 0042), so a sideways drag in a
-  vertical list (a field's caret drag, a desktop field's selection pan) is no longer taken as a scroll.
+  `VerticalDragGestureRecognizer` / `HorizontalDragGestureRecognizer` do (patch 0045; divs and `list()`), so a
+  sideways drag in a vertical list (a field's caret drag, a desktop field's selection pan) is no longer taken as a
+  scroll, and, as Flutter's tap and long press, a touch that strays past the touch slop is no tap or long press
+  (a sideways swipe in a vertical list never clicks its row).
+- `parallax-ext` is published, and the facade re-exports it as `parallax::parallax_ext`. Its text selection taps a
+  caret's handle to toggle the toolbar (a handle drag and the magnifier start past the touch slop), treats obscured
+  text as one word, offers the toolbar's buttons (`TextSelection::toolbar_buttons`: no Cut or Copy for a password),
+  puts a range's end and the magnifier's line end upstream at a soft wrap (`TextLayout::caret_rect` takes an
+  `Affinity`), starts a drag GPUI already won at once (`Input::DragWon`) and never places the caret for a cancelled
+  touch (`Input::Cancel`). hello's toolbar gains Cut.
 
 ### Changed
 
@@ -72,7 +82,7 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
 - Android: one GPUI window per `ParallaxActivity` (was one per process, drawn only by the most recently started
   Activity). Two Activities in split screen both draw and take touch and text; each gets its window from the app's
   `open_window` (below). `onDestroy` closes the Activity's window, and an app closing its window finishes its
-  Activity (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most foreground Activity
+  Activity at once, even while it is paused or stopped (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most foreground Activity
   (`parallax-android`, docs/android-multi-window.md).
 - Breaking: `parallax_android::TouchSlopChanged` takes the reporting Activity's window
   (`fn(&mut App, Option<AnyWindowHandle>, Pixels)`), and the facade retunes that window instead of every window
