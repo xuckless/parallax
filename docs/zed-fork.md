@@ -17,6 +17,7 @@ and after adding or changing a patch:
 ```sh
 scripts/sync-fork.sh              # scratch checkout in build/zed-fork/ (git-ignored, reused)
 scripts/sync-fork.sh /path/to/dir # or anywhere else
+scripts/sync-fork.sh --no-push    # build the branch, push nothing: checks every patch against Zed's tree
 ```
 
 It fetches only the base commit (shallow, blobless) into the scratch checkout, sparse-checks-out `crates/gpui*` and

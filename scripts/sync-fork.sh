@@ -3,7 +3,8 @@
 # patches/*.patch (translated with patch-paths.sh to-zed --drop-manifests, plus its hand-written Zed manifest change
 # from patches/zed/<name>.manifest.patch when it has a */Cargo.toml section), then force-push that one branch.
 # Run after each sync.
-# Usage: scripts/sync-fork.sh [DIR]    (DIR: scratch Zed checkout, default build/zed-fork; reused across runs)
+# Usage: scripts/sync-fork.sh [--no-push] [DIR]    (DIR: scratch Zed checkout, default build/zed-fork; reused)
+#   --no-push builds the branch in DIR and stops: the check that every patch translates and applies to Zed.
 # Idempotent: commit dates are pinned to the base commit's, so an unchanged input rebuilds the same SHAs.
 set -euo pipefail
 
@@ -11,6 +12,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 zed_url="https://github.com/zed-industries/zed.git"
 fork_url="https://github.com/xuckless/zed.git"
 branch="parallax"
+push=yes
+if [[ ${1:-} == --no-push ]]; then push=no; shift; fi
 dir="$(realpath -m "${1:-$root/build/zed-fork}")"
 
 die() { echo "sync-fork: $*" >&2; exit 1; }
@@ -61,5 +64,9 @@ for patch in "${patches[@]}"; do
     git -C "$dir" commit -q -m "$(head -n 1 <<< "$header")" -m "$(tail -n +2 <<< "$header")"
 done
 
+if [[ $push == no ]]; then
+    echo "built $branch in $dir at $(git -C "$dir" rev-parse HEAD) (zed $base + ${#patches[@]} patches); not pushed"
+    exit 0
+fi
 git -C "$dir" push -q --force "$fork_url" "refs/heads/$branch:refs/heads/$branch" || die "push to $fork_url failed"
 echo "pushed $fork_url $branch at $(git -C "$dir" rev-parse HEAD) (zed $base + ${#patches[@]} patches)"
