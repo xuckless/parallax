@@ -223,10 +223,10 @@ index 7ee7a11..995e866 100644
          // contains no transparent pixels. This allows the compositor to skip
 diff --git a/gpui-pre-linux/src/linux/wayland/window/native_view.rs b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
 new file mode 100644
-index 0000000..6049cd9
+index 0000000..dfd4ab0
 --- /dev/null
 +++ b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
-@@ -0,0 +1,1098 @@
+@@ -0,0 +1,1117 @@
 +// Ported from chromium/chromium ui/ozone/platform/wayland/host/wayland_subsurface.cc and
 +// ui/ozone/platform/wayland/host/wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2.
 +// Copyright 2020 The Chromium Authors. BSD-3-Clause, see LICENSE-CHROMIUM.
@@ -325,6 +325,16 @@ index 0000000..6049cd9
 +) -> Option<Box<dyn Any>> {
 +    let viewporter = state.globals.viewporter.as_ref()?;
 +    state.globals.subcompositor.as_ref()?;
++    // The window's surface must blend for a view to show through its hole; without, the app
++    // gets NativeView::new's error and can fall back.
++    if let Some(Err(unsupported)) = state
++        .renderer
++        .as_ref()
++        .map(|renderer| renderer.native_view_support())
++    {
++        log::error!("native views: {unsupported}");
++        return None;
++    }
 +    let connection = wayland_client::Connection::from_backend(state.surface.backend().upgrade()?);
 +    // SAFETY: the caller passes a live wl_surface proxy made on this display.
 +    let surface = unsafe { app_surface(&connection, view) }?;
@@ -437,7 +447,8 @@ index 0000000..6049cd9
 +        for (id, _) in &frame.views {
 +            for view in &views {
 +                let view = view.borrow();
-+                if let (true, Placement::Shown { subsurface, .. }) = (view.id == *id, &view.placement)
++                if view.id == *id
++                    && let Placement::Shown { subsurface, .. } = &view.placement
 +                {
 +                    subsurface.place_below(parent.surface);
 +                }
@@ -922,7 +933,10 @@ index 0000000..6049cd9
 +        };
 +        if self.buffer.as_ref().map(|(shown, _)| *shown) != Some(colour) {
 +            // The old buffer's storage never changes, so destroying it while attached is allowed.
-+            let old = std::mem::replace(&mut self.buffer, colour_buffer(colour, parent).map(|buffer| (colour, buffer)));
++            let old = std::mem::replace(
++                &mut self.buffer,
++                colour_buffer(colour, parent).map(|buffer| (colour, buffer)),
++            );
 +            if let Some((_, old)) = old {
 +                old.destroy();
 +            }
@@ -1123,7 +1137,12 @@ index 0000000..6049cd9
 +                    mode: desync,
 +                },
 +            ),
-+            ("hidden and not painted", hidden(), None, Step::Keep(hidden())),
++            (
++                "hidden and not painted",
++                hidden(),
++                None,
++                Step::Keep(hidden()),
++            ),
 +            (
 +                "painted again shows on the kept subsurface",
 +                hidden(),
@@ -1326,7 +1345,7 @@ index 0000000..6049cd9
 +    }
 +}
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index 6dc1948..f60aac6 100644
+index 42f7efe..d3f0be2 100644
 --- a/gpui-pre/src/window/native_view.rs
 +++ b/gpui-pre/src/window/native_view.rs
 @@ -185,6 +185,13 @@ impl NativeView {

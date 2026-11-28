@@ -20,8 +20,8 @@ What:
   touch's first tap reaches the element; a touch release hands it back to them. The canvas's `pointerleave` is not
   reported while the pointer is over a view. `set_focused_native_view` focuses the element, and its `focusin`
   focuses the view's handle.
-- gpui_wgpu: a WebGL2 canvas is premultiplied by its context's default whatever mode wgpu reports (only `Opaque`), so
-  0047's alpha log says so there instead of warning that holes show black.
+- gpui_wgpu: a WebGL2 canvas is premultiplied by its context's default whatever mode wgpu reports (only `Opaque`);
+  0047's `native_view_support` says so (folded into 0047, Caveman C17).
 
 New files `gpui_web/src/native_views.rs` (the DOM shell) and `native_view_layout.rs` (pure: `placement`, `step`;
 tested on the host in patch-test.sh's web-pure crate). The slot lifecycle is ported from flutter/flutter
@@ -1253,38 +1253,3 @@ index 3d1ba31..4d6763e 100644
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
          self.inner.state.borrow().renderer.sprite_atlas().clone()
      }
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-index aebde2c..1468650 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
-@@ -30,7 +30,13 @@ pub(super) fn color_target(format: wgpu::TextureFormat) -> wgpu::ColorTargetStat
- 
- /// Native views need a compositor that blends the window. NVIDIA's Vulkan WSI has been
- /// known to offer only `Opaque` on Wayland, where every hole then shows black.
--pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode) {
-+pub(super) fn log_alpha_mode(alpha_mode: wgpu::CompositeAlphaMode, backend: Option<wgpu::Backend>) {
-+    // A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to true and wgpu
-+    // leaves alone, whatever surface mode wgpu reports (only `Opaque`).
-+    if cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl) {
-+        log::info!("native views: WebGL2 canvas, premultiplied alpha (the context's default)");
-+        return;
-+    }
-     match alpha_mode {
-         wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit => {
-             log::info!("native views: window surface alpha mode {alpha_mode:?}")
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
-index 1ed0f2c..4c41ee8 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
-@@ -1154,7 +1154,10 @@ impl WgpuRenderer {
-             self.shows_native_views = shows_native_views;
-             self.apply_alpha_mode();
-             if shows_native_views {
--                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
-+                native_view_hole::log_alpha_mode(
-+                    self.transparent_alpha_mode,
-+                    self.core().map(|core| core.adapter_info.backend),
-+                );
-             }
-         }
- 
