@@ -16,6 +16,8 @@
 //!   window-rect            the window's frame on screen, physical px: left top right bottom
 //!   touch <frame>…         inject touch frames (frames.rs has the syntax); pen <frame>… a pen's
 //!   click <x> <y>          a left mouse click there
+//!   move <x> <y>           the mouse cursor moved there
+//!   scroll <x> <y> <notches>  the mouse wheel turned there, positive away from the user
 
 #[cfg_attr(
     not(target_os = "windows"),
@@ -72,7 +74,7 @@ mod windows_tool {
             Input::{
                 KeyboardAndMouse::{
                     INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-                    MOUSEINPUT, SendInput,
+                    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
                 },
                 Pointer::{
                     InjectSyntheticPointerInput, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT,
@@ -197,6 +199,25 @@ mod windows_tool {
                     y: y.parse()?,
                 };
                 click(to_screen(at, origin, scale))?;
+            }
+            ("move", [x, y]) => {
+                let (x, y) = to_screen(
+                    Point {
+                        x: x.parse()?,
+                        y: y.parse()?,
+                    },
+                    origin,
+                    scale,
+                );
+                // SAFETY: plain call, no pointers. Windows sends the window WM_MOUSEMOVE for the new position.
+                unsafe { SetCursorPos(x, y) }?;
+            }
+            ("scroll", [x, y, notches]) => {
+                let at = Point {
+                    x: x.parse()?,
+                    y: y.parse()?,
+                };
+                scroll(to_screen(at, origin, scale), notches.parse()?)?;
             }
             _ => return Err(format!("touch-inject: unknown command {command} {rest:?}").into()),
         }
@@ -532,6 +553,29 @@ mod windows_tool {
     }
 
     /// A real (not promoted) left click: the cursor moves there, then a press and a release.
+    /// Wheel notches of `WHEEL_DELTA` (120) each at a screen point, through `SendInput`.
+    fn scroll((x, y): (i32, i32), notches: i32) -> Result<(), Box<dyn Error>> {
+        // SAFETY: plain call, no pointers.
+        unsafe { SetCursorPos(x, y) }?;
+        let wheel = [INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dwFlags: MOUSEEVENTF_WHEEL,
+                    // mouseData is a DWORD holding a signed wheel delta.
+                    mouseData: (notches * 120) as u32,
+                    ..Default::default()
+                },
+            },
+        }];
+        // SAFETY: `wheel` is a valid slice of INPUTs of the size passed.
+        let sent = unsafe { SendInput(&wheel, size_of::<INPUT>() as i32) };
+        if sent as usize != wheel.len() {
+            return Err("touch-inject: SendInput was blocked".into());
+        }
+        Ok(())
+    }
+
     fn click((x, y): (i32, i32)) -> Result<(), Box<dyn Error>> {
         // SAFETY: plain call, no pointers.
         unsafe { SetCursorPos(x, y) }?;
