@@ -390,10 +390,14 @@ async function nativeViewChecks() {
   console.log(`measure alpha: ${alpha.at(-1)}`);
   check("alpha mode logged", alpha.some((line) => /premultiplied/i.test(line)), true);
   const [gpui0, element0] = await js("[window.gpuiFrames, window.elementFrames]");
+  const framesMark = logs.length;
   await sleep(2000);
   const [gpui1, element1] = await js("[window.gpuiFrames, window.elementFrames]");
-  // The example's own once-a-second count over the same two seconds: GPUI's frames, the canvas element's.
-  const seconds = logs.map((line) => line.match(FRAMES_LINE)).filter(Boolean).slice(-2);
+  // The example's own once-a-second count, GPUI's frames and the canvas element's, for two whole seconds after the
+  // mark: the first line after it counts a second that began before it (still loading: fonts, the first frames).
+  const loggedSeconds = () => logs.slice(framesMark).map((line) => line.match(FRAMES_LINE)).filter(Boolean);
+  for (let i = 0; i < 30 && loggedSeconds().length < 3; i++) await sleep(200);
+  const seconds = loggedSeconds().slice(1, 3);
   const [gpuiLogged, viewLogged] = [1, 2].map((at) => seconds.reduce((sum, second) => sum + Number(second[at]), 0));
   console.log(`measure frames/s: ${seconds.map((second) => second[0]).join("; ")}`);
   check("GPUI frames while only the elements change", [gpui1 - gpui0, seconds.length, gpuiLogged], [0, 2, 0]);
@@ -456,7 +460,11 @@ async function nativeViewChecks() {
   await sleep(500);
   const inFrame = await active();
   await command("field");
-  check("GPUI field focused from inside a view: typing reaches it", [inFrame, await enter()], ["iframe", true]);
+  // GPUI learns that focus went into an iframe from the window's `blur`. Headless Firefox (Playwright's builds 1471
+  // and 1495) fires no focus event at all when a click moves focus into an iframe, not even an <input>'s focusout:
+  // its window is never active. So there GPUI cannot know, and the check would test the harness, not the code.
+  if (browser === "firefox") skip("GPUI field focused from inside a view: typing reaches it");
+  else check("GPUI field focused from inside a view: typing reaches it", [inFrame, await enter()], ["iframe", true]);
   await press(...uncovered("same"));
   await sleep(500);
   await command("drop same");

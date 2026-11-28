@@ -50,6 +50,11 @@ while only the elements change:
 | Chromium 158 headless `--use-angle=gl`, desktop | WebGPU | 1 | 0.16 / 0.13 ms | 60 / 60 fps, 2.7 / 2.0 ms |
 | Firefox (Playwright), desktop and touch | WebGL2 | 1, 1.25 | — | — |
 
+Firefox skips "GPUI field focused from inside a view": headless Firefox (Playwright builds 1471 and 1495) fires no
+focus event when a click moves focus into an iframe (no window `blur`, not even an `<input>`'s `focusout`: its window
+is never active), and that `blur` is how GPUI learns of it; Chromium runs it. The frames check counts the example's
+per-second log from the second after its mark, so a second that began while the page loaded is not counted.
+
 A WebGL2 canvas is premultiplied with or without views, so the views' cost per frame is the DOM slots and their
 compositing, not transparency. Against the series before these checks were added, the stale-shield, dropped-view,
 last-view, form-input, offset-canvas and page-content rows fail.
