@@ -37,7 +37,9 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - iOS: a native view can take the keyboard: while its focus handle is focused, GPUI's text input stays out of first
   responder, so the app can make its `UIView` (a `UITextField`, a `WKWebView`) first responder; focus back on a GPUI
   field takes it back (patch 0064, docs/native-view-apple.md#keyboard-on-ios).
-- `native-view-apple` example (iOS: also a GPUI field next to a native `UITextField`).
+- `examples/native-view`: one native-view example for every target, with one log line format the check scripts
+  share (docs/examples-native-view.md); it replaces the per-platform examples named in these entries (WebView2 is
+  `--view webview2`; iOS: also a GPUI field next to a native `UITextField`).
 - Web: `NativeView::new` takes a DOM element (`web_sys::HtmlElement`: an iframe, a video, a canvas) and shows it under
   GPUI's canvas, placed in GPUI's frame; the browser gives pointer input over an uncovered view to the element itself
   (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patches 0066–0069,

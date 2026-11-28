@@ -1,4 +1,4 @@
-"""Checks every frame of a recording of examples/native-view-apple (docs/native-view-apple.md#checks): each frame
+"""Checks every frame of a recording of examples/native-view (docs/native-view-apple.md#checks): each frame
 must show the native view's colour, the GPUI div's colour over it, and no gap pixel (the gap colour anywhere, or
 black bordering the view inside the app's content: a hole with nothing behind it), so a frame where hole and view
 part, or where either is missing, fails. Black that reaches the frame's edge or the top band is not the app's: the
@@ -18,7 +18,7 @@ import subprocess
 import sys
 
 # Colour classes: a pixel is in a class when every channel is in that class's range. To add one, add a row and give
-# it the next bit. The view turns through hues 90-210 at full saturation and value (apple.rs HUES): red at most
+# it the next bit. The view turns through hues 90-210 at full saturation and value (src/apple.rs HUES): red at most
 # half, green or blue full; the div is DIV_COLOUR (e07020); the gap is GAP_COLOUR (ff00ff). Ranges allow for
 # H.264's colour shifts.
 # (name, bit, (red, green, blue) ranges, inclusive)

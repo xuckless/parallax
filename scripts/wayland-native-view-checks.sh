@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runtime checks of NativeView on Wayland (patches 0047-0055, docs/native-view-wayland.md): runs
-# examples/native-view-wayland in a private headless GNOME Shell (mutter as a compositor, its own D-Bus session,
+# examples/native-view in a private headless GNOME Shell (mutter as a compositor, its own D-Bus session,
 # runtime dir and settings, so nothing of a desktop session is touched), injects pointer input through the Shell's
 # Eval, reads its screenshots back with scripts/pixels.py, and asserts on pixels and on what the example logged.
 # The app renders with Mesa lavapipe (CLIENT_ICD=host keeps the host's Vulkan driver). The Shell composites with
@@ -14,10 +14,14 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin=$repo/target/debug/native-view-wayland
+bin=$repo/target/debug/native-view
 out=$repo/target/native-view-wayland
-# The example's colours (src/main.rs, src/page.rs): the view's container (the gap colour), the div over the view, the
-# page's background (its red drifts) and its one-pixel yellow edge.
+# The example's once-a-second line and the renderers' alpha lines: the same two regexes in every native-view check
+# script (docs/examples-native-view.md).
+frames_line='native-view: gpui frames/s ([0-9]+), view frames/s ([0-9]+)'
+alpha_line='alpha mode [A-Z][A-Za-z]+|alpha mode, only [A-Za-z]+|premultiplied alpha \(|metal layer alpha: [a-z]+'
+# The example's colours (src/wayland.rs, src/wayland/page.rs): the view's container (the gap colour), the div over the
+# view, the page's background (its red drifts) and its one-pixel yellow edge.
 gap=c000c0
 over=2050d0
 page=**4080
@@ -91,8 +95,8 @@ if [[ ${1:-} == --session ]]; then
   stage_width=$(eval_js "global.stage.width" | sed -E "s/^\(true, '([0-9.]+)'\)$/\1/")
   read -r shot_width _ <<<"$(px "$work/still.png" size)"
   factor=$(python3 -c "print($shot_width / $stage_width)")
-  grep -q 'window surface alpha mode' "$work/still.log" \
-    && pass "alpha mode logged: $(grep -o 'alpha mode [A-Za-z]*' "$work/still.log" | head -1)" \
+  grep -qE "$alpha_line" "$work/still.log" \
+    && pass "alpha mode logged: $(grep -oE "$alpha_line" "$work/still.log" | head -1)" \
     || fail "no alpha mode logged"
   # The view's container is the view's bounds: where the page or (at a fractional scale, one device pixel of) the
   # container shows.
@@ -111,9 +115,9 @@ if [[ ${1:-} == --session ]]; then
   [[ $(px "$work/still.png" count "$over") -gt 1000 ]] && read -r cr cg cb <<<"$(px "$work/still.png" at "$ox" "$oy")" \
     && ((cb > 180 && cr < 80)) && pass "the div covers the view" || fail "no div over the view at $ox $oy"
   sleep 4
-  idle=$(grep 'gpui frames/s' "$work/still.log" | sed -n '6,9p')
+  idle=$(grep -oE "$frames_line" "$work/still.log" | sed -n '6,9p')
   echo "$idle"
-  if [[ -z $idle ]] || grep -q 'gpui frames/s: [1-9]' <<<"$idle" || grep -qv 'page frames/s: [1-9][0-9]' <<<"$idle"
+  if [[ -z $idle ]] || grep -q 'gpui frames/s [1-9]' <<<"$idle" || grep -qv 'view frames/s [1-9][0-9]' <<<"$idle"
   then fail "GPUI drew while only the page changed"
   else pass "0 GPUI frames per second while the page commits"; fi
 
@@ -156,7 +160,7 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   downs=$(grep -c 'view pointer down' "$work/still.log" || true)
   move "$dx" "$dy"
   click
-  [[ $(grep -c 'GPUI div over the view: down' "$work/still.log" || true) -eq 1 \
+  [[ $(grep -c 'div over view: down' "$work/still.log" || true) -eq 1 \
     && $(grep -c 'view pointer down' "$work/still.log" || true) -eq $downs ]] \
     && pass "the div over the view takes its own click" || fail "the div's click went wrong"
   kill $app 2>/dev/null || true
@@ -237,10 +241,10 @@ print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f
   eval_js "Main.overview.hide()" >/dev/null
   status=0
   wait $app || status=$?
-  seconds=$(grep -c 'gpui frames/s' "$work/resize.log" || true)
-  late=$(grep 'gpui frames/s' "$work/resize.log" | tail -3)
+  seconds=$(grep -cE "$frames_line" "$work/resize.log" || true)
+  late=$(grep -oE "$frames_line" "$work/resize.log" | tail -3)
   if ((status == 0 && seconds >= 7)) && ! grep -qiE 'protocol error|connection is gone|broken pipe' "$work/resize.log" \
-    && ! grep -qE 'page frames/s: 0$' <<<"$late" && ! grep -q 'gpui frames/s: 0,' <<<"$late"; then
+    && ! grep -qE 'view frames/s 0$' <<<"$late" && ! grep -q 'gpui frames/s 0,' <<<"$late"; then
     pass "resized while clipped: the connection held for $seconds s, page and GPUI kept drawing"
   else
     fail "resized while clipped: exit $status after $seconds s: $(grep -iE 'error|frames/s' "$work/resize.log" | tail -3)"
@@ -261,7 +265,7 @@ for tool in "${tools[@]}"; do
 done
 scales=("${@:-1}")
 [[ $# -gt 0 ]] || scales=(1 1.25)
-cargo build -p native-view-wayland
+cargo build -p native-view
 failed=0
 for scale in "${scales[@]}"; do
   work=$out/$scale

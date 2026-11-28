@@ -21,7 +21,7 @@ window/native_views.rs (upstream GPUI, Apache-2.0) adapted to UIKit, which is mo
 near-verbatim port of proven code it is exempt from the size limit (patch rule 4).
 
 Checked (0062–c together) on the iOS 26.5 simulator (iPhone 17 at 3x, iPad Air 11-inch at 2x) with
-examples/native-view-apple and scripts/apple-native-view-checks.sh: 0 GPUI frames/s while the view recolours at 63
+examples/native-view and scripts/apple-native-view-checks.sh: 0 GPUI frames/s while the view recolours at 63
 frames/s; every recorded frame shows the view and the div over it with no gap pixel, still and with the slot moving
 every frame.
 

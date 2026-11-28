@@ -12,14 +12,14 @@ than failing the whole recovery. Hooks: one module line, one `pub use`, doc line
 Why: owner decision 2026-11-27 (issue #1, WebView2). WebView2's visual hosting
 (`CreateCoreWebView2CompositionController`) renders into a `RootVisualTarget`, a visual that must be on the device of
 the tree it joins, so the app needs GPUI's device; with it, a WebView2 page is a NativeView like a swap chain, with
-its input sent from the view element's listeners (`SendMouseInput`, `MoveFocus`; examples/native-view-webview2).
+its input sent from the view element's listeners (`SendMouseInput`, `MoveFocus`; examples/native-view --view webview2).
 
 `gpui_windows::on_composition_device_changed(window, callback)` tells the app each time a lost GPU device gave the
 window a new DirectComposition device, after its tree is rebuilt (`events.rs` calls it once the renderer's borrow
 ends), since a visual made on the old device can't join the new tree: the app makes its visual (WebView2's
-controller) and `NativeView` again. examples/native-view-webview2 does.
+controller) and `NativeView` again. examples/native-view does.
 
-Test: `scripts/windows-native-view-checks.sh` runs examples/native-view-webview2 on CI's Windows runner at 100 and
+Test: `scripts/windows-native-view-checks.sh` runs examples/native-view --view webview2 on CI's Windows runner at 100 and
 125 %: the page renders in the hole under the cover div, a click, wheel and key over it reach the page (it posts
 them back through `WebMessageReceived`), and GPUI draws 0 frames per second while only the page animates
 (docs/native-view-windows.md).

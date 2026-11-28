@@ -21,7 +21,7 @@ monitor's position and scale, and says `restored: …`. Ctrl-C restores too. If 
 | animate | the view moving and resizing with its magenta container: no magenta flashing at its edges, no lag |
 | clipped | only the lower half of the page (no yellow band), in a see-through window; nothing above it |
 
-After each run it prints the alpha mode, the last seconds of `gpui frames/s: N, page frames/s: M` (still and clipped:
+After each run it prints the alpha mode, the last seconds of `native-view: gpui frames/s N, view frames/s M` (still and clipped:
 GPUI 0) and its log under `target/native-view-wayland/owner-1.25/`. Report anything odd with the log; a screenshot
 helps (PrtSc during the run).
 

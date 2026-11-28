@@ -46,5 +46,5 @@ How to build and run it on each target: [examples-run.md](examples-run.md).
 
 ## Native views
 
-The `native-view-*` examples, one per target, show an OS-native view through GPUI's hole:
+The `native-view` example shows an OS-native view through GPUI's hole, one crate for every target:
 [examples-native-view.md](examples-native-view.md).

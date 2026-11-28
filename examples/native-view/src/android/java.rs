@@ -12,7 +12,7 @@ use std::{
 
 use parallax::parallax_android::jni::{
     self, JNIEnv, JavaVM,
-    objects::{GlobalRef, JObject, JValue},
+    objects::{GlobalRef, JObject, JObjectArray, JValue},
 };
 
 /// The page the WebView loads: tall enough to scroll, a button that turns colour on tap. Its console goes to logcat
@@ -37,23 +37,10 @@ pub enum SurfaceKind {
     Hosted,
 }
 
-/// The intent's `surface` extra → kind. `SurfaceControl` is the default from API 29.
-const SURFACE_KINDS: [(&str, SurfaceKind); 3] = [
-    ("view", SurfaceKind::View),
-    ("hosted", SurfaceKind::Hosted),
-    ("control", SurfaceKind::Control),
-];
-
-/// The intent's extras: `surface` (`view`, `hosted` or `control`), `animate` and `stack`.
-pub struct Options {
-    pub surface: SurfaceKind,
-    pub animate: bool,
-    /// Two overlapping tiles in place of the WebView: SurfaceControls with `control`, plain Views otherwise.
-    pub stack: bool,
-}
-
 /// The objects handed to `NativeView::new`, and the surface the producer fills.
 pub struct Views {
+    /// The kind made: below API 29 always `View`.
+    pub kind: SurfaceKind,
     pub surface_view: GlobalRef,
     pub surface: GlobalRef,
     /// The WebView, or with `stack` the two tiles in attach order (the top one first), each with the surface its
@@ -66,68 +53,70 @@ pub enum Second {
     Tiles([(GlobalRef, Option<GlobalRef>); 2]),
 }
 
-/// The tiles' colours (RGB), in attach order: the yellow one is attached first but painted last, so it is on top.
-pub const TILE_COLOURS: [u32; 2] = [0xe0c020, 0xe03030];
+/// The tiles' names and colours (RGB), in attach order: the yellow one is attached first but painted last, so it is
+/// on top.
+pub const TILE_COLOURS: [(&str, u32); 2] = [("yellow", 0xe0c020), ("red", 0xe03030)];
 
-pub fn options(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<Options> {
-    let sdk = env
-        .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
-        .i()?;
+/// The activity's intent extras, each as `String.valueOf` of its value (`true` for `--ez name true`).
+pub fn extras(env: &mut JNIEnv, activity: &JObject) -> jni::errors::Result<Vec<(String, String)>> {
     let intent = env
         .call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?
         .l()?;
-    let key = env.new_string("surface")?;
-    let surface = env
-        .call_method(
-            &intent,
-            "getStringExtra",
-            "(Ljava/lang/String;)Ljava/lang/String;",
-            &[JValue::Object(&key)],
-        )?
+    let bundle = env
+        .call_method(&intent, "getExtras", "()Landroid/os/Bundle;", &[])?
         .l()?;
-    let surface: Option<String> = if surface.is_null() {
-        None
-    } else {
-        Some(env.get_string(&surface.into())?.into())
-    };
-    let mut flag = |name: &str| -> jni::errors::Result<bool> {
-        let key = env.new_string(name)?;
-        env.call_method(
-            &intent,
-            "getBooleanExtra",
-            "(Ljava/lang/String;Z)Z",
-            &[JValue::Object(&key), JValue::Bool(0)],
-        )?
-        .z()
-    };
-    let (animate, stack) = (flag("animate")?, flag("stack")?);
-    let asked = SURFACE_KINDS
-        .iter()
-        .find(|(name, _)| Some(*name) == surface.as_deref())
-        .map(|(_, kind)| *kind);
-    let surface = match (asked, sdk) {
-        (_, ..29) => SurfaceKind::View,
-        (Some(kind), _) => kind,
-        (None, _) => SurfaceKind::Control,
-    };
-    Ok(Options {
-        surface,
-        animate,
-        stack,
-    })
+    if bundle.is_null() {
+        return Ok(Vec::new());
+    }
+    let keys = env
+        .call_method(&bundle, "keySet", "()Ljava/util/Set;", &[])?
+        .l()?;
+    let keys: JObjectArray = env
+        .call_method(&keys, "toArray", "()[Ljava/lang/Object;", &[])?
+        .l()?
+        .into();
+    let mut extras = Vec::new();
+    for at in 0..env.get_array_length(&keys)? {
+        let key = env.get_object_array_element(&keys, at)?;
+        let value = env
+            .call_method(
+                &bundle,
+                "get",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&key)],
+            )?
+            .l()?;
+        let value = env
+            .call_static_method(
+                "java/lang/String",
+                "valueOf",
+                "(Ljava/lang/Object;)Ljava/lang/String;",
+                &[JValue::Object(&value)],
+            )?
+            .l()?;
+        let key: String = env.get_string(&key.into())?.into();
+        let value: String = env.get_string(&value.into())?.into();
+        extras.push((key, value));
+    }
+    Ok(extras)
 }
 
 pub fn views(
     env: &mut JNIEnv,
     activity: &JObject,
-    options: &Options,
+    kind: SurfaceKind,
+    stack: bool,
 ) -> jni::errors::Result<Views> {
-    let (surface_view, surface) = native_surface(env, activity, options.surface)?;
-    let second = if options.stack {
+    let sdk = env
+        .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
+        .i()?;
+    let kind = if sdk < 29 { SurfaceKind::View } else { kind };
+    let (surface_view, surface) = native_surface(env, activity, kind)?;
+    let second = if stack {
         // A SurfaceControl with a producer, or a plain coloured View: a SurfaceView's surface stacks by Android's own
         // SurfaceView rules, not by the View's Z (docs/native-view-android-hosting.md).
         let mut tile = |colour: u32| -> jni::errors::Result<(GlobalRef, Option<GlobalRef>)> {
-            if options.surface == SurfaceKind::Control {
+            if kind == SurfaceKind::Control {
                 let (object, surface) = native_surface(env, activity, SurfaceKind::Control)?;
                 return Ok((
                     env.new_global_ref(object)?,
@@ -143,12 +132,13 @@ pub fn views(
             env.call_method(&view, "setBackgroundColor", "(I)V", &[JValue::Int(argb)])?;
             Ok((env.new_global_ref(view)?, None))
         };
-        Second::Tiles([tile(TILE_COLOURS[0])?, tile(TILE_COLOURS[1])?])
+        Second::Tiles([tile(TILE_COLOURS[0].1)?, tile(TILE_COLOURS[1].1)?])
     } else {
         let web_view = web_view(env, activity)?;
         Second::Web(env.new_global_ref(web_view)?)
     };
     Ok(Views {
+        kind,
         surface_view: env.new_global_ref(surface_view)?,
         surface: env.new_global_ref(surface)?,
         second,
@@ -164,7 +154,7 @@ fn native_surface<'local>(
     Ok(match kind {
         SurfaceKind::Control => {
             let builder = env.new_object("android/view/SurfaceControl$Builder", "()V", &[])?;
-            let name = env.new_string("native-view-android surface")?;
+            let name = env.new_string("native-view surface")?;
             let returns_builder =
                 |args: &str| format!("({args})Landroid/view/SurfaceControl$Builder;");
             env.call_method(

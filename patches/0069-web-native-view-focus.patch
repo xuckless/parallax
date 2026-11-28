@@ -6,7 +6,7 @@ What:
   sees no `focusin` for) focuses the view's handle.
 - Dropping the last handle of a view with DOM focus inside it gives focus to GPUI's IME mirror.
 
-Tests: in a browser, scripts/web-checks.mjs's `native-view` suite on examples/native-view-web
+Tests: in a browser, scripts/web-checks.mjs's `native-view` suite on examples/native-view
 (docs/native-view-web.md).
 
 Upstream PR: not filed (filing paused, patch rule 14).

@@ -14,8 +14,8 @@ D3D11 device and thread. GPUI keeps a reference until the last handle drops. Its
 from the element's top left, clipped to its content mask; size the swap chain from the element's laid-out bounds × scale
 (the example reads them in a canvas's prepaint) and `ResizeBuffers` when they change. Until it does, `set_background`'s colour (black by default) shows where the content
 doesn't reach. Listen on `view.clone().into_element()` (`on_mouse_move`, `on_mouse_down`, `on_scroll`, `on_key_down`)
-and subtract `bounds.origin` for positions in the view. [native-view-windows](../examples/native-view-windows/src/)
-is the whole pattern.
+and subtract `bounds.origin` for positions in the view. [examples/native-view](../examples/native-view/)'s
+[windows.rs](../examples/native-view/src/windows.rs) is the whole pattern.
 
 **CEF (wubble):** off-screen rendering with `shared_texture_enabled` hands `OnAcceleratedPaint` a D3D11 shared texture
 handle each frame. Open it on the app's device (`ID3D11Device1::OpenSharedResource1`), `CopyResource` it into the
@@ -54,7 +54,7 @@ Each copy logs at debug (`gpui_windows::directx_renderer::native_view_surface`),
 ([ci.md](ci.md)) at 100 and 125 %: it launches the example through [touch-inject](windows-touch-harness.md), reads the
 composed screen back (`BitBlt` with `CAPTUREBLT`, which includes DComp; [pixels.py](../scripts/pixels.py)) and
 injects mouse moves, wheel and clicks. Per scale: alpha mode logged; 0 GPUI frames and 0 copies per second over 3 s
-while the view presents (the example counts paints and presents per second); the hole shows the view and the cover
+while the view presents (the example's once-a-second `gpui frames/s N, view frames/s M`); the hole shows the view and the cover
 div over it shows (GPUI's visual is above the view's); one device pixel past each edge is GPUI's (no seam); no gap
 colour in any of 100 screenshots (`touch-inject shots`) taken while the view slides, and in each the view's colour
 over at least 80 % of its uncovered area and the cover's colour present, so a blank view fails; none after a resize; one copy per

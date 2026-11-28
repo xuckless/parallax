@@ -18,7 +18,7 @@ a ten-line page clearing a WebGPU canvas red shows black, and drawImage of it re
 all-black window (seen on the owner's desktop, 2026-11-28). The same read gives 255,0,0,255 where WebGPU works
 (`--use-angle=gl`). The choice is private to gpui_web's platform (no extension point).
 
-Tests: in a browser (docs/web-webgpu.md): with `--enable-features=Vulkan --use-angle=vulkan` hello and native-view-web
+Tests: in a browser (docs/web-webgpu.md): with `--enable-features=Vulkan --use-angle=vulkan` hello and examples/native-view
 log the fallback and draw with WebGL2; with `--use-angle=gl` they keep WebGPU; with `--disable-webgl` as well as a
 blank WebGPU they log both failures and still open the window.
 

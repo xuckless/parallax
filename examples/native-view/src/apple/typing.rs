@@ -14,11 +14,12 @@ use objc2::{
     sel,
 };
 use parallax::gpui::{
-    App, Context, Entity, FocusHandle, Focusable, MouseButton, NativeView, Subscription,
-    TextInputConfiguration, Window, div, prelude::*, px, rgb,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, MouseButton, NativeView,
+    Subscription, TextInputConfiguration, Window, div, prelude::*, px, rgb,
 };
 use std::{ffi::CStr, ptr::NonNull, sync::OnceLock};
 
+use crate::demo::{Demo, Extra};
 use hello::text_field::{self, TextField};
 
 /// `UIControlEventEditingChanged`.
@@ -38,11 +39,7 @@ struct NativeField {
 }
 
 impl Typing {
-    #[expect(
-        clippy::expect_used,
-        reason = "the example has nothing to show without its view"
-    )]
-    pub fn new<V: 'static>(window: &mut Window, cx: &mut Context<V>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Demo>) -> Result<Self, String> {
         text_field::bind_keys(cx);
         let field =
             cx.new(|cx| TextField::new("GPUI field", TextInputConfiguration::default(), cx));
@@ -50,7 +47,7 @@ impl Typing {
         // SAFETY: `text_field` is a live, parentless UITextField, on the main thread.
         let native_view =
             unsafe { NativeView::new(NonNull::from(&*text_field).cast(), window, cx) }
-                .expect("iOS windows show native views");
+                .map_err(|error| format!("{error:#}"))?;
         native_view.set_background(rgb(super::GAP_COLOUR), cx);
         // Focus leaving the native field for something that is not a text field leaves the UITextField first
         // responder (GPUI takes it back only for a field of its own), so the app resigns it.
@@ -59,22 +56,19 @@ impl Typing {
             // SAFETY: A live UITextField, on the main thread.
             let _: Bool = unsafe { msg_send![&*resign, resignFirstResponder] };
         });
-        Self {
+        Ok(Self {
             field,
             native: Some(NativeField {
                 native_view,
                 text_field,
                 _blur: blur,
             }),
-        }
+        })
     }
+}
 
-    /// Drops the native field's handle, which detaches the `UITextField` (and resigns it if it has the keyboard).
-    pub fn drop_native_field(&mut self) {
-        self.native = None;
-    }
-
-    pub fn render(&self, cx: &App) -> impl IntoElement {
+impl Extra for Typing {
+    fn render(&self, _: &mut Window, cx: &mut App) -> AnyElement {
         div()
             .flex()
             .gap_2()
@@ -95,6 +89,12 @@ impl Typing {
                     })
                     .child(native.native_view.clone())
             }))
+            .into_any_element()
+    }
+
+    /// Drops the native field's handle, which detaches the `UITextField` (and resigns it if it has the keyboard).
+    fn drop_views(&mut self) {
+        self.native = None;
     }
 }
 
@@ -162,7 +162,7 @@ extern "C" fn editing_changed(this: &AnyObject, _: Sel, _: *mut AnyObject) {
             msg_send![text, UTF8String]
         };
         log::info!(
-            "native-view-apple: UITextField: text {:?}",
+            "native-view: UITextField: text {:?}",
             CStr::from_ptr(utf8).to_string_lossy()
         );
     }
@@ -180,7 +180,7 @@ fn call_super(this: &AnyObject, selector: Sel) -> Bool {
 extern "C" fn become_first_responder(this: &AnyObject, selector: Sel) -> Bool {
     let became = call_super(this, selector);
     log::info!(
-        "native-view-apple: UITextField: first responder {}",
+        "native-view: UITextField: first responder {}",
         if became.as_bool() {
             "yes"
         } else {
@@ -193,7 +193,7 @@ extern "C" fn become_first_responder(this: &AnyObject, selector: Sel) -> Bool {
 extern "C" fn resign_first_responder(this: &AnyObject, selector: Sel) -> Bool {
     let resigned = call_super(this, selector);
     if resigned.as_bool() {
-        log::info!("native-view-apple: UITextField: first responder no");
+        log::info!("native-view: UITextField: first responder no");
     }
     resigned
 }

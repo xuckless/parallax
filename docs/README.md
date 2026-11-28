@@ -67,7 +67,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-smoke.md](android-smoke.md) | android-smoke.sh: hello on an emulator, the step table (tap, type, rotate, background) |
 | [android-smoke-ci.md](android-smoke-ci.md) | android-smoke.sh: finding tap targets by colour, the CI job, limits |
 | [examples.md](examples.md) | The hello example: what it shows, its entry point per target |
-| [examples-native-view.md](examples-native-view.md) | The `native-view-*` examples, one per target (Wayland, web, Windows, WebView2, Apple, Android): what each shows and logs, its flags |
+| [examples-native-view.md](examples-native-view.md) | The `native-view` example, one crate for every target: the shared GPUI side, the `make_view` rows per target (Wayland, Windows and WebView2, Apple, Android, web), its options, its log lines and the regexes the checks read them with |
 | [examples-run.md](examples-run.md) | Running hello on desktop, web, Android and iOS (CI build only) |
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
@@ -75,7 +75,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [native-view-android.md](native-view-android.md) | `NativeView` on Android: a `SurfaceControl` under GPUI's buffer or a `View` under its translucent surface, placement per frame, focus and Back, touch forwarding, the example |
 | [native-view-android-hosting.md](native-view-android-hosting.md) | How each kind of Android native view is hosted (View, SurfaceControl, `in_surface`), stacking, clip, the growing edge, GL vs Vulkan |
 | [native-view-android-checks.md](native-view-android-checks.md) | `scripts/android-native-view-checks.sh`: the Android native view emulator checks (per-frame view, div and gap colours, frames/s, stacking, Back) and their results |
-| [native-view-apple.md](native-view-apple.md) | Patches 0059–0064: `NativeView` on macOS (upstream) and iOS: where the view goes, who takes input over it, presenting in step, the alpha log, the native-view-apple example |
+| [native-view-apple.md](native-view-apple.md) | Patches 0059–0064: `NativeView` on macOS (upstream) and iOS: where the view goes, who takes input over it, presenting in step, the alpha log, the example on Apple targets |
 | [native-view-apple-checks.md](native-view-apple-checks.md) | The iOS simulator checks for patches 0059–0064 (`apple-native-view-checks.sh`) and the per-frame recording counter (`apple-native-view-frames.py`): view, div and gap colours in every frame, input, keyboard after a dropped view |
 | [ios-keyboard.md](ios-keyboard.md) | Patches 0031–0033: iOS hardware keyboard presses → GPUI key events (Flutter's key responder, GPUI first then UIKit's text system), the keyboard inset's docked-frame maths and animation, layout-change notifications, the host tables and simulator checks |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |

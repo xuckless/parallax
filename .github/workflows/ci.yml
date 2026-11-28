@@ -197,7 +197,7 @@ jobs:
 
   # Gate 3 on Windows (docs/windows-touch-harness.md): examples/hello's desktop bin gets synthetic touch and pen
   # (crates/touch-inject), records the gesture traces, runs the runtime checks of patch 0021, then replays the fresh
-  # traces beside the committed phone and browser ones, then drives examples/native-view-windows for the NativeView
+  # traces beside the committed phone and browser ones, then drives examples/native-view for the NativeView
   # checks. The runner's desktop session takes injected input. The checks and the replay run even after a failed
   # recording, so one run reports every failure.
   windows-touch:
@@ -221,7 +221,7 @@ jobs:
         timeout-minutes: 15
       - if: ${{ !cancelled() }}
         run: cargo test -p parallax-platform --test trace_replay -- --nocapture
-      # WebView2's Evergreen runtime for examples/native-view-webview2: the image's when it has one, else installed.
+      # WebView2's Evergreen runtime (native-view --view webview2): the image's when it has one, else installed.
       - if: ${{ !cancelled() }}
         shell: pwsh
         run: |

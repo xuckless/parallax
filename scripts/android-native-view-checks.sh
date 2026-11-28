@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runtime checks of NativeView on Android (docs/native-view-android-checks.md): builds, installs and launches
-# examples/native-view-android on one running emulator or device, records screenshots while the example moves and
+# examples/native-view on one running emulator or device, records screenshots while the example moves and
 # resizes the surface's slot every frame, reads them back with scripts/pixels.py, drives input with adb, and asserts on
 # pixels and on what the example logged. Screenshots and logcat land in target/android-native-view/.
 #
@@ -24,8 +24,12 @@ fi
 on_device() { "$adb" -s "$serial" shell "$@"; }
 px() { python3 -I "$repo/scripts/pixels.py" "$@"; }
 
-# The example's colours (src/demo.rs, src/java.rs): the surface (its red drifts), the GPUI div over it, the underlay
-# (`set_background`, the gap colour), the page, and the two stacked tiles (yellow painted last).
+# The example's once-a-second line and the renderers' alpha lines: the same two regexes in every native-view check
+# script (docs/examples-native-view.md).
+frames_line='native-view: gpui frames/s ([0-9]+), view frames/s ([0-9]+)'
+alpha_line='alpha mode [A-Z][A-Za-z]+|alpha mode, only [A-Za-z]+|premultiplied alpha \(|metal layer alpha: [a-z]+'
+# The example's colours (src/android.rs, src/android/java.rs): the surface (its red drifts), the GPUI div over it, the
+# underlay (`set_background`, the gap colour), and the two stacked tiles (yellow painted last).
 view=**c040
 over=2050d0
 gap=ff00ff
@@ -33,6 +37,10 @@ top=e0c020
 bottom=e03030
 # Screenshots per moving-slot run, pixels a colour needs to count as shown, and the edge ring the gap check leaves
 # out: a growing SurfaceControl shows the underlay there for up to one producer frame (docs/native-view-android.md).
+# The slot's right edge moves at most 0.15 * 1.3 + 0.2 * 0.9 = 0.375 half-widths a second (src/android.rs), 389 px/s
+# on the emulator's 1038 px half; in 120 shots under these screenshots' load (producer 37-44 frames/s) the strip was
+# at most 7 px. The ring is measured from the box of the view and the div: the view's own box only while the div stays
+# inside the view (src/android.rs, its cover's comment).
 frames=12
 shown=2000
 ring=8
@@ -63,7 +71,7 @@ is_colour() {
 
 echo "android-native-view-checks: building and installing on $serial"
 cargo build --quiet -p cargo-parallax --manifest-path "$repo/Cargo.toml"
-(cd "$repo/examples/native-view-android" && "$repo/target/debug/cargo-parallax" run android --device "$serial") \
+(cd "$repo/examples/native-view" && "$repo/target/debug/cargo-parallax" run android --device "$serial") \
   >"$out/build.log" 2>&1 || { tail -20 "$out/build.log"; exit 1; }
 api=$(on_device getprop ro.build.version.sdk | tr -d '\r')
 echo "API $api"
@@ -72,9 +80,11 @@ echo "API $api"
 launch
 sleep 4
 on_device logcat -d >"$out/still.log"
-grep -q 'surface frames/s [1-9][0-9]' "$out/still.log" && ! grep 'gpui frames/s' "$out/still.log" | tail -4 | grep -q 'gpui frames/s [1-9]' \
+idle=$(grep -oE "$frames_line" "$out/still.log" | tail -4 || true)
+echo "$idle" | tail -1
+[[ -n $idle ]] && ! grep -q 'gpui frames/s [1-9]' <<<"$idle" && grep -q 'view frames/s [1-9][0-9]' <<<"$idle" \
   && pass "0 GPUI frames/s while the surface draws" || fail "GPUI drew while only the surface changed"
-alpha=$(grep -oE 'window surface alpha mode [A-Za-z]*|offers no premultiplied alpha mode, only Opaque' "$out/still.log" | tail -1 || true)
+alpha=$(grep -oE "$alpha_line" "$out/still.log" | tail -1 || true)
 [[ -n $alpha ]] && pass "$alpha logged" || fail "no alpha mode logged"
 shot "$out/still.raw"
 read -r width height <<<"$(px "$out/still.raw" size)"
@@ -93,7 +103,7 @@ kinds=("view 28 known" "control 29 strict" "hosted 34 known")
 for row in "${kinds[@]}"; do
   read -r kind since gaps <<<"$row"
   ((black || api < since)) && continue
-  launch --es surface "$kind" --ez animate true || continue
+  launch --es view "$kind" --ez animate true || continue
   for i in $(seq "$frames"); do shot "$out/$kind-$i.raw"; done
   missing=0 lagging=0
   for i in $(seq "$frames"); do
@@ -115,7 +125,7 @@ stacks=(view)
 ((api >= 29)) && stacks+=(control)
 for kind in "${stacks[@]}"; do
   ((black)) && break
-  launch --es surface "$kind" --ez stack true || continue
+  launch --es view "$kind" --ez stack true || continue
   s=$out/stack-$kind.raw
   shot "$s"
   read -r l t _ _ <<<"$(px "$s" bbox "$top" || echo "0 0 0 0")"
@@ -131,7 +141,7 @@ sleep 1
 on_device input keyevent KEYCODE_BACK
 sleep 1
 on_device logcat -d >"$out/back.log"
-grep -q 'GPUI back: Committed' "$out/back.log" && pass "Back after tapping the WebView reaches GPUI" \
+grep -q 'native-view: back Committed' "$out/back.log" && pass "Back after tapping the WebView reaches GPUI" \
   || fail "Back after tapping the WebView did not reach GPUI"
 
 on_device am force-stop "$app"

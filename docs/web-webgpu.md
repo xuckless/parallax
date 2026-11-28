@@ -31,7 +31,7 @@ of the canvas read back):
 | `--headless=new --use-angle=gl` | SwiftShader | red | 255,0,0,255 |
 
 The bug is Chromium's or the driver's, not GPUI's: the plain page shows it too, and GPUI's own WebGPU path draws hello
-and native-view-web correctly where Chromium presents (`--use-angle=gl`). With the probe, the black configurations
+and examples/native-view correctly where Chromium presents (`--use-angle=gl`). With the probe, the black configurations
 fall back to WebGL2 and draw. In headless `--enable-features=Vulkan` Chromium's own compositor also fails ("Failed
 to initialize vulkan surface"), so screenshots there are not usable.
 
@@ -40,9 +40,9 @@ to initialize vulkan surface"), so screenshots there are not usable.
 - [web-checks.mjs](../scripts/web-checks.mjs)' `native-view` suite under WebGPU (headless, `--use-angle=gl`, alpha
   mode logged `PreMultiplied`): 34/34 ([native-view-web-checks.md](native-view-web-checks.md)). Its content checks
   (GPUI's background, the divs, each view's colour) fail on a canvas that presents nothing.
-- Headless `--enable-features=Vulkan --use-angle=vulkan` on NVIDIA: the probe logs the fallback and native-view-web
+- Headless `--enable-features=Vulkan --use-angle=vulkan` on NVIDIA: the probe logs the fallback and examples/native-view
   opens on WebGL2; with the page's WebGL2 contexts made to fail (an init script returning `null` from
   `getContext("webgl2")` after firing `webglcontextcreationerror`), it logs the retry and both failures, the event's status
   message among them, and the window opens on WebGPU.
-- Owed to the owner: a short look at native-view-web in a headed Chromium with the flags in the table's first row,
+- Owed to the owner: a short look at examples/native-view in a headed Chromium with the flags in the table's first row,
   which should now log the fallback and draw with WebGL2.
