@@ -7,7 +7,11 @@
 //! Input: on macOS the view takes the mouse over it (AppKit hit-tests it) and logs it in its own coordinates; on iOS
 //! GPUI takes every touch, and the slot's listeners log it relative to the view. Either way the div over the view
 //! takes its own clicks. "Move" moves and resizes the view's slot every frame; the gap colour (magenta, set with
-//! `NativeView::set_background`) is what would show if hole and view fell out of step.
+//! `NativeView::set_background`) is what would show if hole and view fell out of step. "Drop views" drops every
+//! native view handle, which detaches the views for good (iOS: a GPUI field must then still get the keyboard).
+//!
+//! scripts/apple-native-view-frames.py checks recordings by these colours: the view's hues, the div's orange, the
+//! gap's magenta. The "Drop views" button is amber, so scripts find it on screen.
 
 use objc2::{
     class, msg_send,
@@ -16,8 +20,8 @@ use objc2::{
     sel,
 };
 use parallax::gpui::{
-    App, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, NativeView, Pixels,
-    ScrollEvent, Window, WindowOptions, canvas, div, prelude::*, px, rgb, rgba,
+    App, Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, NativeView, Pixels,
+    ScrollEvent, Stateful, Window, WindowOptions, canvas, div, prelude::*, px, rgb,
 };
 use std::{cell::Cell, ffi::CStr, ptr::NonNull, rc::Rc, sync::OnceLock, time::Duration};
 
@@ -30,7 +34,12 @@ const HUES: std::ops::Range<f32> = 90.0..210.0;
 const NATIVE_FPS: f64 = 60.;
 /// Shown wherever hole and view are out of step: nothing else on screen is this colour.
 const GAP_COLOUR: u32 = 0xff00ff;
+/// The div over the view: opaque, and no hue the view turns through.
+const DIV_COLOUR: u32 = 0xe07020;
+/// "Drop views", found by colour.
+const DROP_COLOUR: u32 = 0xffc857;
 const TICKS: &CStr = c"ticks";
+const BUTTON_COLOUR: u32 = 0xd9e2ec;
 
 #[cfg(target_os = "macos")]
 const SUPERCLASS: &CStr = c"NSView";
@@ -44,7 +53,8 @@ enum Motion {
 }
 
 struct Example {
-    native_view: NativeView,
+    /// `None` once "Drop views" dropped it.
+    native_view: Option<NativeView>,
     motion: Motion,
     shown: bool,
     /// GPUI frames since the last report: one per `render`.
@@ -97,7 +107,7 @@ impl Example {
             }
         });
         Self {
-            native_view,
+            native_view: Some(native_view),
             motion: Motion::Still,
             shown: true,
             frames: 0,
@@ -112,15 +122,16 @@ impl Example {
     fn button(
         id: &'static str,
         label: String,
+        colour: u32,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Stateful<Div> {
         div()
             .id(id)
             .px_3()
             .py_2()
             .rounded_md()
-            .bg(rgb(0xd9e2ec))
+            .bg(rgb(colour))
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| {
                 on_click(this, cx);
@@ -168,6 +179,7 @@ impl Render for Example {
                     .child(Self::button(
                         "move",
                         if moving { "Stop" } else { "Move" }.into(),
+                        BUTTON_COLOUR,
                         |this, _| {
                             this.motion = match this.motion {
                                 Motion::Still => Motion::Moving {
@@ -181,9 +193,26 @@ impl Render for Example {
                     .child(Self::button(
                         "show",
                         if self.shown { "Hide" } else { "Show" }.into(),
+                        BUTTON_COLOUR,
                         |this, _| this.shown = !this.shown,
                         cx,
                     ))
+                    .child(
+                        Self::button(
+                            "drop",
+                            "Drop views".into(),
+                            DROP_COLOUR,
+                            |this, _| {
+                                this.native_view = None;
+                                #[cfg(target_os = "ios")]
+                                this.typing.drop_native_field();
+                                log::info!("native-view-apple: dropped the native views");
+                            },
+                            cx,
+                        )
+                        // Wide, so scripts find it as a band of its colour (scripts/locate-colour.py).
+                        .flex_1(),
+                    )
                     .child(format!("div clicks: {}", self.overlay_clicks)),
             )
             .children({
@@ -228,18 +257,22 @@ impl Render for Example {
                                 .absolute()
                                 .size_full(),
                         )
-                        .when(self.shown, |this| this.child(self.native_view.clone()))
+                        .when_some(
+                            self.native_view.clone().filter(|_| self.shown),
+                            |this, native_view| this.child(native_view),
+                        )
                         .child(
                             div()
                                 .id("overlay")
                                 .absolute()
                                 .top(px(16.))
-                                .left(px(16.))
+                                // At the right: a rotation's first frames show only the right of the new layout.
+                                .right(px(16.))
                                 .w(px(150.))
                                 .h(px(70.))
                                 .p_2()
                                 .rounded_md()
-                                .bg(rgba(0xffffffe6))
+                                .bg(rgb(DIV_COLOUR))
                                 .occlude()
                                 .child("A GPUI div")
                                 .on_mouse_down(

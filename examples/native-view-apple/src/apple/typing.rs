@@ -4,7 +4,8 @@
 //! A tap on the native field focuses its handle and makes the `UITextField` first responder (GPUI's view takes every
 //! touch, so the app does both); GPUI's own text input resigns. A tap on the GPUI field moves focus back, and GPUI's
 //! text input takes first responder from the `UITextField`. Log: `UITextField: first responder yes/no`,
-//! `UITextField: text "…"`.
+//! `UITextField: text "…"`. Dropping the native field while it has the keyboard must hand the keyboard back: a tap on
+//! the GPUI field then types there (Return logs hello's `text field submitted: N bytes`).
 
 use objc2::{
     class, msg_send,
@@ -25,6 +26,12 @@ const EDITING_CHANGED: usize = 1 << 17;
 
 pub struct Typing {
     field: Entity<TextField>,
+    /// `None` once "Drop views" dropped it.
+    native: Option<NativeField>,
+}
+
+/// The `UITextField`, shown as a native view.
+struct NativeField {
     native_view: NativeView,
     text_field: Retained<AnyObject>,
     _blur: Subscription,
@@ -54,21 +61,28 @@ impl Typing {
         });
         Self {
             field,
-            native_view,
-            text_field,
-            _blur: blur,
+            native: Some(NativeField {
+                native_view,
+                text_field,
+                _blur: blur,
+            }),
         }
     }
 
+    /// Drops the native field's handle, which detaches the `UITextField` (and resigns it if it has the keyboard).
+    pub fn drop_native_field(&mut self) {
+        self.native = None;
+    }
+
     pub fn render(&self, cx: &App) -> impl IntoElement {
-        let focus: FocusHandle = self.native_view.focus_handle(cx);
-        let text_field = self.text_field.clone();
         div()
             .flex()
             .gap_2()
             .h(px(44.))
             .child(div().flex_1().child(self.field.clone()))
-            .child(
+            .children(self.native.as_ref().map(|native| {
+                let focus: FocusHandle = native.native_view.focus_handle(cx);
+                let text_field = native.text_field.clone();
                 div()
                     .id("native-field")
                     .w(px(160.))
@@ -79,8 +93,8 @@ impl Typing {
                         // SAFETY: A live UITextField, on the main thread.
                         let _: Bool = unsafe { msg_send![&*text_field, becomeFirstResponder] };
                     })
-                    .child(self.native_view.clone()),
-            )
+                    .child(native.native_view.clone())
+            }))
     }
 }
 
