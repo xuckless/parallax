@@ -118,7 +118,7 @@ index 90f7467..0b7b157 100644
          self.0.lock().focused_native_view = id;
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index adc27c0..44412c9 100644
+index 28189ce..77299ce 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -79,6 +79,10 @@ mod prompts;
@@ -210,7 +210,7 @@ index adc27c0..44412c9 100644
          // A field that focus left (blur, another element) ends its IME composition before this
          // draw drops its input handler, so its marked text becomes plain text and no stale composing
          // range reaches the next input session; the platform then ends its IME's side. A tap's
-@@ -4665,11 +4694,6 @@ impl Window {
+@@ -4669,11 +4698,6 @@ impl Window {
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -222,7 +222,7 @@ index adc27c0..44412c9 100644
          self.next_frame.tooltip_requests.extend(
              self.rendered_frame.tooltip_requests
                  [range.start.tooltips_index..range.end.tooltips_index]
-@@ -4690,6 +4714,17 @@ impl Window {
+@@ -4694,6 +4718,17 @@ impl Window {
              &mut self.rendered_frame.dispatch_tree,
              self.focus,
          );
@@ -240,7 +240,7 @@ index adc27c0..44412c9 100644
  
          if reused_subtree.contains_focus() {
              self.next_frame.focus = self.focus;
-@@ -6041,6 +6076,7 @@ impl Window {
+@@ -6045,6 +6080,7 @@ impl Window {
              bounds,
              content_mask,
              behavior,
@@ -248,7 +248,7 @@ index adc27c0..44412c9 100644
          };
          self.next_frame.hitboxes.push(hitbox.clone());
          hitbox
-@@ -6989,11 +7025,29 @@ impl Window {
+@@ -6993,11 +7029,29 @@ impl Window {
                  InputPreference::KeyBindings,
                  dispatch_path,
                  self.context_stack(),
@@ -278,7 +278,7 @@ index adc27c0..44412c9 100644
          let input_preference = self.input_preference(event, cx);
  
          cx.propagate_event = true;
-@@ -7010,6 +7064,7 @@ impl Window {
+@@ -7014,6 +7068,7 @@ impl Window {
                  input_preference,
                  dispatch_path,
                  self.context_stack(),
@@ -286,7 +286,7 @@ index adc27c0..44412c9 100644
                  cx,
              );
              return;
-@@ -7096,6 +7151,7 @@ impl Window {
+@@ -7100,6 +7155,7 @@ impl Window {
              input_preference,
              dispatch_path,
              match_result.context_stack,
@@ -294,7 +294,7 @@ index adc27c0..44412c9 100644
              cx,
          );
          self.pending_input_changed(cx);
-@@ -7156,11 +7212,18 @@ impl Window {
+@@ -7160,11 +7216,18 @@ impl Window {
          input_preference: InputPreference,
          dispatch_path: SmallVec<[DispatchNodeId; 32]>,
          context_stack: Vec<KeyContext>,
@@ -910,7 +910,7 @@ index 0000000..5882a72
 +}
 diff --git a/gpui-pre/src/window/native_view_input.rs b/gpui-pre/src/window/native_view_input.rs
 new file mode 100644
-index 0000000..fa4c413
+index 0000000..861de8c
 --- /dev/null
 +++ b/gpui-pre/src/window/native_view_input.rs
 @@ -0,0 +1,113 @@
@@ -926,7 +926,7 @@ index 0000000..fa4c413
 +    /// The view itself, as on macOS, where AppKit hit-tests the `NSView`.
 +    /// The view's element blocks the mouse from everything behind it.
 +    View,
-+    /// The window's own content, as on iOS, Windows and Wayland, where the view
++    /// The window's own content, as on iOS, Windows, Wayland and Android, where the view
 +    /// takes no input of its own. The view's element occludes like a solid
 +    /// element: it and its ancestors hear the input, elements painted behind it
 +    /// don't, elements painted after it keep theirs. The view hears nothing
