@@ -92,8 +92,9 @@ for dir in "$in"/gpui-pre*/; do
                 line = lines[i]
                 key = line
                 sub(/ = .*/, "", key)
+                # The exact pin in a gpui-pre dep table becomes the fork version, whatever version a patch hunk names.
                 if (table == "[package]" && key in package) line = key " = \"" package[key] "\""
-                else if (gpui_dep && line == "version = \"=" upstream_version "\"") line = "version = \"=" version "\""
+                else if (gpui_dep && line ~ /^version = "=[^"]*"$/) line = "version = \"=" version "\""
                 else if (gpui_dep && line ~ /^package = /) {
                     sub(/"gpui-pre/, "\"parallax-gpui", line)
                     dep = line
