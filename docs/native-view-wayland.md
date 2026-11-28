@@ -63,7 +63,9 @@ and resizes every GPUI frame) `WAYLAND_DEBUG` shows the order above every frame,
 physical pixel of the container, then the page, on every edge. The headless checks are one repeatable script,
 [wayland-native-view-checks.sh](../scripts/wayland-native-view-checks.sh), also run by CI
 ([native-view-wayland-checks.md](native-view-wayland-checks.md)). Mutter compositing on Mesa is the script's
-`--mesa-compositor` mode (and what CI's GPU-less runner does anyway).
+`--mesa-compositor` mode (and what CI's GPU-less runner does anyway). Owed: the owner's look at 125 % on the real
+desktop, one command that restores every setting after ([CHECK.md](../examples/native-view-wayland/CHECK.md),
+[owner-fractional-scale-check.py](../scripts/owner-fractional-scale-check.py)).
 
 Cost on the owner's session (debug build, 10 s each, window 900×600 with a 640×400 view):
 
