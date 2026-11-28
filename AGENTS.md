@@ -45,7 +45,7 @@ Rules for ported code:
 3. **Header on every ported file:** `Ported from flutter/flutter <path> @ <commit>. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.`
 4. **Ledger:** add a row to `third_party/flutter/PORTED.md` for every ported file or test table.
 5. **Licenses:** a crate with ported code declares `license = "Apache-2.0 AND BSD-3-Clause"` and ships `LICENSE-FLUTTER`
-   (fork crates: the `flutter_crates` row in `scripts/fork-crates.sh`). Keep `NOTICE` current.
+   (fork crates: a row of the `ported` table in `scripts/fork-crates.sh`). Keep `NOTICE` current.
 6. **Ported tests are the spec.** A Flutter test case that encodes a bug fix becomes a named row in a Parallax test table, with the Flutter test name in the row.
 7. **Naming:** "ports code from Flutter" is fine. Never use "Flutter" or Google marks in a crate or product name.
 8. **Pinned Flutter stable tag:** recorded in `third_party/flutter/PORTED.md`. Track stable release tags, never master. When a new stable tag ships, diff every ledger row and port the fixes.
@@ -157,7 +157,9 @@ Hard rules:
 
 - **No implicit state.** No globals, thread-locals or statics holding mutable state unless the OS forces it
   (e.g. JNI callbacks). When forced, wrap it in one named type and document why at the definition.
-- **No hidden behaviour.** No action at a distance: no `Drop` side effects beyond freeing resources,
+- **No hidden behaviour.** No action at a distance: no `Drop` side effects beyond freeing resources (closing the OS
+  window a platform window owns counts as freeing it, as upstream's macOS and iOS windows do; on Android that finishes
+  the Activity),
   no `Deref` to fake inheritance, no `Default` that picks platform behaviour silently, no magic env vars.
   Platform-dependent defaults live in a visible table, and the docs say so.
 - **Decide in pure functions, act at the edges.** OS and FFI calls sit in a thin shell. Logic that decides

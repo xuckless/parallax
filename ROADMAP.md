@@ -318,44 +318,49 @@ patch to our published fork, with a draft kept in `drafts/upstream/`. Sources: F
 fixes (39 + 15 cases), web `text_editing.dart` strategies and tests, Flutter's selection behaviour, native
 `UITextInteraction`.
 
-- [ ] iOS text input: the 39 `UITextInput` behaviour cases from `FlutterTextInputPluginTest.mm` as a table against
+- [x] iOS text input: the 39 `UITextInput` behaviour cases from `FlutterTextInputPluginTest.mm` as a table against
       `gpui_ios`, then the 15 mapped cases (text traits, update counts); patch the failures. The other 81 test Flutter
       internals and are skipped. Limit: once these patches total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes), move iOS text
       input into its own Parallax crate.
-- [ ] iOS hardware keyboard: `pressesBegan`/`pressesEnded` → `KeyDown`/`KeyUp`, shortcuts and arrow keys.
-- [ ] iOS keyboard inset: intersect the keyboard frame with the window (floating iPad keyboards) and animate it.
-- [ ] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`
+- [x] iOS hardware keyboard: `pressesBegan`/`pressesEnded` → `KeyDown`/`KeyUp`, shortcuts and arrow keys.
+- [x] iOS keyboard inset: intersect the keyboard frame with the window (floating iPad keyboards) and animate it.
+- [x] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`
       (`ime_mirror.rs`); patch or `parallax-web`.
-- [ ] Web: app lifecycle (`visibilitychange`) and the on-screen keyboard inset.
-- [ ] Text selection: native `UITextInteraction` (handles, magnifier, edit menu) on iOS; Flutter's selection
+- [x] Web: app lifecycle (`visibilitychange`) and the on-screen keyboard inset.
+- [x] Text selection: native `UITextInteraction` (handles, magnifier, edit menu) on iOS; Flutter's selection
       behaviour ported for Android and touch desktops (no Material/Cupertino look).
-- [ ] Remaining lifecycle and safe-area gaps from the audit, as patches.
-- [ ] Gboard select mode (Shift + arrows) extends the selection (deferred from Gate 1).
-- [ ] Android multi-window (deferred past Gate 2): one GPUI window per process, so in split-screen only the most
+- [x] Remaining lifecycle and safe-area gaps from the audit, as patches.
+- [x] Gboard select mode (Shift + arrows) extends the selection (deferred from Gate 1).
+- [x] Android multi-window (deferred past Gate 2): one GPUI window per process, so in split-screen only the most
       recently started Activity draws; decide whether to support a window per Activity.
-- [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`).
+- [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`). Moved to Phase 8
+      (stylable widgets), where the friction shows; Wave 14 put the selection engine in `parallax-ext` instead.
 
 Follow-ups found by Wave 14's first batch (second batch):
 
-- [ ] OS reduce-motion and reduce-transparency settings, on every target. Upstream has `App::reduce_motion` and its
+- [x] OS reduce-motion and reduce-transparency settings, on every target. Upstream has `App::reduce_motion` and its
       animation element obeys it, but no platform sets it. Sources: React Native's `RCTAccessibilityManager.mm` and
       `AccessibilityInfoModule.kt` (MIT); macOS `accessibilityDisplayShouldReduceMotion` / `…ReduceTransparency`,
       Windows `SPI_GETCLIENTAREAANIMATION` and its transparency setting, web `prefers-reduced-motion` /
       `prefers-reduced-transparency`. Phase 7's motion and Phase 10's materials read them.
-- [ ] Android clipboard (a stub today, so Copy and Paste do nothing): `ClipboardManager` over JNI, from React Native's
+- [x] Android clipboard (a stub today, so Copy and Paste do nothing): `ClipboardManager` over JNI, from React Native's
       `ClipboardModule.kt`.
-- [ ] iOS edit actions (cut, copy, paste, select all): the four `Open` rows of the iOS oracle table, with
+- [x] iOS edit actions (cut, copy, paste, select all): the four `Open` rows of the iOS oracle table, with
       `UITextInteraction`. iOS autofill hint → `textContentType`.
-- [ ] Web secure fields: the IME mirror becomes `<input type=password>` for secure input. Safari (pixl-mac) and
+- [x] Web secure fields: the IME mirror becomes `<input type=password>` for secure input. Safari (pixl-mac) and
       Firefox checks of the web text tables.
-- [ ] Android finger drag moves the caret: a fork patch offering a touch drag after the slop, so a field needn't claim
+- [x] Android finger drag moves the caret: a fork patch offering a touch drag after the slop, so a field needn't claim
       every touch at touch-down.
-- [ ] Android API 28–29: the keyboard inset never arrives.
+- [x] Android API 28–29: the keyboard inset never arrives.
 - [ ] Owner's iPad check (signed build + checklist under `/Users/Shared/parallax`): hardware keyboard chords, Caps Lock,
       key repeat, floating and split keyboards, selection. Owed, not part of the gate.
 
 **Gate 4** (0.1.9): the ported Flutter text-input tables pass on every target (iOS: on the simulator, owner decision
 2026-11-27).
+
+**Gate 4 passed 2026-11-27** ([gate-4.md](docs/gate-4.md)): iOS oracle 47/47 on the simulator, web tables in Chromium
+and Firefox, Android Java and selection checks on the emulator, desktop selection under Weston. Owner checks owed: iPad
+checklist, Mac WebKit/Safari, macOS Sidecar re-check, macOS Japanese IME.
 
 ## Phase: NativeView
 
