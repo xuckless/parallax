@@ -19,6 +19,8 @@ Shared, patch [0051](../patches/0051-native-view-in-step.patch):
   that places it (`MetalRenderer::draw_placing_native_views`), so hole and view reach the screen together; other
   frames present on their own and pay nothing. iOS counts a restack as placing, and sets frames and the gap colour
   in one no-animation block. A scene that wasn't presented (no drawable) places nothing; the next one plans again.
+- **Planning.** gpui_apple's `native_view_placement::plan_layout`, one copy for both backends (macOS's, moved out of
+  upstream), works out which views a scene moves, shows, hides or restacks; table-tested on the host (`apple-pure`).
 - **Edges.** gpui_apple's `native_view_placement.rs` turns core's `visible` part of a view (whole device pixels
   already, [native-view-placement.md](native-view-placement.md)) into frames in points for both backends, and where
   the screen resamples the layer the hole is cut one pixel inside it (core's `hole_inset(true)`), so no gap-colour

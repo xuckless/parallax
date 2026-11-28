@@ -2,8 +2,8 @@ iOS native views: the app's UIView shown beneath GPUI's non-opaque CAMetalLayer,
 
 What:
 - `IosWindow::attach_native_view` puts the view in a clipping container inserted directly below GPUI's view; `draw`
-  plans each scene's placements (gpui_apple's shared `Placement`, 0051, from core's `native_view_placement`,
-  0048: `visible`, `background`), presents with `draw_placing_native_views` (in step whenever the scene moves,
+  plans each scene's placements (gpui_apple's shared `plan_layout` and `Placement`, 0051, from core's
+  `native_view_placement`, 0048: `visible`, `background`), presents with `draw_placing_native_views` (in step whenever the scene moves,
   resizes, shows, hides or restacks a view) and then applies them in one no-animation block (frames, hidden, and
   `NativeView::set_background`'s colour on the host view behind them), then restacks, as macOS's native_views.rs
   does. A view is hidden in a scene that doesn't paint it and removed when its last handle drops.
@@ -40,8 +40,8 @@ Why: upstream's `NativeView::new` fails on iOS. Lifecycle, clipping and z-order 
 FlutterPlatformViewsController.mm (oracle only: Flutter draws over its views, this draws under them; its touch
 interceptor is the model for an app that forwards touches into its view). Flutter's FlutterViewController.mm
 (`viewWillTransitionToSize:withTransitionCoordinator:`) only delays its viewport update to halfway through a turn,
-which halves the stretch; rendering the new size at once keeps the views in step instead. The layout code is
-gpui_macos's window/native_views.rs (upstream GPUI, Apache-2.0) adapted to UIKit, which is most of this patch's size.
+which halves the stretch; rendering the new size at once keeps the views in step instead. The attach and apply code
+is gpui_macos's window/native_views.rs (upstream GPUI, Apache-2.0) adapted to UIKit, which is most of this patch's size.
 
 Checked on the iOS 26.5 simulator (iPhone 17 at 3x, iPad Air 11-inch at 2x) with examples/native-view-apple and
 scripts/apple-native-view-checks.sh: 0 GPUI frames/s while the view recolours at 63 frames/s; every recorded frame
@@ -386,10 +386,10 @@ index 5865795..b6e69a1 100644
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
 diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
 new file mode 100644
-index 0000000..24097ce
+index 0000000..8a57830
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/window/native_views.rs
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,232 @@
 +//! Composites the app's `UIView`s beneath GPUI's view, which is non-opaque
 +//! while one shows (gpui_apple's `MetalRenderer` clears a hole over each).
 +//!
@@ -415,7 +415,7 @@ index 0000000..24097ce
 +
 +use super::super::native_view_state::KeyboardEvent;
 +use super::{IosWindow, IosWindowState};
-+use gpui_apple::native_view_placement::{Placement, YAxis};
++use gpui_apple::native_view_placement::{Layout, Placement, YAxis, plan_layout};
 +
 +#[derive(Default)]
 +pub(super) struct NativeViews {
@@ -433,70 +433,6 @@ index 0000000..24097ce
 +    container: Retained<UIView>,
 +    /// Where the view was last placed, or `None` while it is hidden.
 +    placement: Option<Placement>,
-+}
-+
-+/// What a scene changes about the window's attached views.
-+#[derive(Default)]
-+pub(super) struct Layout {
-+    /// Views to place somewhere new, or to hide for `None`.
-+    placements: Vec<(NativeViewId, Option<Placement>)>,
-+    /// The views the scene shows, from back to front, if that order changed.
-+    stacking: Option<Vec<NativeViewId>>,
-+    /// The window's new background, if it changed.
-+    background: Option<Option<Rgba>>,
-+}
-+
-+impl Layout {
-+    /// Whether the scene moves, resizes, shows, hides or restacks a view, which
-+    /// must then reach the screen with the scene
-+    /// (`MetalRenderer::draw_placing_native_views`).
-+    fn places_views(&self) -> bool {
-+        !self.placements.is_empty() || self.stacking.is_some()
-+    }
-+}
-+
-+impl NativeViews {
-+    /// Works out which attached views the scene moves, shows, hides or restacks.
-+    pub(super) fn plan_layout(
-+        &self,
-+        scene: &Scene,
-+        scale_factor: f64,
-+        gpui_frame: [f64; 4],
-+    ) -> Layout {
-+        if self.views.is_empty() {
-+            return Layout::default();
-+        }
-+        let placements = self
-+            .views
-+            .iter()
-+            .filter_map(|attached| {
-+                let placement = scene
-+                    .native_views
-+                    .iter()
-+                    .find(|native_view| native_view.id == attached.id)
-+                    .and_then(|native_view| {
-+                        Placement::new(native_view, scale_factor, gpui_frame, YAxis::Down)
-+                    });
-+                (attached.placement != placement).then_some((attached.id, placement))
-+            })
-+            .collect();
-+        // The scene's native views are sorted by draw order, so the ones
-+        // painted later, which belong in front, come last.
-+        let mut stacking = Vec::new();
-+        for native_view in &scene.native_views {
-+            if !stacking.contains(&native_view.id) {
-+                stacking.push(native_view.id);
-+            }
-+        }
-+        // Core's rule, kept until a scene without native views: it covers any
-+        // frame the compositor shows early.
-+        let background = background(&scene.native_views);
-+        Layout {
-+            placements,
-+            stacking: (stacking != self.stacking).then_some(stacking),
-+            background: (background != self.background).then_some(background),
-+        }
-+    }
 +}
 +
 +/// Adds `view` beneath GPUI's view, hidden until a scene shows it.
@@ -572,11 +508,26 @@ index 0000000..24097ce
 +/// places a view, then applies them.
 +pub(super) fn draw(window: &IosWindow, scene: &Scene) {
 +    let CGRect { origin, size } = window.view.frame();
-+    let layout = window.native_views.borrow().plan_layout(
-+        scene,
-+        f64::from(window.scale_factor.get()),
-+        [origin.x, origin.y, size.width, size.height],
-+    );
++    let (layout, background) = {
++        let native_views = window.native_views.borrow();
++        let layout = plan_layout(
++            native_views
++                .views
++                .iter()
++                .map(|attached| (attached.id, attached.placement)),
++            &native_views.stacking,
++            scene,
++            f64::from(window.scale_factor.get()),
++            [origin.x, origin.y, size.width, size.height],
++            YAxis::Down,
++        );
++        // Core's rule, kept until a scene without native views: it covers any
++        // frame the compositor shows early.
++        let background = background(&scene.native_views);
++        let background = (!native_views.views.is_empty() && background != native_views.background)
++            .then_some(background);
++        (layout, background)
++    };
 +    let presented = window
 +        .renderer
 +        .lock()
@@ -584,13 +535,19 @@ index 0000000..24097ce
 +    // A scene that never reached the screen has no opening for the views to
 +    // move to; the next one plans them again.
 +    if presented {
-+        apply_layout(window, &window.view, layout);
++        apply_layout(window, &window.view, layout, background);
 +    }
 +}
 +
-+/// Applies a planned layout. The views are cloned out first, because UIKit can
-+/// call back into the window while frames change.
-+fn apply_layout(window: &IosWindowState, gpui_view: &UIView, layout: Layout) {
++/// Applies a planned layout and the window's new background, if it changed.
++/// The views are cloned out first, because UIKit can call back into the window
++/// while frames change.
++fn apply_layout(
++    window: &IosWindowState,
++    gpui_view: &UIView,
++    layout: Layout,
++    background: Option<Option<Rgba>>,
++) {
 +    let (placements, stacking) = {
 +        let mut native_views = window.native_views.borrow_mut();
 +        let mut placements = Vec::new();
@@ -600,7 +557,7 @@ index 0000000..24097ce
 +                placements.push((attached.view.clone(), attached.container.clone(), placement));
 +            }
 +        }
-+        if let Some(background) = layout.background {
++        if let Some(background) = background {
 +            native_views.background = background;
 +        }
 +        let stacking = layout.stacking.map(|stacking| {
@@ -635,7 +592,7 @@ index 0000000..24097ce
 +                None => container.setHidden(true),
 +            }
 +        }
-+        if let (Some(background), Some(host)) = (layout.background, &host) {
++        if let (Some(background), Some(host)) = (background, &host) {
 +            // SAFETY: `+[UIColor colorWithRed:green:blue:alpha:]` returns a
 +            // UIColor; the host is live, on the main thread. Nil clears it.
 +            unsafe {

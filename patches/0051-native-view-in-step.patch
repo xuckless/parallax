@@ -17,9 +17,11 @@ What:
   core's `hole_inset(true)` cuts the hole one pixel inside the view, so the layer's own pixels cover the view's
   blended edges; `MetalRenderer::set_native_view_hole_inset` applies it (0 by default, so exact edges at 1x/2x/3x
   stay).
-- macOS: `draw` passes `Layout::places_views()` (the scene moves, resizes, shows, hides or restacks a view); placement
-  from gpui_apple,
-  the background colour from core's `native_view_placement::background`.
+- gpui_apple `native_view_placement::plan_layout` (moved out of upstream's macOS window/native_views.rs, shared with
+  0052's iOS, table-tested): which attached views a scene moves, shows, hides or restacks, as a `Layout`;
+  `Layout::places_views()` says whether the scene must present in step.
+- macOS: `draw` passes `Layout::places_views()`; the background colour from core's
+  `native_view_placement::background`.
 - Who takes pointer input over a view (`NativeViewInput`, macOS `View`, iOS `Window`) is patch 0048's.
 
 Why: upstream presents every frame on its own, so a view's new frame reaches the screen a frame or two before the
@@ -195,17 +197,19 @@ index 33c5299..be0146a 100644
          }))?,
 diff --git a/gpui-pre-apple/src/native_view_placement.rs b/gpui-pre-apple/src/native_view_placement.rs
 new file mode 100644
-index 0000000..860c1fc
+index 0000000..16ca7a7
 --- /dev/null
 +++ b/gpui-pre-apple/src/native_view_placement.rs
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,283 @@
 +//! Where a native view's clipping container and view go in the window: shared by gpui_macos (AppKit, y up) and
 +//! gpui_ios (UIKit, y down). Pure, so scripts/patch-test.sh runs its tests on the host (`apple-pure`).
 +//!
 +//! What shows of a view and how far inside it the hole is cut are GPUI's one copy (`gpui::native_view_placement`):
 +//! the element's bounds are whole device pixels already, so this only turns them into points.
 +
-+use gpui::{Bounds, PaintNativeView, ScaledPixels, native_view_placement::visible};
++use gpui::{
++    Bounds, NativeViewId, PaintNativeView, ScaledPixels, Scene, native_view_placement::visible,
++};
 +
 +/// Which way the platform's view coordinates grow vertically.
 +#[derive(Clone, Copy, Debug, PartialEq)]
@@ -257,6 +261,63 @@ index 0000000..860c1fc
 +            container,
 +            view: [x - container[0], y - container[1], width, height],
 +        })
++    }
++}
++
++/// What a scene changes about a window's attached views.
++#[derive(Default)]
++pub struct Layout {
++    /// Views to place somewhere new, or to hide for `None`.
++    pub placements: Vec<(NativeViewId, Option<Placement>)>,
++    /// The views the scene shows, from back to front, if that order changed.
++    pub stacking: Option<Vec<NativeViewId>>,
++}
++
++impl Layout {
++    /// Whether the scene moves, resizes, shows, hides or restacks a view, whose frame must then reach the screen with
++    /// the scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
++    pub fn places_views(&self) -> bool {
++        !self.placements.is_empty() || self.stacking.is_some()
++    }
++}
++
++/// Works out which attached views the scene moves, shows, hides, or restacks. `attached` is each attached view with
++/// where it was last placed, `stacking` the order the last scene showed them in, back to front.
++pub fn plan_layout(
++    attached: impl IntoIterator<Item = (NativeViewId, Option<Placement>)>,
++    stacking: &[NativeViewId],
++    scene: &Scene,
++    scale_factor: f64,
++    gpui_frame: [f64; 4],
++    y_axis: YAxis,
++) -> Layout {
++    let mut attached = attached.into_iter().peekable();
++    if attached.peek().is_none() {
++        return Layout::default();
++    }
++    let placements = attached
++        .filter_map(|(id, last)| {
++            let placement = scene
++                .native_views
++                .iter()
++                .find(|native_view| native_view.id == id)
++                .and_then(|native_view| {
++                    Placement::new(native_view, scale_factor, gpui_frame, y_axis)
++                });
++            (last != placement).then_some((id, placement))
++        })
++        .collect();
++    // The scene's native views are sorted by draw order, so the ones painted
++    // later, which belong in front, come last.
++    let mut shown = Vec::new();
++    for native_view in &scene.native_views {
++        if !shown.contains(&native_view.id) {
++            shown.push(native_view.id);
++        }
++    }
++    Layout {
++        placements,
++        stacking: (shown != stacking).then_some(shown),
 +    }
 +}
 +
@@ -376,6 +437,52 @@ index 0000000..860c1fc
 +            );
 +        }
 +    }
++
++    #[test]
++    fn plan_layout_changes_only_what_the_scene_moves() {
++        let painted = |id: u64, x: f32| PaintNativeView {
++            order: 0,
++            id: NativeViewId::for_test(id),
++            hitbox_id: HitboxId::placeholder(),
++            bounds: scaled(x, 0., 10., 10.),
++            content_mask: ContentMask {
++                bounds: scaled(0., 0., 100., 100.),
++            },
++            background: Hsla::transparent_black(),
++        };
++        let at = |x: f64| {
++            Some(Placement {
++                container: [x, 0., 10., 10.],
++                view: [0., 0., 10., 10.],
++            })
++        };
++        let one = NativeViewId::for_test(1);
++        let two = NativeViewId::for_test(2);
++        // (name, attached views with their last placement, last stacking, the scene's views, placements, stacking)
++        let cases: [(&str, Vec<_>, Vec<_>, Vec<_>, Vec<_>, Option<Vec<_>>); 6] = [
++            ("nothing attached", vec![], vec![], vec![painted(1, 0.)], vec![], None),
++            ("unmoved", vec![(one, at(0.))], vec![one], vec![painted(1, 0.)], vec![], None),
++            ("moved", vec![(one, at(0.))], vec![one], vec![painted(1, 5.)], vec![(one, at(5.))], None),
++            ("shown", vec![(one, None)], vec![], vec![painted(1, 0.)], vec![(one, at(0.))], Some(vec![one])),
++            ("hidden", vec![(one, at(0.))], vec![one], vec![], vec![(one, None)], Some(vec![])),
++            (
++                "restacked",
++                vec![(one, at(0.)), (two, at(5.))],
++                vec![one, two],
++                vec![painted(2, 5.), painted(1, 0.)],
++                vec![],
++                Some(vec![two, one]),
++            ),
++        ];
++        for (name, attached, stacking, shown, placements, restacked) in cases {
++            let mut scene = Scene::default();
++            scene.native_views = shown;
++            let layout = plan_layout(attached, &stacking, &scene, 1., [0., 0., 100., 100.], YAxis::Down);
++            assert_eq!(layout.places_views(), !placements.is_empty() || restacked.is_some(), "{name}");
++            assert_eq!(layout.placements, placements, "{name}");
++            assert_eq!(layout.stacking, restacked, "{name}");
++        }
++    }
 +}
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
 index 7c0c918..2e14571 100644
@@ -400,7 +507,7 @@ index 7c0c918..2e14571 100644
  
      unsafe fn attach_native_view(
 diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
-index 0f551ca..5e885e6 100644
+index 0f551ca..b6b0ad9 100644
 --- a/gpui-pre-macos/src/window/native_views.rs
 +++ b/gpui-pre-macos/src/window/native_views.rs
 @@ -15,9 +15,10 @@ use super::{
@@ -412,7 +519,7 @@ index 0f551ca..5e885e6 100644
 +    KeyDownEvent, ModifiersChangedEvent, NativeViewId, Pixels, PlatformInput, Point, Rgba, Scene,
 +    WindowBackgroundAppearance, native_view_placement,
  };
-+use gpui_apple::native_view_placement::{Placement, YAxis};
++use gpui_apple::native_view_placement::{self as apple_placement, Layout, Placement, YAxis};
  use objc2::{
      class, msg_send,
      rc::Retained,
@@ -493,36 +600,85 @@ index 0f551ca..5e885e6 100644
      if state.native_views.background == background {
          return;
      }
-@@ -369,6 +322,14 @@ pub(super) struct Layout {
-     stacking: Option<Vec<NativeViewId>>,
+@@ -360,62 +313,27 @@ fn background_color(color: Option<Rgba>) -> Retained<NSColor> {
+     NSColor::colorWithSRGBRed_green_blue_alpha(r as f64, g as f64, b as f64, 1.)
  }
  
-+impl Layout {
-+    /// Whether the scene moves, resizes, shows, hides or restacks a view, whose frame must then reach the screen with
-+    /// the scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
-+    pub(super) fn places_views(&self) -> bool {
-+        !self.placements.is_empty() || self.stacking.is_some()
-+    }
-+}
-+
+-/// What a scene changes about the window's attached views.
+-#[derive(Default)]
+-pub(super) struct Layout {
+-    /// Views to place somewhere new, or to hide for `None`.
+-    placements: Vec<(NativeViewId, Option<Placement>)>,
+-    /// The views the scene shows, from back to front, if that order changed.
+-    stacking: Option<Vec<NativeViewId>>,
+-}
+-
  /// Works out which attached views the scene moves, shows, hides, or restacks.
  pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
-     if state.native_views.views.is_empty() {
-@@ -391,12 +352,7 @@ pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
+-    if state.native_views.views.is_empty() {
+-        return Layout::default();
+-    }
+-    let scale_factor = state.scale_factor() as f64;
+     // SAFETY: The GPUI view is live for as long as the window state.
+     let gpui_frame: NSRect = unsafe { msg_send![state.native_view.as_ptr(), frame] };
+-    let gpui_frame = [
+-        gpui_frame.origin.x,
+-        gpui_frame.origin.y,
+-        gpui_frame.size.width,
+-        gpui_frame.size.height,
+-    ];
+-
+-    let mut placements = Vec::new();
+-    for attached in &state.native_views.views {
+-        let placement = scene
++    apple_placement::plan_layout(
++        state
+             .native_views
++            .views
              .iter()
-             .find(|native_view| native_view.id == attached.id)
-             .and_then(|native_view| {
+-            .find(|native_view| native_view.id == attached.id)
+-            .and_then(|native_view| {
 -                Placement::new(
 -                    native_view.bounds,
 -                    native_view.content_mask.bounds,
 -                    scale_factor,
 -                    gpui_frame,
 -                )
-+                Placement::new(native_view, scale_factor, gpui_frame, YAxis::Up)
-             });
-         if attached.placement != placement {
-             placements.push((attached.id, placement));
-@@ -1435,42 +1391,6 @@ extern "C" fn resign_first_responder(this: &AnyObject, _: Sel) -> Bool {
+-            });
+-        if attached.placement != placement {
+-            placements.push((attached.id, placement));
+-        }
+-    }
+-
+-    // The scene's native views are sorted by draw order, so the ones painted
+-    // later, which belong in front, come last.
+-    let mut stacking = Vec::new();
+-    for placement in &scene.native_views {
+-        if !stacking.contains(&placement.id) {
+-            stacking.push(placement.id);
+-        }
+-    }
+-    let stacking = (stacking != state.native_views.stacking).then_some(stacking);
+-    Layout {
+-        placements,
+-        stacking,
+-    }
++            .map(|attached| (attached.id, attached.placement)),
++        &state.native_views.stacking,
++        scene,
++        state.scale_factor() as f64,
++        [
++            gpui_frame.origin.x,
++            gpui_frame.origin.y,
++            gpui_frame.size.width,
++            gpui_frame.size.height,
++        ],
++        YAxis::Up,
++    )
+ }
+ 
+ /// Applies a planned layout. The window state must be unlocked, because AppKit
+@@ -1435,42 +1353,6 @@ extern "C" fn resign_first_responder(this: &AnyObject, _: Sel) -> Bool {
  #[cfg(test)]
  mod tests {
      use super::*;
