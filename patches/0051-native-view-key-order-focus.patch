@@ -1,0 +1,665 @@
+Keys and keyboard focus for native views: one view-first key order on every platform, and the platform hears every
+change of the focused native view.
+
+What:
+- Keys while the view's `FocusHandle` is focused follow macOS's view-first rule (`Window::native_view_key_order`, the
+  one decision `dispatch_key_down_before_native_view` uses too): reserved bindings and the rest of a pending binding
+  go first; with `Window` (0049's `NativeViewInput`), every other key reaches the view's element's key listeners
+  before key bindings (`dispatch_key_event`), and bindings get only what they leave
+  (`KeyListeners { NotHeard, Heard }`).
+- The platform hears every change of the focused native view (`PlatformWindow::set_focused_native_view`): the window
+  keeps the one it sent (`focused_native_view_sent`) and sends again whenever focus or a frame finds another, so
+  dropping the focused view's last handle gives keyboard input back even with no view left.
+- `NativeView`'s doc comment states the key order for `NativeViewInput::Window` (the element's key listeners before
+  key bindings).
+
+Test: `native_view::tests::the_platform_hears_every_change_of_the_focused_native_view` (rows: focus, drop the last
+view, focus moving with none left) and
+`native_view::tests::window_input::window_keys_reach_the_view_element_before_key_bindings` (one row per key order:
+left, used, reserved, the start and the rest of a pending binding),
+`native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element`, one row per input (a key
+and a reserved key while focused; press, move and scroll over the uncovered view, with an element painted under the
+view that must hear none of them; a press on the element painted over it), with view-relative positions (0049's
+`NativeView::bounds`). The existing native view tests run unchanged in `View` mode, now with listeners on the view's
+element that must stay silent there. New file `window/native_view/tests/window_input.rs`.
+
+Why: where the window gets a focused view's keys (0049's `Window`), key bindings would otherwise take every key
+before the app could forward it to the view; and the platform kept the keyboard on a view whose last handle was
+dropped. Key dispatch and focus are GPUI's own, so this is a core patch (rule 12).
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 6efc5f5..77299ce 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -1290,6 +1290,8 @@ pub struct Window {
+     next_hitbox_id: HitboxId,
+     native_views: Vec<std::rc::Weak<NativeViewState>>,
+     next_native_view_id: u64,
++    /// The native view last given keyboard input (`sync_native_view_focus`).
++    focused_native_view_sent: Option<NativeViewId>,
+     pub(crate) next_tooltip_id: TooltipId,
+     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+@@ -1601,6 +1603,15 @@ impl PendingInputTimeout {
+     }
+ }
+ 
++/// Whether a key event's key listeners have heard it before key bindings did,
++/// which only a focused native view's element does
++/// (`Window::native_view_key_order`).
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++enum KeyListeners {
++    NotHeard,
++    Heard,
++}
++
+ #[derive(Default, Debug)]
+ struct PendingInput {
+     keystrokes: SmallVec<[Keystroke; 1]>,
+@@ -2546,6 +2557,7 @@ impl Window {
+             next_hitbox_id: HitboxId(0),
+             native_views: Vec::new(),
+             next_native_view_id: 0,
++            focused_native_view_sent: None,
+             next_tooltip_id: TooltipId::default(),
+             tooltip_bounds: None,
+             dirty_views: FxHashSet::default(),
+@@ -4097,6 +4109,7 @@ impl Window {
+         if self.platform_window.prepare_frame() {
+             self.refresh();
+         }
++        self.sync_native_view_focus();
+         // A field that focus left (blur, another element) ends its IME composition before this
+         // draw drops its input handler, so its marked text becomes plain text and no stale composing
+         // range reaches the next input session; the platform then ends its IME's side. A tap's
+@@ -7016,11 +7029,29 @@ impl Window {
+                 InputPreference::KeyBindings,
+                 dispatch_path,
+                 self.context_stack(),
++                KeyListeners::NotHeard,
+                 cx,
+             );
+             return;
+         };
+ 
++        // Where the window gets a focused native view's keys, the view's element
++        // hears each first, as the view itself does on macOS, and key bindings
++        // get what it leaves (`native_view_key_order`).
++        let key_listeners = if event.is::<KeyDownEvent>()
++            && self.platform_window.native_view_input() == NativeViewInput::Window
++            && self.native_view_key_order(&keystroke, cx) == Some(native_view::KeyOrder::ViewFirst)
++        {
++            cx.propagate_event = true;
++            self.dispatch_key_down_up_event(event, &dispatch_path, cx);
++            if !cx.propagate_event {
++                return;
++            }
++            KeyListeners::Heard
++        } else {
++            KeyListeners::NotHeard
++        };
++
+         let input_preference = self.input_preference(event, cx);
+ 
+         cx.propagate_event = true;
+@@ -7037,6 +7068,7 @@ impl Window {
+                 input_preference,
+                 dispatch_path,
+                 self.context_stack(),
++                key_listeners,
+                 cx,
+             );
+             return;
+@@ -7123,6 +7155,7 @@ impl Window {
+             input_preference,
+             dispatch_path,
+             match_result.context_stack,
++            key_listeners,
+             cx,
+         );
+         self.pending_input_changed(cx);
+@@ -7183,11 +7216,18 @@ impl Window {
+         input_preference: InputPreference,
+         dispatch_path: SmallVec<[DispatchNodeId; 32]>,
+         context_stack: Vec<KeyContext>,
++        key_listeners: KeyListeners,
+         cx: &mut App,
+     ) {
+-        self.dispatch_key_down_up_event(event, &dispatch_path, cx);
+-        if !cx.propagate_event {
+-            return;
++        // key listeners → whether they hear the key now.
++        match key_listeners {
++            KeyListeners::NotHeard => {
++                self.dispatch_key_down_up_event(event, &dispatch_path, cx);
++                if !cx.propagate_event {
++                    return;
++                }
++            }
++            KeyListeners::Heard => {}
+         }
+ 
+         self.dispatch_modifiers_changed_event(event, &dispatch_path, cx);
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 73d47f1..daa0aaa 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -1,4 +1,4 @@
+-use crate::{Action, KeyBinding, KeyDownEvent, PlatformInput};
++use crate::{Action, KeyBinding, KeyDownEvent, Keystroke, PlatformInput};
+ use crate::{
+     AnyWindowHandle, App, Bounds, Element, ElementId, FocusHandle, FocusId, Focusable,
+     GlobalElementId, Hitbox, HitboxId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
+@@ -14,6 +14,18 @@ use std::{
+     rc::{Rc, Weak},
+ };
+ 
++/// Who hears a key press first while a native view is focused
++/// (`Window::native_view_key_order`).
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub(crate) enum KeyOrder {
++    /// Key bindings, then the view (or, where the window gets the view's keys,
++    /// the view's element) with what they leave.
++    BindingsFirst,
++    /// The view, or the view's element where the window gets its keys; key
++    /// bindings get what it leaves.
++    ViewFirst,
++}
++
+ /// Identifies a [`NativeView`] within its window.
+ #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeViewId(u64);
+@@ -40,8 +52,11 @@ impl NativeViewId {
+ /// and its ancestors hear it, elements painted before the view hear nothing
+ /// over it, elements painted after the view take theirs, and
+ /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
+-/// the view's [`FocusHandle`] is focused are dispatched from that element like
+-/// any other key press, so the app forwards the ones it wants to the view.
++/// the view's [`FocusHandle`] is focused reach that element's key listeners
++/// before key bindings, as they reach the view itself on macOS, so the app
++/// forwards the ones it wants to the view and stops their propagation; key
++/// bindings get the rest. Bindings for reserved actions and the rest of a
++/// pending binding apply first, as described below.
+ /// The rest of this comment describes macOS ([`crate::NativeViewInput::View`]).
+ ///
+ /// The view is composited beneath the window's GPUI content and shows through
+@@ -298,16 +313,18 @@ impl Element for NativeViewElement {
+ }
+ 
+ impl Window {
+-    /// Tells the platform which native view, if any, the focused handle belongs to.
++    /// Tells the platform which native view, if any, the focused handle belongs
++    /// to, whenever that changes: on a focus change, and on a frame drawn after
++    /// the focused view's last handle was dropped, even with no view left.
+     pub(super) fn sync_native_view_focus(&mut self) {
+         self.native_views.retain(|view| view.strong_count() > 0);
+-        if self.native_views.is_empty() {
+-            return;
+-        }
+         let focused = self
+             .focus
+             .and_then(|focus| self.native_view_for_focus(focus));
+-        self.platform_window.set_focused_native_view(focused);
++        if focused != self.focused_native_view_sent {
++            self.focused_native_view_sent = focused;
++            self.platform_window.set_focused_native_view(focused);
++        }
+     }
+ 
+     /// Ends an unfinished composition in the window's own content when keyboard
+@@ -361,14 +378,34 @@ impl Window {
+         event: KeyDownEvent,
+         cx: &mut App,
+     ) -> bool {
+-        let Some(view) = self
++        match self.native_view_key_order(&event.keystroke, cx) {
++            None | Some(KeyOrder::ViewFirst) => false,
++            Some(KeyOrder::BindingsFirst) => {
++                // The key is GPUI's whether or not anything acts on it. Leaving it to
++                // the view as well would have it dispatched again when the view left it.
++                self.dispatch_event(PlatformInput::KeyDown(event), cx);
++                true
++            }
++        }
++    }
++
++    /// Who hears a key press first while a native view's handle is focused, the
++    /// rule macOS's views follow: key bindings, for a key that continues a
++    /// pending binding or starts one bound to an action the view reserved; the
++    /// view for every other key. `None` while no native view is focused. A
++    /// pending binding the key doesn't continue ends here, as it would in the
++    /// window's own content; left pending, it would be completed by a later key
++    /// even after the view had used this one.
++    pub(super) fn native_view_key_order(
++        &mut self,
++        keystroke: &Keystroke,
++        cx: &mut App,
++    ) -> Option<KeyOrder> {
++        let view = self
+             .native_views
+             .iter()
+             .filter_map(Weak::upgrade)
+-            .find(|view| Some(view.focus_handle.id) == self.focus)
+-        else {
+-            return false;
+-        };
++            .find(|view| Some(view.focus_handle.id) == self.focus)?;
+         let node_id = self.focus_node_id_in_rendered_frame(self.focus);
+         let dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
+         let dispatch_tree = &self.rendered_frame.dispatch_tree;
+@@ -376,13 +413,13 @@ impl Window {
+         let is_pending = pending.is_some();
+         let continues_pending = pending.is_some_and(|pending| {
+             let mut input = pending.to_vec();
+-            input.push(event.keystroke.clone());
++            input.push(keystroke.clone());
+             let (bindings, is_pending, _) =
+                 dispatch_tree.bindings_for_input(&input, &dispatch_path);
+             is_pending || !bindings.is_empty()
+         });
+         let is_reserved = !continues_pending && {
+-            let input = std::slice::from_ref(&event.keystroke);
++            let input = std::slice::from_ref(keystroke);
+             let (bindings, _, context_stack) =
+                 dispatch_tree.bindings_for_input(input, &dispatch_path);
+             let reserved_actions = view.reserved_actions.borrow();
+@@ -398,20 +435,13 @@ impl Window {
+                     .any(is_reserved)
+         };
+         if is_pending && !continues_pending {
+-            // The pending binding ends here, as it would in the window's own
+-            // content. Left pending, it would be completed by a later key even
+-            // after the view had used this one.
+             self.flush_pending_input(cx);
+         }
+-        if !continues_pending && !is_reserved {
+-            // The key is left for the view like any other. Dispatching it here
+-            // as well would dispatch it twice when the view then leaves it.
+-            return false;
+-        }
+-        // The key is GPUI's whether or not anything acts on it. Leaving it to
+-        // the view as well would have it dispatched again when the view left it.
+-        self.dispatch_event(PlatformInput::KeyDown(event), cx);
+-        true
++        // (continues a pending binding, reserved) → order.
++        Some(match (continues_pending, is_reserved) {
++            (true, _) | (false, true) => KeyOrder::BindingsFirst,
++            (false, false) => KeyOrder::ViewFirst,
++        })
+     }
+ 
+     /// Focuses the handle of a native view that the platform gave keyboard input to.
+@@ -432,11 +462,13 @@ mod tests {
+     use super::*;
+     use crate::{
+         Context, Entity, FocusHandle, InputHandler, KeyBinding, Keystroke, Modifiers, MouseButton,
+-        Render, ScaledPixels, TestAppContext, UTF16Selection, VisualTestContext, WindowHandle,
+-        canvas, point, prelude::*, px, rgb,
++        MouseDownEvent, MouseMoveEvent, Render, ScaledPixels, ScrollEvent, TestAppContext,
++        UTF16Selection, VisualTestContext, WindowHandle, canvas, point, prelude::*, px, rgb,
+     };
+     use std::ops::Range;
+ 
++    mod window_input;
++
+     #[gpui::test]
+     fn focusing_a_native_view_gives_it_keyboard_input(cx: &mut TestAppContext) {
+         let window = open_window(cx);
+@@ -464,6 +496,62 @@ mod tests {
+         assert_eq!(platform_window.focused_native_view(), None);
+     }
+ 
++    #[gpui::test]
++    fn the_platform_hears_every_change_of_the_focused_native_view(cx: &mut TestAppContext) {
++        let window = open_window(cx);
++        let other_window = open_window(cx);
++        let platform_window = cx.test_window(window.into());
++        let id = window
++            .update(cx, |view, _, _| view.native_view.0.id)
++            .unwrap();
++        type Step = Box<dyn Fn(&mut TestAppContext)>;
++        // (row name, step, the view the platform was last told is focused)
++        let rows: [(&str, Step, Option<NativeViewId>); 3] = [
++            (
++                "focusing the view gives it keyboard input",
++                Box::new(move |cx| {
++                    window
++                        .update(cx, |view, window, cx| {
++                            window.focus(&view.native_view.focus_handle(cx), cx)
++                        })
++                        .unwrap()
++                }),
++                Some(id),
++            ),
++            (
++                // The window's only view goes: its handle is swapped for one of
++                // another window's views. No view is left to compare against.
++                "dropping the focused view's last handle gives the keyboard back",
++                Box::new(move |cx| {
++                    let elsewhere = other_window
++                        .update(cx, |view, _, _| view.native_view.clone())
++                        .unwrap();
++                    window
++                        .update(cx, |view, _, cx| {
++                            view.native_view = elsewhere;
++                            cx.notify();
++                        })
++                        .unwrap();
++                    cx.run_until_parked();
++                }),
++                None,
++            ),
++            (
++                "moving focus with no view left changes nothing",
++                Box::new(move |cx| {
++                    window
++                        .update(cx, |view, window, cx| window.focus(&view.other_focus, cx))
++                        .unwrap()
++                }),
++                None,
++            ),
++        ];
++        for (name, step, focused) in rows {
++            step(cx);
++            assert_eq!(platform_window.focused_native_view(), focused, "{name}");
++        }
++    }
++
+     #[gpui::test]
+     fn platform_focus_of_a_native_view_focuses_its_handle(cx: &mut TestAppContext) {
+         let window = open_window(cx);
+@@ -722,7 +810,9 @@ mod tests {
+             actions: Vec::new(),
+             keys: Vec::new(),
+             presses: Vec::new(),
++            view_events: Vec::new(),
+             paints_native_view_twice: false,
++            paints_under_view: false,
+             unmark_count: 0,
+         });
+         cx.run_until_parked();
+@@ -767,7 +857,13 @@ mod tests {
+         /// The key presses dispatched to the window's content.
+         keys: Vec<String>,
+         presses: Vec<&'static str>,
++        /// The input the native view's own element hears, with positions
++        /// relative to the view.
++        view_events: Vec<String>,
+         paints_native_view_twice: bool,
++        /// Paints an element before the view's container, under the view,
++        /// which a view that occludes keeps from the input over it.
++        paints_under_view: bool,
+         /// How many times the input handler of the "cover" element was told to
+         /// end its composition.
+         unmark_count: usize,
+@@ -782,10 +878,26 @@ mod tests {
+                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
+                     this.keys.push(event.keystroke.key.clone())
+                 }))
++                .when(self.paints_under_view, |this| {
++                    this.child(
++                        div()
++                            .absolute()
++                            .top(px(10.))
++                            .left_0()
++                            .size(px(100.))
++                            .on_mouse_down(
++                                MouseButton::Left,
++                                cx.listener(|this, _, _, _| this.presses.push("under view")),
++                            )
++                            .on_scroll(
++                                cx.listener(|this, _, _, _| this.presses.push("scroll under view")),
++                            ),
++                    )
++                })
+                 .child(
+                     div()
+                         .absolute()
+-                        .top_0()
++                        .top(px(10.))
+                         .left_0()
+                         .size(px(100.))
+                         .bg(rgb(0xff0000))
+@@ -793,7 +905,35 @@ mod tests {
+                             MouseButton::Left,
+                             cx.listener(|this, _, _, _| this.presses.push("behind view")),
+                         )
+-                        .child(self.native_view.clone()),
++                        .child(
++                            self.native_view
++                                .clone()
++                                .into_element()
++                                .on_mouse_down(
++                                    MouseButton::Left,
++                                    cx.listener(|this, event: &MouseDownEvent, window, _| {
++                                        this.view_event("down", event.position, window)
++                                    }),
++                                )
++                                .on_mouse_move(cx.listener(
++                                    |this, event: &MouseMoveEvent, window, _| {
++                                        this.view_event("move", event.position, window)
++                                    },
++                                ))
++                                .on_scroll(cx.listener(|this, event: &ScrollEvent, window, _| {
++                                    this.view_event("scroll", event.position, window)
++                                }))
++                                .on_key_down(cx.listener(
++                                    |this, event: &KeyDownEvent, _, cx| {
++                                        this.view_events
++                                            .push(format!("key {}", event.keystroke.key));
++                                        // The view uses "q" and leaves every other key.
++                                        if event.keystroke.key == "q" {
++                                            cx.stop_propagation();
++                                        }
++                                    },
++                                )),
++                        ),
+                 )
+                 .when(self.paints_native_view_twice, |this| {
+                     this.child(
+@@ -917,7 +1057,9 @@ mod tests {
+             actions: Vec::new(),
+             keys: Vec::new(),
+             presses: Vec::new(),
++            view_events: Vec::new(),
+             paints_native_view_twice: false,
++            paints_under_view: false,
+             unmark_count: 0,
+         })
+     }
+diff --git a/gpui-pre/src/window/native_view/tests/window_input.rs b/gpui-pre/src/window/native_view/tests/window_input.rs
+new file mode 100644
+index 0000000..5882a72
+--- /dev/null
++++ b/gpui-pre/src/window/native_view/tests/window_input.rs
+@@ -0,0 +1,188 @@
++//! Native views whose input reaches the window ([`NativeViewInput::Window`]: iOS, Windows, Wayland, Android).
++
++use super::*;
++use crate::{NativeViewInput, ScrollDelta};
++
++impl TestView {
++    pub(super) fn view_event(&mut self, kind: &str, position: Point<Pixels>, window: &Window) {
++        let origin = self
++            .native_view
++            .bounds(window)
++            .expect("the view hears input only where it shows")
++            .origin;
++        let position = position - origin;
++        self.view_events.push(format!(
++            "{kind} {} {}",
++            f32::from(position.x),
++            f32::from(position.y)
++        ));
++    }
++}
++
++/// Where the window gets a native view's input, as on Wayland, the view's
++/// own element hears it with view-relative positions, and so do its ancestors (the
++/// container, "behind view"), as any element's input. The view occludes like a
++/// solid element: the element painted before it under it ("under view") hears
++/// nothing over it, the element painted after it over it (the cover) keeps its
++/// own input. The container is at (0, 10).
++#[gpui::test]
++fn window_input_over_a_native_view_reaches_its_element(cx: &mut TestAppContext) {
++    cx.update(|cx| cx.bind_keys([KeyBinding::new("cmd-r", Reserved, None)]));
++    let window = open_window(cx);
++    cx.test_window(window.into())
++        .set_native_view_input(NativeViewInput::Window);
++    window
++        .update(cx, |view, window, cx| {
++            view.native_view = new_native_view(window, cx);
++            view.native_view.reserve_action::<Reserved>();
++            view.paints_under_view = true;
++            window.focus(&view.native_view.focus_handle(cx), cx);
++        })
++        .unwrap();
++    cx.run_until_parked();
++    let mut cx = VisualTestContext::from_window(window.into(), cx);
++    let uncovered = point(px(75.), px(75.));
++    let covered = point(px(25.), px(25.));
++    let scroll = ScrollEvent {
++        position: uncovered,
++        delta: ScrollDelta::Pixels(point(px(0.), px(10.))),
++        ..Default::default()
++    };
++
++    type Input = Box<dyn Fn(&mut VisualTestContext)>;
++    // (row name, input, what the view's element hears, presses heard elsewhere). The
++    // press on the cover moves focus to it, so it comes last.
++    let rows: [(&str, Input, &[&str], &[&str]); 6] = [
++        (
++            "a key while the view is focused",
++            Box::new(|cx| cx.simulate_keystrokes("a")),
++            &["key a"],
++            &[],
++        ),
++        (
++            "a reserved key while the view is focused",
++            Box::new(|cx| cx.simulate_keystrokes("cmd-r")),
++            &[],
++            &[],
++        ),
++        (
++            "a press on the uncovered view",
++            Box::new(move |cx| {
++                cx.simulate_mouse_down(uncovered, MouseButton::Left, Modifiers::default())
++            }),
++            &["down 75 65"],
++            &["outside cover", "behind view"],
++        ),
++        (
++            "a move over the uncovered view",
++            Box::new(move |cx| cx.simulate_mouse_move(uncovered, None, Modifiers::default())),
++            &["move 75 65"],
++            &[],
++        ),
++        (
++            "a scroll over the uncovered view",
++            Box::new(move |cx| cx.simulate_event(scroll.clone())),
++            &["scroll 75 65"],
++            &[],
++        ),
++        (
++            "a press on the element painted over the view",
++            Box::new(move |cx| {
++                cx.simulate_mouse_down(covered, MouseButton::Left, Modifiers::default())
++            }),
++            &[],
++            &[],
++        ),
++    ];
++    for (name, input, view_events, presses) in rows {
++        input(&mut cx);
++        let (heard_by_view, heard_elsewhere) = window
++            .update(&mut cx, |view, _, _| {
++                (
++                    std::mem::take(&mut view.view_events),
++                    std::mem::take(&mut view.presses),
++                )
++            })
++            .unwrap();
++        assert_eq!(heard_by_view, view_events, "{name}: the view's element");
++        assert_eq!(heard_elsewhere, presses, "{name}: the rest of the window");
++    }
++    let actions = window
++        .update(&mut cx, |view, _, _| std::mem::take(&mut view.actions))
++        .unwrap();
++    assert_eq!(actions, ["reserved"]);
++}
++
++/// Where the window gets a focused native view's keys, the view's element
++/// hears each first, as the view itself does on macOS; key bindings get the keys
++/// it leaves. Reserved bindings and the rest of a pending binding go first and
++/// never reach the element. The element uses "q" and leaves every other key.
++#[gpui::test]
++fn window_keys_reach_the_view_element_before_key_bindings(cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        cx.bind_keys([
++            KeyBinding::new("cmd-r", Reserved, None),
++            KeyBinding::new("cmd-o", Ordinary, None),
++            KeyBinding::new("q", Ordinary, None),
++            KeyBinding::new("cmd-k o", Ordinary, None),
++        ])
++    });
++    let window = open_window(cx);
++    cx.test_window(window.into())
++        .set_native_view_input(NativeViewInput::Window);
++    window
++        .update(cx, |view, window, cx| {
++            view.native_view = new_native_view(window, cx);
++            view.native_view.reserve_action::<Reserved>();
++            window.focus(&view.native_view.focus_handle(cx), cx);
++        })
++        .unwrap();
++    cx.run_until_parked();
++
++    // (row name, keystrokes, what the view's element hears, actions run)
++    let rows: [(&str, &str, &[&str], &[&str]); 5] = [
++        (
++            "a bound key the element leaves reaches it, then its binding",
++            "cmd-o",
++            &["key o"],
++            &["ordinary"],
++        ),
++        (
++            "a bound key the element uses never reaches its binding",
++            "q",
++            &["key q"],
++            &[],
++        ),
++        (
++            "a reserved key goes to its binding and never to the element",
++            "cmd-r",
++            &[],
++            &["reserved"],
++        ),
++        (
++            "the first key of a longer binding reaches the element, then starts the binding",
++            "cmd-k",
++            &["key k"],
++            &[],
++        ),
++        (
++            "a key that continues a pending binding goes to it, not to the element",
++            "o",
++            &[],
++            &["ordinary"],
++        ),
++    ];
++    for (name, keystrokes, view_events, actions) in rows {
++        cx.simulate_keystrokes(window.into(), keystrokes);
++        let (heard, ran) = window
++            .update(cx, |view, _, _| {
++                (
++                    std::mem::take(&mut view.view_events),
++                    std::mem::take(&mut view.actions),
++                )
++            })
++            .unwrap();
++        assert_eq!(heard, view_events, "{name}: the view's element");
++        assert_eq!(ran, actions, "{name}: key bindings");
++    }
++}

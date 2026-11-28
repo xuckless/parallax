@@ -371,26 +371,26 @@ platform views, WebView2's visual hosting. Helpers: React Native's `RCTSurfaceTo
 (touch into native views), `RCTComponentViewRegistry.mm` and `SurfaceMountingManager.kt` (view lifecycle), all MIT;
 gpui-component's `gpui-webview` crate (Apache-2.0) as a reference.
 
-- [ ] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
+- [x] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
       `set_sync` only for frames that move, resize, show or hide it, `desync` otherwise; `wp_viewport` for its size;
       fractional scale rounds the subsurface outwards and cuts the hole a physical pixel smaller. Port Chromium's
       `ui/ozone/platform/wayland/host/wayland_subsurface.cc` and `wayland_frame_manager.cc` (BSD-3; with its mutter
       buffer-release workaround). GStreamer's `waylandsink` layout sequence is reference only (LGPL).
-- [ ] wgpu renderer hole: `PrimitiveBatch::NativeViews` clears the view's bounds to transparent in paint order, with
+- [x] wgpu renderer hole: `PrimitiveBatch::NativeViews` clears the view's bounds to transparent in paint order, with
       Chromium's `ReplaceExistingQuadWithHolePunch` semantics; premultiplied alpha while a view shows; log the
       alpha mode chosen. Risk: NVIDIA's Vulkan WSI offers only opaque, so fall back to GL there.
-- [ ] Windows: GPUI already presents through DirectComposition. A root container visual, the app's visual below
+- [x] Windows: GPUI already presents through DirectComposition. A root container visual, the app's visual below
       GPUI's swapchain visual, a D3D11 hole, placement in GPUI's own DComp `Commit`. Model Chromium's
       `dc_layer_overlay.cc` / `dc_layer_tree.cc` and WebView2's visual hosting; never child HWNDs.
-- [ ] iOS: a `UIView` / `CALayer` under a non-opaque `CAMetalLayer`, the Metal hole shared with macOS; Flutter's
+- [x] iOS: a `UIView` / `CALayer` under a non-opaque `CAMetalLayer`, the Metal hole shared with macOS; Flutter's
       `FlutterPlatformViewsController.mm` as the oracle.
-- [ ] Android: a `SurfaceView` underlay; Flutter's HCPP `PlatformViewsController2.java` as reference (API 34+), with
+- [x] Android: a `SurfaceView` underlay; Flutter's HCPP `PlatformViewsController2.java` as reference (API 34+), with
       TLHC-style copies below it.
-- [ ] Web: a DOM slot under a transparent canvas, from Flutter's `slots.dart` and `content_manager.dart`.
-- [ ] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
+- [x] Web: a DOM slot under a transparent canvas, from Flutter's `slots.dart` and `content_manager.dart`.
+- [x] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
       take their own input.
-- [ ] The view's own frames cause 0 GPUI renders.
-- [ ] macOS: upstream's native view checked against the acceptance below; patch the gaps (owner wants native views on
+- [x] The view's own frames cause 0 GPUI renders.
+- [x] macOS: upstream's native view checked against the acceptance below; patch the gaps (owner wants native views on
       every desktop, 2026-11-27).
 - [ ] X11: deferred (no underlay); `NativeView::new` keeps failing there.
 
@@ -401,6 +401,11 @@ mode chosen is logged; no seams at 1.0 and a fractional scale (1.25). On Wayland
 NVIDIA (proprietary, Vulkan) and Mesa.
 
 **NativeView gate** (0.1.10): the acceptance above passes on every listed target.
+
+**NativeView gate passed 2026-11-28** ([native-view-gate.md](docs/native-view-gate.md)): 0 GPUI frames/s while only the
+view updates on Wayland (NVIDIA and Mesa), Windows, iOS, Android, web (Chromium, Firefox); macOS on upstream's native
+view plus in-step present. Owner checks owed: macOS screen recording, iPad, Wayland 125 % on the real desktop, headed
+WebGPU on NVIDIA, WebView2 popups and device loss on real Windows. Android `View` / `in_surface` lag a frame by design.
 
 ## Phase 5: Tooling and docs
 
@@ -558,3 +563,7 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | gpui_ios's `insertText:`/`setMarkedText:`/`replaceRange:` used `NSString::to_string`, which for half a surrogate pair (what iOS 16's partial-emoji bug sends) reads a NULL `UTF8String`: undefined behaviour, an abort in debug builds. Patch 0029. |
 | 2026-11-27 | Flutter `3.50.1` | Flutter's `KeyCodeMap.g.mm` maps `UIKeyInputEnd` to Enter's logical key (a table bug); patch 0031 maps it to End. |
 | 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | GPUI's `SpringConfig` treats the iOS keyboard spring (mass 3, stiffness 1000, damping 500) as overdamped (about 70% of the way in 0.6 s), so it cannot stand in for Flutter's keyboard-inset spring; patch 0032 samples the keyboard's presentation layer instead. |
+| 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | `gpui-pre` dropped gpui's dev-dependencies, so upstream's macOS `native_view` and `native_view_appkit_field` examples (the NativeView reference) don't build from the package: no `gpui_platform`, and `objc2` only as an optional dependency. Patch 0065 adds both back as macOS dev-dependencies. |
+| 2026-11-28 | gpui-pre 0.3.14 | gpui_web sizes its canvas from `devicePixelContentBoxSize`, which scale emulation (DevTools' device mode, CDP `Emulation.setDeviceMetricsOverride`, Playwright's `deviceScaleFactor`, Chromium 158 and Firefox) leaves at CSS size while `devicePixelRatio` scales: GPUI drew at the square of the scale. Patch 0070 trusts the box only where it agrees with the CSS box times the ratio. |
+| 2026-11-28 | gpui-pre 0.3.14 | gpui_web's automatic backend choice keeps WebGPU whenever a device is made, but Chromium 158 with its Vulkan feature on NVIDIA's Linux driver (and its default SwiftShader WebGPU) composites every WebGPU canvas black, so GPUI's window was all black. Patch 0072 reads a test clear back and falls back to WebGL2 (docs/web-webgpu.md). |
+| 2026-11-28 | wgpu-hal 30.0.2 (`gles/egl.rs` `choose_config`, `gles/adapter.rs` `surface_capabilities`) | Emulator GL apps render 16-bit RGB 565: `choose_config` asks `ALPHA_SIZE 8` only when EGL has sRGB (`EGL_KHR_gl_colorspace`), which the emulator's EGL lacks. GLES surfaces also report only `CompositeAlphaMode::Opaque` (a `//TODO`) on every device, so a native view's hole is black on GL; parallax-android rebuilds the renderer on Vulkan when a view first shows (API 30+, [native-view-android.md](docs/native-view-android.md)). |

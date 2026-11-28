@@ -1,15 +1,15 @@
 //! GPUI's `PlatformWindow` on Android: one Activity's window, filling it. State lives in its [`ActivityWindow`] (and
 //! the Activity's stage in the app's [`Shell`]); this type answers GPUI from them. Stubs are marked "Not yet on Android" and listed in `docs/android.md`.
 
-use std::{rc::Rc, sync::Arc};
+use std::{any::Any, ffi::c_void, ptr::NonNull, rc::Rc, sync::Arc};
 
 use futures::channel::oneshot;
 use gpui::{
-    Bounds, Capslock, DispatchEventResult, GpuSpecs, Haptic, Modifiers, Pixels, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration, TextInputStateChange,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets,
-    WindowVisibility,
+    Bounds, Capslock, DispatchEventResult, GpuSpecs, Haptic, Modifiers, NativeViewId,
+    NativeViewInput, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, Size,
+    TextInputConfiguration, TextInputStateChange, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowInsets, WindowVisibility,
 };
 use raw_window_handle as rwh;
 
@@ -259,7 +259,40 @@ impl PlatformWindow for AndroidWindow {
         // Not yet on Android: dark mode changes (onConfigurationChanged uiMode).
     }
 
+    // SAFETY (for callers): `view` is a live JNI reference to an `android.view.View` without a parent, an
+    // `android.view.SurfaceControl` (API 29+) or an `InSurface` (`in_surface`), as `NativeView::new` documents for
+    // Android.
+    unsafe fn attach_native_view(
+        &self,
+        id: NativeViewId,
+        view: NonNull<c_void>,
+    ) -> Option<Box<dyn Any>> {
+        // SAFETY: the caller upholds `NativeViews::attach`'s contract (above).
+        unsafe { self.window.native_views.attach(id, view) }
+    }
+
+    // GPUI's own content takes touches over a view; the app may forward them to it too (`forward_touches`).
+    fn native_view_input(&self) -> NativeViewInput {
+        NativeViewInput::Window
+    }
+
+    fn set_focused_native_view(&self, id: Option<NativeViewId>) {
+        self.window.native_views.focus(id);
+    }
+
+    fn on_hit_test_native_view(
+        &self,
+        callback: Box<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>,
+    ) {
+        self.window.callbacks.hit_test_native_view.set(callback);
+    }
+
     fn draw(&self, scene: &Scene) {
+        // Placed before the frame that cuts their holes is drawn, so both reach the screen with this vsync.
+        self.window.native_views.place(scene);
+        if !scene.native_views.is_empty() {
+            self.window.native_views_shown();
+        }
         // `false` means no surface or a lost device; the shell handles both on the next surface event or frame.
         let drawn = self
             .window

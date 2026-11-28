@@ -40,7 +40,7 @@ const VIEW_CLASS: &str = "io/github/xuckless/parallax/ParallaxSurfaceView";
 
 /// Java's native methods → Rust functions. To add one: declare it `static native` in `ParallaxSurfaceView.java`
 /// and add a row here with its JNI signature.
-fn natives() -> [NativeMethod; 15] {
+fn natives() -> [NativeMethod; 17] {
     let row = |name: &str, sig: &str, fn_ptr: *mut c_void| NativeMethod {
         name: name.into(),
         sig: sig.into(),
@@ -108,6 +108,16 @@ fn natives() -> [NativeMethod; 15] {
             "nativeBoundsForRange",
             "(III[F)Z",
             bounds_for_range as *mut c_void,
+        ),
+        row(
+            "nativeViewCreated",
+            "(ILio/github/xuckless/parallax/NativeViews;)V",
+            view_created as *mut c_void,
+        ),
+        row(
+            "nativeHitTestNativeView",
+            "(IFF)I",
+            hit_test_native_view as *mut c_void,
         ),
         row(
             "nativeAccessibilitySettings",
@@ -576,6 +586,35 @@ extern "system" fn bounds_for_range(
     }
 }
 
+/// `ParallaxActivity.onCreate`, once `activity`'s view exists: the `NativeViews` that places its native views.
+extern "system" fn view_created(
+    env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    native_views: JObject,
+) {
+    match env.new_global_ref(native_views) {
+        Ok(native_views) => with_window(activity, |_, window| {
+            window.native_views.created(native_views)
+        }),
+        Err(error) => log::error!("parallax: Activity {activity} shows no native views: {error}"),
+    }
+}
+
+/// `NativeViewTouchDispatcher`, on a touch down at `(x, y)` view pixels: the handle of the native view GPUI shows
+/// topmost there, when the app forwards touches to it, else -1.
+extern "system" fn hit_test_native_view(
+    _env: JNIEnv,
+    _class: JClass,
+    activity: jint,
+    x: jfloat,
+    y: jfloat,
+) -> jint {
+    let mut handle = -1;
+    with_window(activity, |_, window| handle = window.native_view_at(x, y));
+    handle
+}
+
 /// The ported `AndroidTouchProcessor` hands over Flutter's pointer data packet: the first `position` bytes of
 /// a direct `ByteBuffer`, from `activity`'s view.
 extern "system" fn dispatch_pointer_data_packet(
@@ -765,6 +804,15 @@ impl Shell {
                 window.activity.0
             ),
         }
+    }
+
+    /// The Activity window GPUI's `handle` is; `None` for one no live Activity shows.
+    pub(crate) fn window_for(&self, handle: AnyWindowHandle) -> Option<Rc<ActivityWindow>> {
+        self.windows
+            .borrow()
+            .values()
+            .find(|window| window.gpui_handle() == Some(handle))
+            .cloned()
     }
 
     /// Activity `id`'s window; `None` once it is destroyed.

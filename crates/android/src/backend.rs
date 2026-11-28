@@ -49,9 +49,44 @@ impl Device {
     }
 }
 
+/// Native views show through holes only on a surface with alpha, and wgpu-hal's GL surfaces offer only `Opaque`
+/// (30.0.2, `gles/adapter.rs` `surface_capabilities`), so holes are black on GL. When a window first shows native views
+/// on `current`, the renderer is rebuilt on the returned backends, in order, or kept (`None`). The first row that
+/// matches wins; to change the rule, edit a row. API 30+ only: below, the emulator's Vulkan is not trusted, and holes
+/// stay black there (docs/native-view-android.md).
+const FOR_NATIVE_VIEWS: [(Backend, u32, Option<[Backend; 2]>); 2] = [
+    (Backend::Vulkan, 0, None),
+    (Backend::Gl, 30, Some([Backend::Vulkan, Backend::Gl])),
+];
+
+/// The backends to rebuild on when native views first show on `current` at `api_level` ([`FOR_NATIVE_VIEWS`]).
+pub fn for_native_views(current: Backend, api_level: u32) -> Option<[Backend; 2]> {
+    FOR_NATIVE_VIEWS
+        .iter()
+        .find(|(backend, since, _)| *backend == current && api_level >= *since)
+        .and_then(|(_, _, backends)| *backends)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_views_rebuild_gl_on_vulkan_from_api_30() {
+        // (row name, current backend, API level, expected)
+        let vulkan_first = Some([Backend::Vulkan, Backend::Gl]);
+        let cases = [
+            ("vulkan_keeps", Backend::Vulkan, 35, None),
+            ("vulkan_keeps_on_28", Backend::Vulkan, 28, None),
+            ("gl_on_28_keeps_black_holes", Backend::Gl, 28, None),
+            ("gl_on_29_keeps_black_holes", Backend::Gl, 29, None),
+            ("gl_on_30_moves_to_vulkan", Backend::Gl, 30, vulkan_first),
+            ("gl_on_35_moves_to_vulkan", Backend::Gl, 35, vulkan_first),
+        ];
+        for (name, current, api_level, expected) in cases {
+            assert_eq!(for_native_views(current, api_level), expected, "{name}");
+        }
+    }
 
     #[test]
     fn backends_by_hardware() {

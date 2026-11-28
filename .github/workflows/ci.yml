@@ -140,7 +140,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: patch-tests
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core
+      # Mesa lavapipe: parallax-gpui-wgpu's headless renderer tests (patch 0047's hole among them) need a Vulkan device.
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_PACKAGES fonts-dejavu-core mesa-vulkan-drivers
       - run: scripts/apply-patches.sh
       - run: scripts/patch-test.sh
 
@@ -175,6 +176,13 @@ jobs:
       # Mouse and touch selection in hello's text field, live (docs/text-selection.md#live-checks).
       - if: ${{ !cancelled() }}
         run: scripts/weston-selection-checks.sh
+      # NativeView on Wayland (docs/native-view-wayland-checks.md): a private headless GNOME Shell, the app on lavapipe,
+      # scales 1 and 1.25. The script skips with a message where the Shell can't run.
+      - if: ${{ !cancelled() }}
+        run: |
+          sudo apt-get install -y --no-install-recommends gnome-shell dbus-user-session fuse3
+          scripts/wayland-native-view-checks.sh
+        timeout-minutes: 15
       # The fresh recordings, to compare with or replace the committed fixtures.
       - if: always()
         uses: actions/upload-artifact@v7.0.2
@@ -185,17 +193,19 @@ jobs:
             crates/platform/tests/traces/x11
             target/record-traces/*/*.log
             target/record-traces/wayland/selection/*.log
+            target/native-view-wayland/
 
   # Gate 3 on Windows (docs/windows-touch-harness.md): examples/hello's desktop bin gets synthetic touch and pen
   # (crates/touch-inject), records the gesture traces, runs the runtime checks of patch 0021, then replays the fresh
-  # traces beside the committed phone and browser ones. The runner's desktop session takes injected input. The checks
-  # and the replay run even after a failed recording, so one run reports every failure.
+  # traces beside the committed phone and browser ones, then drives examples/native-view for the NativeView
+  # checks. The runner's desktop session takes injected input. The checks and the replay run even after a failed
+  # recording, so one run reports every failure.
   windows-touch:
     name: windows-touch
     # Drives a desktop session, so like android-smoke it runs on main, pull requests and manual runs (docs/ci.md).
     if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
@@ -211,6 +221,25 @@ jobs:
         timeout-minutes: 15
       - if: ${{ !cancelled() }}
         run: cargo test -p parallax-platform --test trace_replay -- --nocapture
+      # WebView2's Evergreen runtime (native-view --view webview2): the image's when it has one, else installed.
+      - if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).pv
+          if ($version) {
+            "WebView2 runtime $version, on the image"
+          } else {
+            $setup = "$env:RUNNER_TEMP\MicrosoftEdgeWebview2Setup.exe"
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup
+            Start-Process $setup -ArgumentList '/silent', '/install' -Wait
+            "WebView2 runtime $((Get-ItemProperty -Path $key).pv), installed"
+          }
+      # NativeView on Windows (docs/native-view-windows.md): the composed screen, input and frame counts at 100 and
+      # 125 %, for a composition swap chain and a WebView2 page.
+      - if: ${{ !cancelled() }}
+        run: scripts/windows-native-view-checks.sh
+        timeout-minutes: 25
       # The fresh traces (commit them when they change) and every launch's log.
       - if: always()
         uses: actions/upload-artifact@v7.0.2
@@ -219,6 +248,7 @@ jobs:
           path: |
             crates/platform/tests/traces/windows/
             target/record-traces/windows/
+            target/native-view-windows/
 
   # examples/hello on an API 35 emulator: scripts/android-smoke.sh builds, installs and drives it (docs/android-smoke.md).
   # It boots an emulator and builds a whole APK, so it runs on main, pull requests and manual runs, not on every

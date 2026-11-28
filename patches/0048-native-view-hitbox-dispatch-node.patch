@@ -1,0 +1,67 @@
+A hitbox knows the dispatch node of the element that inserted it, so a hit test can tell an element's ancestors.
+
+What: A hitbox records its element's dispatch node (`Hitbox::dispatch_node`, remapped when a cached view's prepaint
+is reused). `insert_hitbox` sets it from the active dispatch node; `reuse_prepaint` copies the cached hitboxes after
+the dispatch subtree is reused and maps each node to its new id.
+
+Why: 0049's occlusion (`HitboxBehavior::BlockMouseExceptAncestors`) keeps hit only the hitboxes on a native view's
+dispatch path, which needs each hitbox's node. `Hitbox` is GPUI's own type, so this is a core patch (rule 12).
+Nothing reads the field outside this patch until 0049.
+
+Test: none of its own; 0051's `native_view::tests::window_input` rows hit-test through it, and the existing
+cached-view tests keep passing.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index 28189ce..4501675 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -858,6 +858,9 @@ pub struct Hitbox {
+     pub content_mask: ContentMask<Pixels>,
+     /// Flags that specify hitbox behavior.
+     pub behavior: HitboxBehavior,
++    /// The dispatch node of the element that inserted the hitbox, which tells
++    /// a [`HitboxBehavior::BlockMouseExceptAncestors`] hitbox its ancestors.
++    pub(crate) dispatch_node: Option<DispatchNodeId>,
+ }
+ 
+ impl Hitbox {
+@@ -4669,11 +4672,6 @@ impl Window {
+     }
+ 
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+-        self.next_frame.hitboxes.extend(
+-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+-                .iter()
+-                .cloned(),
+-        );
+         self.next_frame.tooltip_requests.extend(
+             self.rendered_frame.tooltip_requests
+                 [range.start.tooltips_index..range.end.tooltips_index]
+@@ -4694,6 +4692,17 @@ impl Window {
+             &mut self.rendered_frame.dispatch_tree,
+             self.focus,
+         );
++        // After the dispatch subtree, whose new node ids the hitboxes take.
++        self.next_frame.hitboxes.extend(
++            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
++                .iter()
++                .map(|hitbox| Hitbox {
++                    dispatch_node: hitbox
++                        .dispatch_node
++                        .map(|node| reused_subtree.refresh_node_id(node)),
++                    ..hitbox.clone()
++                }),
++        );
+ 
+         if reused_subtree.contains_focus() {
+             self.next_frame.focus = self.focus;
+@@ -6045,6 +6054,7 @@ impl Window {
+             bounds,
+             content_mask,
+             behavior,
++            dispatch_node: self.next_frame.dispatch_tree.active_node_id(),
+         };
+         self.next_frame.hitboxes.push(hitbox.clone());
+         hitbox

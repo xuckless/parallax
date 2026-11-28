@@ -7,14 +7,27 @@
 // - firefox, webkit: Playwright's builds, loaded from PLAYWRIGHT_DIR (a directory whose node_modules holds playwright;
 //   its browsers come from PLAYWRIGHT_BROWSERS_PATH). Checks needing what Playwright can't drive print "skip".
 // Usage: node scripts/web-checks.mjs <hello url> desktop|mobile <chromium debugging port | firefox | webkit>
+// With a fourth argument `native-view` and examples/native-view's url, it checks patches 0066-0069's native views instead
+// (docs/native-view-web-checks.md): input into the views' elements and the divs over them, focus between them and
+// GPUI's field, page content around an offset canvas, 0 GPUI frames while only the elements change, the alpha mode,
+// each screenshot's content (holes cut, views, divs and GPUI drew, no gap; still and animating) at the page's scale,
+// and, on Chromium, the toggle's and the views' costs (on a phone profile in mobile mode). A fifth argument is the page's scale (default
+// 1), emulated: Emulation.setDeviceMetricsOverride on Chromium, the context's deviceScaleFactor in Playwright.
 // Prints each check; exits 1 if any fails.
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
-const [url, mode, browser] = process.argv.slice(2);
+const [url, mode, browser, suite, scale = "1"] = process.argv.slice(2);
 if (!["desktop", "mobile"].includes(mode)) throw new Error("web-checks: mode is desktop or mobile");
 // An Android phone: touch input, and the user agent that makes gpui_web treat the browser as mobile.
 const ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The native-view example's once-a-second line and the renderers' alpha lines: the same two regexes in every
+// native-view check script (docs/examples-native-view.md).
+const FRAMES_LINE = /native-view: gpui frames\/s ([0-9]+), view frames\/s ([0-9]+)/;
+const ALPHA_LINE = /alpha mode [A-Z][A-Za-z]+|alpha mode, only [A-Za-z]+|premultiplied alpha \(|metal layer alpha: [a-z]+/;
 const logs = [];
 
 // The page, over the DevTools Protocol. Optional steps (compose, hide, show, freeze, resume) exist only here.
@@ -58,6 +71,38 @@ const chromium = async (port) => {
         }
       }
     },
+    move: (x, y) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }),
+    click: async (x, y) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+      }
+    },
+    drag: async ([x0, y0], [x1, y1]) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x0, y: y0 });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: x0, y: y0, button: "left", clickCount: 1 });
+      for (let step = 1; step <= 10; step++) {
+        const at = { x: x0 + ((x1 - x0) * step) / 10, y: y0 + ((y1 - y0) * step) / 10 };
+        await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at, button: "left", buttons: 1 });
+      }
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x1, y: y1, button: "left", clickCount: 1 });
+    },
+    wheel: async (x, y, deltaY) => {
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      await send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY });
+    },
+    screenshot: async (path) => {
+      const { data } = await send("Page.captureScreenshot", { format: "png" });
+      (await import("node:fs")).writeFileSync(path, Buffer.from(data, "base64"));
+    },
+    // Takes effect on the next navigation's first layout too; `mobile` also turns on the mobile viewport.
+    viewport: (width, height) =>
+      send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: Number(scale), mobile: mode === "mobile" }),
+    throttle: (rate) => send("Emulation.setCPUThrottlingRate", { rate }),
+    taskSeconds: async () => {
+      await send("Performance.enable");
+      return (await send("Performance.getMetrics")).metrics.find((m) => m.name === "TaskDuration").value;
+    },
     insertText: (text) => send("Input.insertText", { text }),
     pressEnter: async () => {
       for (const type of ["keyDown", "keyUp"]) {
@@ -87,13 +132,33 @@ const playwright = async (engine) => {
   const launcher = createRequire(`${process.env.PLAYWRIGHT_DIR}/`)("playwright")[engine];
   const instance = await launcher.launch();
   const touch = mode === "mobile" ? { hasTouch: true, userAgent: ANDROID } : {};
-  const context = await instance.newContext({ viewport: { width: 412, height: 915 }, deviceScaleFactor: 1, ...touch });
-  const page = await context.newPage();
-  page.on("console", (message) => logs.push(message.text()));
+  let page;
+  // A new page in a new context: Playwright sets the scale per context.
+  const open = async (width, height, deviceScaleFactor) => {
+    await page?.context().close();
+    const context = await instance.newContext({ viewport: { width, height }, deviceScaleFactor, ...touch });
+    page = await context.newPage();
+    page.on("console", (message) => logs.push(message.text()));
+  };
+  await open(412, 915, Number(scale));
   return {
     navigate: (url) => page.goto(url),
     js: (expression) => page.evaluate(expression),
     tap: (x, y) => (mode === "mobile" ? page.touchscreen.tap(x, y) : page.mouse.click(x, y)),
+    move: (x, y) => page.mouse.move(x, y),
+    click: (x, y) => page.mouse.click(x, y),
+    drag: async ([x0, y0], [x1, y1]) => {
+      await page.mouse.move(x0, y0);
+      await page.mouse.down();
+      await page.mouse.move(x1, y1, { steps: 10 });
+      await page.mouse.up();
+    },
+    wheel: async (x, y, deltaY) => {
+      await page.mouse.move(x, y);
+      await page.mouse.wheel(0, deltaY);
+    },
+    screenshot: (path) => page.screenshot({ path }),
+    viewport: (width, height) => open(width, height, Number(scale)),
     insertText: (text) => page.keyboard.insertText(text),
     pressEnter: () => page.keyboard.press("Enter"),
     close: () => instance.close(),
@@ -125,6 +190,12 @@ const tap = async (x, y) => {
   await driver.tap(x, y);
   await sleep(500);
 };
+
+if (suite === "native-view") {
+  await nativeViewChecks();
+  await driver.close();
+  process.exit(failed ? 1 : 0);
+}
 
 await driver.navigate(url);
 for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
@@ -228,3 +299,225 @@ check("unloading", await phases(3), ["Inactive", "Background", "Disconnected"]);
 
 await driver.close();
 process.exit(failed ? 1 : 0);
+
+// examples/native-view on the web (src/web.rs's places), in CSS px of a 900 x 700 page: each view is
+// 400 x 260 at its corner of the canvas, with a GPUI div at +20..+180, +20..+80 over it. `?offset` puts the canvas
+// at (8, 48), under a header of page content.
+async function nativeViewChecks() {
+  const views = { same: [20, 60], cross: [460, 60], canvas: [20, 360], form: [460, 360] };
+  const names = Object.keys(views);
+  const [VIEW_W, VIEW_H, OVER_W, OVER_H] = [400, 260, 160, 60];
+  let origin = [0, 0];
+  const at = (name, [x, y]) => [origin[0] + views[name][0] + x, origin[1] + views[name][1] + y];
+  const uncovered = (name) => at(name, [280, 190]);
+  const covered = (name) => at(name, [80, 50]);
+  const shots = mkdtempSync(`${process.env.SHOTS_DIR ?? tmpdir()}/native-view-`);
+  const pixels = (...args) => execFileSync("python3", ["-I", new URL("pixels.py", import.meta.url).pathname, ...args]).toString().trim();
+  const count = (path, colour) => Number(pixels(path, "count", colour));
+  const s = Number(scale);
+  const rgb = (path, [x, y]) => pixels(path, "at", String(Math.round(x * s)), String(Math.round(y * s))).split(" ").map(Number);
+  // Each view's content, looked for at points clear of its div, its text and (±12 px) the animation's shift: the
+  // iframes' frame.html gradient (blue, not the slot's white), the canvas's hsl(h 70% 60%) (two points, one clear of
+  // its moving black bar) and the form's orange. Add a row per view.
+  const hsl = ([r, g, b]) => {
+    const [max, min] = [Math.max(r, g, b) / 255, Math.min(r, g, b) / 255];
+    const l = (max + min) / 2;
+    return [max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1)), l];
+  };
+  const LOOKS = {
+    same: [[[280, 200]], ([r, , b]) => b > 200 && r > 120 && r < 230],
+    cross: [[[280, 200]], ([r, , b]) => b > 200 && r > 120 && r < 230],
+    canvas: [[[100, 130], [140, 130]], (pixel) => { const [sat, l] = hsl(pixel); return sat > 0.55 && sat < 0.85 && l > 0.5 && l < 0.7; }],
+    form: [[[200, 130]], ([r, g, b]) => Math.abs(r - 0xe0) < 24 && Math.abs(g - 0xa0) < 24 && Math.abs(b - 0x30) < 24],
+  };
+  // The page's gap colour (green: a hole with no element under it), GPUI's view boxes (magenta: a view not cut out),
+  // the divs over the views, GPUI's background and each view's content, in one screenshot.
+  const content = async (name, shown = names) => {
+    const path = `${shots}/${name}.png`;
+    await driver.screenshot(path);
+    const divs = count(path, "2050d0") / (shown.length * OVER_W * OVER_H * s * s);
+    const canvasArea = (900 - 2 * origin[0]) * (700 - origin[1] - origin[0]);
+    const background = count(path, "202020") / ((canvasArea - shown.length * VIEW_W * VIEW_H) * s * s);
+    return {
+      gap: count(path, "00ff00"),
+      uncut: count(path, "c000c0"),
+      divs: divs > 0.9 && divs < 1.1 ? "drew" : divs.toFixed(2),
+      background: background > 0.5 ? "drew" : background.toFixed(2),
+      views: Object.fromEntries(shown.map((view) => {
+        const [points, looks] = LOOKS[view];
+        const seen = points.map((point) => rgb(path, at(view, point)));
+        return [view, seen.some(looks) ? "drew" : seen.map((pixel) => pixel.join(" ")).join(", ")];
+      })),
+    };
+  };
+  const drew = (shown = names) => ({ gap: 0, uncut: 0, divs: "drew", background: "drew", views: Object.fromEntries(shown.map((v) => [v, "drew"])) });
+  const open = async (query) => {
+    await driver.viewport(900, 700);
+    logs.length = 0;
+    await driver.navigate(`${url}${query}`);
+    for (let i = 0; i < 150 && !logs.some((line) => line.includes("window open")); i++) await sleep(200);
+    await sleep(2500);
+  };
+  const press = (x, y) => (mode === "mobile" ? driver.tap(x, y) : driver.click(x, y));
+  const events = async (frame, kind) =>
+    (await js("window.frameEvents.splice(0)")).filter((e) => e.frame === frame && e.kind === kind);
+  const said = (pattern) => logs.some((line) => pattern.test(line));
+  const saidSince = (mark, text) => logs.slice(mark).some((line) => line.includes(text));
+  const command = async (text) => {
+    await js(`window.nativeViewCommand(${JSON.stringify(text)})`);
+    await sleep(600);
+  };
+  const active = () => js("document.activeElement.localName");
+  // A real click (or tap) into each element at view-relative (280, 190), and the GPUI div over each.
+  const pressChecks = async (label) => {
+    for (const name of names) {
+      await js("window.frameEvents.length = 0");
+      await press(...uncovered(name));
+      await sleep(500);
+      check(`${label}${name} element takes a real ${mode === "mobile" ? "tap" : "click"} at view-relative (280, 190)`,
+        (await events(name, "click")).map(({ x, y, trusted }) => [Math.round(x), Math.round(y), trusted]), [[280, 190, true]]);
+      const mark = logs.length;
+      await press(...covered(name));
+      await sleep(500);
+      check(`${label}the div over ${name} takes its own press`,
+        [saidSince(mark, `div over ${name}: down`), (await events(name, "click")).length], [true, 0]);
+    }
+  };
+
+  await open("");
+  check(`page scale ${scale}`, await js("devicePixelRatio"), Number(scale));
+  const alpha = logs.map((line) => line.match(ALPHA_LINE)?.[0]).filter(Boolean);
+  console.log(`measure alpha: ${alpha.at(-1)}`);
+  check("alpha mode logged", alpha.some((line) => /premultiplied/i.test(line)), true);
+  const [gpui0, element0] = await js("[window.gpuiFrames, window.elementFrames]");
+  await sleep(2000);
+  const [gpui1, element1] = await js("[window.gpuiFrames, window.elementFrames]");
+  // The example's own once-a-second count over the same two seconds: GPUI's frames, the canvas element's.
+  const seconds = logs.map((line) => line.match(FRAMES_LINE)).filter(Boolean).slice(-2);
+  const [gpuiLogged, viewLogged] = [1, 2].map((at) => seconds.reduce((sum, second) => sum + Number(second[at]), 0));
+  console.log(`measure frames/s: ${seconds.map((second) => second[0]).join("; ")}`);
+  check("GPUI frames while only the elements change", [gpui1 - gpui0, seconds.length, gpuiLogged], [0, 2, 0]);
+  check("the canvas element drew frames meanwhile", element1 - element0 > 30 && viewLogged > 30, true);
+  check("still: holes cut, views, divs and GPUI drew, no gap", await content("still"), drew());
+
+  await pressChecks("");
+  // A press into the form lands in its <input>: GPUI focusing the view (from its field) must leave it there.
+  await command("field");
+  await press(...uncovered("form"));
+  await sleep(500);
+  await driver.insertText("hi");
+  await sleep(300);
+  check("focus inside an element (its <input>) stays when GPUI focuses the view",
+    await js("[document.activeElement.localName, document.querySelector('gpui-native-view input').value]"), ["input", "hi"]);
+
+  if (mode === "desktop") {
+    await driver.wheel(...uncovered("same"), 200);
+    await sleep(600);
+    check("the same-origin iframe scrolls by a real wheel", (await events("same", "scroll")).some((e) => e.top > 0), true);
+    const mark = logs.length;
+    await driver.wheel(...covered("same"), 200);
+    await sleep(600);
+    check("a wheel over the div is GPUI's", [saidSince(mark, "div over same: scroll"),
+      (await events("same", "wheel")).length], [true, 0]);
+    await js("window.frameEvents.length = 0");
+    await driver.drag([views.cross[0] + 5, views.cross[1] + 130], [views.cross[0] + 390, views.cross[1] + 130]);
+    await sleep(500);
+    check("text selects in the cross-origin iframe", (await events("cross", "selection")).some((e) => e.text.startsWith("A page")), true);
+    const pointerEvents = () => js("document.body.querySelector(':scope > canvas').style.pointerEvents");
+    await driver.move(...uncovered("canvas"));
+    await sleep(100);
+    const overView = await pointerEvents();
+    await driver.move(880, 680);
+    await sleep(100);
+    check("the canvas lets the pointer through only over a view", [overView, await pointerEvents()], ["none", "auto"]);
+  }
+
+  // A shield left over a spot where GPUI's content no longer is (moved there by hand): the pointer there must reach
+  // the element under it, and the shield go back where GPUI's frame has its occluder.
+  const shield = "document.querySelector('gpui-native-views > div:nth-child(2) > div')";
+  const placed = await js(`${shield}.style.transform`);
+  await js(`${shield}.style.transform = 'translate(${views.canvas[0] + 260}px, ${views.canvas[1] + 170}px)'`);
+  await js("window.frameEvents.length = 0");
+  await press(...uncovered("canvas"));
+  await sleep(500);
+  check("a stale shield gives its press to the element under it",
+    [await js(`${shield}.style.transform`) === placed,
+      (await events("canvas", "pointerdown")).some(({ x, y }) => Math.round(x) === 280 && Math.round(y) === 190)], [true, true]);
+
+  // Focus: GPUI's field must get the keys back from a view's element, also when that view goes.
+  await open("");
+  const enter = async () => {
+    const mark = logs.length;
+    await driver.pressEnter();
+    await sleep(400);
+    return saidSince(mark, "field key enter");
+  };
+  await press(...uncovered("same"));
+  await sleep(500);
+  const inFrame = await active();
+  await command("field");
+  check("GPUI field focused from inside a view: typing reaches it", [inFrame, await enter()], ["iframe", true]);
+  await press(...uncovered("same"));
+  await sleep(500);
+  await command("drop same");
+  await command("field");
+  check("focused view dropped then GPUI field focused: typing reaches it", await enter(), true);
+  for (const name of names.slice(1)) await command(`drop ${name}`);
+  check("the last view gone, the canvas has its own styles back and no layer",
+    await js("(() => { const c = document.body.querySelector(':scope > canvas'); return [c.style.position, c.style.zIndex, c.style.pointerEvents, !!document.querySelector('gpui-native-views')]; })()"),
+    ["", "", "", false]);
+
+  // The canvas away from the page's origin, under page content.
+  origin = [8, 48];
+  await open("?offset");
+  check("offset: holes cut, views, divs and GPUI drew, no gap", await content("offset"), drew());
+  await pressChecks("offset: ");
+  await js("window.frameEvents.length = 0");
+  await press(100, 28);
+  await sleep(400);
+  check("page content outside the canvas takes a real press while views show",
+    (await events("header", "click")).map(({ trusted }) => trusted), [true]);
+  if (mode === "desktop") {
+    await driver.wheel(100, 28, 100);
+    await sleep(600);
+    check("page content outside the canvas scrolls while views show", (await events("header", "scroll")).some((e) => e.top > 0), true);
+  }
+  origin = [0, 0];
+
+  await open("?animate");
+  const moving = [];
+  for (let i = 0; i < 8; i++) moving.push(await content(`animate-${i}`));
+  check("while moving and resizing: holes cut, views, divs and GPUI drew, no gap", moving, Array(8).fill(drew()));
+
+  if (!driver.throttle) {
+    skip("the toggle's and the views' costs");
+    return;
+  }
+  // On a phone profile (mobile, scale 2.625) the CPU runs 4x slower. Moves cross
+  // the views and GPUI's content; the cost is the time from the page's first capture listener to its last bubbling
+  // one, with views and without.
+  await driver.throttle(mode === "mobile" ? 4 : 1);
+  const path = Array.from({ length: 200 }, (_, i) => [20 + ((i * 37) % 840), 60 + ((i * 53) % 560)]);
+  const perMove = async (query) => {
+    await open(query);
+    await js("window.moveTimes.length = 0");
+    for (const [x, y] of path) await driver.move(x, y);
+    const times = await js("window.moveTimes");
+    return times.reduce((sum, time) => sum + time, 0) / times.length;
+  };
+  const withViews = await perMove("");
+  const without = await perMove("?no-view");
+  console.log(`measure pointer move handling: ${withViews.toFixed(3)} ms with views, ${without.toFixed(3)} ms without`);
+  const perFrame = async (query) => {
+    await open(query);
+    const [frames0, task0] = [await js("window.gpuiFrames"), await driver.taskSeconds()];
+    await sleep(3000);
+    const [frames1, task1] = [await js("window.gpuiFrames"), await driver.taskSeconds()];
+    return [(frames1 - frames0) / 3, ((task1 - task0) * 1000) / (frames1 - frames0)];
+  };
+  const [fpsViews, taskViews] = await perFrame("?animate");
+  const [fpsNone, taskNone] = await perFrame("?animate&no-view");
+  console.log(`measure animating: ${fpsViews.toFixed(1)} GPUI frames/s, ${taskViews.toFixed(2)} ms main-thread task per frame with views; ` +
+    `${fpsNone.toFixed(1)} frames/s, ${taskNone.toFixed(2)} ms without`);
+  await driver.throttle(1);
+}

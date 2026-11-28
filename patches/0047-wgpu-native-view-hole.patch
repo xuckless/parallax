@@ -1,0 +1,704 @@
+Cut native views' holes in the wgpu renderer, so every wgpu target (Linux, Android, web) can show one.
+
+What: `PrimitiveBatch::NativeViews` draws, in paint order, each view's bounds clipped to its content mask as
+transparent black with blending off, as the Metal renderer's `native_view_fragment` does (Chromium's
+`ReplaceExistingQuadWithHolePunch` semantics): what was painted beneath is erased, what is painted after covers it.
+Holes are passed as `Quad`s, so both instance transports (storage buffers, WebGL2's texture) decode them with the
+existing `load_quad`; the pipeline tests depth like other non-quad batches and writes none, so opaque quads painted
+after a view (drawn early, front to back) stay over its hole. While the window has native views attached (the new
+`Scene::native_views_attached`, set by the window each frame, shown or not) the surface uses its transparent alpha
+mode (premultiplied where offered; `wanted_alpha_mode`, the one rule), whatever the window asked for, and the hole
+pipeline exists; once the last view is dropped both go. So showing and hiding a view (a tab switch) rebuilds nothing,
+and a window that never attaches a view never builds the hole pipeline nor writes its bind group (built lazily,
+`update_pipelines` compares the mode and the views with what the pipelines were built for). The mode is logged when
+the first view is attached. `WgpuRenderer::native_view_support()` says what blends the window (`NativeViewSupport`: the
+surface's mode, or a WebGL2 canvas's premultiplied context whatever mode wgpu reports, which the log names) or fails
+with the typed `NativeViewsUnsupported` on a surface that offers no blending mode (NVIDIA's Vulkan WSI being the
+known risk), so a platform can fail `NativeView::new` and the app fall back.
+`set_native_view_hole_inset` (kept only on the renderer's core) cuts holes inside the views' bounds, for a platform
+that rounds views to whole logical pixels (Wayland, patch 0053).
+
+New files: `shaders_native_view.wgsl` (concatenated after each transport), `wgpu_renderer/native_view_hole.rs` (the
+hole quads, the pipeline's colour target, the alpha-mode log), `wgpu_renderer/tests/native_view_hole.rs` (table test
+`native_view_hole_is_cut_in_paint_order` and `hole_pipeline_exists_only_while_native_views_are_attached`, on the
+headless renderer; `native_view_support_names_what_blends_the_window`, pure). `wgpu_renderer.rs` holds only the hooks; `scene.rs` and `window.rs` the attached flag.
+
+Why: the wgpu renderer ignored `PrimitiveBatch::NativeViews`, so no wgpu target could show a native view
+(xuckless/parallax#1). The renderer is private to gpui_wgpu, so this can't live in a Parallax crate.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-wgpu/src/gpui_wgpu.rs b/gpui-pre-wgpu/src/gpui_wgpu.rs
+index 29a79af..04196ee 100644
+--- a/gpui-pre-wgpu/src/gpui_wgpu.rs
++++ b/gpui-pre-wgpu/src/gpui_wgpu.rs
+@@ -12,4 +12,6 @@ pub use wgpu_context::*;
+     any(test, feature = "bench-support", feature = "test-support")
+ ))]
+ pub use wgpu_renderer::WgpuHeadlessRenderer;
+-pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
++pub use wgpu_renderer::{
++    GpuContext, NativeViewSupport, NativeViewsUnsupported, WgpuRenderer, WgpuSurfaceConfig,
++};
+diff --git a/gpui-pre-wgpu/src/shaders_native_view.wgsl b/gpui-pre-wgpu/src/shaders_native_view.wgsl
+new file mode 100644
+index 0000000..8367052
+--- /dev/null
++++ b/gpui-pre-wgpu/src/shaders_native_view.wgsl
+@@ -0,0 +1,20 @@
++// --- native view holes --- //
++
++// A native view shows through a hole: its bounds, clipped to its content mask, replace
++// whatever was drawn beneath them with transparent black (Chromium's
++// ReplaceExistingQuadWithHolePunch). The pipeline does not blend, so the zero replaces
++// the color, and its depth test keeps opaque quads painted after the view on top. Holes
++// are passed as quads, so both instance transports already decode them.
++
++@vertex
++fn vs_native_view_hole(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> @builtin(position) vec4<f32> {
++    let hole = load_quad(instance_id);
++    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
++    let clipped = clip_to_mask(unit_vertex, hole.bounds, hole.content_mask);
++    return to_device_position_impl(clipped.position);
++}
++
++@fragment
++fn fs_native_view_hole() -> @location(0) vec4<f32> {
++    return vec4<f32>(0.0);
++}
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
+index 41be0d3..fd1ff67 100644
+--- a/gpui-pre-wgpu/src/wgpu_renderer.rs
++++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
+@@ -17,6 +17,9 @@ use std::ops::Range;
+ use std::rc::Rc;
+ use std::sync::Arc;
+ 
++mod native_view_hole;
++pub use native_view_hole::{NativeViewSupport, NativeViewsUnsupported};
++
+ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+ 
+ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
+@@ -26,6 +29,7 @@ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
+ const STORAGE_BUFFER_SHADERS: &str = concat!(
+     include_str!("shaders.wgsl"),
+     include_str!("shaders_storage.wgsl"),
++    include_str!("shaders_native_view.wgsl"),
+ );
+ 
+ /// Shader variant for WebGL2, which has no storage buffers: the shared shader
+@@ -33,6 +37,7 @@ const STORAGE_BUFFER_SHADERS: &str = concat!(
+ const WEBGL_SHADERS: &str = concat!(
+     include_str!("shaders.wgsl"),
+     include_str!("shaders_webgl.wgsl"),
++    include_str!("shaders_native_view.wgsl"),
+ );
+ 
+ /// Subpixel text rendering requires dual-source blending, which WebGL2 lacks, so
+@@ -131,7 +136,12 @@ struct WgpuPipelines {
+     poly_sprites: wgpu::RenderPipeline,
+     #[allow(dead_code)]
+     surfaces: wgpu::RenderPipeline,
++    /// Only while the window has native views attached, so a window without views never
++    /// builds it.
++    native_view_holes: Option<wgpu::RenderPipeline>,
+     premultiplied_alpha: bool,
++    /// The alpha mode these pipelines were built for (`update_pipelines`).
++    alpha_mode: wgpu::CompositeAlphaMode,
+ }
+ 
+ /// One frame allocation of instance data, ready to bind.
+@@ -166,6 +176,8 @@ struct InstanceBindings {
+     monochrome_sprites: InstanceBinding,
+     subpixel_sprites: InstanceBinding,
+     polychrome_sprites: InstanceBinding,
++    /// Only for a scene that paints native views.
++    native_view_holes: Option<InstanceBinding>,
+ }
+ 
+ struct WgpuBindGroupLayouts {
+@@ -223,6 +235,11 @@ struct WgpuRendererCore {
+     transient_attachments: bool,
+     adapter_info: wgpu::AdapterInfo,
+     depth_texture: Option<DepthTexture>,
++    /// How far each native view's hole is cut inside the view's bounds, so the platform's
++    /// rounding of the view to whole logical pixels can't show a seam. See
++    /// [`WgpuRenderer::set_native_view_hole_inset`]. A new core (device recovery) starts at
++    /// none; the platform sets it again each frame.
++    native_view_hole_inset: ScaledPixels,
+     /// Read by the headless renderer to create its render target.
+     #[cfg(all(
+         not(target_family = "wasm"),
+@@ -260,6 +277,11 @@ pub struct WgpuRenderer {
+     atlas: Arc<WgpuAtlas>,
+     transparent_alpha_mode: wgpu::CompositeAlphaMode,
+     opaque_alpha_mode: wgpu::CompositeAlphaMode,
++    /// The transparency the window asked for. The surface also blends while the window
++    /// has native views attached (`Scene::native_views_attached`), shown or not, so showing
++    /// and hiding a view never rebuilds the pipelines.
++    transparent: bool,
++    native_views_attached: bool,
+     max_texture_size: u32,
+     is_bgr: bool,
+     failed_frame_count: u32,
+@@ -513,6 +535,8 @@ impl WgpuRenderer {
+             atlas,
+             transparent_alpha_mode,
+             opaque_alpha_mode,
++            transparent: config.transparent,
++            native_views_attached: false,
+             max_texture_size,
+             is_bgr: false,
+             failed_frame_count: 0,
+@@ -728,6 +752,7 @@ impl WgpuRendererCore {
+         alpha_mode: wgpu::CompositeAlphaMode,
+         dual_source_blending: bool,
+         uses_webgl_instance_data: bool,
++        native_views_attached: bool,
+     ) -> WgpuPipelines {
+         // Diagnostic guard: verify the device actually has
+         // DUAL_SOURCE_BLENDING. We have a crash report (ZED-5G1) where a
+@@ -981,6 +1006,21 @@ impl WgpuRendererCore {
+             &shader_module,
+         );
+ 
++        let native_view_holes = native_views_attached.then(|| {
++            create_pipeline(
++                "native_view_holes",
++                "vs_native_view_hole",
++                "fs_native_view_hole",
++                &layouts.globals,
++                &layouts.instances,
++                None,
++                wgpu::PrimitiveTopology::TriangleStrip,
++                &[Some(native_view_hole::color_target(surface_format))],
++                false,
++                &shader_module,
++            )
++        });
++
+         WgpuPipelines {
+             quads,
+             opaque_quads,
+@@ -991,7 +1031,9 @@ impl WgpuRendererCore {
+             subpixel_sprites,
+             poly_sprites,
+             surfaces,
++            native_view_holes,
+             premultiplied_alpha,
++            alpha_mode,
+         }
+     }
+ }
+@@ -1032,22 +1074,52 @@ impl WgpuRenderer {
+     }
+ 
+     pub fn update_transparency(&mut self, transparent: bool) {
+-        let new_alpha_mode = if transparent {
+-            self.transparent_alpha_mode
+-        } else {
+-            self.opaque_alpha_mode
+-        };
+-        if new_alpha_mode == self.surface_config.alpha_mode {
+-            return;
++        self.transparent = transparent;
++        self.apply_alpha_mode();
++    }
++
++    /// Cuts every native view's hole this far inside the view's bounds.
++    ///
++    /// A platform that places native views in whole logical pixels, as Wayland does, sets
++    /// a physical pixel here at a fractional scale, so the window's own pixels cover the
++    /// view's rounded edges instead of a seam showing there.
++    pub fn set_native_view_hole_inset(&mut self, inset: ScaledPixels) {
++        if let Some(core) = self.core_mut() {
++            core.native_view_hole_inset = inset;
+         }
+-        self.surface_config.alpha_mode = new_alpha_mode;
+-        let format = self.surface_config.format;
++    }
+ 
+-        let Some(core) = self.core_mut() else {
+-            return;
+-        };
+-        core.rebuild_pipelines(format, new_alpha_mode);
++    /// Whether this surface can show native views: they show through their holes only where
++    /// the compositor blends the window. A platform fails `NativeView::new` on `Err`, so the
++    /// app can fall back.
++    pub fn native_view_support(&self) -> Result<NativeViewSupport, NativeViewsUnsupported> {
++        let backend = self.core().map(|core| core.adapter_info.backend);
++        native_view_hole::support(
++            self.transparent_alpha_mode,
++            cfg!(target_family = "wasm") && backend == Some(wgpu::Backend::Gl),
++        )
++    }
++
++    /// The surface blends while the window asks for transparency or has native views
++    /// attached, and is opaque otherwise.
++    fn wanted_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
++        // (transparent, views attached) → mode.
++        match (self.transparent, self.native_views_attached) {
++            (true, _) | (false, true) => self.transparent_alpha_mode,
++            (false, false) => self.opaque_alpha_mode,
++        }
++    }
+ 
++    fn apply_alpha_mode(&mut self) {
++        let alpha_mode = self.wanted_alpha_mode();
++        let (format, attached) = (self.surface_config.format, self.native_views_attached);
++        if let Some(core) = self.core_mut() {
++            core.update_pipelines(format, alpha_mode, attached);
++        }
++        if alpha_mode == self.surface_config.alpha_mode {
++            return;
++        }
++        self.surface_config.alpha_mode = alpha_mode;
+         if let RendererState::Ready { surface, core } = &self.state {
+             surface.configure(&core.resources.device, &self.surface_config);
+         }
+@@ -1101,6 +1173,17 @@ impl WgpuRenderer {
+         // Android background/rotation transitions).  Attempting to acquire
+         // a texture from an unconfigured surface can block indefinitely on
+         // some drivers (Adreno).
++        // The alpha mode and the hole pipeline follow whether the window has native views
++        // attached, not whether this scene shows one, so a view that hides and shows again
++        // rebuilds nothing. Cheap when nothing changed; a recovered core rebuilds here too.
++        if scene.native_views_attached != self.native_views_attached {
++            self.native_views_attached = scene.native_views_attached;
++            if self.native_views_attached {
++                native_view_hole::log_alpha_mode(self.native_view_support());
++            }
++        }
++        self.apply_alpha_mode();
++
+         let RendererState::Ready { surface, core } = &mut self.state else {
+             return false;
+         };
+@@ -1189,6 +1272,7 @@ impl WgpuRendererCore {
+             alpha_mode,
+             dual_source_blending,
+             uses_webgl_instance_data,
++            false,
+         );
+         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+             label: Some("atlas_sampler"),
+@@ -1293,6 +1377,7 @@ impl WgpuRendererCore {
+             transient_attachments: context.supports_transient_attachments(),
+             adapter_info: context.adapter.get_info(),
+             depth_texture: None,
++            native_view_hole_inset: ScaledPixels(0.),
+             #[cfg(all(
+                 not(target_family = "wasm"),
+                 any(test, feature = "bench-support", feature = "test-support")
+@@ -1306,11 +1391,20 @@ impl WgpuRendererCore {
+         &self.resources
+     }
+ 
+-    fn rebuild_pipelines(
++    /// Rebuilds the pipelines when the alpha mode or whether native views are attached
++    /// differs from what they were built for.
++    fn update_pipelines(
+         &mut self,
+         surface_format: wgpu::TextureFormat,
+         alpha_mode: wgpu::CompositeAlphaMode,
++        native_views_attached: bool,
+     ) {
++        let pipelines = &self.resources.pipelines;
++        if pipelines.alpha_mode == alpha_mode
++            && pipelines.native_view_holes.is_some() == native_views_attached
++        {
++            return;
++        }
+         self.resources.pipelines = Self::create_pipelines(
+             &self.resources.device,
+             &self.resources.bind_group_layouts,
+@@ -1318,6 +1412,7 @@ impl WgpuRendererCore {
+             alpha_mode,
+             self.dual_source_blending,
+             self.uses_webgl_instance_data,
++            native_views_attached,
+         );
+     }
+ 
+@@ -1544,8 +1639,16 @@ impl WgpuRendererCore {
+                     // Surfaces are macOS-only for video playback and are not
+                     // implemented by the WGPU renderer.
+                     PrimitiveBatch::Surfaces(_surfaces) => {}
+-                    // Native views are only composited by the Metal renderer.
+-                    PrimitiveBatch::NativeViews(_) => {}
++                    // The platform composites the views beneath the window; the
++                    // renderer only cuts their holes, in paint order.
++                    PrimitiveBatch::NativeViews(range) => {
++                        if let (Some(holes), Some(pipeline)) = (
++                            &instance_bindings.native_view_holes,
++                            &self.resources().pipelines.native_view_holes,
++                        ) {
++                            self.draw_instances(holes, pipeline, instance_range(range), &mut pass);
++                        }
++                    }
+                 }
+             }
+         }
+@@ -1629,6 +1732,15 @@ impl WgpuRendererCore {
+                 instance_offset,
+                 &scene.polychrome_sprites,
+             )?,
++            native_view_holes: if scene.native_views.is_empty() {
++                None
++            } else {
++                Some(self.write_instance_binding(
++                    "native_view_holes_bind_group",
++                    instance_offset,
++                    &native_view_hole::holes(&scene.native_views, self.native_view_hole_inset),
++                )?)
++            },
+         })
+     }
+ 
+@@ -2109,12 +2221,8 @@ impl WgpuRenderer {
+         let width = (config.size.width.0 as u32).max(1);
+         let height = (config.size.height.0 as u32).max(1);
+ 
+-        let alpha_mode = if config.transparent {
+-            self.transparent_alpha_mode
+-        } else {
+-            self.opaque_alpha_mode
+-        };
+-        let alpha_mode_changed = alpha_mode != self.surface_config.alpha_mode;
++        self.transparent = config.transparent;
++        let alpha_mode = self.wanted_alpha_mode();
+ 
+         self.surface_config.width = width;
+         self.surface_config.height = height;
+@@ -2136,9 +2244,11 @@ impl WgpuRenderer {
+                 anyhow::bail!("Cannot replace the surface: GPU resources have been released")
+             }
+         };
+-        if alpha_mode_changed {
+-            core.rebuild_pipelines(self.surface_config.format, alpha_mode);
+-        }
++        core.update_pipelines(
++            self.surface_config.format,
++            alpha_mode,
++            self.native_views_attached,
++        );
+         surface.configure(&core.resources.device, &self.surface_config);
+         self.state = RendererState::Ready { surface, core };
+ 
+@@ -2367,6 +2477,12 @@ impl WgpuHeadlessRenderer {
+     fn render(&mut self, scene: &Scene, size: Size<DevicePixels>) -> anyhow::Result<()> {
+         self.check_gpu_errors()?;
+         self.ensure_render_target(size)?;
++        let format = self.core.target_format;
++        self.core.update_pipelines(
++            format,
++            wgpu::CompositeAlphaMode::Opaque,
++            scene.native_views_attached,
++        );
+         let view = self
+             .render_target
+             .as_ref()
+@@ -2573,6 +2689,8 @@ impl RenderingParameters {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    mod native_view_hole;
+     use gpui::{
+         BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite, PathCurve,
+         PathPaint, PathTile, Point, PolychromeSprite, Quad, Shadow, Size, SubpixelSprite,
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+new file mode 100644
+index 0000000..ad6219f
+--- /dev/null
++++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+@@ -0,0 +1,94 @@
++//! Native views: the hole the renderer cuts where one shows. The platform composites the view
++//! beneath the window (a Wayland subsurface, an Android SurfaceView, a DOM element under the
++//! canvas); every wgpu target shares this hole.
++
++use gpui::{PaintNativeView, Quad, ScaledPixels};
++
++/// The holes of a scene's native views, as quads the hole shader reads with either instance
++/// transport, each cut `inset` inside its view's bounds.
++pub(super) fn holes(native_views: &[PaintNativeView], inset: ScaledPixels) -> Vec<Quad> {
++    native_views
++        .iter()
++        .map(|native_view| Quad {
++            order: native_view.order,
++            bounds: native_view.bounds.inset(inset),
++            content_mask: native_view.content_mask,
++            ..Quad::default()
++        })
++        .collect()
++}
++
++/// No blending, so a hole replaces what was drawn beneath it (Metal's native view pipeline does
++/// the same).
++pub(super) fn color_target(format: wgpu::TextureFormat) -> wgpu::ColorTargetState {
++    wgpu::ColorTargetState {
++        format,
++        blend: None,
++        write_mask: wgpu::ColorWrites::ALL,
++    }
++}
++
++/// A surface native views can't show through: the compositor doesn't blend it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NativeViewsUnsupported {
++    /// The surface's alpha mode for a see-through window, the best it offers.
++    pub alpha_mode: wgpu::CompositeAlphaMode,
++}
++
++impl std::fmt::Display for NativeViewsUnsupported {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "the window surface offers no premultiplied alpha mode, only {:?}, so native views \
++             would show black through their holes",
++            self.alpha_mode
++        )
++    }
++}
++
++impl std::error::Error for NativeViewsUnsupported {}
++
++/// Why a surface can show native views: what blends the window.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeViewSupport {
++    /// The compositor blends the surface by this premultiplied alpha mode.
++    Surface(wgpu::CompositeAlphaMode),
++    /// A WebGL2 canvas blends by its context's `premultipliedAlpha`, which browsers default to
++    /// true and wgpu leaves alone, whatever surface mode wgpu reports (only `Opaque`).
++    WebGl2Premultiplied,
++}
++
++/// Native views need a compositor that blends the window. NVIDIA's Vulkan WSI has been
++/// known to offer only `Opaque` on Wayland, where every hole would show black.
++/// `webgl2_canvas`: the surface is a browser's WebGL2 canvas (wasm on wgpu's GL backend).
++pub(super) fn support(
++    alpha_mode: wgpu::CompositeAlphaMode,
++    webgl2_canvas: bool,
++) -> Result<NativeViewSupport, NativeViewsUnsupported> {
++    // (WebGL2 canvas, alpha mode) → what blends the window. Add a row per new mode.
++    match (webgl2_canvas, alpha_mode) {
++        (true, _) => Ok(NativeViewSupport::WebGl2Premultiplied),
++        (false, wgpu::CompositeAlphaMode::PreMultiplied | wgpu::CompositeAlphaMode::Inherit) => {
++            Ok(NativeViewSupport::Surface(alpha_mode))
++        }
++        (
++            false,
++            wgpu::CompositeAlphaMode::Auto
++            | wgpu::CompositeAlphaMode::Opaque
++            | wgpu::CompositeAlphaMode::PostMultiplied,
++        ) => Err(NativeViewsUnsupported { alpha_mode }),
++    }
++}
++
++/// Logged once when a window's first native view is attached.
++pub(super) fn log_alpha_mode(support: Result<NativeViewSupport, NativeViewsUnsupported>) {
++    match support {
++        Ok(NativeViewSupport::Surface(alpha_mode)) => {
++            log::info!("native views: window surface alpha mode {alpha_mode:?}")
++        }
++        Ok(NativeViewSupport::WebGl2Premultiplied) => {
++            log::info!("native views: WebGL2 canvas, premultiplied alpha (the context's default)")
++        }
++        Err(unsupported) => log::warn!("native views: {unsupported}"),
++    }
++}
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
+new file mode 100644
+index 0000000..d8720ea
+--- /dev/null
++++ b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
+@@ -0,0 +1,158 @@
++use super::*;
++use gpui::{PlatformHeadlessRenderer, Scene};
++
++/// A native view's hole replaces what was painted beneath it with transparent black,
++/// within its clip, and what is painted after it covers it, as Metal's does.
++#[cfg(target_os = "linux")]
++#[test]
++fn native_view_hole_is_cut_in_paint_order() -> anyhow::Result<()> {
++    const HOLE: [u8; 4] = [0, 0, 0, 0];
++    let view_bounds = Bounds {
++        origin: Point {
++            x: 16.0.into(),
++            y: 0.0.into(),
++        },
++        size: Size {
++            width: 32.0.into(),
++            height: 32.0.into(),
++        },
++    };
++    let mut clip = view_bounds;
++    clip.size.width = 24.0.into();
++    // (row name, hole inset, pixel, expected colour). Add a row per rule.
++    let rows: [(&str, f32, (u32, u32), [u8; 4]); 7] = [
++        ("outside the view keeps the window", 0., (8, 16), RED),
++        (
++            "opaque quad painted after covers the hole",
++            0.,
++            (20, 16),
++            BLUE,
++        ),
++        ("opaque quad painted before is erased", 0., (30, 2), HOLE),
++        (
++            "translucent quad painted before is erased",
++            0.,
++            (30, 16),
++            HOLE,
++        ),
++        ("the view's clip bounds the hole", 0., (44, 16), RED),
++        (
++            "an inset hole leaves its edge to the window",
++            1.,
++            (30, 0),
++            RED,
++        ),
++        ("an inset hole is cut inside its edge", 1., (30, 1), HOLE),
++    ];
++    let mut renderer = WgpuHeadlessRenderer::new()?;
++    for (name, inset, (x, y), expected) in rows {
++        let mut scene = Scene::default();
++        scene.insert_primitive(solid_quad(0.0, 0.0, 64.0, 32.0, gpui::red()));
++        let mut translucent = gpui::green();
++        translucent.a = 0.5;
++        scene.insert_primitive(solid_quad(24.0, 8.0, 16.0, 16.0, translucent));
++        scene.insert_primitive(gpui::PaintNativeView {
++            order: 0,
++            id: gpui::NativeViewId::for_test(1),
++            hitbox_id: gpui::HitboxId::placeholder(),
++            bounds: view_bounds,
++            content_mask: ContentMask { bounds: clip },
++            background: Hsla::default(),
++        });
++        scene.insert_primitive(solid_quad(16.0, 0.0, 8.0, 32.0, gpui::blue()));
++        scene.native_views_attached = true;
++        scene.finish();
++
++        renderer.core.native_view_hole_inset = ScaledPixels(inset);
++        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
++        let actual = image.get_pixel(x, y).0;
++        assert!(
++            actual
++                .iter()
++                .zip(expected)
++                .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
++            "{name}: pixel ({x}, {y}) was {actual:?}, expected {expected:?}"
++        );
++    }
++    Ok(())
++}
++
++/// The hole pipeline exists only while the window has native views attached, so a window
++/// without views never pays for it, and a view that hides and shows again rebuilds nothing.
++#[cfg(target_os = "linux")]
++#[test]
++fn hole_pipeline_exists_only_while_native_views_are_attached() -> anyhow::Result<()> {
++    // (row name, views attached in the frame's scene, hole pipeline after the frame)
++    let rows = [
++        ("a window without views never builds it", false, false),
++        ("the first attached view builds it", true, true),
++        ("a frame where the view is hidden keeps it", true, true),
++        ("the last view dropped drops it", false, false),
++    ];
++    let mut renderer = WgpuHeadlessRenderer::new()?;
++    for (name, attached, expected) in rows {
++        let mut scene = Scene::default();
++        scene.insert_primitive(solid_quad(0.0, 0.0, 8.0, 8.0, gpui::red()));
++        scene.native_views_attached = attached;
++        scene.finish();
++        renderer.render_scene(&scene, device_size(8, 8))?;
++        assert_eq!(
++            renderer
++                .core
++                .resources
++                .pipelines
++                .native_view_holes
++                .is_some(),
++            expected,
++            "{name}"
++        );
++    }
++    Ok(())
++}
++
++/// Native views show only where something blends the window; the alpha log names what.
++#[test]
++fn native_view_support_names_what_blends_the_window() {
++    use crate::wgpu_renderer::native_view_hole::{
++        NativeViewSupport, NativeViewsUnsupported, support,
++    };
++    use wgpu::CompositeAlphaMode::{Inherit, Opaque, PostMultiplied, PreMultiplied};
++    // (row name, WebGL2 canvas, surface alpha mode, expected). Add a row per rule.
++    let rows = [
++        (
++            "premultiplied surface blends",
++            false,
++            PreMultiplied,
++            Ok(NativeViewSupport::Surface(PreMultiplied)),
++        ),
++        (
++            "inherit surface blends",
++            false,
++            Inherit,
++            Ok(NativeViewSupport::Surface(Inherit)),
++        ),
++        (
++            "opaque surface can't show views",
++            false,
++            Opaque,
++            Err(NativeViewsUnsupported { alpha_mode: Opaque }),
++        ),
++        (
++            "postmultiplied surface can't show views",
++            false,
++            PostMultiplied,
++            Err(NativeViewsUnsupported {
++                alpha_mode: PostMultiplied,
++            }),
++        ),
++        (
++            "WebGL2 canvas reporting opaque is premultiplied",
++            true,
++            Opaque,
++            Ok(NativeViewSupport::WebGl2Premultiplied),
++        ),
++    ];
++    for (name, webgl2_canvas, alpha_mode, expected) in rows {
++        assert_eq!(support(alpha_mode, webgl2_canvas), expected, "{name}");
++    }
++}
+diff --git a/gpui-pre/src/scene.rs b/gpui-pre/src/scene.rs
+index cccc924..6f773a8 100644
+--- a/gpui-pre/src/scene.rs
++++ b/gpui-pre/src/scene.rs
+@@ -64,6 +64,10 @@ pub struct Scene {
+     pub polychrome_sprites: Vec<PolychromeSprite>,
+     pub surfaces: Vec<PaintSurface>,
+     pub native_views: Vec<PaintNativeView>,
++    /// Whether the window has native views attached, shown or not. A renderer keeps
++    /// what showing one needs (a blending alpha mode, its hole pipeline) while this is
++    /// true, so a view that hides and shows again rebuilds nothing.
++    pub native_views_attached: bool,
+     animations: Vec<SpriteAnimation>,
+ }
+ 
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index adc27c0..28189ce 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -4163,6 +4163,10 @@ impl Window {
+ 
+         self.layout_engine.as_mut().unwrap().clear();
+         self.text_system().finish_frame();
++        self.next_frame.scene.native_views_attached = self
++            .native_views
++            .iter()
++            .any(|view| view.strong_count() > 0);
+         self.next_frame.finish(&mut self.rendered_frame);
+ 
+         self.invalidator.set_phase(DrawPhase::Focus);

@@ -1,0 +1,224 @@
+Cut native views' holes in GPUI's frame on Windows: the D3D11 renderer draws `PrimitiveBatch::NativeViews`.
+
+What: `PrimitiveBatch::NativeViews` draws a hole: a `native_view` shader writing transparent black with
+blending off, at the batch's fixed depth with the depth test on, so opaque quads painted after the view (drawn
+first by the opaque pass) keep their pixels and everything painted before it is erased, as Metal's
+`native_view_fragment` does. The swap chain keeps upstream's premultiplied alpha mode for every window, so a window
+without views behaves exactly as upstream. The hole pipeline is in a new file, `directx_renderer/native_view_tree.rs`
+(0057 adds the visual tree to it); `directx_renderer.rs` gets only hooks (the pipeline field, the upload and draw
+calls, the shader module row), and `build.rs` compiles the new shader.
+
+Why: issue #1 (NativeView on every desktop): the hole is where 0057's visuals show through GPUI's frame.
+Upstream's `PrimitiveBatch::NativeViews` arm was a no-op.
+
+Test: live, with 0057's tree, `scripts/windows-native-view-checks.sh` (0057) checks at 100 and 125 % that the hole
+shows the view, the div over it covers it, and one device pixel past each edge is GPUI's.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-windows/build.rs b/gpui-pre-windows/build.rs
+index 4b5c3d6..b29b426 100644
+--- a/gpui-pre-windows/build.rs
++++ b/gpui-pre-windows/build.rs
+@@ -40,6 +40,7 @@ mod shader_compilation {
+             "monochrome_sprite",
+             "subpixel_sprite",
+             "polychrome_sprite",
++            "native_view",
+         ];
+ 
+         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
+diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
+index 5ab9167..228c719 100644
+--- a/gpui-pre-windows/src/directx_renderer.rs
++++ b/gpui-pre-windows/src/directx_renderer.rs
+@@ -20,8 +20,11 @@ use windows::{
+     core::{HSTRING, Interface},
+ };
+ 
++use crate::directx_renderer::native_view_tree::NativeViewHole;
+ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
+ use crate::*;
++
++mod native_view_tree;
+ use gpui::*;
+ 
+ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
+@@ -90,6 +93,7 @@ struct DirectXRenderPipelines {
+     mono_sprites: PipelineState<MonochromeSprite>,
+     subpixel_sprites: PipelineState<SubpixelSprite>,
+     poly_sprites: PipelineState<PolychromeSprite>,
++    native_view_holes: PipelineState<NativeViewHole>,
+ }
+ 
+ struct DirectXGlobalElements {
+@@ -438,8 +442,7 @@ impl DirectXRenderer {
+                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
+                 }
+                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+-                // Native views are only composited on macOS.
+-                PrimitiveBatch::NativeViews(_) => Ok(()),
++                PrimitiveBatch::NativeViews(range) => self.draw_native_view_holes(range),
+             }
+             .with_context(|| {
+                 format!(
+@@ -697,7 +700,7 @@ impl DirectXRenderer {
+             )?;
+         }
+ 
+-        Ok(())
++        self.upload_native_view_holes(scene)
+     }
+ 
+     fn draw_shadows(&mut self, start: usize, len: usize) -> Result<()> {
+@@ -1014,6 +1017,7 @@ impl DirectXRenderPipelines {
+             create_blend_state(device)?,
+         )?;
+         let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
++        let native_view_holes = native_view_tree::hole_pipeline(device)?;
+ 
+         Ok(Self {
+             shadow_pipeline,
+@@ -1026,6 +1030,7 @@ impl DirectXRenderPipelines {
+             mono_sprites,
+             subpixel_sprites,
+             poly_sprites,
++            native_view_holes,
+         })
+     }
+ }
+@@ -1741,6 +1746,7 @@ pub(crate) mod shader_resources {
+         MonochromeSprite,
+         SubpixelSprite,
+         PolychromeSprite,
++        NativeView,
+     }
+ 
+     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+@@ -1814,6 +1820,10 @@ pub(crate) mod shader_resources {
+                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                 },
++                ShaderModule::NativeView => match target {
++                    ShaderTarget::Vertex => NATIVE_VIEW_VERTEX_BYTES,
++                    ShaderTarget::Fragment => NATIVE_VIEW_FRAGMENT_BYTES,
++                },
+             };
+             Self { inner: bytes }
+         }
+@@ -1894,6 +1904,7 @@ pub(crate) mod shader_resources {
+                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                 ShaderModule::SubpixelSprite => "subpixel_sprite",
+                 ShaderModule::PolychromeSprite => "polychrome_sprite",
++                ShaderModule::NativeView => "native_view",
+             }
+         }
+     }
+diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+new file mode 100644
+index 0000000..4b69595
+--- /dev/null
++++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+@@ -0,0 +1,68 @@
++//! The hole each native view shows through in GPUI's frame (docs/native-view-windows.md in Parallax), cleared in
++//! paint order as the Metal renderer's `native_views` pipeline does.
++
++use std::ops::Range;
++
++use anyhow::{Context as _, Result};
++use gpui::{Bounds, ScaledPixels, Scene};
++use windows::Win32::Graphics::Direct3D11::ID3D11Device;
++
++use super::{DirectXRenderer, PipelineState, create_opaque_blend_state, shader_resources::ShaderModule};
++
++/// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
++/// renderer's `native_views` pipeline does, so elements painted after the view still cover it.
++#[derive(Clone, Copy)]
++#[repr(C)]
++pub(super) struct NativeViewHole {
++    bounds: Bounds<ScaledPixels>,
++    content_mask: Bounds<ScaledPixels>,
++}
++
++/// Writes with blending off at the batch's fixed depth, the depth test on, as every non-quad batch draws.
++pub(super) fn hole_pipeline(device: &ID3D11Device) -> Result<PipelineState<NativeViewHole>> {
++    PipelineState::new(
++        device,
++        "native_view_hole_pipeline",
++        ShaderModule::NativeView,
++        4,
++        create_opaque_blend_state(device)?,
++    )
++}
++
++impl DirectXRenderer {
++    pub(super) fn upload_native_view_holes(&mut self, scene: &Scene) -> Result<()> {
++        if scene.native_views.is_empty() {
++            return Ok(());
++        }
++        let devices = self.devices.as_ref().context("devices missing")?;
++        let holes: Vec<_> = scene
++            .native_views
++            .iter()
++            .map(|native_view| NativeViewHole {
++                bounds: native_view.bounds,
++                content_mask: native_view.content_mask.bounds,
++            })
++            .collect();
++        self.pipelines
++            .native_view_holes
++            .update_buffer(&devices.device, &devices.device_context, &holes)
++    }
++
++    /// Opaque quads painted after the view, which the opaque pass drew first, are nearer than the batch's depth and
++    /// keep their pixels; everything painted before it is erased.
++    pub(super) fn draw_native_view_holes(&mut self, range: Range<usize>) -> Result<()> {
++        if range.is_empty() {
++            return Ok(());
++        }
++        let devices = self.devices.as_ref().context("devices missing")?;
++        self.pipelines.native_view_holes.draw_range(
++            &devices.device_context,
++            self.globals
++                .batch_params_buffer
++                .as_ref()
++                .context("batch params buffer missing")?,
++            range.start as u32,
++            range.len() as u32,
++        )
++    }
++}
+diff --git a/gpui-pre-windows/src/shaders.hlsl b/gpui-pre-windows/src/shaders.hlsl
+index e849773..bdc868a 100644
+--- a/gpui-pre-windows/src/shaders.hlsl
++++ b/gpui-pre-windows/src/shaders.hlsl
+@@ -1370,3 +1370,29 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
+     color.a *= input.opacity * saturate(0.5 - distance);
+     return color;
+ }
++
++/*
++**
++**              Native views
++**
++*/
++
++struct NativeViewHole {
++    Bounds bounds;
++    Bounds content_mask;
++};
++
++StructuredBuffer<NativeViewHole> native_view_holes: register(t1);
++
++float4 native_view_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID): SV_Position {
++    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
++    NativeViewHole hole = native_view_holes[batch_start_index + instance_id];
++    ClippedVertex vertex = clip_to_mask(unit_vertex, hole.bounds, hole.content_mask);
++    return to_device_position_impl(vertex.position);
++}
++
++// The pipeline does not blend, so this erases what was drawn beneath the view, as the Metal renderer's
++// native_view_fragment does.
++float4 native_view_fragment(float4 position: SV_Position): SV_Target {
++    return float4(0.0, 0.0, 0.0, 0.0);
++}

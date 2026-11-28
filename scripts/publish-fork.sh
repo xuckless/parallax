@@ -39,13 +39,15 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
 # Crate → version, and the publish order: a topological sort of every fork-crate dependency edge (all kinds), so a
-# crate goes up only after what it names. tsort fails loudly on a cycle.
+# crate goes up only after what it names. A path-only dev-dependency (req "*", e.g. patch 0065's gpui_platform) is
+# left out: cargo publish drops it, and it would make a cycle. tsort fails loudly on a cycle.
 metadata="$(cargo metadata --no-deps --format-version 1)"
 declare -A versions
 while read -r name version; do versions[$name]=$version; done \
     < <(jq -r '.packages[] | "\(.name) \(.version)"' <<< "$metadata")
 mapfile -t order < <(jq -r '.packages[] | .name as $crate | "\($crate) \($crate)",
-    (.dependencies[] | select(.name | startswith("parallax-gpui")) | "\(.name) \($crate)")' <<< "$metadata" | tsort)
+    (.dependencies[] | select(.name | startswith("parallax-gpui"))
+        | select(.kind != "dev" or .req != "*") | "\(.name) \($crate)")' <<< "$metadata" | tsort)
 [[ ${#order[@]} == "${#versions[@]}" ]] || die "publish order has ${#order[@]} crates, the workspace ${#versions[@]}"
 
 # Is name@version on crates.io? Asks the sparse index (what cargo reads): 200 lists the versions, 404 means a new name.

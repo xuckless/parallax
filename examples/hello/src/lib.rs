@@ -9,7 +9,8 @@
 //! Ctrl-W closes the window `CLOSE_DELAY` later (on Android its Activity finishes, docs/android-multi-window.md).
 //! `launch` and `open_window` run on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
-mod text_field;
+/// Also used by examples/native-view (its iOS keyboard focus check).
+pub mod text_field;
 
 use parallax::gpui::{
     AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity, KeyBinding,

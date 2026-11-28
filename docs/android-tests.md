@@ -49,6 +49,8 @@ are). The shadow extends `ShadowSurfaceView`, so a test can also build a `Parall
 
 Parallax's own: `HapticArgumentsTest` reads the argument match in [haptics.rs](../crates/android/src/haptics.rs) (the
 one list; build.gradle passes its path as `parallax.hapticsRs`) and checks every argument resolves through
-`HapticFeedbackType.fromValue`, one Android type each.
+`HapticFeedbackType.fromValue`, one Android type each. `NativeViewTouchDispatcherTest` drives the ported
+`JSTouchDispatcher` with a fake hit test into a `View` that `NativeViews` laid out: one row per gesture rule
+([native-view-android.md](native-view-android.md)).
 
 Versions of the test stack and how to port the next Flutter test: [android-tests-porting.md](android-tests-porting.md).

@@ -43,3 +43,8 @@ point per target, all through the `parallax` facade.
 | iOS | none yet | |
 
 How to build and run it on each target: [examples-run.md](examples-run.md).
+
+## Native views
+
+The `native-view` example shows an OS-native view through GPUI's hole, one crate for every target:
+[examples-native-view.md](examples-native-view.md).

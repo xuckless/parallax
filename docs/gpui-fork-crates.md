@@ -45,7 +45,8 @@ metadata (`+parallax.1`) can't be used, crates.io rejects versions that differ o
 is a separate script because a patch session edits `build/gpui-patched/` and regenerates only the fork crates
 ([patches.md](patches.md#making-one-from-a-change-in-buildgpui-patched)). Output: `build/parallax-gpui/<crate>/` and a
 workspace manifest of all of them. Deps between fork crates carry the exact version and a sibling `path` (cargo drops
-the path on publish). It fails loudly on a stale pin, a leftover `gpui-pre` name, a missing licence file, or a fork
+the path on publish); every exact pin is rewritten, so a patch's manifest hunk may name the gpui-pre version it was
+written on. It fails loudly on a stale pin, a leftover `gpui-pre` name, a missing licence file, or a fork
 crate some manifest names that is not vendored (optional deps included; add a vendor root in `sync-upstream.sh`).
 
 ## Publishing

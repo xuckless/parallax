@@ -137,6 +137,14 @@ final class ParallaxSurfaceView extends SurfaceView
   static native void nativeAccessibilitySettings(
       String transitionAnimationScale, String animatorDurationScale);
 
+  // ParallaxActivity.onCreate, once this view exists: the NativeViews Rust places the Activity's
+  // native views with (docs/native-view-android.md).
+  static native void nativeViewCreated(int activity, NativeViews nativeViews);
+
+  // A touch down or wheel turn at (x, y) in view pixels: the handle of the native view GPUI shows
+  // topmost there (no GPUI element over it), else -1 (NativeViewTouchDispatcher).
+  static native int nativeHitTestNativeView(int activity, float x, float y);
+
   // Both tag what they send with `activity`, so they are built once it is set.
   private final AndroidTouchProcessor touchProcessor;
 
@@ -148,6 +156,11 @@ final class ParallaxSurfaceView extends SurfaceView
 
   // Plays GPUI's haptics on the Activity's decor view, as Flutter's embedding does.
   private final PlatformPlugin platformPlugin;
+
+  /** The app's native views, under this view (docs/native-view-android.md). */
+  final NativeViews nativeViews;
+
+  private final NativeViewTouchDispatcher nativeViewTouches;
 
   /** Whether a Choreographer callback is posted: between onResume and onPause. */
   private boolean framesRunning;
@@ -178,6 +191,10 @@ final class ParallaxSurfaceView extends SurfaceView
     textInputChannel = new TextInputChannel(activity);
     textInputPlugin = new TextInputPlugin(this, textInputChannel);
     getHolder().addCallback(this);
+    nativeViews = new NativeViews(context, this);
+    nativeViewTouches =
+        new NativeViewTouchDispatcher(
+            (x, y) -> nativeHitTestNativeView(activity, x, y), nativeViews);
     // No default focus highlight (API 26+): out of touch mode Android draws a translucent grey over
     // the focused view, which here is GPUI's whole frame (white read 224 of 255). GPUI draws its own
     // focus.
@@ -213,6 +230,7 @@ final class ParallaxSurfaceView extends SurfaceView
 
   @Override
   public void surfaceCreated(SurfaceHolder holder) {
+    nativeViews.surfaceCreated();
     // Per-app locales (API 33+) are in the Activity's configuration, not the system property.
     nativeSurfaceCreated(
         activity,
@@ -247,6 +265,11 @@ final class ParallaxSurfaceView extends SurfaceView
   public boolean onTouchEvent(MotionEvent event) {
     // As FlutterView.onTouchEvent: deliver moves as they arrive, not batched to vsync.
     requestUnbufferedDispatch(event);
+    // GPUI gets every touch unless a native view takes the gesture exclusively
+    // (TouchForwarding::Exclusive).
+    if (nativeViewTouches.handleTouchEvent(event)) {
+      return true;
+    }
     return touchProcessor.onTouchEvent(event);
   }
 
@@ -256,6 +279,9 @@ final class ParallaxSurfaceView extends SurfaceView
   // without accessibility.
   @Override
   public boolean onGenericMotionEvent(MotionEvent event) {
+    if (nativeViewTouches.handleGenericMotionEvent(event)) {
+      return true;
+    }
     boolean handled = touchProcessor.onGenericMotionEvent(event, getContext());
     return handled || super.onGenericMotionEvent(event);
   }

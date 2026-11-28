@@ -1,0 +1,249 @@
+iOS native views: keyboard input to a native view (needs 0063).
+
+What:
+- Keyboard: `set_focused_native_view` gives keyboard input to a native view (`KeyboardInput::NativeView(id)`):
+  GPUI's text input view resigns and never becomes first responder, so the app can make its own UIView (a
+  UITextField, a WKWebView) first responder. When GPUI focus comes back, a focused GPUI field takes first responder
+  again, even though UIKit cleared its keyboard wish when the app's view took first responder from it. Dropping the
+  focused view's last handle also gives the keyboard back, whatever GPUI tells the window, so a GPUI field focused
+  next always gets it.
+
+Where: one-line hooks in upstream's window.rs and text_input.rs, 0062's native_views.rs (the drop), and
+ios/native_view_state.rs, which now holds the two lifecycles, `KeyboardInput` and `Rotation`, as pure transitions,
+table-tested on the host by scripts/patch-test.sh (`ios-pure`).
+
+Tests: `KeyboardInput::next`'s table, one row per (state, event), rejected and dropped-view events among them.
+Checked (0062–0064 together) on the iOS simulator as 0062 says: after the native UITextField took the keyboard and
+every native view was dropped, typing goes to GPUI's field.
+
+Also: 0028's main-thread test harness (tests/text_input.rs) includes native_view_state.rs, which text_input.rs now
+uses, so scripts/ios-text-oracle.sh builds again (47 of 47 rows).
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-ios/src/ios/native_view_state.rs b/gpui-pre-ios/src/ios/native_view_state.rs
+index fda3fc2..f577522 100644
+--- a/gpui-pre-ios/src/ios/native_view_state.rs
++++ b/gpui-pre-ios/src/ios/native_view_state.rs
+@@ -1,5 +1,42 @@
+-//! The lifecycle native views add to an iOS window, as a plain value: whether UIKit is turning the window. Pure,
+-//! so scripts/patch-test.sh runs its tests on the host (`ios-pure`).
++//! The two lifecycles native views add to an iOS window, as plain values: who gets keyboard input, and whether
++//! UIKit is turning the window. Pure, so scripts/patch-test.sh runs its tests on the host (`ios-pure`).
++
++use gpui::NativeViewId;
++
++/// Who GPUI's focus gives keyboard input to. GPUI's text input view becomes first responder only for `Gpui`.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(super) enum KeyboardInput {
++    /// GPUI's own content: its text input view becomes first responder while a GPUI field is focused.
++    Gpui,
++    /// This native view's focus handle is focused: GPUI's text input view never becomes first responder, so the
++    /// app can make its own `UIView` first responder.
++    NativeView(NativeViewId),
++}
++
++/// What moves keyboard input.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(super) enum KeyboardEvent {
++    /// GPUI's focus is on this native view's handle, or (`None`) on none (`PlatformWindow::set_focused_native_view`).
++    Focused(Option<NativeViewId>),
++    /// The last handle of this native view was dropped. A dropped view can't keep the keyboard, whether or not
++    /// GPUI tells the window its focus moved, or a GPUI field focused next could never take it back.
++    Dropped(NativeViewId),
++}
++
++impl KeyboardInput {
++    /// The one place keyboard input changes hands.
++    pub(super) fn next(self, event: KeyboardEvent) -> Self {
++        use KeyboardEvent::{Dropped, Focused};
++        use KeyboardInput::{Gpui, NativeView};
++        match (self, event) {
++            (Gpui | NativeView(_), Focused(None)) => Gpui,
++            (Gpui | NativeView(_), Focused(Some(id))) => NativeView(id),
++            (NativeView(focused), Dropped(id)) if focused == id => Gpui,
++            (NativeView(focused), Dropped(_)) => NativeView(focused),
++            (Gpui, Dropped(_)) => Gpui,
++        }
++    }
++}
+ 
+ /// Whether UIKit is animating a rotation (`viewWillTransitionToSize:…` to its coordinator's completion), during
+ /// which Core Animation resamples every pixel of the turning content.
+@@ -34,6 +71,58 @@ impl Rotation {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use KeyboardEvent::{Dropped, Focused};
++    use KeyboardInput::{Gpui, NativeView};
++
++    #[test]
++    fn keyboard_input_follows_focus_and_leaves_a_dropped_view() {
++        let (a, b) = (NativeViewId::for_test(1), NativeViewId::for_test(2));
++        // (name, state, event, next)
++        let cases = [
++            (
++                "GPUI to a focused view",
++                Gpui,
++                Focused(Some(a)),
++                NativeView(a),
++            ),
++            (
++                "GPUI stays without a focused view",
++                Gpui,
++                Focused(None),
++                Gpui,
++            ),
++            ("a view back to GPUI", NativeView(a), Focused(None), Gpui),
++            (
++                "one view to another",
++                NativeView(a),
++                Focused(Some(b)),
++                NativeView(b),
++            ),
++            (
++                "the same view again",
++                NativeView(a),
++                Focused(Some(a)),
++                NativeView(a),
++            ),
++            // M1: GPUI never says None once the last view is gone; a GPUI field must still get the keyboard.
++            (
++                "focused view dropped: back to GPUI",
++                NativeView(a),
++                Dropped(a),
++                Gpui,
++            ),
++            (
++                "another view dropped: the focused one keeps it",
++                NativeView(a),
++                Dropped(b),
++                NativeView(a),
++            ),
++            ("a view dropped while GPUI has it", Gpui, Dropped(a), Gpui),
++        ];
++        for (name, state, event, next) in cases {
++            assert_eq!(state.next(event), next, "{name}");
++        }
++    }
+ 
+     #[test]
+     fn the_screen_resamples_while_turning_and_under_display_zoom() {
+diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
+index 67ee86b..14ba9fd 100644
+--- a/gpui-pre-ios/src/ios/text_input.rs
++++ b/gpui-pre-ios/src/ios/text_input.rs
+@@ -1,3 +1,4 @@
++use super::native_view_state::{KeyboardEvent, KeyboardInput};
+ use super::window::{IosWindowState, WindowReference};
+ use gpui::{
+     Autocapitalize, AutofillHint, KeyboardType, PlatformInputHandler, TextInputAction,
+@@ -162,6 +163,7 @@ pub(super) struct TextInputIvars {
+     marked_style: RefCell<Option<Retained<NSDictionary<NSAttributedStringKey, AnyObject>>>>,
+     keyboard_desired: Cell<bool>,
+     keyboard_eligible: Cell<bool>,
++    keyboard_input: Cell<KeyboardInput>,
+     reconciling_responder: Cell<bool>,
+     update_pending: Cell<bool>,
+     configuration_changed: Cell<bool>,
+@@ -187,6 +189,7 @@ define_class!(
+         fn can_become_first_responder(&self) -> bool {
+             self.ivars().keyboard_desired.get()
+                 && self.ivars().keyboard_eligible.get()
++                && self.ivars().keyboard_input.get() == KeyboardInput::Gpui
+         }
+ 
+         // UIKit can make this view first responder itself (not only `reconcileTextInput`), so the selection UI comes
+@@ -743,6 +746,7 @@ impl TextInputView {
+             marked_style: RefCell::new(None),
+             keyboard_desired: Cell::new(false),
+             keyboard_eligible: Cell::new(false),
++            keyboard_input: Cell::new(KeyboardInput::Gpui),
+             reconciling_responder: Cell::new(false),
+             update_pending: Cell::new(false),
+             configuration_changed: Cell::new(false),
+@@ -966,6 +970,20 @@ impl TextInputView {
+         self.refresh_keyboard();
+     }
+ 
++    /// Moves keyboard input to a native view or back to GPUI (native_view_state.rs). Going to a native view, this
++    /// view resigns (its keyboard stays wanted); coming back, a field GPUI focused takes the keyboard again, even when
++    /// the app's view took first responder from this one, which UIKit counts as ending native editing.
++    pub(super) fn move_keyboard_input(&self, event: KeyboardEvent) {
++        let input = self.ivars().keyboard_input.get().next(event);
++        if self.ivars().keyboard_input.replace(input) == input {
++            return;
++        }
++        if input == KeyboardInput::Gpui && self.ivars().input_field.get().is_some() {
++            self.ivars().keyboard_desired.set(true);
++        }
++        self.refresh_keyboard();
++    }
++
+     pub(super) fn set_input_field(&self, field: Option<gpui::FocusId>) {
+         // Taking the handler during draw must not clear this identity: the
+         // replacement adapter can still represent the same focused document.
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 4feb8e8..b6e69a1 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -18,7 +18,7 @@ use super::keyboard_inset::{
+     InsetSample, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification, KeyboardSpring,
+     NotificationName, Rect, ViewGeometry,
+ };
+-use super::native_view_state::Rotation;
++use super::native_view_state::{KeyboardEvent, Rotation};
+ use super::text_input::TextInputView;
+ use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
+ use gpui::{
+@@ -1396,6 +1396,11 @@ impl PlatformWindow for IosWindow {
+         gpui::NativeViewInput::Window
+     }
+ 
++    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
++        self.text_input_view
++            .move_keyboard_input(KeyboardEvent::Focused(id));
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.renderer.lock().sprite_atlas().clone()
+     }
+diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
+index a4fc5e9..35e855a 100644
+--- a/gpui-pre-ios/src/ios/window/native_views.rs
++++ b/gpui-pre-ios/src/ios/window/native_views.rs
+@@ -21,6 +21,7 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+ use objc2_ui_kit::UIView;
+ use std::{any::Any, ffi::c_void, ptr::NonNull, rc::Weak};
+ 
++use super::super::native_view_state::KeyboardEvent;
+ use super::{IosWindow, IosWindowState};
+ use gpui_apple::native_view_placement::{Layout, Placement, YAxis, plan_layout};
+ 
+@@ -105,6 +106,9 @@ impl Drop for Attachment {
+         // Handles are dropped on the main thread: `gpui::NativeView` is not `Send`.
+         attached.container.removeFromSuperview();
+         attached.view.removeFromSuperview();
++        window
++            .text_input_view
++            .move_keyboard_input(KeyboardEvent::Dropped(self.id));
+     }
+ }
+ 
+diff --git a/gpui-pre-ios/tests/text_input.rs b/gpui-pre-ios/tests/text_input.rs
+index f380ebb..a7ba72f 100644
+--- a/gpui-pre-ios/tests/text_input.rs
++++ b/gpui-pre-ios/tests/text_input.rs
+@@ -2,6 +2,12 @@
+ #[path = "../src/ios/text_input.rs"]
+ mod text_input;
+ 
++// text_input.rs moves keyboard input with native_view_state.rs's pure transitions.
++#[cfg(target_os = "ios")]
++#[path = "../src/ios/native_view_state.rs"]
++#[allow(dead_code, unused_imports, reason = "text_input.rs uses only its keyboard transitions here; its tests run in scripts/patch-test.sh's ios-pure crate")]
++mod native_view_state;
++
+ // Native protocol construction does not need a GPUI window, renderer, or a
+ // second text model. This fixture deliberately has no registered input handler.
+ #[cfg(target_os = "ios")]

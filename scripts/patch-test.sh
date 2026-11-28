@@ -3,7 +3,9 @@
 # On Linux it also runs parallax-gpui-linux's lib tests (host_backends below).
 # The crate can't run them as shipped, so this tests a scratch copy of build/parallax-gpui/ in build/patch-tests/
 # (generated, git-ignored, rebuilt every run) with two test-only changes, and never touches build/parallax-gpui/:
-#   - stand-in fonts at the two paths svg_renderer.rs includes from Zed's assets/, which is not vendored;
+#   - stand-in fonts at the paths svg_renderer.rs and gpui_wgpu's cosmic_text_system.rs include from Zed's assets/,
+#     which is not vendored;
+#   - gpui_wgpu's `naga` dev-dependency (its shader tests), which the published crate drops;
 #   - #[test] for Zed's #[perf] in style.rs (#[perf] wraps #[test]; its util_macros is not vendored).
 # Then it tests gpui_windows's and gpui_ios's pure modules (pure_crates below) on the host as scratch crates.
 # Usage: scripts/patch-test.sh [libtest args...]   e.g. scripts/patch-test.sh pointer_source
@@ -22,12 +24,12 @@ rm -rf "$out"
 mkdir -p "$out"
 cp -a "$in" "$out/crates"
 
-# svg_renderer.rs includes "../../../assets/fonts/<path>" from crates/parallax-gpui/src/, so assets/ sits in $out.
-# Any two fonts do; the tests that need Zed's own are in `skips`.
-included=(ibm-plex-sans/IBMPlexSans-Regular.ttf lilex/Lilex-Regular.ttf)
-mapfile -t fonts < <(find /usr/share/fonts -name '*.ttf' | LC_ALL=C sort | head -n 2)
-(( ${#fonts[@]} == 2 )) || die "need two .ttf files under /usr/share/fonts as stand-in fonts (Ubuntu: fonts-dejavu-core)"
-for i in 0 1; do
+# svg_renderer.rs and cosmic_text_system.rs include "../../../assets/fonts/<path>" from crates/<crate>/src/, so
+# assets/ sits in $out. Any fonts do; the tests that need Zed's own are in `skips` and `backend_skips`.
+included=(ibm-plex-sans/IBMPlexSans-Regular.ttf lilex/Lilex-Regular.ttf lilex/Lilex-Bold.ttf)
+mapfile -t fonts < <(find /usr/share/fonts -name '*.ttf' | LC_ALL=C sort | head -n 3)
+(( ${#fonts[@]} == 3 )) || die "need three .ttf files under /usr/share/fonts as stand-in fonts (Ubuntu: fonts-dejavu-core)"
+for i in 0 1 2; do
     mkdir -p "$(dirname "$out/assets/fonts/${included[$i]}")"
     cp "${fonts[$i]}" "$out/assets/fonts/${included[$i]}"
 done
@@ -63,16 +65,17 @@ done
 
 "${test_cmd[@]}" "${skip_args[@]}" "$@"
 
-# gpui_windows and gpui_ios build only on their own OS and gpui_web only on wasm32, so their pure decision modules
+# gpui_windows, gpui_ios and gpui_apple build only on their own OS and gpui_web only on wasm32, so their pure decision modules
 # (plain values, no `windows`, objc2 or `web_sys` crate) are tested here as one host crate per backend on
 # parallax-gpui, members of the scratch workspace.
 # One row per backend: "scratch crate:fork crate:modules", each module its path under the crate's src/ without
 # ".rs", space-separated. To add a module, add its path to its backend's row. A module listed must use only `gpui`
 # and `std`.
 pure_crates=(
-    "windows-pure:parallax-gpui-windows:pointer accessibility_display"
-    "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
-    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
+    "windows-pure:parallax-gpui-windows:pointer accessibility_display native_views"
+    "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset native_view_layout"
+    "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation ios/native_view_state"
+    "apple-pure:parallax-gpui-apple:native_view_placement"
 )
 for row in "${pure_crates[@]}"; do
     IFS=: read -r name backend modules <<<"$row"
@@ -106,7 +109,21 @@ done
 # builds. Add a row when a backend patch ships tests the host can run.
 host_backends=()
 [[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-linux)   # 0022's Wayland and 0023's X11 touch tables
+[[ $(uname -s) == Linux ]] && host_backends+=(parallax-gpui-wgpu)    # 0047's native view hole (headless renderer)
+
+# gpui_wgpu's shader tests parse with `naga`, a dev-dependency the published crate drops; the scratch copy gets it.
+wgpu_manifest="$out/crates/parallax-gpui-wgpu/Cargo.toml"
+grep -q '^\[dev-dependencies\]' "$wgpu_manifest" && die "parallax-gpui-wgpu has dev-dependencies now: update this script"
+printf '\n[dev-dependencies]\nnaga = { version = "30", features = ["wgsl-in"] }\n' >> "$wgpu_manifest"
+
+# Backend tests skipped, one row each with the reason, as `skips` above. A row may name a whole test module.
+backend_skips=(
+    # Every one shapes text in Zed's IBM Plex Sans or Lilex, found by family name; the stand-ins have other names.
+    cosmic_text_system::tests::
+)
 for crate in "${host_backends[@]}"; do
+    skip_args=()
+    for test in "${backend_skips[@]}"; do skip_args+=(--skip "$test"); done
     cargo test --manifest-path "$out/crates/Cargo.toml" -p "$crate" --features test-support --lib \
-        --target-dir target/patch-tests -- "$@"
+        --target-dir target/patch-tests -- "${skip_args[@]}" "$@"
 done

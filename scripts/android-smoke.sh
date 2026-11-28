@@ -121,9 +121,10 @@ step "background" "on_device input keyevent KEYCODE_HOME" "parallax: lifecycle F
 step "resume" "on_device am start -n $hello_component" "$drawn portrait surface" 20
 step "tap the box again" "tap_colour ef4444" "box colour 22c55e \(touch click" 20
 
-# Lines that mean the app crashed, hung or cannot draw (host.rs logs the last two), at any step.
+# Lines that mean the app crashed, hung or cannot draw (host.rs and activity_window.rs log the last three), at any step.
 crashed="FATAL EXCEPTION|Fatal signal|ANR in $app|Process $app .* has died"
 crashed+="|parallax: cannot attach the new surface|parallax: GPU device recovery failed"
+crashed+="|parallax: cannot rebuild the renderer for native views"
 
 fail() {
   log_since "$start" >"$log" || true

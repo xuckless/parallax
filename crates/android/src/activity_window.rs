@@ -10,9 +10,9 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, DevicePixels, DispatchEventResult, Edges, Haptic, Pixels, PlatformAtlas,
-    PlatformInput, PlatformInputHandler, RequestFrameOptions, Size, WindowInsets, WindowVisibility,
-    point, px,
+    AnyWindowHandle, DevicePixels, DispatchEventResult, Edges, Haptic, NativeViewId, Pixels,
+    PlatformAtlas, PlatformInput, PlatformInputHandler, Point, RequestFrameOptions, Size,
+    WindowInsets, WindowVisibility, point, px,
 };
 use gpui_wgpu::{GpuContext, WgpuRenderer};
 use jni::objects::GlobalRef;
@@ -20,11 +20,12 @@ use serde_json::Value;
 
 use crate::{
     Error,
-    backend::Device,
+    backend::{self, Device},
     gpui_window::{Gpui, GpuiEffect, GpuiEvent},
     haptics, keys,
     lifecycle::ActivityId,
     metrics::Metrics,
+    native_view::NativeViews,
     pointer,
     renderer::{self, NativeWindow},
     surface::{Action, Surface, SurfaceEvent},
@@ -95,6 +96,8 @@ pub(crate) struct Callbacks {
     pub(crate) insets_changed: Slot<dyn FnMut(WindowInsets)>,
     pub(crate) active_status: Slot<dyn FnMut(bool)>,
     pub(crate) visibility: Slot<dyn FnMut(WindowVisibility)>,
+    /// GPUI's hit test for a native view at a point: which view a touch down there forwards to.
+    pub(crate) hit_test_native_view: Slot<dyn FnMut(Point<Pixels>) -> Option<NativeViewId>>,
     /// Run once, when the Activity is destroyed: GPUI removes the window.
     pub(crate) close: RefCell<Option<Box<dyn FnOnce()>>>,
 }
@@ -106,6 +109,14 @@ pub(crate) struct Callbacks {
 pub(crate) enum FirstFrame {
     Pending,
     Drawn,
+}
+
+/// Whether the renderer's backend was checked for native views since it was made ([`backend::for_native_views`]):
+/// once per window, again after device recovery (which picks the device's backends again).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ViewsBackend {
+    Unchecked,
+    Checked,
 }
 
 /// GPUI's window for an Activity, while it is open ([`Gpui::Open`]).
@@ -140,6 +151,9 @@ pub(crate) struct ActivityWindow {
     /// The Activity's Java `PlatformPlugin` (Flutter's, ported): the clipboard goes through it (platform.rs). Freed
     /// with the window, so a destroyed Activity is not kept alive.
     pub(crate) platform_plugin: GlobalRef,
+    /// The app's native views under GPUI's surface (docs/native-view-android.md).
+    pub(crate) native_views: NativeViews,
+    views_backend: Cell<ViewsBackend>,
 }
 
 impl ActivityWindow {
@@ -164,6 +178,8 @@ impl ActivityWindow {
             text_input: RefCell::new(text_input::Session::default()),
             haptics: RefCell::new(Vec::new()),
             first_frame: Cell::new(FirstFrame::Pending),
+            native_views: NativeViews::default(),
+            views_backend: Cell::new(ViewsBackend::Unchecked),
         }
     }
 
@@ -269,6 +285,7 @@ impl ActivityWindow {
             insets_changed,
             active_status,
             visibility,
+            hit_test_native_view,
             close,
         } = &self.callbacks;
         request_frame.clear();
@@ -277,6 +294,7 @@ impl ActivityWindow {
         insets_changed.clear();
         active_status.clear();
         visibility.clear();
+        hit_test_native_view.clear();
         close.borrow_mut().take();
         effect
     }
@@ -331,6 +349,7 @@ impl ActivityWindow {
                 match attached {
                     Ok(()) => {
                         self.first_frame.set(FirstFrame::Pending);
+                        self.native_views.surface_replaced();
                         self.resized();
                     }
                     Err(error) => {
@@ -350,14 +369,21 @@ impl ActivityWindow {
                 let window = self.current_window();
                 let recovered = self
                     .with_renderer(|renderer| match window {
-                        Some(window) => {
-                            renderer::recover(&self.gpu, self.device, renderer, &window, size)
-                        }
+                        Some(window) => renderer::recover(
+                            &self.gpu,
+                            self.device.backends(),
+                            renderer,
+                            &window,
+                            size,
+                        ),
                         None => Err(Error::NoSurface),
                     })
                     .unwrap_or(Err(Error::NoSurface));
                 match recovered {
-                    Ok(()) => self.handle(SurfaceEvent::Recovered),
+                    Ok(()) => {
+                        self.views_backend.set(ViewsBackend::Unchecked);
+                        self.handle(SurfaceEvent::Recovered)
+                    }
                     Err(error) => {
                         // The state machine waits longer before the next try. scripts/android-smoke.sh fails on
                         // this line: keep its wording.
@@ -437,6 +463,44 @@ impl ActivityWindow {
                 callback(event);
             });
         }
+    }
+
+    /// A frame is about to show native views: on a backend whose surface has no alpha, the renderer is rebuilt on one
+    /// that has ([`backend::for_native_views`]), keeping its atlas, before the frame draws. Checked once per renderer.
+    pub(crate) fn native_views_shown(&self) {
+        if self.views_backend.replace(ViewsBackend::Checked) == ViewsBackend::Checked {
+            return;
+        }
+        let Some(backends) = renderer::backend(&self.gpu)
+            .and_then(|current| backend::for_native_views(current, renderer::api_level()))
+        else {
+            return;
+        };
+        let (Some(window), size) = (self.current_window(), self.metrics.get().size) else {
+            return;
+        };
+        log::info!("parallax: native views need a surface with alpha: rebuilding on {backends:?}");
+        let rebuilt = self
+            .with_renderer(|renderer| {
+                renderer::recover(&self.gpu, backends, renderer, &window, size)
+            })
+            .unwrap_or(Err(Error::NoSurface));
+        if let Err(error) = rebuilt {
+            // The renderer let go of its surface: device recovery builds it again, on the device's backends.
+            log::error!("parallax: cannot rebuild the renderer for native views: {error}");
+            self.handle(SurfaceEvent::AttachFailed { at: Instant::now() });
+        }
+    }
+
+    /// Java's handle of the native view GPUI shows topmost at `(x, y)` view pixels, no GPUI element over it, or -1.
+    pub(crate) fn native_view_at(&self, x: f32, y: f32) -> i32 {
+        let density = self.metrics.get().density;
+        let hit = self
+            .callbacks
+            .hit_test_native_view
+            .with(|hit_test| hit_test(point(px(x / density), px(y / density))))
+            .flatten();
+        self.native_views.handle(hit)
     }
 
     /// One key data packet → GPUI; returns whether GPUI handled it. The keyboard is not borrowed while GPUI runs,

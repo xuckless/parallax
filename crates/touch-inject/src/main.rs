@@ -4,8 +4,8 @@
 //! `CreateSyntheticPointerDevice` / `InjectSyntheticPointerInput` (Windows 10 1809+), so the window gets real
 //! `WM_POINTER*` messages and Windows' own promoted mouse copies; the mouse goes through `SendInput`.
 //!
-//! Usage: touch-inject launch <program> <log>
-//!                                        start a program, its stderr to the log; prints its pid
+//! Usage: touch-inject launch <program> <log> [argument…]
+//!                                        start a program with its arguments, its stderr to the log; prints its pid
 //!        touch-inject park                move the mouse cursor to the screen's top-left corner, off the window
 //!        touch-inject display <width> <height> <percent>
 //!                                        set the display's resolution and scale; prints the old "width height percent"
@@ -13,9 +13,13 @@
 //!   raise                  keep the window above all others (the CI runner's own console can cover it)
 //!   scale                  the window's scale factor (its DPI / 96)
 //!   screenshot <file>      the client area as a raw RGBA image (scripts/locate-colour.py reads it)
+//!   shots <count> <prefix> that many screenshots as fast as they come, to <prefix>1.raw, <prefix>2.raw, …
 //!   window-rect            the window's frame on screen, physical px: left top right bottom
 //!   touch <frame>…         inject touch frames (frames.rs has the syntax); pen <frame>… a pen's
 //!   click <x> <y>          a left mouse click there
+//!   move <x> <y>           the mouse cursor moved there
+//!   scroll <x> <y> <notches>  the mouse wheel turned there, positive away from the user
+//!   key <code>             press and release a virtual-key code (decimal), into the focused window
 
 #[cfg_attr(
     not(target_os = "windows"),
@@ -71,8 +75,9 @@ mod windows_tool {
             },
             Input::{
                 KeyboardAndMouse::{
-                    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-                    MOUSEINPUT, SendInput,
+                    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+                    KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_WHEEL,
+                    MOUSEINPUT, SendInput, VIRTUAL_KEY,
                 },
                 Pointer::{
                     InjectSyntheticPointerInput, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT,
@@ -140,11 +145,12 @@ mod windows_tool {
                 unsafe { SetCursorPos(0, 0) }?;
                 return Ok(());
             }
-            [command, program, log] if command == "launch" => {
+            [command, program, log, arguments @ ..] if command == "launch" => {
                 // Spawned here, not by the shell: Git Bash's `$!` names its own process, whose Windows pid can be
                 // read before the program replaces it. Dropping the child leaves it running. It inherits this
                 // tool's inheritable handles whatever its stdio, so a caller reads the pid from a file, not a pipe.
                 let child = std::process::Command::new(program)
+                    .args(arguments)
                     .stderr(std::fs::File::create(log)?)
                     .spawn()?;
                 println!("{}", child.id());
@@ -183,6 +189,16 @@ mod windows_tool {
             }
             ("scale", []) => println!("{scale}"),
             ("screenshot", [file]) => std::fs::write(file, screenshot(origin, width, height)?)?,
+            ("shots", [count, prefix]) => {
+                // Taken first, written after, so they sample the screen as often as BitBlt allows.
+                let shots = (0..count.parse::<u32>()?)
+                    .map(|_| screenshot(origin, width, height))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (n, shot) in shots.iter().enumerate() {
+                    std::fs::write(format!("{prefix}{}.raw", n + 1), shot)?;
+                }
+            }
+            ("key", [code]) => key(code.parse()?)?,
             ("window-rect", []) => {
                 let mut rect = RECT::default();
                 // SAFETY: `window` is live and `rect` outlives the call.
@@ -197,6 +213,25 @@ mod windows_tool {
                     y: y.parse()?,
                 };
                 click(to_screen(at, origin, scale))?;
+            }
+            ("move", [x, y]) => {
+                let (x, y) = to_screen(
+                    Point {
+                        x: x.parse()?,
+                        y: y.parse()?,
+                    },
+                    origin,
+                    scale,
+                );
+                // SAFETY: plain call, no pointers. Windows sends the window WM_MOUSEMOVE for the new position.
+                unsafe { SetCursorPos(x, y) }?;
+            }
+            ("scroll", [x, y, notches]) => {
+                let at = Point {
+                    x: x.parse()?,
+                    y: y.parse()?,
+                };
+                scroll(to_screen(at, origin, scale), notches.parse()?)?;
             }
             _ => return Err(format!("touch-inject: unknown command {command} {rest:?}").into()),
         }
@@ -532,6 +567,24 @@ mod windows_tool {
     }
 
     /// A real (not promoted) left click: the cursor moves there, then a press and a release.
+    /// Wheel notches of `WHEEL_DELTA` (120) each at a screen point, through `SendInput`.
+    fn scroll((x, y): (i32, i32), notches: i32) -> Result<(), Box<dyn Error>> {
+        // SAFETY: plain call, no pointers.
+        unsafe { SetCursorPos(x, y) }?;
+        let wheel = [INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dwFlags: MOUSEEVENTF_WHEEL,
+                    // mouseData is a DWORD holding a signed wheel delta.
+                    mouseData: (notches * 120) as u32,
+                    ..Default::default()
+                },
+            },
+        }];
+        send(&wheel)
+    }
+
     fn click((x, y): (i32, i32)) -> Result<(), Box<dyn Error>> {
         // SAFETY: plain call, no pointers.
         unsafe { SetCursorPos(x, y) }?;
@@ -544,9 +597,27 @@ mod windows_tool {
                 },
             },
         };
-        let inputs = [button(MOUSEEVENTF_LEFTDOWN), button(MOUSEEVENTF_LEFTUP)];
+        send(&[button(MOUSEEVENTF_LEFTDOWN), button(MOUSEEVENTF_LEFTUP)])
+    }
+
+    /// A press and release of virtual-key `code`, to whatever window has the keyboard focus.
+    fn key(code: u16) -> Result<(), Box<dyn Error>> {
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(code),
+                    dwFlags: flags,
+                    ..Default::default()
+                },
+            },
+        };
+        send(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)])
+    }
+
+    fn send(inputs: &[INPUT]) -> Result<(), Box<dyn Error>> {
         // SAFETY: `inputs` is a valid slice of INPUTs of the size passed.
-        let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
             return Err("touch-inject: SendInput was blocked".into());
         }
