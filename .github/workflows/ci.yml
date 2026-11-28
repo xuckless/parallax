@@ -465,7 +465,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
       # binaryen: wasm-opt, which `--release` runs. Playwright: Firefox (web-checks.mjs drives Chromium over CDP).
-      - run: sudo apt-get update && sudo apt-get install -y binaryen
+      # Mesa: the software GL Firefox's WebGL2 runs on without a GPU.
+      - run: sudo apt-get update && sudo apt-get install -y binaryen libgl1-mesa-dri libegl1
       - run: |
           mkdir -p "$PLAYWRIGHT_DIR" && cd "$PLAYWRIGHT_DIR" && npm init -y >/dev/null
           npm install playwright@1.56.1
@@ -490,7 +491,7 @@ jobs:
             google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir="$RUNNER_TEMP/chrome" \
               --window-size=$size --force-device-scale-factor=1 --touch-events=enabled about:blank > /dev/null 2>&1 &
             local pid=$!
-            sleep 3
+            for _ in $(seq 60); do curl -sf http://127.0.0.1:9222/json/version > /dev/null && break; sleep 0.5; done
             node scripts/web-checks.mjs "$@" 9222 ${SUITE:-}
             local status=$?
             kill $pid; wait $pid 2>/dev/null
@@ -511,7 +512,7 @@ jobs:
           if grep "wasm-opt not found" hello-web-release.log; then exit 1; fi
           google-chrome --headless=new --remote-debugging-port=9223 --user-data-dir="$RUNNER_TEMP/chrome-release" \
             --window-size=412,915 --force-device-scale-factor=1 --touch-events=enabled about:blank > /dev/null 2>&1 &
-          sleep 3
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:9223/json/version > /dev/null && break; sleep 0.5; done
           node scripts/web-checks.mjs http://127.0.0.1:8766/ desktop 9223
       - if: always()
         uses: actions/upload-artifact@v7.0.2

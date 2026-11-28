@@ -130,7 +130,8 @@ const chromium = async (port) => {
 // The page in Playwright's Firefox or WebKit: their pages stay visible and focused whatever else opens.
 const playwright = async (engine) => {
   const launcher = createRequire(`${process.env.PLAYWRIGHT_DIR}/`)("playwright")[engine];
-  const instance = await launcher.launch();
+  // Firefox refuses WebGL on a software GL (a GPU-less CI runner's llvmpipe) unless forced; GPUI needs WebGL2 there.
+  const instance = await launcher.launch(engine === "firefox" ? { firefoxUserPrefs: { "webgl.force-enabled": true } } : {});
   const touch = mode === "mobile" ? { hasTouch: true, userAgent: ANDROID } : {};
   let page;
   // A new page in a new context: Playwright sets the scale per context.
