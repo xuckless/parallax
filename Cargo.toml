@@ -17,6 +17,8 @@ gpui = { package = "parallax-gpui", version = "=0.3.14-parallax.12" }
 # `font-kit` is off by default upstream too; without it macOS uses GPUI's NoopTextSystem and draws no text.
 gpui_platform = { package = "parallax-gpui-platform", version = "=0.3.14-parallax.12", default-features = false, features = ["font-kit", "wayland", "x11"] }
 gpui_wgpu = { package = "parallax-gpui-wgpu", version = "=0.3.14-parallax.12" }
+# Windows only: GPUI's DirectComposition device for hosted visuals (examples/native-view-webview2).
+gpui_windows = { package = "parallax-gpui-windows", version = "=0.3.14-parallax.12" }
 parallax-android = { path = "crates/android", version = "0.1.9" }
 parallax-ext = { path = "crates/ext", version = "0.1.9" }
 parallax-platform = { path = "crates/platform", version = "0.1.9" }

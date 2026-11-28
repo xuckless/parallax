@@ -59,9 +59,17 @@ yellow band across its top half shows whether a clipped view is cropped or squee
 ## native-view-windows
 
 [examples/native-view-windows](../examples/native-view-windows/): a `NativeView` on Windows, the app's own composition
-swap chain presented every vsync from its own thread, under an orange div; "move" and "resize" buttons; logs GPUI
+swap chain presented every vsync from its own thread, under an orange div; "move" (slides it back and forth for about
+ten seconds) and "resize" buttons; logs GPUI
 frames and view presents per second and the input its element hears. A platform-specific check, so it does nothing
 on other targets (it still builds there). `cargo run -p native-view-windows`; checks: [native-view-windows.md](native-view-windows.md).
+
+## native-view-webview2
+
+[examples/native-view-webview2](../examples/native-view-webview2/): a local HTML page through WebView2's visual hosting
+as a `NativeView` on Windows, in a visual on GPUI's DirectComposition device, under an orange div; the mouse, wheel
+and keys over it go to the page, which posts its events and frame rate back to the log. Needs the WebView2 runtime.
+`cargo run -p native-view-webview2`; checks: [native-view-webview2.md](native-view-webview2.md).
 
 ## native-view-apple
 

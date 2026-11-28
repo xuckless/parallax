@@ -205,7 +205,7 @@ jobs:
     # Drives a desktop session, so like android-smoke it runs on main, pull requests and manual runs (docs/ci.md).
     if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install
@@ -221,10 +221,25 @@ jobs:
         timeout-minutes: 15
       - if: ${{ !cancelled() }}
         run: cargo test -p parallax-platform --test trace_replay -- --nocapture
-      # NativeView on Windows (docs/native-view-windows.md): the composed screen, input and frame counts at 100 and 125 %.
+      # WebView2's Evergreen runtime for examples/native-view-webview2: the image's when it has one, else installed.
+      - if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).pv
+          if ($version) {
+            "WebView2 runtime $version, on the image"
+          } else {
+            $setup = "$env:RUNNER_TEMP\MicrosoftEdgeWebview2Setup.exe"
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup
+            Start-Process $setup -ArgumentList '/silent', '/install' -Wait
+            "WebView2 runtime $((Get-ItemProperty -Path $key).pv), installed"
+          }
+      # NativeView on Windows (docs/native-view-windows.md): the composed screen, input and frame counts at 100 and
+      # 125 %, for a composition swap chain and a WebView2 page.
       - if: ${{ !cancelled() }}
         run: scripts/windows-native-view-checks.sh
-        timeout-minutes: 15
+        timeout-minutes: 25
       # The fresh traces (commit them when they change) and every launch's log.
       - if: always()
         uses: actions/upload-artifact@v7.0.2

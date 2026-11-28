@@ -4,12 +4,12 @@ A `NativeView` shows an OS-native view (a browser page, video, map) under GPUI's
 paints. The view's own frames reach the screen through the OS compositor and draw no GPUI frame
 ([ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview), issue #1). Upstream GPUI has it on macOS only; this
 page is what every target shares. Per target: [native-view-wayland.md](native-view-wayland.md),
-[native-view-windows.md](native-view-windows.md), [native-view-apple.md](native-view-apple.md).
+[native-view-windows.md](native-view-windows.md) (and [WebView2](native-view-webview2.md)), [native-view-apple.md](native-view-apple.md).
 
 ## One API
 
 `NativeView::new(view, window, cx)` takes the platform's own view as a pointer, as upstream's macOS one takes an
-`NSView`: a `UIView` on iOS, DirectComposition content on Windows, the app's `wl_surface` on Wayland (owner
+`NSView`: a `UIView` on iOS, DirectComposition content (or a visual on GPUI's device, as WebView2 wants) on Windows, the app's `wl_surface` on Wayland (owner
 decision, 2026-11-27). The handle is an element: paint it
 where the view goes, and elements painted after it cover it. `NativeView::bounds(window)` gives where it showed in the
 last frame: the whole view, so pointer positions stay view-relative when a clip cuts it. A view its element's clip
@@ -56,7 +56,8 @@ forwards the rest to the view.
 
 A frame that moves, resizes, shows or hides a view must place the view in the same compositor transaction as the hole
 (`places_views()`): Core Animation's transaction on Apple, `wl_subsurface.set_sync` on Wayland, GPUI's own
-DirectComposition `Commit` on Windows. Every other frame leaves the view alone, so its own frames never wait for
+DirectComposition `Commit` on Windows, which also shows GPUI's frame while a view shows (a DComp surface, as a swap
+chain's present is not tied to a commit). Every other frame leaves the view alone, so its own frames never wait for
 GPUI.
 
 ## Tests

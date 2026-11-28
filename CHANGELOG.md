@@ -17,7 +17,11 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   element (`HitboxBehavior::BlockMouseExceptAncestors`, fork patch 0048, docs/native-view.md).
 - Windows: `NativeView` shows an app's composition swap chain (or any DirectComposition content) under GPUI's
   content, with no child window and no GPUI frame for the view's own presents; input over it reaches the view's
-  element (patch 0050, docs/native-view-windows.md, examples/native-view-windows).
+  element (patch 0050, docs/native-view-windows.md, examples/native-view-windows). While a view shows, GPUI's frame
+  goes through a DirectComposition surface, so a moving view and its hole change in the same composition frame.
+- Windows: a WebView2 page as a `NativeView`: `gpui_windows::composition_device` gives GPUI's DirectComposition
+  device, and `NativeView::new` takes a visual made on it, such as a WebView2 composition controller's root visual
+  target (patch 0058, docs/native-view-webview2.md, examples/native-view-webview2).
 - iOS: `gpui::NativeView` shows an app's `UIView` under GPUI's content; touches over it reach the element's listeners
   (patch 0052, [docs/native-view-apple.md](docs/native-view-apple.md)).
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so

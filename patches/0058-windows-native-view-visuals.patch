@@ -1,0 +1,169 @@
+Host visuals as native views on Windows: GPUI's DirectComposition device for content that wants a visual of its own.
+
+What: `gpui_windows::composition_device(window)` returns the DirectComposition device of GPUI's window (from its
+window handle; `None` without DirectComposition or while the window draws), in a new file
+`directx_renderer/native_view_host.rs`. `NativeView::new` on Windows now also takes an `IDCompositionVisual` made on
+that device: `NativeViewTree::attach` adds it under the view's content visual (offset and clipped like any view)
+instead of setting it as content; detaching removes it. After a lost device the views are attached again one by
+one, a visual from the old device logged and skipped (it cannot join the new tree; the app makes it again) rather
+than failing the whole recovery. Hooks: one module line, one `pub use`, doc lines on `attach_native_view` and
+`NativeView::new`.
+
+Why: owner decision 2026-11-27 (issue #1, WebView2). WebView2's visual hosting
+(`CreateCoreWebView2CompositionController`) renders into a `RootVisualTarget`, a visual that must be on the device of
+the tree it joins, so the app needs GPUI's device; with it, a WebView2 page is a NativeView like a swap chain, with
+its input sent from the view element's listeners (`SendMouseInput`, `MoveFocus`; examples/native-view-webview2).
+
+Test: `scripts/windows-native-view-checks.sh` runs examples/native-view-webview2 on CI's Windows runner at 100 and
+125 %: the page renders in the hole under the cover div, a click, wheel and key over it reach the page (it posts
+them back through `WebMessageReceived`), and GPUI draws 0 frames per second while only the page animates
+(docs/native-view-windows.md).
+
+Upstream: not filed (patch rule 14).
+
+diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
+index 8ed49c2..0875eb8 100644
+--- a/gpui-pre-windows/src/directx_renderer.rs
++++ b/gpui-pre-windows/src/directx_renderer.rs
+@@ -25,6 +25,7 @@ use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, Sh
+ use crate::native_views::AlphaMode;
+ use crate::*;
+ 
++pub(crate) mod native_view_host;
+ mod native_view_surface;
+ mod native_view_tree;
+ use gpui::*;
+@@ -346,7 +347,7 @@ impl DirectXRenderer {
+             let mut composition =
+                 DirectComposition::new(devices.dxgi_device.as_ref().unwrap(), self.hwnd)?;
+             composition.set_swap_chain(&resources.swap_chain)?;
+-            composition.reattach_native_views(&self.native_views)?;
++            composition.reattach_native_views(&self.native_views);
+             Some(composition)
+         };
+ 
+diff --git a/gpui-pre-windows/src/directx_renderer/native_view_host.rs b/gpui-pre-windows/src/directx_renderer/native_view_host.rs
+new file mode 100644
+index 0000000..f2e099a
+--- /dev/null
++++ b/gpui-pre-windows/src/directx_renderer/native_view_host.rs
+@@ -0,0 +1,22 @@
++//! GPUI's DirectComposition device, for apps that host content which wants a visual in the window's own tree rather
++//! than content for one: WebView2's `CreateCoreWebView2CompositionController` renders into a `RootVisualTarget`
++//! visual, which must be made on the device of the tree it joins (docs/native-view-windows.md in Parallax). The app
++//! makes a visual on this device and hands it to `NativeView::new`; `NativeViewTree::attach` then adds it under the
++//! view's clip instead of setting it as content.
++
++use raw_window_handle::{HasWindowHandle, RawWindowHandle};
++use windows::Win32::{Foundation::HWND, Graphics::DirectComposition::IDCompositionDevice};
++
++use crate::window_from_hwnd;
++
++/// The DirectComposition device of GPUI's window behind `window` (a `gpui::Window`, through its window handle).
++/// `None` off the main thread's own windows, when GPUI_DISABLE_DIRECT_COMPOSITION turned DirectComposition off, or
++/// while the window draws. A lost GPU device makes a new one: a visual made on the old device cannot join the new tree.
++pub fn composition_device(window: &impl HasWindowHandle) -> Option<IDCompositionDevice> {
++    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
++        return None;
++    };
++    let window = window_from_hwnd(HWND(handle.hwnd.get() as _))?;
++    let renderer = window.state.renderer.try_borrow().ok()?;
++    Some(renderer.direct_composition.as_ref()?.comp_device.clone())
++}
+diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+index aa690c3..904f13f 100644
+--- a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
++++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
+@@ -25,7 +25,7 @@ use windows::{
+         },
+         Dxgi::{DXGI_PRESENT, IDXGISwapChain1},
+     },
+-    core::IUnknown,
++    core::{IUnknown, Interface as _},
+ };
+ 
+ use super::{
+@@ -140,9 +140,16 @@ impl NativeViewTree {
+             let content_visual = comp_device.CreateVisual()?;
+             clip_visual.SetClip(&clip)?;
+             clip_visual.AddVisual(&content_visual, false, None)?;
+-            content_visual
+-                .SetContent(content)
+-                .context("the native view's content is not something DirectComposition shows")?;
++            // A visual the app made on this device (`composition_device`, e.g. WebView2's root visual target) joins
++            // the tree under the content visual; anything else is the content visual's content.
++            match content.cast::<IDCompositionVisual>() {
++                Ok(visual) => content_visual
++                    .AddVisual(&visual, false, None)
++                    .context("the native view's visual is not on this window's DirectComposition device")?,
++                Err(_) => content_visual
++                    .SetContent(content)
++                    .context("the native view's content is not something DirectComposition shows")?,
++            }
+             ViewVisuals {
+                 clip_visual,
+                 clip,
+@@ -167,6 +174,7 @@ impl NativeViewTree {
+                 self.views_visual.RemoveVisual(&visuals.clip_visual)?;
+             }
+             visuals.content_visual.SetContent(None)?;
++            visuals.content_visual.RemoveAllVisuals()?;
+             comp_device.Commit()?;
+         }
+         Ok(())
+@@ -249,11 +257,11 @@ impl NativeViewTree {
+ 
+ impl DirectComposition {
+     /// Shows every attached view's content again, on a new device after the old one was lost.
+-    pub(super) fn reattach_native_views(&mut self, native_views: &NativeViews) -> Result<()> {
++    pub(super) fn reattach_native_views(&mut self, native_views: &NativeViews) {
+         for (id, content) in &native_views.contents {
+-            self.view_tree.attach(&self.comp_device, *id, content)?;
++            // A visual made on the lost device cannot join the new tree; the app must make it again.
++            self.view_tree.attach(&self.comp_device, *id, content).log_err();
+         }
+-        Ok(())
+     }
+ }
+ 
+diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
+index 150a617..88d6461 100644
+--- a/gpui-pre-windows/src/gpui_windows.rs
++++ b/gpui-pre-windows/src/gpui_windows.rs
+@@ -41,6 +41,7 @@ pub(crate) use vsync::*;
+ pub(crate) use window::*;
+ pub(crate) use wrapper::*;
+ 
++pub use directx_renderer::native_view_host::composition_device;
+ pub use platform::WindowsPlatform;
+ 
+ pub(crate) use windows::Win32::Foundation::HWND;
+diff --git a/gpui-pre-windows/src/window.rs b/gpui-pre-windows/src/window.rs
+index 5688de9..522d766 100644
+--- a/gpui-pre-windows/src/window.rs
++++ b/gpui-pre-windows/src/window.rs
+@@ -1034,7 +1034,8 @@ impl PlatformWindow for WindowsWindow {
+     }
+ 
+     /// `view` is any COM object `IDCompositionVisual::SetContent` takes, usually a composition swap chain the app
+-    /// presents to on its own device; it shows under GPUI's content through DirectComposition, never a child window.
++    /// presents to on its own device, or an `IDCompositionVisual` made on [`crate::composition_device`] (WebView2's
++    /// root visual target); it shows under GPUI's content through DirectComposition, never a child window.
+     unsafe fn attach_native_view(
+         &self,
+         id: NativeViewId,
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 66b55fb..4270974 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -106,7 +106,9 @@ impl NativeView {
+     /// embeds, which is an `NSView` on macOS, and that view must not be in
+     /// another view hierarchy. On iOS it is a `UIView`. On Windows it is a
+     /// COM object (`IUnknown`) that `IDCompositionVisual::SetContent` takes,
+-    /// usually a composition swap chain the app presents to on its own.
++    /// usually a composition swap chain the app presents to on its own, or an
++    /// `IDCompositionVisual` made on the window's own DirectComposition device
++    /// (`gpui_windows::composition_device`), such as WebView2's root visual target.
+     /// On Wayland it is a `wl_proxy` of a `wl_surface`
+     /// made on the window's own `wl_display`, with no role, no `wp_viewport`
+     /// and no subsurfaces of its own; GPUI makes it a subsurface of the window

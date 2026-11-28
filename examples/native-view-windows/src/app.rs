@@ -19,9 +19,11 @@ const VIEW_SIZES: [[f32; 2]; 2] = [[322., 242.], [402., 302.]];
 const GAP_COLOUR: u32 = 0xff00ff;
 const COVER_COLOUR: u32 = 0xff8000;
 const WINDOW_COLOUR: u32 = 0x303030;
-/// How far and how long "move" slides the view: a step per GPUI frame.
+/// How "move" slides the view: a step per GPUI frame, turning back every MOVE_LEG frames, MOVE_FRAMES frames in all
+/// (an even number of legs, so it ends where it started). Long enough for the checks' 100 screenshots.
 const MOVE_STEP: f32 = 3.;
-const MOVE_FRAMES: u32 = 120;
+const MOVE_LEG: u32 = 40;
+const MOVE_FRAMES: u32 = 16 * MOVE_LEG;
 
 struct Example {
     view: NativeView,
@@ -85,7 +87,7 @@ impl Example {
         }
     }
 
-    /// Slides the view right by a step per frame, then back, logging where it ends.
+    /// Slides the view right and back by a step per frame, logging when it starts and ends.
     fn slide(&mut self, cx: &mut Context<Self>) {
         log::info!("motion: start");
         cx.spawn(async move |this, cx| {
@@ -93,7 +95,7 @@ impl Example {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
-                let step = if frame < MOVE_FRAMES / 2 {
+                let step = if (frame / MOVE_LEG).is_multiple_of(2) {
                     MOVE_STEP
                 } else {
                     -MOVE_STEP
