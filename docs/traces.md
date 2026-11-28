@@ -29,7 +29,7 @@ stays). Gestures are in logical px and ms, the same everywhere.
 
 | Platform | App | Driver | Limits |
 |---|---|---|---|
-| web | `wasm-pack` build served on 127.0.0.1, headless Chromium (free ports, or `HTTP_PORT` / `CDP_PORT`) | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
+| web | `cargo parallax run web` on 127.0.0.1, headless Chromium (free ports, or `HTTP_PORT` / `CDP_PORT`) | [cdp-touch.mjs](../scripts/cdp-touch.mjs): CDP `Input.dispatchTouchEvent`, each stamped when its fingers were there (Node 22, no deps) | headless frames every ~33 ms, so moves are ~33 ms apart |
 | ios | hello's desktop bin built for `aarch64-apple-ios-sim` on the owner's Mac, packed with upstream's example `Info.plist` | Meta's [idb](https://github.com/facebook/idb) `ui tap / multi-tap / swipe / pinch` | idb's 150 ms swipe takes ~200 ms |
 | android | `cargo parallax run android` on an emulator ([hello-android.sh](../scripts/hello-android.sh), shared with the smoke test) | type-B multi-touch `input_event`s written to the emulator's touchscreen (`/dev/input`, `adb root`), a frame per 16 ms | emulator only; not `adb shell input`, whose swipe sends ~7 moves a millisecond, many with the same time stamp |
 | wayland, x11 | hello's desktop bin in Weston's headless backend; x11 through its Xwayland | Weston's test plugin (`weston_test.send_touch`), frames as android's ([traces-desktop.md](traces-desktop.md)) | x11 at scale 1 only |

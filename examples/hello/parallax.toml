@@ -1,5 +1,8 @@
-# cargo parallax run android reads this (docs/cli.md). Every other key keeps its default.
+# cargo parallax run android / run web read this (docs/cli.md, docs/cli-web.md). Every other key keeps its default.
 [app]
 name = "Hello"
 id = "io.github.xuckless.parallax.hello"
 icon = "../../assets/brand/parallax-app-icon.svg"
+
+[web]
+title = "Parallax hello"
