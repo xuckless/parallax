@@ -22,7 +22,13 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   (patch 0052, [docs/native-view-apple.md](docs/native-view-apple.md)).
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
   no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0051).
-- `native-view-apple` example.
+- iOS native views turn with GPUI's content through a rotation, at the new size, with no stretch and no gap; where
+  the screen resamples (a rotation's turn, Display Zoom) holes are cut a pixel inside their views, so no seam shows
+  (patches 0051, 0052).
+- iOS: a native view can take the keyboard: while its focus handle is focused, GPUI's text input stays out of first
+  responder, so the app can make its `UIView` (a `UITextField`, a `WKWebView`) first responder; focus back on a GPUI
+  field takes it back (patch 0052, docs/native-view-apple.md#keyboard-on-ios).
+- `native-view-apple` example (iOS: also a GPUI field next to a native `UITextField`).
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
