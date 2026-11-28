@@ -43,3 +43,13 @@ point per target, all through the `parallax` facade.
 | iOS | none yet | |
 
 How to build and run it on each target: [examples-run.md](examples-run.md).
+
+## native-view-wayland
+
+[examples/native-view-wayland](../examples/native-view-wayland/) (Linux, Wayland only): a GPUI window with a native
+view ([native-view-wayland.md](native-view-wayland.md)). The "page" ([page.rs](../examples/native-view-wayland/src/page.rs))
+owns a `wl_surface` on GPUI's connection and commits a new 640×400 shm buffer to it about 60 times a second from its
+own thread; a blue GPUI div covers part of it. Once a second it logs `gpui frames/s: N, page frames/s: M` (GPUI's is
+0 while only the page changes), and it logs the alpha mode GPUI chose and every pointer event over the view with its
+view-relative position. Flags: `--fps N` (page rate), `--animate` (the view moves and resizes every GPUI frame),
+`--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds).

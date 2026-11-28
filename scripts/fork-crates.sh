@@ -25,6 +25,7 @@ ported=(
     "gpui-pre gpui-pre-apple gpui-pre-ios gpui-pre-web gpui-pre-windows gpui-pre-macos|BSD-3-Clause|third_party/flutter/LICENSE:LICENSE-FLUTTER|Some patches port code from [Flutter](https://github.com/flutter/flutter) (Copyright 2014 The Flutter Authors), under the BSD 3-Clause License (see LICENSE-FLUTTER); each ported file names its source. Parallax is not affiliated with or endorsed by Google or the Flutter project."
     "gpui-pre-ios|MIT|third_party/react-native/LICENSE:LICENSE-REACT-NATIVE|Some patches port code from [React Native](https://github.com/facebook/react-native) (Copyright Meta Platforms, Inc. and affiliates), under the MIT License (see LICENSE-REACT-NATIVE); each ported file names its source."
     "gpui-pre-windows gpui-pre-linux|||Some patches port code from [winit](https://github.com/rust-windowing/winit) (Copyright the winit contributors), under the Apache License 2.0; each ported file names its source."
+    "gpui-pre-linux|BSD-3-Clause|third_party/chromium/LICENSE:LICENSE-CHROMIUM|Some patches port code from [Chromium](https://chromium.googlesource.com/chromium/src) (Copyright The Chromium Authors), under the BSD 3-Clause License (see LICENSE-CHROMIUM); each ported file names its source."
     "gpui-pre-web|||Some patches port code from [page-lifecycle](https://github.com/GoogleChromeLabs/page-lifecycle) (Copyright 2018 Google Inc.), under the Apache License 2.0; each ported file names its source."
 )
 

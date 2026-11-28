@@ -42,6 +42,11 @@ parallax-gpui-web includes code ported from GoogleChromeLabs/page-lifecycle
 (https://github.com/GoogleChromeLabs/page-lifecycle) 0.1.2, its page lifecycle state machine
 (patch 0035, page_lifecycle.rs), licensed under the Apache License 2.0. Copyright 2018 Google Inc.
 
+parallax-gpui-linux includes code ported from Chromium (https://chromium.googlesource.com/chromium/src),
+its Wayland subsurface handling (patch 0049, ui/ozone/platform/wayland/host/wayland_subsurface.cc and
+wayland_frame_manager.cc, wayland/window/native_view.rs), licensed under the BSD 3-Clause License
+(LICENSE-CHROMIUM in parallax-gpui-linux, third_party/chromium/LICENSE). Copyright The Chromium Authors.
+
 parallax-gpui-linux includes code ported from winit (https://github.com/rust-windowing/winit)
 v0.30.13, licensed under the Apache License 2.0: its Wayland touch handling (patch 0022,
 wayland/touch.rs) and X11 XInput 2 touch handling (patch 0023). Copyright the winit contributors.

@@ -3001,6 +3001,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-view-wayland"
+version = "0.1.9"
+dependencies = [
+ "env_logger",
+ "libc",
+ "log",
+ "parallax",
+ "raw-window-handle",
+ "wayland-backend",
+ "wayland-client",
+]
+
+[[package]]
 name = "ndk-sys"
 version = "0.6.0+11769913"
 source = "registry+https://github.com/rust-lang/crates.io-index"
