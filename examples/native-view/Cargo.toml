@@ -1,0 +1,75 @@
+[package]
+name = "native-view"
+description = "Parallax example: an OS-native view under a GPUI window as a NativeView, on every target, with a div over part of it and GPUI's frame counter (docs/examples-native-view.md)."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+# Examples are never published.
+publish = false
+
+[lints]
+workspace = true
+
+# cdylib: the Android .so (android_main!) and the web .wasm. rlib: for the desktop and iOS bin in main.rs.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+log = "0.4"
+parallax = { path = "../../crates/parallax" }
+# The motion's clock, which works in the browser too.
+web-time = "1.1"
+
+# Desktop and iOS log to stderr (lib.rs `main`); Android logs to logcat and the web to the console.
+[target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
+env_logger = "0.11"
+
+# Wayland (src/wayland.rs): the page, its own event queue on GPUI's Wayland connection, an shm pool, one wl_surface,
+# committed through `NativeViewBuffers` (docs/native-view-wayland.md).
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux.workspace = true
+libc = "0.2"
+raw-window-handle = "0.6"
+wayland-backend = { version = "0.3.15", features = ["client_system"] }
+wayland-client = "0.31.11"
+
+# Windows (src/windows.rs): a composition swap chain; WebView2 (src/windows/webview2.rs) in a visual on GPUI's
+# DirectComposition device (`gpui_windows::composition_device`, docs/native-view-webview2.md).
+[target.'cfg(target_os = "windows")'.dependencies]
+anyhow = "1"
+gpui_windows.workspace = true
+raw-window-handle = { version = "0.6", features = ["std"] }
+# Microsoft's WebView2 COM API and its loader (MIT, as tauri's wry uses it), on the windows crate gpui_windows uses.
+webview2-com = "0.39"
+
+# The windows crate version gpui_windows uses, so the example adds no second copy.
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+]
+
+# macOS and iOS (src/apple.rs): the view is made and coloured through the Objective-C runtime.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6"
+
+# iOS: hello's text field, next to a native UITextField for the keyboard focus check (src/apple/typing.rs).
+[target.'cfg(target_os = "ios")'.dependencies]
+hello = { path = "../hello" }
+
+# Android (src/android.rs): the surface's producer fills an ANativeWindow from its own thread.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = "0.6"
+
+# The web (src/web.rs): the #[wasm_bindgen(start)] entry, the page's elements (index.html makes them).
+[target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2.120"
+web-sys = { version = "0.3", features = ["HtmlElement", "Window"] }

@@ -19,7 +19,7 @@
     <div id="header"><div style="height: 400px">Page content above the canvas: it scrolls and takes clicks.</div></div>
     <script type="module">
       // The views, made here as an app would, and handed to the Rust side (src/lib.rs) by name. `?animate` moves
-      // and resizes them every GPUI frame; `?noview` shows the window without them, for the cost comparisons.
+      // and resizes them every GPUI frame; `?no-view` shows the window without them, for the cost comparisons.
       const options = new URLSearchParams(location.search);
       if (options.has("offset")) document.documentElement.classList.add("offset");
       const frame = (name, origin) => {
@@ -75,19 +75,20 @@
         window.frameEvents.push(event.data);
         console.log(`native-view-web: ${event.data.frame} ${event.data.kind} ${JSON.stringify(event.data)}`);
       });
-      window.nativeViewElements = options.has("noview")
+      window.nativeViewElements = options.has("no-view")
         ? {}
         : { same: frame("same", location.origin), cross: frame("cross", other), canvas: animated, form };
-      window.nativeViewAnimate = options.has("animate");
+      // Every query parameter is an option of the Rust side (src/demo.rs Options), a bare one a flag.
+      window.nativeViewOptions = Object.fromEntries(options);
 
       // The toggle cost: time from the first capture listener (this one, on window) to the last bubbling one, per
-      // pointer move; compared with `?noview` (scripts/web-checks.mjs).
+      // pointer move; compared with `?no-view` (scripts/web-checks.mjs).
       window.moveTimes = [];
       let moveStart = 0;
       window.addEventListener("pointermove", () => { moveStart = performance.now(); }, { capture: true });
       window.addEventListener("pointermove", () => window.moveTimes.push(performance.now() - moveStart));
 
-      import init from "./pkg/native_view_web.js";
+      import init from "./pkg/native_view.js";
       init();
     </script>
   </body>

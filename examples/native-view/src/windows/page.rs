@@ -2,7 +2,10 @@
 //! into a visual on GPUI's DirectComposition device. WebView2's completion handlers run from GPUI's own message loop,
 //! so the page's state is shared with GPUI's listeners through an `Rc`.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use webview2_com::{
     CreateCoreWebView2CompositionControllerCompletedHandler,
@@ -23,7 +26,7 @@ use windows::{
     core::{Error, HSTRING, Interface, PCWSTR, PWSTR},
 };
 
-/// The page: a local HTML file, loaded as a string. It posts its input events and frame rate back.
+/// The page: a local HTML file, loaded as a string. It posts its input events and frame count back.
 const PAGE: &str = include_str!("page.html");
 
 /// Where the page is in its life.
@@ -40,11 +43,13 @@ enum State {
 pub struct Page(Rc<RefCell<State>>);
 
 impl Page {
-    /// Starts WebView2 for `window`, rendering into `visual`, made on GPUI's DirectComposition `device`.
+    /// Starts WebView2 for `window`, rendering into `visual`, made on GPUI's DirectComposition `device`; `frames`
+    /// follows the frame count the page posts.
     pub fn start(
         window: HWND,
         device: IDCompositionDevice,
         visual: IDCompositionVisual,
+        frames: Rc<Cell<u64>>,
     ) -> windows::core::Result<Self> {
         let page = Self(Rc::new(RefCell::new(State::Starting {
             bounds: RECT {
@@ -66,7 +71,7 @@ impl Page {
                         let composition = result
                             .and_then(|()| composition.ok_or_else(Error::empty))
                             .and_then(|composition| {
-                                show(&composition, &device, &visual).map(|()| composition)
+                                show(&composition, &device, &visual, frames).map(|()| composition)
                             })
                             .inspect_err(|error| log::error!("webview: no page: {error}"))?;
                         let controller: ICoreWebView2Controller = composition.cast()?;
@@ -156,22 +161,31 @@ impl Page {
     }
 }
 
-/// Renders the controller's page into `visual`, logs what it posts, and loads it. WebView2 adds its content under
-/// `visual`, a change to GPUI's tree that shows only once `device` commits; GPUI commits only for its own frames.
+/// Renders the controller's page into `visual`, logs what it posts (but its frame count, which goes to `frames`),
+/// and loads it. WebView2 adds its content under `visual`, a change to GPUI's tree that shows only once `device`
+/// commits; GPUI commits only for its own frames.
 fn show(
     composition: &ICoreWebView2CompositionController,
     device: &IDCompositionDevice,
     visual: &IDCompositionVisual,
+    frames: Rc<Cell<u64>>,
 ) -> windows::core::Result<()> {
     let controller: ICoreWebView2Controller = composition.cast()?;
-    let messages = WebMessageReceivedEventHandler::create(Box::new(|_, args| {
+    let messages = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
         let Some(args) = args else {
             return Ok(());
         };
         let mut message = PWSTR::null();
         // SAFETY: `message` outlives the call; take_pwstr frees what it gets.
         unsafe { args.TryGetWebMessageAsString(&mut message) }?;
-        log::info!("page: {}", take_pwstr(message));
+        let message = take_pwstr(message);
+        match message
+            .strip_prefix("frames ")
+            .and_then(|count| count.parse().ok())
+        {
+            Some(count) => frames.set(count),
+            None => log::info!("page: {message}"),
+        }
         Ok(())
     }));
     let mut token = 0;
