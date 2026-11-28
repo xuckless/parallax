@@ -2,163 +2,111 @@ iOS native views: the app's UIView shown beneath GPUI's non-opaque CAMetalLayer,
 
 What:
 - `IosWindow::attach_native_view` puts the view in a clipping container inserted directly below GPUI's view; `draw`
-  plans each scene's placements, presents with `draw_placing_native_views` and then applies them (frames, hidden,
-  z-order, and the window's background colour from `NativeView::set_background`), as macOS's native_views.rs does. The code is in the new ios/window/native_views.rs; window.rs only hooks it in.
-  A view is hidden in a scene that doesn't paint it and removed when its last handle drops.
+  plans each scene's placements (gpui_apple's shared `native_view_placement`, 0051), presents with
+  `draw_placing_native_views` and then applies them without UIKit animation (frames, hidden, z-order, and
+  `NativeView::set_background`'s colour on the host view behind them), as macOS's native_views.rs does. The code is in
+  the new ios/window/native_views.rs; window.rs only hooks it in. A view is hidden in a scene that doesn't paint it
+  and removed when its last handle drops.
 - `native_view_input` is `Window`: GPUI's view stays on top and takes every touch, so pointer and scroll over a view
   reach its element's listeners; the view gets none unless the app forwards it.
-- GPUI's view now fills a plain root view (the view controller's), where the containers live, so they turn with
-  GPUI's content on rotation.
-- native_view_placement.rs: macOS's `Placement` without AppKit's flipped y, pure, with its table test
-  (scripts/patch-test.sh runs it on the host, `ios-pure`).
+- Rotation: GPUI's view and the containers live in a host view inside the view controller's plain root view. In
+  `handle_layout_change` (inside UIKit's rotation animation) the host takes the new size without animation and only
+  its centre follows the turn, and the frame at the new size is drawn right there, in the same transaction, so GPUI's
+  content, the holes and the views turn as one rigid picture instead of GPUI's last frame stretching while the views
+  jump. `viewWillTransitionToSize:withTransitionCoordinator:` marks the turn (`Rotation::Turning` until the
+  coordinator's completion), during which the holes are cut a pixel inside the views (0051's `hole_inset`), since
+  Core Animation resamples the turning edges; the frame after the turn cuts them exactly again. Display Zoom
+  (`nativeScale` != `scale`) gets the same inset.
+- Keyboard: `set_focused_native_view` gives keyboard input to a native view (`KeyboardInput::NativeView`): GPUI's
+  text input view resigns and never becomes first responder, so the app can make its own UIView (a UITextField, a
+  WKWebView) first responder. When GPUI focus comes back, a focused GPUI field takes first responder again, even
+  though UIKit cleared its keyboard wish when the app's view took first responder from it.
 
 Why: upstream's `NativeView::new` fails on iOS. Lifecycle, clipping and z-order follow Flutter's
 FlutterPlatformViewsController.mm (oracle only: Flutter draws over its views, this draws under them; its touch
-interceptor is the model for an app that forwards touches into its view). The layout code is gpui_macos's
-window/native_views.rs (upstream GPUI, Apache-2.0) adapted to UIKit, which is most of this patch's size.
+interceptor is the model for an app that forwards touches into its view). Flutter's FlutterViewController.mm
+(`viewWillTransitionToSize:withTransitionCoordinator:`) only delays its viewport update to halfway through a turn,
+which halves the stretch; rendering the new size at once keeps the views in step instead. The layout code is
+gpui_macos's window/native_views.rs (upstream GPUI, Apache-2.0) adapted to UIKit, which is most of this patch's size.
 
-Checked on the iOS 26.5 simulator with examples/native-view-apple: 0 GPUI frames/s while the view recolours at
-63 frames/s; slot-relative mouse downs and scrolls from taps and swipes; the div over the view takes its own taps;
-0 gap frames while the slot moves every frame; no seam at 3x. Known: during UIKit's rotation animation GPUI's content
-is stretched and the hole leaves the view for about 0.3 s (the gap colour shows), as upstream's macOS live resize
-can; it settles in step.
+Checked on the iOS 26.5 simulator (iPhone 17 at 3x, iPad Air 11-inch at 2x) with examples/native-view-apple: 0 GPUI
+frames/s while the view recolours at 63 frames/s; slot-relative mouse downs and scrolls from taps and swipes; the div
+over the view takes its own taps; 0 gap frames while the slot moves every frame (228 frames) and through rotations to
+landscape and back (436, 360 and 615 frames); exact edges at 2x and 3x; typing goes to a native UITextField while its
+handle is focused and back to GPUI's field after.
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
-diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
-index e3d1b02..3a79c2d 100644
---- a/gpui-pre-ios/src/ios.rs
-+++ b/gpui-pre-ios/src/ios.rs
-@@ -5,6 +5,7 @@ mod display;
- mod events;
- mod keyboard;
- mod keyboard_inset;
-+mod native_view_placement;
- mod platform;
- mod spring_animation;
- mod text_input;
-diff --git a/gpui-pre-ios/src/ios/native_view_placement.rs b/gpui-pre-ios/src/ios/native_view_placement.rs
-new file mode 100644
-index 0000000..23866d5
---- /dev/null
-+++ b/gpui-pre-ios/src/ios/native_view_placement.rs
-@@ -0,0 +1,111 @@
-+//! Where a native view's container and view go in the window: gpui_macos's
-+//! `Placement` (window/native_views.rs) without AppKit's flipped y. Pure, so
-+//! scripts/patch-test.sh runs its tests on the host (`ios-pure`).
-+
-+use gpui::{Bounds, ScaledPixels};
-+
-+/// Where a native view is shown, as `[x, y, width, height]` frames in points.
+diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
+index 67ee86b..0ab78e6 100644
+--- a/gpui-pre-ios/src/ios/text_input.rs
++++ b/gpui-pre-ios/src/ios/text_input.rs
+@@ -153,6 +153,16 @@ define_class!(
+     }
+ );
+ 
++/// Who GPUI's focus gives keyboard input to (`PlatformWindow::set_focused_native_view`).
 +#[derive(Clone, Copy, Debug, PartialEq)]
-+pub(super) struct Placement {
-+    /// The visible part of the view, in GPUI's view's superview.
-+    pub(super) container: [f64; 4],
-+    /// The whole view, in its container.
-+    pub(super) view: [f64; 4],
++pub(super) enum KeyboardInput {
++    /// GPUI's own content: this view becomes first responder while a field is focused.
++    Gpui,
++    /// A native view's focus handle is focused: this view never becomes first responder, so the app can make its
++    /// own `UIView` first responder.
++    NativeView,
 +}
 +
-+impl Placement {
-+    /// Places a view with the given bounds and clip, both in device pixels
-+    /// from the top left of GPUI's view, whose origin in the window is
-+    /// `gpui_origin`. Returns `None` if the clip leaves none of the view visible.
-+    pub(super) fn new(
-+        bounds: Bounds<ScaledPixels>,
-+        content_mask: Bounds<ScaledPixels>,
-+        scale_factor: f64,
-+        gpui_origin: [f64; 2],
-+    ) -> Option<Self> {
-+        let visible = bounds.intersect(&content_mask);
-+        if visible.is_empty() {
-+            return None;
+ pub(super) struct TextInputIvars {
+     window: WindowReference,
+     input_field: Cell<Option<gpui::FocusId>>,
+@@ -162,6 +172,7 @@ pub(super) struct TextInputIvars {
+     marked_style: RefCell<Option<Retained<NSDictionary<NSAttributedStringKey, AnyObject>>>>,
+     keyboard_desired: Cell<bool>,
+     keyboard_eligible: Cell<bool>,
++    keyboard_input: Cell<KeyboardInput>,
+     reconciling_responder: Cell<bool>,
+     update_pending: Cell<bool>,
+     configuration_changed: Cell<bool>,
+@@ -187,6 +198,7 @@ define_class!(
+         fn can_become_first_responder(&self) -> bool {
+             self.ivars().keyboard_desired.get()
+                 && self.ivars().keyboard_eligible.get()
++                && self.ivars().keyboard_input.get() == KeyboardInput::Gpui
+         }
+ 
+         // UIKit can make this view first responder itself (not only `reconcileTextInput`), so the selection UI comes
+@@ -743,6 +755,7 @@ impl TextInputView {
+             marked_style: RefCell::new(None),
+             keyboard_desired: Cell::new(false),
+             keyboard_eligible: Cell::new(false),
++            keyboard_input: Cell::new(KeyboardInput::Gpui),
+             reconciling_responder: Cell::new(false),
+             update_pending: Cell::new(false),
+             configuration_changed: Cell::new(false),
+@@ -966,6 +979,19 @@ impl TextInputView {
+         self.refresh_keyboard();
+     }
+ 
++    /// Gives keyboard input to a native view or back to GPUI. Going to a native view, this view resigns (its
++    /// keyboard stays wanted); coming back, a field GPUI focused takes the keyboard again, even when the app's view
++    /// took first responder from this one, which UIKit counts as ending native editing.
++    pub(super) fn set_keyboard_input(&self, input: KeyboardInput) {
++        if self.ivars().keyboard_input.replace(input) == input {
++            return;
 +        }
-+        let to_frame = |bounds: Bounds<ScaledPixels>| {
-+            let to_points = |value: ScaledPixels| f64::from(value) / scale_factor;
-+            [
-+                gpui_origin[0] + to_points(bounds.origin.x),
-+                gpui_origin[1] + to_points(bounds.origin.y),
-+                to_points(bounds.size.width),
-+                to_points(bounds.size.height),
-+            ]
-+        };
-+        let container = to_frame(visible);
-+        let [x, y, width, height] = to_frame(bounds);
-+        Some(Self {
-+            container,
-+            view: [x - container[0], y - container[1], width, height],
-+        })
-+    }
-+}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+    use gpui::{point, size};
-+
-+    #[test]
-+    fn placement_clips_a_view_to_its_content_mask() {
-+        let bounds = |x: f32, y: f32, width: f32, height: f32| Bounds {
-+            origin: point(ScaledPixels(x), ScaledPixels(y)),
-+            size: size(ScaledPixels(width), ScaledPixels(height)),
-+        };
-+        // (name, bounds, content mask, scale, GPUI origin, placement)
-+        let cases = [
-+            (
-+                "unclipped at 2x",
-+                bounds(20., 40., 200., 100.),
-+                bounds(0., 0., 1000., 1000.),
-+                2.,
-+                [0., 0.],
-+                Some(Placement {
-+                    container: [10., 20., 100., 50.],
-+                    view: [0., 0., 100., 50.],
-+                }),
-+            ),
-+            (
-+                "clipped on the top left at 3x",
-+                bounds(0., 0., 300., 300.),
-+                bounds(30., 60., 600., 600.),
-+                3.,
-+                [0., 0.],
-+                Some(Placement {
-+                    container: [10., 20., 90., 80.],
-+                    view: [-10., -20., 100., 100.],
-+                }),
-+            ),
-+            (
-+                "GPUI's view offset in the window",
-+                bounds(0., 0., 100., 100.),
-+                bounds(0., 0., 100., 100.),
-+                1.,
-+                [5., 7.],
-+                Some(Placement {
-+                    container: [5., 7., 100., 100.],
-+                    view: [0., 0., 100., 100.],
-+                }),
-+            ),
-+            (
-+                "clipped away",
-+                bounds(0., 0., 100., 100.),
-+                bounds(200., 200., 10., 10.),
-+                1.,
-+                [0., 0.],
-+                None,
-+            ),
-+        ];
-+        for (name, bounds, mask, scale, origin, placement) in cases {
-+            assert_eq!(
-+                Placement::new(bounds, mask, scale, origin),
-+                placement,
-+                "{name}"
-+            );
++        if input == KeyboardInput::Gpui && self.ivars().input_field.get().is_some() {
++            self.ivars().keyboard_desired.set(true);
 +        }
++        self.refresh_keyboard();
 +    }
-+}
++
+     pub(super) fn set_input_field(&self, field: Option<gpui::FocusId>) {
+         // Taking the handler during draw must not clear this identity: the
+         // replacement adapter can still represent the same focused document.
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 5865795..91ee87c 100644
+index 5865795..babad16 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
-@@ -10,6 +10,8 @@
+@@ -10,25 +10,28 @@
  //! whose view hosts a CAMetalLayer.
  
  use super::events::*;
@@ -167,38 +115,190 @@ index 5865795..91ee87c 100644
  use super::keyboard::{KeyResponder, Press, PressPhase, Primary};
  use super::keyboard_inset::{
      InsetSample, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification, KeyboardSpring,
-@@ -376,6 +378,8 @@ pub(crate) struct IosWindowState {
+     NotificationName, Rect, ViewGeometry,
+ };
+-use super::text_input::TextInputView;
++use super::text_input::{KeyboardInput, TextInputView};
+ use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
+ use gpui::{
+     AnyWindowHandle, BackGestureEvent, BackGesturePhase, BackGestureSource, Bounds, Capslock,
+     Corners, DevicePixels, DispatchEventResult, DisplayId, Edges, GpuSpecs, Modifiers, Pixels,
+     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+-    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TextInputConfiguration,
+-    TextInputStateChange, TouchEvent, TouchId, TouchPhase, WindowAppearance,
+-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets, WindowParams,
+-    WindowVisibility, px, size,
++    PromptButton, PromptLevel, RequestFrameOptions, ScaledPixels, Scene, Size,
++    TextInputConfiguration, TextInputStateChange, TouchEvent, TouchId, TouchPhase,
++    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets,
++    WindowParams, WindowVisibility, px, size,
+ };
+ use gpui_apple::{
+     main_thread_marker,
+     metal_renderer::{Context as MetalContext, MetalRenderer},
++    native_view_placement::hole_inset,
+     process_info,
+ };
+ use objc2::rc::Retained;
+@@ -88,6 +91,13 @@ struct KeyboardDismissTouch {
+ /// Accessed from the main thread only.
+ static STATUS_BAR_STYLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+ 
++/// Whether UIKit is animating a rotation, during which Core Animation resamples every pixel of the turning content.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum Rotation {
++    Settled,
++    Turning,
++}
++
+ #[derive(Default)]
+ pub(super) struct WindowReference(pub(super) RefCell<Weak<IosWindowState>>);
+ 
+@@ -118,6 +128,38 @@ define_class!(
+             }
+         }
+ 
++        // Flutter's FlutterViewController.mm (`viewWillTransitionToSize:withTransitionCoordinator:`) @ 3.50.1 delays
++        // its viewport update to halfway through the turn, which halves the stretch; here the window's content takes
++        // its new size at once and turns rigidly (`handle_layout_change`), and this only marks the turn, whose
++        // resampled edges need the holes cut inside the views. A turn with no duration is not marked, as Flutter.
++        #[unsafe(method(viewWillTransitionToSize:withTransitionCoordinator:))]
++        fn view_will_transition_to_size(&self, size: CGSize, coordinator: &AnyObject) {
++            // SAFETY: UIViewController's own method, with UIKit's arguments; the coordinator is live for the call.
++            let duration: f64 = unsafe {
++                let _: () = msg_send![super(self), viewWillTransitionToSize: size, withTransitionCoordinator: coordinator];
++                msg_send![coordinator, transitionDuration]
++            };
++            if duration == 0. {
++                return;
++            }
++            self.ivars().with_window(|window| window.set_rotation(Rotation::Turning));
++            let window = self.ivars().0.borrow().clone();
++            let completion = block2::RcBlock::new(move |_: *mut AnyObject| {
++                if let Some(window) = window.upgrade() {
++                    window.set_rotation(Rotation::Settled);
++                }
++            });
++            // SAFETY: `animateAlongsideTransition:completion:` takes an optional animation block and a completion
++            // block given the transition context; it copies the block.
++            let _: objc2::runtime::Bool = unsafe {
++                msg_send![
++                    coordinator,
++                    animateAlongsideTransition: std::ptr::null::<block2::Block<dyn Fn(*mut AnyObject)>>(),
++                    completion: &*completion
++                ]
++            };
++        }
++
+         #[unsafe(method(viewDidLayoutSubviews))]
+         fn view_did_layout_subviews(&self) {
+             unsafe {
+@@ -376,6 +418,10 @@ pub(crate) struct IosWindowState {
      /// Fires the held key's repeats while `key_responder` has a key that repeats.
      key_repeat_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
      renderer: Mutex<MetalRenderer>,
 +    /// The app's views shown beneath GPUI's (native_views.rs).
 +    native_views: RefCell<native_views::NativeViews>,
++    /// Whether UIKit is turning the window (`viewWillTransitionToSize:…` to its completion).
++    rotation: Cell<Rotation>,
  }
  
  impl IosWindow {
-@@ -486,8 +490,12 @@ impl IosWindow {
+@@ -486,8 +532,16 @@ impl IosWindow {
          back_recognizer.setDelegate(Some(ProtocolObject::from_ref(&*view)));
          view.addGestureRecognizer(&back_recognizer);
  
-+        // GPUI's view fills a plain root view, where native views go beneath it
-+        // (native_views.rs): inside the root, they turn with it on rotation.
++        // GPUI's view fills a host view, where native views go beneath it
++        // (native_views.rs). The host sits in the view controller's plain root
++        // view and takes each new size at once (`handle_layout_change`), so
++        // GPUI's content and the views turn with the root as one on rotation.
++        let host_view = UIView::initWithFrame(UIView::alloc(main_thread), metal_frame);
++        host_view.addSubview(&view);
 +        let root_view = UIView::initWithFrame(UIView::alloc(main_thread), metal_frame);
-+        root_view.addSubview(&view);
++        root_view.addSubview(&host_view);
          let view_controller = ViewController::new(main_thread);
 -        view_controller.setView(Some(&view));
 +        view_controller.setView(Some(&root_view));
          window.setRootViewController(Some(&view_controller));
  
          // Make the window visible
-@@ -545,6 +553,7 @@ impl IosWindow {
+@@ -545,6 +599,8 @@ impl IosWindow {
              key_responder: RefCell::default(),
              key_repeat_timer: RefCell::default(),
              renderer: Mutex::new(renderer),
 +            native_views: RefCell::default(),
++            rotation: Cell::new(Rotation::Settled),
          };
  
          Ok(Self {
-@@ -1355,7 +1364,21 @@ impl PlatformWindow for IosWindow {
+@@ -1071,13 +1127,55 @@ impl IosWindowState {
+         }
+     }
+ 
++    /// Where the screen resamples GPUI's pixels (Display Zoom, or a rotation's
++    /// turn), a native view's hole is cut a pixel inside it, so the view's blended
++    /// edges stay under GPUI's own pixels (gpui_apple's native_view_placement).
++    fn native_view_hole_inset(&self) -> ScaledPixels {
++        match self.rotation.get() {
++            Rotation::Turning => ScaledPixels(1.),
++            Rotation::Settled => {
++                let display = IosDisplay::from_screen(self.window.screen());
++                hole_inset(display.scale() as f64, display.native_scale() as f64)
++            }
++        }
++    }
++
++    /// UIKit starts or ends turning the window. The frame drawn when it ends cuts
++    /// the holes exactly again.
++    fn set_rotation(&self, rotation: Rotation) {
++        self.rotation.set(rotation);
++        self.renderer
++            .lock()
++            .set_native_view_hole_inset(self.native_view_hole_inset());
++        self.force_next_frame.set(true);
++    }
++
+     pub fn handle_layout_change(&self) {
++        // UIKit lays the root view out inside its rotation animation, which
++        // would stretch GPUI's last frame to each in-between size while the
++        // native views jump to their new frames. Instead the host takes the new
++        // size at once and only its centre follows the animation; the frame at
++        // the new size is drawn below, in this same transaction, so GPUI's
++        // content, its holes and the views turn together.
++        if let Some(host) = self.view.superview()
++            && let Some(root) = host.superview()
++        {
++            let root_size = root.bounds().size;
++            let resize = block2::RcBlock::new(|| {
++                host.setBounds(CGRect::new(CGPoint::ZERO, root_size));
++            });
++            UIView::performWithoutAnimation(&resize, MainThreadMarker::from(&*root));
++            host.setCenter(CGPoint::new(root_size.width / 2., root_size.height / 2.));
++        }
+         let view_bounds = self.view.bounds();
+         let display = IosDisplay::from_screen(self.window.screen());
+         if self.display_id.replace(display.id()) != display.id() {
+             self.display_changed_callback.with(|callback| callback());
+         }
+         let scale = display.scale() as f64;
++        self.renderer
++            .lock()
++            .set_native_view_hole_inset(self.native_view_hole_inset());
+ 
+         let width = view_bounds.size.width as f32;
+         let height = view_bounds.size.height as f32;
+@@ -1120,6 +1218,10 @@ impl IosWindowState {
+ 
+         self.resize_callback
+             .with(|callback| callback(new_size, new_scale));
++        // The frame at the new size goes out with UIKit's layout (see above),
++        // not at the next display link.
++        self.force_next_frame.set(true);
++        self.request_frame(CACurrentMediaTime());
+     }
+ }
+ 
+@@ -1355,7 +1457,28 @@ impl PlatformWindow for IosWindow {
      }
  
      fn draw(&self, scene: &Scene) {
@@ -218,20 +318,27 @@ index 5865795..91ee87c 100644
 +
 +    fn native_view_input(&self) -> gpui::NativeViewInput {
 +        gpui::NativeViewInput::Window
++    }
++
++    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
++        self.text_input_view.set_keyboard_input(match id {
++            Some(_) => KeyboardInput::NativeView,
++            None => KeyboardInput::Gpui,
++        });
      }
  
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
 diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
 new file mode 100644
-index 0000000..429c51f
+index 0000000..b4f68e6
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/window/native_views.rs
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,275 @@
 +//! Composites the app's `UIView`s beneath GPUI's view, which is non-opaque
 +//! while one shows (gpui_apple's `MetalRenderer` clears a hole over each).
 +//!
-+//! Each view sits in a clipping container, a sibling below GPUI's view in the
-+//! view controller's root view, so GPUI's view stays on top and takes every
++//! Each view sits in a clipping container, a sibling below GPUI's view in its
++//! host view (window.rs), so GPUI's view stays on top and takes every
 +//! touch ([`gpui::NativeViewInput::Window`]); the app forwards touches into its
 +//! view if it wants them. A scene that moves, resizes, shows or hides a view is
 +//! presented with the Core Animation transaction that places it, so hole and
@@ -241,8 +348,8 @@ index 0000000..429c51f
 +//! `FlutterPlatformViewsController.mm` (oracle only: Flutter draws over its
 +//! views, this draws under them): a view stays attached while its handle
 +//! lives, is hidden in a frame that doesn't paint it, and is reordered only
-+//! when the frame's order changes. The placement maths is in
-+//! native_view_placement.rs.
++//! when the frame's order changes. The placement maths, shared with macOS, is
++//! gpui_apple's native_view_placement.rs.
 +
 +use gpui::{NativeViewId, Rgba, Scene};
 +use objc2::{msg_send, rc::Retained, runtime::AnyObject};
@@ -251,7 +358,7 @@ index 0000000..429c51f
 +use std::{any::Any, ffi::c_void, ptr::NonNull, rc::Weak};
 +
 +use super::{IosWindow, IosWindowState};
-+use crate::ios::native_view_placement::Placement;
++use gpui_apple::native_view_placement::{Placement, YAxis};
 +
 +#[derive(Default)]
 +pub(super) struct NativeViews {
@@ -296,7 +403,7 @@ index 0000000..429c51f
 +        &self,
 +        scene: &Scene,
 +        scale_factor: f64,
-+        gpui_origin: [f64; 2],
++        gpui_frame: [f64; 4],
 +    ) -> Layout {
 +        if self.views.is_empty() {
 +            return Layout::default();
@@ -314,7 +421,8 @@ index 0000000..429c51f
 +                            native_view.bounds,
 +                            native_view.content_mask.bounds,
 +                            scale_factor,
-+                            gpui_origin,
++                            gpui_frame,
++                            YAxis::Down,
 +                        )
 +                    });
 +                (attached.placement != placement).then_some((attached.id, placement))
@@ -413,27 +521,22 @@ index 0000000..429c51f
 +/// Draws a scene: plans its placements, presents it in step with them when it
 +/// places a view, then applies them.
 +pub(super) fn draw(window: &IosWindow, scene: &Scene) {
-+    let origin = window.view.frame().origin;
++    let CGRect { origin, size } = window.view.frame();
 +    let layout = window.native_views.borrow().plan_layout(
 +        scene,
 +        f64::from(window.scale_factor.get()),
-+        [origin.x, origin.y],
++        [origin.x, origin.y, size.width, size.height],
 +    );
 +    window
 +        .renderer
 +        .lock()
 +        .draw_placing_native_views(scene, layout.places_views());
-+    apply_layout(window, &window.view, &window.window, layout);
++    apply_layout(window, &window.view, layout);
 +}
 +
 +/// Applies a planned layout. The views are cloned out first, because UIKit can
 +/// call back into the window while frames change.
-+fn apply_layout(
-+    window: &IosWindowState,
-+    gpui_view: &UIView,
-+    native_window: &UIView,
-+    layout: Layout,
-+) {
++fn apply_layout(window: &IosWindowState, gpui_view: &UIView, layout: Layout) {
 +    let (placements, stacking) = {
 +        let mut native_views = window.native_views.borrow_mut();
 +        let mut placements = Vec::new();
@@ -460,16 +563,21 @@ index 0000000..429c51f
 +    let to_rect = |[x, y, width, height]: [f64; 4]| {
 +        CGRect::new(CGPoint::new(x, y), CGSize::new(width, height))
 +    };
-+    for (view, container, placement) in placements {
-+        match placement {
-+            Some(placement) => {
-+                container.setFrame(to_rect(placement.container));
-+                view.setFrame(to_rect(placement.view));
-+                container.setHidden(false);
++    // A scene can be drawn inside one of UIKit's animations (a rotation's
++    // layout, window.rs), which must not animate the views away from their holes.
++    let place = block2::RcBlock::new(|| {
++        for (view, container, placement) in &placements {
++            match placement {
++                Some(placement) => {
++                    container.setFrame(to_rect(placement.container));
++                    view.setFrame(to_rect(placement.view));
++                    container.setHidden(false);
++                }
++                None => container.setHidden(true),
 +            }
-+            None => container.setHidden(true),
 +        }
-+    }
++    });
++    UIView::performWithoutAnimation(&place, objc2::MainThreadMarker::from(gpui_view));
 +    if let (Some(containers), Some(superview)) = (stacking, gpui_view.superview()) {
 +        // Each one goes directly below GPUI's view, so the last inserted, which
 +        // was painted last, ends up in front.
@@ -480,24 +588,24 @@ index 0000000..429c51f
 +            };
 +        }
 +    }
-+    if let Some(background) = layout.background {
-+        let Rgba { r, g, b, .. } = background.unwrap_or(Rgba {
-+            r: 0.,
-+            g: 0.,
-+            b: 0.,
-+            a: 1.,
-+        });
++    // The colour goes on GPUI's host view, right behind GPUI's view and the
++    // views, not on the window: through a rotation the window shows around the
++    // turning content, as in any app, and only a hole that left its view shows it.
++    if let (Some(background), Some(host)) = (layout.background, gpui_view.superview()) {
 +        // SAFETY: `+[UIColor colorWithRed:green:blue:alpha:]` returns a UIColor;
-+        // the window is live, on the main thread.
++        // the host is live, on the main thread. Nil clears it.
 +        unsafe {
-+            let color: *mut AnyObject = msg_send![
-+                objc2::class!(UIColor),
-+                colorWithRed: r as f64,
-+                green: g as f64,
-+                blue: b as f64,
-+                alpha: 1.0f64
-+            ];
-+            let _: () = msg_send![native_window, setBackgroundColor: color];
++            let color: *mut AnyObject = match background {
++                Some(Rgba { r, g, b, .. }) => msg_send![
++                    objc2::class!(UIColor),
++                    colorWithRed: r as f64,
++                    green: g as f64,
++                    blue: b as f64,
++                    alpha: 1.0f64
++                ],
++                None => std::ptr::null_mut(),
++            };
++            let _: () = msg_send![&*host, setBackgroundColor: color];
 +        }
 +    }
 +}

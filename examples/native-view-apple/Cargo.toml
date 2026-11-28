@@ -19,3 +19,7 @@ parallax = { path = "../../crates/parallax" }
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 env_logger = "0.11"
 objc2 = "0.6"
+
+# hello's text field, next to a native UITextField for the keyboard focus check (src/apple/typing.rs).
+[target.'cfg(target_os = "ios")'.dependencies]
+hello = { path = "../hello" }

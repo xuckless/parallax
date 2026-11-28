@@ -3005,6 +3005,7 @@ name = "native-view-apple"
 version = "0.1.9"
 dependencies = [
  "env_logger",
+ "hello",
  "log",
  "objc2 0.6.5",
  "parallax",

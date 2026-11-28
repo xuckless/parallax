@@ -21,6 +21,9 @@ use parallax::gpui::{
 };
 use std::{cell::Cell, ffi::CStr, ptr::NonNull, rc::Rc, sync::OnceLock, time::Duration};
 
+#[cfg(target_os = "ios")]
+mod typing;
+
 /// The view's colour turns through these hues (degrees), never near the magenta gap colour.
 const HUES: std::ops::Range<f32> = 90.0..210.0;
 /// The native view's own frame rate: one recolour per timer tick.
@@ -49,6 +52,9 @@ struct Example {
     /// The slot's bounds as last laid out, for view-relative positions.
     slot: Rc<Cell<Bounds<Pixels>>>,
     overlay_clicks: u32,
+    /// iOS: keyboard focus between a GPUI field and a native `UITextField` (typing.rs).
+    #[cfg(target_os = "ios")]
+    typing: typing::Typing,
     _report: parallax::gpui::Task<()>,
 }
 
@@ -97,6 +103,8 @@ impl Example {
             frames: 0,
             slot: Rc::default(),
             overlay_clicks: 0,
+            #[cfg(target_os = "ios")]
+            typing: typing::Typing::new(window, cx),
             _report: report,
         }
     }
@@ -178,6 +186,13 @@ impl Render for Example {
                     ))
                     .child(format!("div clicks: {}", self.overlay_clicks)),
             )
+            .children({
+                #[cfg(target_os = "ios")]
+                let typing = Some(self.typing.render(cx));
+                #[cfg(not(target_os = "ios"))]
+                let typing: Option<parallax::gpui::Div> = None;
+                typing
+            })
             .child(
                 div().flex_1().relative().child(
                     div()
