@@ -19,6 +19,24 @@ const ANDROID_DEFAULTS: AndroidDefaults = AndroidDefaults {
     icon: None,
 };
 
+/// `[web]` defaults. To add a key: add it here, to `WebToml`, `Web` and docs/cli-web.md.
+const WEB_DEFAULTS: WebDefaults = WebDefaults {
+    // No web.title → app.name.
+    title: None,
+    // The page behind the canvas until GPUI's first frame, and the manifest's colours.
+    background: "#ffffff",
+    // No web.index → cargo-parallax's templates/web/index.html.
+    index: None,
+    assets: &[],
+};
+
+struct WebDefaults {
+    title: Option<&'static str>,
+    background: &'static str,
+    index: Option<&'static str>,
+    assets: &'static [&'static str],
+}
+
 struct AndroidDefaults {
     min_sdk: u32,
     target_sdk: u32,
@@ -33,6 +51,8 @@ struct ConfigToml {
     app: AppToml,
     #[serde(default)]
     android: AndroidToml,
+    #[serde(default)]
+    web: WebToml,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +71,15 @@ struct AndroidToml {
     abis: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct WebToml {
+    title: Option<String>,
+    background: Option<String>,
+    index: Option<String>,
+    assets: Option<Vec<String>>,
+}
+
 /// `parallax.toml` with defaults filled in and every value checked.
 #[derive(Debug, PartialEq)]
 pub struct Config {
@@ -61,6 +90,7 @@ pub struct Config {
     /// Launcher icon SVG, relative to `parallax.toml`.
     pub icon: Option<PathBuf>,
     pub android: Android,
+    pub web: Web,
 }
 
 #[derive(Debug, PartialEq)]
@@ -69,6 +99,18 @@ pub struct Android {
     /// Also the `compileSdk`.
     pub target_sdk: u32,
     pub abis: Vec<&'static Abi>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Web {
+    /// The page's `<title>` and the web app manifest's name.
+    pub title: String,
+    /// `#rgb` or `#rrggbb`.
+    pub background: String,
+    /// The app's own host page, relative to `parallax.toml`, in place of the template.
+    pub index: Option<PathBuf>,
+    /// Files copied next to `index.html`, relative to `parallax.toml`.
+    pub assets: Vec<PathBuf>,
 }
 
 impl Config {
@@ -113,6 +155,34 @@ impl Config {
                     .ok_or_else(|| CliError::UnknownAbi(n.clone()))
             })
             .collect::<Result<_, _>>()?;
+        let background = raw
+            .web
+            .background
+            .unwrap_or_else(|| WEB_DEFAULTS.background.into());
+        if !is_hex_colour(&background) {
+            return Err(CliError::BadColour(background));
+        }
+        let web = Web {
+            title: raw
+                .web
+                .title
+                .or(WEB_DEFAULTS.title.map(String::from))
+                .unwrap_or_else(|| raw.app.name.clone()),
+            background,
+            index: raw
+                .web
+                .index
+                .as_deref()
+                .or(WEB_DEFAULTS.index)
+                .map(PathBuf::from),
+            assets: raw
+                .web
+                .assets
+                .unwrap_or_else(|| WEB_DEFAULTS.assets.iter().map(|s| s.to_string()).collect())
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        };
         Ok(Config {
             name: raw.app.name,
             id: raw.app.id,
@@ -127,8 +197,16 @@ impl Config {
                 target_sdk,
                 abis,
             },
+            web,
         })
     }
+}
+
+/// CSS hex colour: `#` then 3 or 6 hex digits (it lands in CSS and the manifest unescaped).
+fn is_hex_colour(colour: &str) -> bool {
+    colour.strip_prefix('#').is_some_and(|hex| {
+        [3, 6].contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit())
+    })
 }
 
 /// Android's rule: two or more dot-separated segments, each a letter followed by letters, digits or `_`.
@@ -160,6 +238,16 @@ mod tests {
                 target_sdk,
                 abis: abis.to_vec(),
             },
+            web: web("Hello", "#ffffff"),
+        }
+    }
+
+    fn web(title: &str, background: &str) -> Web {
+        Web {
+            title: title.into(),
+            background: background.into(),
+            index: None,
+            assets: Vec::new(),
         }
     }
 
@@ -216,6 +304,48 @@ mod tests {
             (
                 "unknown key in [android]",
                 format!("{APP}[android]\nmin_api = 28\n"),
+                Err("ConfigSyntax"),
+            ),
+            (
+                "every [web] key set",
+                format!(
+                    "{APP}[web]\ntitle = \"Hi\"\nbackground = \"#102030\"\nindex = \"web/index.html\"\nassets = [\"frame.html\"]\n"
+                ),
+                Ok(Config {
+                    web: Web {
+                        index: Some("web/index.html".into()),
+                        assets: vec!["frame.html".into()],
+                        ..web("Hi", "#102030")
+                    },
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "short web.background",
+                format!("{APP}[web]\nbackground = \"#fff\"\n"),
+                Ok(Config {
+                    web: web("Hello", "#fff"),
+                    ..config(28, 35, &[ARM64, X86_64])
+                }),
+            ),
+            (
+                "web.background without #",
+                format!("{APP}[web]\nbackground = \"ffffff\"\n"),
+                Err("BadColour"),
+            ),
+            (
+                "web.background a CSS name",
+                format!("{APP}[web]\nbackground = \"red\"\n"),
+                Err("BadColour"),
+            ),
+            (
+                "web.background four digits",
+                format!("{APP}[web]\nbackground = \"#ffff\"\n"),
+                Err("BadColour"),
+            ),
+            (
+                "unknown key in [web]",
+                format!("{APP}[web]\nport = 8080\n"),
                 Err("ConfigSyntax"),
             ),
             (

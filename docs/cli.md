@@ -5,6 +5,7 @@ in a generated Gradle project, installs the APK and launches it. Source: [main.r
 [config.rs](../crates/cli/src/config.rs) (`parallax.toml`), [android.rs](../crates/cli/src/android.rs) (the run),
 [icon.rs](../crates/cli/src/icon.rs) (launcher icon), [error.rs](../crates/cli/src/error.rs) (every failure and its fix),
 [templates/android/](../crates/cli/templates/android/). Install: `cargo install --path crates/cli`.
+The web: `cargo parallax run web` / `build web`, [cli-web.md](cli-web.md).
 
 ## parallax.toml
 

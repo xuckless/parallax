@@ -4,9 +4,14 @@ use std::path::PathBuf;
 
 use crate::android::{ABIS, HOSTS};
 
+/// Every command and its flags, one line each (the rows of `COMMANDS` in main.rs).
+const USAGE: &str = "cargo parallax run android [--release] [--device <serial>]
+       cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]
+       cargo parallax build web [--release]";
+
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[error("usage: cargo parallax run android [--release] [--device <serial>]\n{0}")]
+    #[error("usage: {USAGE}\n{0}")]
     Usage(String),
     #[error(
         "cannot read {path}: {source}. Run cargo parallax in the app crate's directory, next to parallax.toml"
@@ -27,6 +32,8 @@ pub enum CliError {
     MinSdkTooLow { min_sdk: u32, lowest: u32 },
     #[error("parallax.toml: android.target_sdk {target_sdk} is below android.min_sdk {min_sdk}")]
     TargetBelowMin { min_sdk: u32, target_sdk: u32 },
+    #[error("parallax.toml: web.background {0:?} is not a CSS hex colour (#rgb or #rrggbb)")]
+    BadColour(String),
     #[error("parallax.toml: android.abis is empty; list at least one ABI")]
     NoAbis,
     #[error("parallax.toml: unknown ABI {0:?}; supported: {supported}", supported = ABIS.map(|a| a.name).join(", "))]
@@ -91,6 +98,30 @@ pub enum CliError {
     SeveralDevices(Vec<String>),
     #[error("device {serial:?} is not online; online: {online:?}")]
     DeviceNotFound { serial: String, online: Vec<String> },
+    #[error(
+        "{} wasm-bindgen {want} (the wasm-bindgen crate in Cargo.lock). Install that version: cargo install wasm-bindgen-cli --version {want}",
+        match have { Some(have) => format!("wasm-bindgen on PATH is {have}, not"), None => "wasm-bindgen is not on PATH; the app needs".into() }
+    )]
+    WasmBindgen { have: Option<String>, want: String },
+    #[error(
+        "package {0} does not depend on wasm-bindgen. Add to its Cargo.toml: [target.'cfg(target_family = \"wasm\")'.dependencies] wasm-bindgen = \"0.2\", and a #[wasm_bindgen(start)] function"
+    )]
+    NoWasmBindgen(String),
+    #[error(
+        "several wasm-bindgen versions in Cargo.lock: {0:?}. Make them one (cargo update -p wasm-bindgen), so one wasm-bindgen-cli fits"
+    )]
+    SeveralWasmBindgens(Vec<String>),
+    #[error("parallax.toml: web.assets entry {0} names no file")]
+    AssetName(PathBuf),
+    #[error(
+        "parallax.toml: web.assets file {0:?} has the name of a file cargo parallax writes (index.html: use web.index)"
+    )]
+    AssetClash(String),
+    #[error("cannot serve on {addr}: {source}. Pick another port with --port <n>")]
+    Bind {
+        addr: std::net::SocketAddr,
+        source: std::io::Error,
+    },
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,

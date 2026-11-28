@@ -6,6 +6,15 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 ## [Unreleased]
 
+## Unreleased (0.1.11)
+
+- `cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]` and `cargo parallax build web
+  [--release]`: wasm32 build, wasm-bindgen (its version checked against `Cargo.lock`), a host page and web app
+  manifest ported from Flutter's web template, optional `wasm-opt`, a built-in development server
+  (docs/cli-web.md). New `parallax.toml` table `[web]` (`title`, `background`, `index`, `assets`). The examples
+  run on the web through it; hello's hand-written `index.html` is gone.
+- cargo-parallax is now `Apache-2.0 AND BSD-3-Clause` (it ships Flutter's web template).
+
 ## [0.1.10] - 2026-11-28 — NativeView gate: native views on every platform
 
 Wave 15 (Phase: NativeView, issue #1), fork `parallax-gpui*` 0.3.14-parallax.12 (patches 0047–0072). The NativeView

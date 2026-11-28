@@ -126,7 +126,7 @@ pub enum Profile {
 }
 
 impl Profile {
-    fn cargo_args(self) -> &'static [&'static str] {
+    pub fn cargo_args(self) -> &'static [&'static str] {
         match self {
             Profile::Debug => &[],
             Profile::Release => &["--release"],
@@ -141,9 +141,9 @@ impl Profile {
     }
 }
 
-pub struct RunArgs {
-    pub profile: Profile,
-    pub device: Option<String>,
+struct RunArgs {
+    profile: Profile,
+    device: Option<String>,
 }
 
 /// What `run` needs to know about the app crate, from `cargo metadata`.
@@ -154,15 +154,17 @@ struct AppCrate {
     java_dir: PathBuf,
 }
 
+/// `cargo metadata --format-version 1`, the parts `cargo parallax` reads.
 #[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<MetaPackage>,
-    target_directory: PathBuf,
+pub struct Metadata {
+    pub packages: Vec<MetaPackage>,
+    pub target_directory: PathBuf,
 }
 
 #[derive(Deserialize)]
-struct MetaPackage {
-    name: String,
+pub struct MetaPackage {
+    pub name: String,
+    pub version: String,
     manifest_path: PathBuf,
     targets: Vec<MetaTarget>,
 }
@@ -173,7 +175,9 @@ struct MetaTarget {
     crate_types: Vec<String>,
 }
 
-pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliError> {
+/// `run android [--release] [--device <serial>]`.
+pub fn run(app_dir: &Path, config: &Config, args: &[String]) -> Result<(), CliError> {
+    let args = parse_args(args)?;
     let host = HOSTS
         .iter()
         .find(|h| h.os == std::env::consts::OS)
@@ -224,16 +228,9 @@ pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliErr
         args.device.as_deref(),
     )?;
 
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = cargo();
     let manifest = app_dir.join("Cargo.toml");
-    let metadata = capture(
-        Command::new(&cargo)
-            .args(["metadata", "--format-version", "1", "--manifest-path"])
-            .arg(&manifest),
-        "cargo metadata",
-        CARGO_FIX,
-    )?;
-    let app = app_crate(&metadata, &manifest)?;
+    let app = app_crate(&metadata(&manifest)?, &manifest)?;
 
     let abis = &config.android.abis;
     let mut build = Command::new(&cargo);
@@ -338,7 +335,7 @@ pub fn run(app_dir: &Path, config: &Config, args: &RunArgs) -> Result<(), CliErr
 }
 
 const ADB_FIX: &str = "Install the SDK platform-tools: sdkmanager \"platform-tools\"";
-const CARGO_FIX: &str = "Install Rust from https://rustup.rs";
+pub const CARGO_FIX: &str = "Install Rust from https://rustup.rs";
 const JAVA_FIX: &str = "Install a JDK or JRE 17 or newer and put java on PATH, or set JAVA_HOME";
 
 /// `$ANDROID_NDK_HOME`, else the only NDK under `$ANDROID_HOME/ndk/`. Several there is an error, not a guess.
@@ -428,9 +425,50 @@ fn pick_device(online: &[String], requested: Option<&str>) -> Result<String, Cli
     }
 }
 
-fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
-    let metadata: Metadata =
-        serde_json::from_slice(metadata).map_err(|e| CliError::Metadata(e.to_string()))?;
+/// `[parallax] run android …` flags, after the command.
+fn parse_args(args: &[String]) -> Result<RunArgs, CliError> {
+    let mut rest = args.iter();
+    let mut run_args = RunArgs {
+        profile: Profile::Debug,
+        device: None,
+    };
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--release" => run_args.profile = Profile::Release,
+            "--device" => {
+                let serial = rest
+                    .next()
+                    .ok_or_else(|| CliError::Usage("--device needs a serial".into()))?;
+                run_args.device = Some(serial.clone());
+            }
+            other => return Err(CliError::Usage(format!("unknown argument {other:?}"))),
+        }
+    }
+    Ok(run_args)
+}
+
+/// The cargo that runs us (`CARGO`, set by `cargo parallax`), else `cargo` on PATH.
+pub fn cargo() -> std::ffi::OsString {
+    std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into())
+}
+
+/// `cargo metadata` of the workspace holding `manifest`.
+pub fn metadata(manifest: &Path) -> Result<Metadata, CliError> {
+    let out = capture(
+        Command::new(cargo())
+            .args(["metadata", "--format-version", "1", "--manifest-path"])
+            .arg(manifest),
+        "cargo metadata",
+        CARGO_FIX,
+    )?;
+    serde_json::from_slice(&out).map_err(|e| CliError::Metadata(e.to_string()))
+}
+
+/// The app's package (the one whose Cargo.toml is `manifest`) and its `cdylib`'s library name.
+pub fn app_package<'a>(
+    metadata: &'a Metadata,
+    manifest: &Path,
+) -> Result<(&'a MetaPackage, String), CliError> {
     // cargo metadata reports canonical manifest paths.
     let manifest = manifest.canonicalize().map_err(|source| CliError::Io {
         path: manifest.to_path_buf(),
@@ -446,6 +484,11 @@ fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
         .iter()
         .find(|t| t.crate_types.iter().any(|c| c == "cdylib"))
         .ok_or_else(|| CliError::NotCdylib(package.name.clone()))?;
+    Ok((package, lib.name.replace('-', "_")))
+}
+
+fn app_crate(metadata: &Metadata, manifest: &Path) -> Result<AppCrate, CliError> {
+    let (package, lib) = app_package(metadata, manifest)?;
     let android = metadata
         .packages
         .iter()
@@ -458,8 +501,8 @@ fn app_crate(metadata: &[u8], manifest: &Path) -> Result<AppCrate, CliError> {
         .join("java");
     Ok(AppCrate {
         package: package.name.clone(),
-        lib: lib.name.replace('-', "_"),
-        target_dir: metadata.target_directory,
+        lib,
+        target_dir: metadata.target_directory.clone(),
         java_dir,
     })
 }
@@ -493,7 +536,7 @@ fn project_vars(
     ]
 }
 
-fn xml_escape(text: &str) -> String {
+pub fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -501,14 +544,14 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn render(template: &str, vars: &[(&str, String)]) -> String {
+pub fn render(template: &str, vars: &[(&str, String)]) -> String {
     vars.iter()
         .fold(template.to_string(), |text, (key, value)| {
             text.replace(&format!("{{{{{key}}}}}"), value)
         })
 }
 
-fn write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+pub fn write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     let io = |source| CliError::Io {
         path: path.to_path_buf(),
         source,
@@ -528,7 +571,11 @@ fn spawn_error(cmd: &Command, fix: &'static str, source: std::io::Error) -> CliE
 }
 
 /// Runs `cmd`, returning stdout; stderr goes to the terminal.
-fn capture(cmd: &mut Command, step: &'static str, fix: &'static str) -> Result<Vec<u8>, CliError> {
+pub fn capture(
+    cmd: &mut Command,
+    step: &'static str,
+    fix: &'static str,
+) -> Result<Vec<u8>, CliError> {
     let out = cmd
         .stderr(Stdio::inherit())
         .output()
@@ -544,7 +591,7 @@ fn capture(cmd: &mut Command, step: &'static str, fix: &'static str) -> Result<V
 }
 
 /// Runs `cmd` with its output on the terminal.
-fn step(
+pub fn step(
     cmd: &mut Command,
     fix: &'static str,
     step: &'static str,
@@ -560,6 +607,33 @@ fn step(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_args_table() {
+        // (row name, flags after `run android`, expected (profile dir, --device) or a usage error)
+        type Case<'a> = (&'a str, &'a [&'a str], Option<(&'a str, Option<&'a str>)>);
+        let cases: [Case; 5] = [
+            ("no flags", &[], Some(("debug", None))),
+            ("release", &["--release"], Some(("release", None))),
+            (
+                "device",
+                &["--device", "emulator-5556"],
+                Some(("debug", Some("emulator-5556"))),
+            ),
+            ("device without serial", &["--device"], None),
+            ("unknown flag", &["--fast"], None),
+        ];
+        for (name, args, want) in cases {
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let got = parse_args(&args)
+                .map(|a| (a.profile.dir(), a.device))
+                .map_err(|e| e.variant());
+            let want = want
+                .map(|(profile, device)| (profile, device.map(String::from)))
+                .ok_or_else(|| "Usage".to_string());
+            assert_eq!(got, want, "{name}");
+        }
+    }
 
     #[test]
     fn abi_table() {
@@ -710,6 +784,12 @@ mod tests {
                 min_sdk: 28,
                 target_sdk: 35,
                 abis: vec![&ABIS[3]],
+            },
+            web: crate::config::Web {
+                title: "Tom & Jerry".into(),
+                background: "#fff".into(),
+                index: None,
+                assets: Vec::new(),
             },
         };
         let app = AppCrate {

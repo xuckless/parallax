@@ -1,13 +1,17 @@
 # cargo-parallax
 
 `cargo parallax run android` builds a [Parallax](https://github.com/xuckless/parallax) app crate, wraps it in a
-generated Gradle project, installs the APK and launches it. Configured by `parallax.toml` next to `Cargo.toml`.
+generated Gradle project, installs the APK and launches it; `cargo parallax run web` builds it for the browser and
+serves it. Configured by `parallax.toml` next to `Cargo.toml`.
 
 ```sh
 cargo install cargo-parallax
 cargo parallax run android [--release] [--device <serial>]
+cargo parallax run web [--release] [--port <n>] [--host <address>] [--open]
+cargo parallax build web [--release]
 ```
 
 Keys, requirements (Android SDK, NDK, Java 17) and each step:
 [docs/cli.md](https://github.com/xuckless/parallax/blob/main/docs/cli.md). Copyright 2026 Syed Ali (xuckless). Licensed Apache-2.0; includes the Gradle
-Wrapper jar (Apache-2.0, see [NOTICE](https://github.com/xuckless/parallax/blob/main/NOTICE)).
+Wrapper jar (Apache-2.0, see [NOTICE](https://github.com/xuckless/parallax/blob/main/NOTICE)) and Flutter's web
+template (BSD-3-Clause, `LICENSE-FLUTTER`). Web: [docs/cli-web.md](https://github.com/xuckless/parallax/blob/main/docs/cli-web.md).
