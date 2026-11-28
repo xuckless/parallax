@@ -6,8 +6,10 @@
 //! position relative to the view. See docs/native-view-wayland.md.
 //!
 //! Arguments: `--fps N` sets the page's frame rate; `--animate` moves and resizes the view every GPUI frame, to
-//! check that the hole and the subsurface stay in step; `--seconds N` quits after N seconds; `--no-view` shows the
-//! same window without the view, to compare the compositor's cost.
+//! check that the hole and the subsurface stay in step; `--clipped` puts the view in a scrolled container that hides
+//! its top half, in a see-through window, to check that only the visible half shows;
+//! `--seconds N` quits after N seconds; `--no-view` shows the same window without the view, to compare the
+//! compositor's cost.
 
 #[cfg(target_os = "linux")]
 mod page;
@@ -32,9 +34,10 @@ fn main() {
 mod demo {
     use crate::page::{self, Page};
     use parallax::gpui::{
-        App, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        NativeView, Pixels, Point, ScrollEvent, Window, WindowBounds, WindowOptions, canvas, div,
-        prelude::*, px, rgb, size,
+        App, Bounds, Context, DevicePixels, MouseButton, MouseDownEvent, MouseMoveEvent,
+        MouseUpEvent, NativeView, Pixels, Point, ScrollEvent, ScrollHandle, Window,
+        WindowBackgroundAppearance, WindowBounds, WindowOptions, canvas, div, point, prelude::*,
+        px, rgb, size,
     };
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     use std::{
@@ -47,6 +50,7 @@ mod demo {
     pub struct Options {
         fps: u32,
         animate: bool,
+        clipped: bool,
         seconds: Option<u64>,
         no_view: bool,
     }
@@ -64,6 +68,7 @@ mod demo {
                     .and_then(|fps| fps.parse().ok())
                     .unwrap_or(60),
                 animate: args.iter().any(|arg| arg == "--animate"),
+                clipped: args.iter().any(|arg| arg == "--clipped"),
                 no_view: args.iter().any(|arg| arg == "--no-view"),
                 seconds: value("--seconds").and_then(|seconds| seconds.parse().ok()),
             }
@@ -75,6 +80,12 @@ mod demo {
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // `--clipped`: see-through around the container, so a view showing past its clip would show.
+                window_background: if options.clipped {
+                    WindowBackgroundAppearance::Transparent
+                } else {
+                    WindowBackgroundAppearance::Opaque
+                },
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Demo::new(options, window, cx)),
@@ -91,6 +102,8 @@ mod demo {
         /// Frames GPUI painted, counted by a canvas in the root.
         gpui_frames: Rc<Cell<u64>>,
         animate: bool,
+        /// `--clipped`: the scrolled container that hides the view's top half.
+        scroll: Option<ScrollHandle>,
         started: Instant,
     }
 
@@ -135,10 +148,17 @@ mod demo {
                 }
             })
             .detach();
+            // Scrolled by half the view: its top half is clipped away.
+            let scroll = options.clipped.then(|| {
+                let scroll = ScrollHandle::new();
+                scroll.set_offset(point(px(0.), px(-200.)));
+                scroll
+            });
             Self {
                 view,
                 gpui_frames,
                 animate: options.animate,
+                scroll,
                 started: Instant::now(),
             }
         }
@@ -159,6 +179,11 @@ mod demo {
             // is dropped after the view (field order of the tuple).
             let view =
                 unsafe { NativeView::new(proxy, window, cx) }.map_err(|error| error.to_string())?;
+            // The page's buffers never change size; Wayland needs it to crop a clipped view.
+            view.set_buffer_size(
+                size(DevicePixels(page::WIDTH), DevicePixels(page::HEIGHT)),
+                window,
+            );
             Ok((view, page))
         }
 
@@ -179,7 +204,7 @@ mod demo {
 
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            // The view's container: where the view is, and what shows where the view hasn't drawn.
+            // Where the view's container is.
             let (left, width) = if self.animate {
                 window.request_animation_frame();
                 let t = self.started.elapsed().as_secs_f32();
@@ -191,67 +216,82 @@ mod demo {
                 (110., 640.)
             };
             let frames = self.gpui_frames.clone();
+            // The view's container: where the view is, and what shows where the view hasn't drawn.
+            let container = div()
+                .flex_none()
+                .w(px(width))
+                .h(px(400.))
+                .bg(rgb(0xc000c0))
+                .when_some(self.view.as_ref(), |this, (view, _)| {
+                    this.child(
+                        view.clone()
+                            .into_element()
+                            .on_mouse_move(cx.listener(
+                                |this, event: &MouseMoveEvent, window, _| {
+                                    this.log_pointer("move", event.position, window)
+                                },
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, _| {
+                                    this.log_pointer("down", event.position, window)
+                                }),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseUpEvent, window, _| {
+                                    this.log_pointer("up", event.position, window)
+                                }),
+                            )
+                            .on_scroll(cx.listener(|this, event: &ScrollEvent, window, _| {
+                                this.log_pointer("scroll", event.position, window)
+                            })),
+                    )
+                })
+                // Painted after the view, so it covers it and takes its own input.
+                .child(
+                    div()
+                        .id("over")
+                        .absolute()
+                        .top(px(24.))
+                        .left(px(24.))
+                        .w(px(200.))
+                        .h(px(90.))
+                        .bg(rgb(0x2050d0))
+                        .text_color(rgb(0xffffff))
+                        .p_2()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {
+                            log::info!("GPUI div over the view: down")
+                        })
+                        .child("a GPUI div over the view"),
+                );
+            // With `--clipped`, inside a scrolled container of half its height.
+            let container = match &self.scroll {
+                Some(scroll) => div()
+                    .id("scroller")
+                    .absolute()
+                    .top(px(80.))
+                    .left(px(left))
+                    .w(px(width))
+                    .h(px(200.))
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .child(container)
+                    .into_any_element(),
+                None => container
+                    .absolute()
+                    .top(px(80.))
+                    .left(px(left))
+                    .into_any_element(),
+            };
             div()
                 .size_full()
-                .bg(rgb(0x202020))
+                .when(self.scroll.is_none(), |this| this.bg(rgb(0x202020)))
                 .child(
                     canvas(|_, _, _| {}, move |_, _, _, _| frames.set(frames.get() + 1)).size_0(),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(80.))
-                        .left(px(left))
-                        .w(px(width))
-                        .h(px(400.))
-                        .bg(rgb(0xc000c0))
-                        .when_some(self.view.as_ref(), |this, (view, _)| {
-                            this.child(
-                                view.clone()
-                                    .into_element()
-                                    .on_mouse_move(cx.listener(
-                                        |this, event: &MouseMoveEvent, window, _| {
-                                            this.log_pointer("move", event.position, window)
-                                        },
-                                    ))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, event: &MouseDownEvent, window, _| {
-                                            this.log_pointer("down", event.position, window)
-                                        }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, event: &MouseUpEvent, window, _| {
-                                            this.log_pointer("up", event.position, window)
-                                        }),
-                                    )
-                                    .on_scroll(cx.listener(
-                                        |this, event: &ScrollEvent, window, _| {
-                                            this.log_pointer("scroll", event.position, window)
-                                        },
-                                    )),
-                            )
-                        })
-                        // Painted after the view, so it covers it and takes its own input.
-                        .child(
-                            div()
-                                .id("over")
-                                .absolute()
-                                .top(px(24.))
-                                .left(px(24.))
-                                .w(px(200.))
-                                .h(px(90.))
-                                .bg(rgb(0x2050d0))
-                                .text_color(rgb(0xffffff))
-                                .p_2()
-                                .occlude()
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                                    log::info!("GPUI div over the view: down")
-                                })
-                                .child("a GPUI div over the view"),
-                        ),
-                )
+                .child(container)
                 .child(
                     div()
                         .absolute()

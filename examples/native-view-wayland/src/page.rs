@@ -24,6 +24,8 @@ pub const HEIGHT: i32 = 400;
 /// Enough buffers that one is free while the compositor holds the others.
 const BUFFER_COUNT: usize = 4;
 const STRIDE: i32 = WIDTH * 4;
+/// The rows of the yellow band in the buffer's top half.
+const MARK: std::ops::Range<i32> = 96..104;
 
 pub struct Page {
     /// The surface the app hands to `NativeView::new`.
@@ -171,15 +173,16 @@ impl Page {
     }
 }
 
-/// A frame that differs from the last everywhere: a hue that drifts, a white bar that sweeps across, and a
-/// one-pixel yellow frame on the buffer's edges, so a seam or a crop is easy to spot.
+/// A frame that differs from the last everywhere: a hue that drifts, a white bar that sweeps across, a one-pixel
+/// yellow frame on the buffer's edges, so a seam or a crop is easy to spot, and a yellow band across the top half
+/// (rows `MARK`), which a view cropped to its lower half must not show.
 fn draw(pixels: &mut [u32], frame: u64) {
     let phase = (frame % 240) as u32;
     let background = 0x0020_4080 | ((phase * 255 / 240) << 16);
     let bar = (frame as i32 * 4) % WIDTH;
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
-            let edge = x == 0 || y == 0 || x == WIDTH - 1 || y == HEIGHT - 1;
+            let edge = x == 0 || y == 0 || x == WIDTH - 1 || y == HEIGHT - 1 || MARK.contains(&y);
             let color = if edge {
                 0x00ff_ff00
             } else if (x - bar).abs() < 8 {

@@ -42,9 +42,12 @@ CLIENT_ICD=host scripts/wayland-native-view-checks.sh   # the app on the host's 
 | Pointer input reaches the view's element | a move, a click and a scroll at (400, 250) in the view log `view pointer … at (400.0, 250.0)` |
 | The div over the view keeps its own input | its click logs `GPUI div over the view: down` and no view press |
 | In step while moving | `--animate`: 8 screenshots with no gap pixel inside the view |
+| A clipped view shows only its visible part | `--clipped` (top half scrolled out, see-through window): the view's pixels span 640×200, none past the clip |
+| …cropped, not squeezed | no yellow at 50 logical pixels down the visible part, where the page's top-half band would land squeezed |
+| Input over the clipped view | the pointer over the clipped-away part logs no view move; a click in the visible part logs `view pointer down at (400.0, 300.0)`, relative to the whole view |
 
 Logs and screenshots: `target/native-view-wayland/<scale>/` (`still.log`, `still.png`, `animate.log`,
-`move-*.png`, `shell.log`).
+`move-*.png`, `clipped.log`, `clipped.png`, `shell.log`).
 
 ## CI
 

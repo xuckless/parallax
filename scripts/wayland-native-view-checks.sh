@@ -119,9 +119,11 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   click() { eval_js "globalThis.w15.notify_button($now, 1, 1); globalThis.w15.notify_button($now, 1, 0); true" \
     >/dev/null; sleep 0.4; }
   # mutter keeps the first click on an unfocused window from it (the headless seat has no keyboard to focus it
-  # otherwise), so the first click lands on the window's own background, left of the view.
+  # otherwise), so the first click lands on the window's own background, left of the view; a second one there in
+  # case the focus took longer than a click (seen with the Shell on llvmpipe).
   move "$bx" "$by"
   move "$bx" "$by"
+  click
   click
   move "$vx" "$vy"
   move "$vx" "$vy"
@@ -129,8 +131,10 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   eval_js "globalThis.w15.notify_discrete_scroll($now, imports.gi.Clutter.ScrollDirection.DOWN,
     imports.gi.Clutter.ScrollSource.WHEEL); true" >/dev/null
   sleep 0.4
-  near() { grep "view pointer $1 at" "$work/still.log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
-    | awk -v x="$2" -v y="$3" '{ exit !(($1 - x)^2 <= 4 && ($2 - y)^2 <= 4) }'; }
+  # Whether the last `view pointer <kind>` in $log is within 2 pixels of (x, y).
+  log=$work/still.log
+  near() { grep "view pointer $1 at" "$log" | tail -1 | sed -E 's/.*\(([-0-9.]+), ([-0-9.]+)\)$/\1 \2/' \
+    | awk -v x="$2" -v y="$3" '{ found = ($1 - x)^2 <= 4 && ($2 - y)^2 <= 4 } END { exit !found }'; }
   for kind in move down scroll; do
     near "$kind" 400 250 && pass "a $kind over the view arrives at 400 250 in the view" \
       || fail "no $kind at 400 250 in the view: $(grep "view pointer $kind" "$work/still.log" | tail -1)"
@@ -160,6 +164,43 @@ print($l / f + 400, $t / f + 250, $l / f + 124, $t / f + 80, $l / f - 50, $t / f
   ((out_of_step == 0)) && pass "moving: no gap in $shots shots" \
     || fail "moving: hole and view out of step in $out_of_step of $shots shots"
   wait $app || true
+
+  # Clipped: the view's top half is scrolled out of its container (and past the window's top edge). Only the lower
+  # half shows, cropped from the page's buffer, and input is still relative to the whole view.
+  "$bin" --clipped --seconds 30 >"$work/clipped.log" 2>&1 &
+  app=$!
+  sleep 4
+  eval_js "Main.overview.hide()" >/dev/null
+  sleep 1
+  shot "$work/clipped.png"
+  read -r l t r b <<<"$(px "$work/clipped.png" bbox "$gap" "$page" "$edge" || echo "0 0 0 0")"
+  python3 -c "import sys; f=$factor; sys.exit(not (abs($r - $l - 640 * f) <= 2 and abs($b - $t - 200 * f) <= 2))" \
+    && pass "clipped: only the visible part shows, at $l $t $r $b (640x200 at $factor), nothing past the clip" \
+    || fail "clipped: the view shows at $l $t $r $b, not 640x200 at $factor"
+  # The page's yellow band crosses its top half, 100 pixels down: squeezed into the visible part, it would show
+  # 50 pixels down.
+  read -r cr cg cb <<<"$(px "$work/clipped.png" at "$(python3 -c "print(round($l + 400 * $factor))")" \
+    "$(python3 -c "print(round($t + 50 * $factor))")")"
+  ((cr > 200 && cg > 200 && cb < 80)) && fail "clipped: the whole page is squeezed into the visible part" \
+    || pass "clipped: the visible part shows the page's lower half"
+  log=$work/clipped.log
+  read -r vx vy ax ay bx by <<<"$(python3 -c "f=$factor
+print($l / f + 400, $t / f + 100, $l / f + 400, $t / f - 40, $l / f - 50, $t / f + 100)")"
+  move "$bx" "$by"
+  move "$bx" "$by"
+  click
+  click
+  move "$ax" "$ay"
+  move "$ax" "$ay"
+  ! near move 400 160 && pass "clipped: the pointer over the clipped-away part doesn't reach the view" \
+    || fail "clipped: the clipped-away part took the pointer"
+  move "$vx" "$vy"
+  move "$vx" "$vy"
+  click
+  near down 400 300 && pass "clipped: a click in the visible part arrives at 400 300 in the whole view" \
+    || fail "clipped: no click at 400 300 in the view: $(grep 'view pointer down' "$log" | tail -1)"
+  kill $app 2>/dev/null || true
+  wait $app 2>/dev/null || true
   echo "$failures failure(s) at scale $scale"
   exit $((failures > 0))
 fi
