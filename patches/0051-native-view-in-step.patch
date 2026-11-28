@@ -9,11 +9,13 @@ What:
   (`metal layer alpha: opaque` / `premultiplied, native views show through`) each time a native view shows or goes.
 - gpui_apple `native_view_placement.rs` (new, pure, table-tested on the host by scripts/patch-test.sh, `apple-pure`):
   macOS's `Placement` (moved out of upstream's window/native_views.rs, with its test as table rows) made shared with
-  iOS by a `YAxis` (AppKit up, UIKit down). Chromium's edge rule for overlays, as patch 0049's Wayland subsurfaces:
-  the view is rounded outwards to whole device pixels, and `hole_inset(scale, physical_scale)` cuts the hole one
-  pixel inside the view where the screen resamples the layer, so the layer's own pixels cover the view's blended
-  edges; `MetalRenderer::set_native_view_hole_inset` applies it (0 by default, so exact edges at 1x/2x/3x stay).
-- macOS: `draw` passes `Layout::places_views()` (the scene changes a view's placement); placement from gpui_apple.
+  iOS by a `YAxis` (AppKit up, UIKit down), from core's `native_view_placement::visible` (0048: the element's bounds
+  are whole device pixels already, so only the points conversion is here). Where the screen resamples the layer,
+  core's `hole_inset(true)` cuts the hole one pixel inside the view, so the layer's own pixels cover the view's
+  blended edges; `MetalRenderer::set_native_view_hole_inset` applies it (0 by default, so exact edges at 1x/2x/3x
+  stay).
+- macOS: `draw` passes `Layout::places_views()` (the scene changes a view's placement); placement from gpui_apple,
+  the background colour from core's `native_view_placement::background`.
 - Who takes pointer input over a view (`NativeViewInput`, macOS `View`, iOS `Window`) is patch 0048's.
 
 Why: upstream presents every frame on its own, so a view's new frame reaches the screen a frame or two before the
@@ -151,20 +153,17 @@ index 33c5299..9388d46 100644
          }))?,
 diff --git a/gpui-pre-apple/src/native_view_placement.rs b/gpui-pre-apple/src/native_view_placement.rs
 new file mode 100644
-index 0000000..f49d5b2
+index 0000000..860c1fc
 --- /dev/null
 +++ b/gpui-pre-apple/src/native_view_placement.rs
-@@ -0,0 +1,231 @@
-+//! Where a native view's clipping container and view go in the window, and how far inside the view its hole is
-+//! cut: shared by gpui_macos (AppKit, y up) and gpui_ios (UIKit, y down). Pure, so scripts/patch-test.sh runs its
-+//! tests on the host (`apple-pure`).
+@@ -0,0 +1,178 @@
++//! Where a native view's clipping container and view go in the window: shared by gpui_macos (AppKit, y up) and
++//! gpui_ios (UIKit, y down). Pure, so scripts/patch-test.sh runs its tests on the host (`apple-pure`).
 +//!
-+//! Edges follow Chromium's rule for overlays under a window (ui/ozone wayland_subsurface.cc, as patch 0049's
-+//! Wayland subsurfaces): the view is rounded outwards to whole device pixels, and where the compositor resamples
-+//! the window's pixels (a scale that is not a whole number of physical pixels per device pixel) the hole is cut one
-+//! pixel inside the view, so the window's own pixels cover the view's blended edges and no gap shows between them.
++//! What shows of a view and how far inside it the hole is cut are GPUI's one copy (`gpui::native_view_placement`):
++//! the element's bounds are whole device pixels already, so this only turns them into points.
 +
-+use gpui::{Bounds, ScaledPixels, size};
++use gpui::{Bounds, PaintNativeView, ScaledPixels, native_view_placement::visible};
 +
 +/// Which way the platform's view coordinates grow vertically.
 +#[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,21 +184,16 @@ index 0000000..f49d5b2
 +}
 +
 +impl Placement {
-+    /// Places a view with the given bounds and clip, both in device pixels from the top left of GPUI's view, whose
++    /// Places a painted view, whose bounds and clip are in device pixels from the top left of GPUI's view, whose
 +    /// frame in its superview is `gpui_frame`. Returns `None` if the clip leaves none of the view visible.
 +    pub fn new(
-+        bounds: Bounds<ScaledPixels>,
-+        content_mask: Bounds<ScaledPixels>,
++        native_view: &PaintNativeView,
 +        scale_factor: f64,
 +        gpui_frame: [f64; 4],
 +        y_axis: YAxis,
 +    ) -> Option<Self> {
-+        let visible = bounds.intersect(&content_mask);
-+        if visible.is_empty() {
-+            return None;
-+        }
++        let visible = visible(native_view)?;
 +        let to_frame = |bounds: Bounds<ScaledPixels>| {
-+            let bounds = round_outwards(bounds);
 +            let [gpui_x, gpui_y, _, gpui_height] = gpui_frame;
 +            let to_points = |value: ScaledPixels| f64::from(value) / scale_factor;
 +            let top = to_points(bounds.origin.y);
@@ -216,7 +210,7 @@ index 0000000..f49d5b2
 +            ]
 +        };
 +        let container = to_frame(visible);
-+        let [x, y, width, height] = to_frame(bounds);
++        let [x, y, width, height] = to_frame(native_view.bounds);
 +        Some(Self {
 +            container,
 +            view: [x - container[0], y - container[1], width, height],
@@ -224,31 +218,10 @@ index 0000000..f49d5b2
 +    }
 +}
 +
-+/// The smallest whole-pixel bounds that hold `bounds`.
-+fn round_outwards(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
-+    let origin = bounds.origin.map(|value| value.floor());
-+    let end = bounds.bottom_right().map(|value| value.ceil());
-+    Bounds {
-+        origin,
-+        size: size(end.x - origin.x, end.y - origin.y),
-+    }
-+}
-+
-+/// How far inside a view's bounds its hole is cut, given the device pixels per point GPUI draws at and the physical
-+/// pixels per point the screen shows: one device pixel where they differ (the compositor resamples, so the view's
-+/// and the hole's edges both blend), none where they match.
-+pub fn hole_inset(scale_factor: f64, physical_scale: f64) -> ScaledPixels {
-+    if scale_factor == physical_scale {
-+        ScaledPixels(0.)
-+    } else {
-+        ScaledPixels(1.)
-+    }
-+}
-+
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
-+    use gpui::point;
++    use gpui::{ContentMask, HitboxId, Hsla, NativeViewId, point, size};
 +
 +    /// Bounds in device pixels.
 +    fn scaled(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
@@ -336,19 +309,6 @@ index 0000000..f49d5b2
 +                }),
 +            ),
 +            (
-+                // Chromium's rule: a view never ends partway through a pixel, so it covers its hole's every pixel.
-+                "fractional bounds round outwards to whole device pixels",
-+                scaled(10.5, 20.25, 100., 50.5),
-+                scaled(0., 0., 1000., 1000.),
-+                2.,
-+                [0., 0., 500., 500.],
-+                YAxis::Down,
-+                Some(Placement {
-+                    container: [5., 10., 50.5, 25.5],
-+                    view: [0., 0., 50.5, 25.5],
-+                }),
-+            ),
-+            (
 +                "iOS: clipped away",
 +                scaled(0., 0., 100., 100.),
 +                scaled(200., 200., 10., 10.),
@@ -359,30 +319,19 @@ index 0000000..f49d5b2
 +            ),
 +        ];
 +        for (name, bounds, mask, scale, frame, y_axis, placement) in cases {
++            let native_view = PaintNativeView {
++                order: 0,
++                id: NativeViewId::for_test(1),
++                hitbox_id: HitboxId::placeholder(),
++                bounds,
++                content_mask: ContentMask { bounds: mask },
++                background: Hsla::transparent_black(),
++            };
 +            assert_eq!(
-+                Placement::new(bounds, mask, scale, frame, y_axis),
++                Placement::new(&native_view, scale, frame, y_axis),
 +                placement,
 +                "{name}"
 +            );
-+        }
-+    }
-+
-+    #[test]
-+    fn hole_is_cut_inside_the_view_only_where_the_compositor_resamples() {
-+        // (name, GPUI's scale, the screen's physical scale, inset)
-+        let cases = [
-+            ("iPhone at 3x", 3., 3., 0.),
-+            ("iPad and Retina Mac at 2x", 2., 2., 0.),
-+            (
-+                "iPhone with Display Zoom (3x drawn, 2.88x shown)",
-+                3.,
-+                2.88,
-+                1.,
-+            ),
-+            ("iPad mini (2x drawn, 2.18x shown)", 2., 2.1875, 1.),
-+        ];
-+        for (name, scale, physical, inset) in cases {
-+            assert_eq!(hole_inset(scale, physical), ScaledPixels(inset), "{name}");
 +        }
 +    }
 +}
@@ -401,7 +350,7 @@ index 7c0c918..b8d40a8 100644
          native_views::apply_layout(&self.0, native_view_layout);
      }
 diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
-index 0f551ca..79ea46d 100644
+index 0f551ca..e847d1c 100644
 --- a/gpui-pre-macos/src/window/native_views.rs
 +++ b/gpui-pre-macos/src/window/native_views.rs
 @@ -15,9 +15,10 @@ use super::{
@@ -411,7 +360,7 @@ index 0f551ca..79ea46d 100644
 -    Bounds, KeyDownEvent, ModifiersChangedEvent, NativeViewId, Pixels, PlatformInput, Point, Rgba,
 -    ScaledPixels, Scene, WindowBackgroundAppearance,
 +    KeyDownEvent, ModifiersChangedEvent, NativeViewId, Pixels, PlatformInput, Point, Rgba, Scene,
-+    WindowBackgroundAppearance,
++    WindowBackgroundAppearance, native_view_placement,
  };
 +use gpui_apple::native_view_placement::{Placement, YAxis};
  use objc2::{
@@ -480,7 +429,21 @@ index 0f551ca..79ea46d 100644
  ///
  /// The color stays until a scene without native views is drawn. The last
  /// view's opening is still on screen when the view goes, and would show the
-@@ -369,6 +327,14 @@ pub(super) struct Layout {
+@@ -335,12 +293,7 @@ pub(super) fn update_background(state: &mut MacWindowState, scene: &Scene) {
+     if state.background_appearance != WindowBackgroundAppearance::Opaque {
+         return;
+     }
+-    let background = scene
+-        .native_views
+-        .iter()
+-        .rev()
+-        .map(|native_view| Rgba::from(native_view.background))
+-        .find(|background| background.a > 0.);
++    let background = native_view_placement::background(&scene.native_views);
+     if state.native_views.background == background {
+         return;
+     }
+@@ -369,6 +322,14 @@ pub(super) struct Layout {
      stacking: Option<Vec<NativeViewId>>,
  }
  
@@ -495,15 +458,21 @@ index 0f551ca..79ea46d 100644
  /// Works out which attached views the scene moves, shows, hides, or restacks.
  pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
      if state.native_views.views.is_empty() {
-@@ -396,6 +362,7 @@ pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
-                     native_view.content_mask.bounds,
-                     scale_factor,
-                     gpui_frame,
-+                    YAxis::Up,
-                 )
+@@ -391,12 +352,7 @@ pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
+             .iter()
+             .find(|native_view| native_view.id == attached.id)
+             .and_then(|native_view| {
+-                Placement::new(
+-                    native_view.bounds,
+-                    native_view.content_mask.bounds,
+-                    scale_factor,
+-                    gpui_frame,
+-                )
++                Placement::new(native_view, scale_factor, gpui_frame, YAxis::Up)
              });
          if attached.placement != placement {
-@@ -1435,42 +1402,6 @@ extern "C" fn resign_first_responder(this: &AnyObject, _: Sel) -> Bool {
+             placements.push((attached.id, placement));
+@@ -1435,42 +1391,6 @@ extern "C" fn resign_first_responder(this: &AnyObject, _: Sel) -> Bool {
  #[cfg(test)]
  mod tests {
      use super::*;

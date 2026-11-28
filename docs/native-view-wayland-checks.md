@@ -46,8 +46,10 @@ CLIENT_ICD=host scripts/wayland-native-view-checks.sh   # the app on the host's 
 | …cropped, not squeezed | no yellow at 50 logical pixels down the visible part, where the page's top-half band would land squeezed |
 | Input over the clipped view | the pointer over the clipped-away part logs no view move; a click in the visible part logs `view pointer down at (400.0, 300.0)`, relative to the whole view |
 
+| A resize while clipped never costs the connection | `--clipped --animate --resize` for 8 s (the page switches buffer size every 45 frames from its thread, two stale old-size frames after each switch, GPUI re-crops every frame): exits 0, no protocol error, page and GPUI frames in each of the last seconds |
+
 Logs and screenshots: `target/native-view-wayland/<scale>/` (`still.log`, `still.png`, `animate.log`,
-`move-*.png`, `clipped.log`, `clipped.png`, `shell.log`).
+`move-*.png`, `clipped.log`, `clipped.png`, `resize.log`, `shell.log`).
 
 ## CI
 

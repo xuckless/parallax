@@ -12,7 +12,8 @@ swap chain (`native_view_surface.rs`, `Presenter::new`): a surface changes only 
 change in one `Commit`. With no view shown the swap chain presents as upstream (no copy, no commit); the switch
 either way is logged at info. Each frame, `NativeViewTree::place_views` (named after macOS's
 `Layout::places_views`) compares the scene's views
-(`native_views.rs`: placement in whole device pixels, back-to-front order, background colour) with what the tree
+(`native_views.rs`: placement from core's `native_view_placement::visible`, back-to-front order, background colour from
+`native_view_placement::background`, black when none asks) with what the tree
 shows, restacks only when the views or their order change, places only the views that moved, and the frame commits
 once after (Chromium's `DCLayerTree::CommitAndClearPendingOverlays` order: present, then build and commit the tree).
 `PrimitiveBatch::NativeViews` draws a hole: a `native_view` shader writing transparent black with
@@ -834,17 +835,20 @@ index bff01be..150a617 100644
  mod system_settings;
 diff --git a/gpui-pre-windows/src/native_views.rs b/gpui-pre-windows/src/native_views.rs
 new file mode 100644
-index 0000000..6616965
+index 0000000..7bc336b
 --- /dev/null
 +++ b/gpui-pre-windows/src/native_views.rs
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,234 @@
 +//! What DirectComposition shows of a window's native views, decided on plain values so it is tested on any host
 +//! (Parallax's `scripts/patch-test.sh` builds this file on its own); `directx_renderer.rs` applies it to the visual
 +//! tree. Modelled on Chromium's `ui/gl/dc_layer_tree.cc` (`VisualTree::BuildTree`, `VisualSubtree::Update`): every
 +//! view is a clip visual holding a content visual, stacked back to front under GPUI's own swap chain visual, and the
 +//! tree is changed and committed only when a frame moves, shows, hides or restacks a view.
 +
-+use gpui::{Bounds, NativeViewId, PaintNativeView, Rgba, ScaledPixels, WindowBackgroundAppearance};
++use gpui::{
++    NativeViewId, PaintNativeView, Rgba, WindowBackgroundAppearance,
++    native_view_placement::{background, visible},
++};
 +
 +/// Where one native view's visuals sit, in whole device pixels from the window's top left.
 +#[derive(Clone, Copy, Debug, PartialEq)]
@@ -856,32 +860,14 @@ index 0000000..6616965
 +}
 +
 +impl Placement {
-+    /// `None` when the content mask leaves none of the view.
-+    ///
-+    /// The bounds are already snapped to device pixels by the element, and the hole is drawn from the same bounds, so
-+    /// rounding to whole pixels here puts the visuals exactly where the rasterizer cleared the hole, at any scale.
-+    pub(crate) fn new(
-+        bounds: Bounds<ScaledPixels>,
-+        content_mask: Bounds<ScaledPixels>,
-+    ) -> Option<Self> {
-+        let visible = bounds.intersect(&content_mask);
-+        let edges = |bounds: Bounds<ScaledPixels>| {
-+            let corner = bounds.bottom_right();
-+            [
-+                bounds.origin.x.0.round(),
-+                bounds.origin.y.0.round(),
-+                corner.x.0.round(),
-+                corner.y.0.round(),
-+            ]
-+        };
-+        let clip = edges(visible);
-+        if clip[0] >= clip[2] || clip[1] >= clip[3] {
-+            return None;
-+        }
-+        let [x, y, ..] = edges(bounds);
++    /// `None` when the content mask leaves none of the view. The element's bounds and clip are whole device pixels,
++    /// and the hole is drawn from the same bounds, so the visuals sit exactly where the rasterizer cleared the hole.
++    pub(crate) fn new(view: &PaintNativeView) -> Option<Self> {
++        let visible = visible(view)?;
++        let corner = visible.bottom_right();
 +        Some(Self {
-+            origin: [x, y],
-+            clip,
++            origin: [view.bounds.origin.x.0, view.bounds.origin.y.0],
++            clip: [visible.origin.x.0, visible.origin.y.0, corner.x.0, corner.y.0],
 +        })
 +    }
 +}
@@ -946,22 +932,15 @@ index 0000000..6616965
 +
 +impl Frame {
 +    /// The scene's native views are sorted by draw order and painted once each, so the ones painted later, which
-+    /// belong in front, come last. An opaque window shows black under its views unless one asks for a color, the
-+    /// view painted last winning, as on macOS.
++    /// belong in front, come last. An opaque window shows black under its views unless one asks for a color
++    /// (`native_view_placement::background`).
 +    pub(crate) fn new(native_views: &[PaintNativeView], appearance: WindowBackgroundAppearance) -> Self {
 +        let views: Vec<_> = native_views
 +            .iter()
-+            .filter_map(|view| {
-+                Placement::new(view.bounds, view.content_mask.bounds).map(|placement| (view.id, placement))
-+            })
++            .filter_map(|view| Placement::new(view).map(|placement| (view.id, placement)))
 +            .collect();
 +        let background = (appearance == WindowBackgroundAppearance::Opaque && !views.is_empty()).then(|| {
-+            let Rgba { r, g, b, .. } = native_views
-+                .iter()
-+                .rev()
-+                .map(|view| Rgba::from(view.background))
-+                .find(|color| color.a > 0.)
-+                .unwrap_or(Rgba { r: 0., g: 0., b: 0., a: 1. });
++            let Rgba { r, g, b, .. } = background(native_views).unwrap_or(Rgba { r: 0., g: 0., b: 0., a: 1. });
 +            [r, g, b]
 +        });
 +        Self { views, background }
@@ -975,7 +954,7 @@ index 0000000..6616965
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
-+    use gpui::{ContentMask, DrawOrder, HitboxId, Hsla, hsla, point, size};
++    use gpui::{Bounds, ContentMask, DrawOrder, HitboxId, Hsla, ScaledPixels, hsla, point, size};
 +
 +    fn device_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
 +        Bounds {
@@ -987,7 +966,7 @@ index 0000000..6616965
 +    #[test]
 +    fn placement_of_a_view() {
 +        // (name, bounds, content mask, placement). Extend with a row per layout case DirectComposition must match.
-+        let rows: [(&str, [f32; 4], [f32; 4], Option<Placement>); 5] = [
++        let rows: [(&str, [f32; 4], [f32; 4], Option<Placement>); 3] = [
 +            (
 +                "unclipped view shows whole at its origin",
 +                [10., 20., 100., 50.],
@@ -1000,19 +979,18 @@ index 0000000..6616965
 +                [0., 40., 60., 600.],
 +                Some(Placement { origin: [10., 20.], clip: [10., 40., 60., 70.] }),
 +            ),
-+            (
-+                // At scale 1.25 an element at 9.6 logical px is snapped to device px 12.
-+                "1.25 scale: snapped bounds stay on whole pixels",
-+                [12., 25., 125., 62.5],
-+                [0., 0., 1000., 750.],
-+                Some(Placement { origin: [12., 25.], clip: [12., 25., 137., 88.] }),
-+            ),
 +            ("clipped away entirely is hidden", [10., 20., 100., 50.], [200., 0., 50., 50.], None),
-+            ("zero sized is hidden", [10., 20., 0., 50.], [0., 0., 800., 600.], None),
 +        ];
 +        for (name, [x, y, w, h], [mx, my, mw, mh], expected) in rows {
-+            let placement = Placement::new(device_bounds(x, y, w, h), device_bounds(mx, my, mw, mh));
-+            assert_eq!(placement, expected, "{name}");
++            let view = PaintNativeView {
++                order: 0 as DrawOrder,
++                id: NativeViewId::for_test(1),
++                hitbox_id: HitboxId::placeholder(),
++                bounds: device_bounds(x, y, w, h),
++                content_mask: ContentMask { bounds: device_bounds(mx, my, mw, mh) },
++                background: Hsla::transparent_black(),
++            };
++            assert_eq!(Placement::new(&view), expected, "{name}");
 +        }
 +    }
 +

@@ -41,8 +41,12 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
 - Wayland: a native view its element's clip cuts (scrolled partly out of a container) shows only its visible part,
-  cropped from the app's buffer, as on the other platforms; the new `NativeView::set_buffer_size` tells GPUI the
-  buffer size the crop needs (does nothing elsewhere; fork patch 0049, docs/native-view-wayland.md#clipped-views).
+  cropped from the app's buffer, as on the other platforms. The app commits every buffer through
+  `gpui_linux::NativeViewBuffers::of(&view).commit_buffer(&surface, &buffer, size)`, from any thread: its commits and
+  GPUI's take turns under one lock, so each carries a crop that fits its buffer (a resize's stale frames included)
+  and the compositor never ends the connection (fork patch 0049, docs/native-view-wayland.md#clipped-views). Views
+  stack in paint order, a view shown again reuses its subsurface, and `NativeView::set_background` fills an opaque
+  window's holes where a view hasn't drawn (GPUI's underlay subsurface).
   `scripts/wayland-native-view-checks.sh --mesa-compositor` runs the checks with the compositor on Mesa too.
 - Android: `NativeView` shows an app's `SurfaceControl` (API 29+, under GPUI's buffer, placed with GPUI's frame) or
   any `View` (WebView, SurfaceView; laid out under GPUI's translucent surface), with no GPUI frame for the view's own;

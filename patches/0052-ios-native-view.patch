@@ -103,10 +103,10 @@ index 67ee86b..0ab78e6 100644
          // Taking the handler during draw must not clear this identity: the
          // replacement adapter can still represent the same focused document.
 diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 5865795..babad16 100644
+index 5865795..4e08c17 100644
 --- a/gpui-pre-ios/src/ios/window.rs
 +++ b/gpui-pre-ios/src/ios/window.rs
-@@ -10,25 +10,28 @@
+@@ -10,27 +10,30 @@
  //! whose view hosts a CAMetalLayer.
  
  use super::events::*;
@@ -136,10 +136,12 @@ index 5865795..babad16 100644
  use gpui_apple::{
      main_thread_marker,
      metal_renderer::{Context as MetalContext, MetalRenderer},
-+    native_view_placement::hole_inset,
      process_info,
  };
++use gpui::native_view_placement::hole_inset;
  use objc2::rc::Retained;
+ use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+ use objc2::{
 @@ -88,6 +91,13 @@ struct KeyboardDismissTouch {
  /// Accessed from the main thread only.
  static STATUS_BAR_STYLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -240,10 +242,10 @@ index 5865795..babad16 100644
 +    /// edges stay under GPUI's own pixels (gpui_apple's native_view_placement).
 +    fn native_view_hole_inset(&self) -> ScaledPixels {
 +        match self.rotation.get() {
-+            Rotation::Turning => ScaledPixels(1.),
++            Rotation::Turning => hole_inset(true),
 +            Rotation::Settled => {
 +                let display = IosDisplay::from_screen(self.window.screen());
-+                hole_inset(display.scale() as f64, display.native_scale() as f64)
++                hole_inset(display.scale() != display.native_scale())
 +            }
 +        }
 +    }
@@ -330,10 +332,10 @@ index 5865795..babad16 100644
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
 diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
 new file mode 100644
-index 0000000..b4f68e6
+index 0000000..b514f6c
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/window/native_views.rs
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,269 @@
 +//! Composites the app's `UIView`s beneath GPUI's view, which is non-opaque
 +//! while one shows (gpui_apple's `MetalRenderer` clears a hole over each).
 +//!
@@ -417,13 +419,7 @@ index 0000000..b4f68e6
 +                    .iter()
 +                    .find(|native_view| native_view.id == attached.id)
 +                    .and_then(|native_view| {
-+                        Placement::new(
-+                            native_view.bounds,
-+                            native_view.content_mask.bounds,
-+                            scale_factor,
-+                            gpui_frame,
-+                            YAxis::Down,
-+                        )
++                        Placement::new(native_view, scale_factor, gpui_frame, YAxis::Down)
 +                    });
 +                (attached.placement != placement).then_some((attached.id, placement))
 +            })
