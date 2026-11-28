@@ -46,9 +46,10 @@ mutter may never release a buffer that was attached when a view hid: treat it as
 
 NVIDIA's WSI offers premultiplied here, so no GL fallback is needed on this driver. With `--animate` (the view moves
 and resizes every GPUI frame) `WAYLAND_DEBUG` shows the order above every frame, and a screenshot at 1.25 shows one
-physical pixel of the container, then the page, on every edge. Headless runs: a private `gnome-shell --headless`
-(screenshots) or `mutter --headless` (input through its RemoteDesktop API) in its own D-Bus session and runtime dir.
-Not yet run: a mutter compositing on Mesa (this machine has only the NVIDIA GPU).
+physical pixel of the container, then the page, on every edge. The headless checks are one repeatable script,
+[wayland-native-view-checks.sh](../scripts/wayland-native-view-checks.sh), also run by CI
+([native-view-wayland-checks.md](native-view-wayland-checks.md)). Not yet run: a mutter compositing on Mesa (this
+machine has only the NVIDIA GPU).
 
 Cost on the owner's session (debug build, 10 s each, window 900×600 with a 640×400 view):
 
