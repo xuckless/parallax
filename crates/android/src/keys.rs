@@ -581,9 +581,12 @@ mod tests {
             Vec<((Vec<u8>, KeyEventExtras), DispatchEventResult)>,
             Vec<(Option<&'static str>, bool)>,
         );
-        // KeyEvent.META_SHIFT_ON, and every bit of the `META` table.
-        const META_SHIFT_ON: i32 = 0x01;
-        const META_ALL: i32 = 0x1000 | 0x02 | 0x01 | 0x10000 | 0x08;
+        // KeyEvent.META_SHIFT_ON, and every bit of the `META` table, read from it.
+        let meta_shift_on = META
+            .iter()
+            .find(|(_, modifier)| *modifier == Modifier::Shift)
+            .map_or(0, |(bit, _)| *bit);
+        let meta_all = META.iter().fold(0, |all, (bit, _)| all | bit);
         let cases: Vec<Row> = vec![
             (
                 // Gboard's text-editing panel with Select on (docs/gate-1.md, known limit 5): Shift down with meta
@@ -594,8 +597,8 @@ mod tests {
                 vec![
                     (key(DOWN, SHIFT_LEFT, ""), UNHANDLED),
                     (key(UP, SHIFT_LEFT, ""), UNHANDLED),
-                    (meta(key(DOWN, ARROW_LEFT, ""), META_SHIFT_ON), UNHANDLED),
-                    (meta(key(UP, ARROW_LEFT, ""), META_SHIFT_ON), UNHANDLED),
+                    (meta(key(DOWN, ARROW_LEFT, ""), meta_shift_on), UNHANDLED),
+                    (meta(key(UP, ARROW_LEFT, ""), meta_shift_on), UNHANDLED),
                 ],
                 vec![
                     (Some("modifiers shift-caps=false"), false),
@@ -607,7 +610,7 @@ mod tests {
             (
                 "gboard_select_mode_off_arrow_moves",
                 vec![
-                    (meta(key(DOWN, ARROW_LEFT, ""), META_SHIFT_ON), HANDLED),
+                    (meta(key(DOWN, ARROW_LEFT, ""), meta_shift_on), HANDLED),
                     (key(DOWN, ARROW_LEFT, ""), HANDLED),
                 ],
                 vec![
@@ -617,7 +620,7 @@ mod tests {
             ),
             (
                 "meta_state_sets_each_modifier",
-                vec![(meta(key(DOWN, KEY_A, "a"), META_ALL), UNHANDLED)],
+                vec![(meta(key(DOWN, KEY_A, "a"), meta_all), UNHANDLED)],
                 vec![(Some(r#"down ctrl-alt-shift-cmd-fn-a Some("a")"#), false)],
             ),
             (
