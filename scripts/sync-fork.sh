@@ -57,11 +57,14 @@ export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 
 for patch in "${patches[@]}"; do
     out="$translated/$(basename "$patch")"
-    git -C "$dir" apply --check "$out" || die "$(basename "$patch") does not apply to zed $base"
-    git -C "$dir" apply --index "$out"
+    # A patch with only a manifest change Zed already has translates to nothing; it still gets its (empty) commit.
+    if grep -q '^diff --git ' "$out"; then
+        git -C "$dir" apply --check "$out" || die "$(basename "$patch") does not apply to zed $base"
+        git -C "$dir" apply --index "$out"
+    fi
     # Subject = first header line, body = the rest of the header (everything above the first `diff --git`).
     header="$(sed '/^diff --git /,$d' "$patch")"
-    git -C "$dir" commit -q -m "$(head -n 1 <<< "$header")" -m "$(tail -n +2 <<< "$header")"
+    git -C "$dir" commit -q --allow-empty -m "$(head -n 1 <<< "$header")" -m "$(tail -n +2 <<< "$header")"
 done
 
 if [[ $push == no ]]; then

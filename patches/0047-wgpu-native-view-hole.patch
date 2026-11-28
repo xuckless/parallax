@@ -22,7 +22,6 @@ Upstream PR: not filed yet.
 
 diff --git a/gpui-pre-wgpu/src/shaders_native_view.wgsl b/gpui-pre-wgpu/src/shaders_native_view.wgsl
 new file mode 100644
-index 0000000..8367052
 --- /dev/null
 +++ b/gpui-pre-wgpu/src/shaders_native_view.wgsl
 @@ -0,0 +1,20 @@
@@ -46,213 +45,8 @@ index 0000000..8367052
 +fn fs_native_view_hole() -> @location(0) vec4<f32> {
 +    return vec4<f32>(0.0);
 +}
-diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
-index 41be0d3..946138a 100644
---- a/gpui-pre-wgpu/src/wgpu_renderer.rs
-+++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
-@@ -1,4 +1,5 @@
- // Modified for gpui-pre (snapshot of zed@f126950): adapt device queues and sRGB detection to wgpu 30.0.1.
-+mod native_view_hole;
- use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
- use anyhow::{Context as _, Result};
- use bytemuck::{Pod, Zeroable};
-@@ -26,6 +27,7 @@ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
- const STORAGE_BUFFER_SHADERS: &str = concat!(
-     include_str!("shaders.wgsl"),
-     include_str!("shaders_storage.wgsl"),
-+    include_str!("shaders_native_view.wgsl"),
- );
- 
- /// Shader variant for WebGL2, which has no storage buffers: the shared shader
-@@ -33,6 +35,7 @@ const STORAGE_BUFFER_SHADERS: &str = concat!(
- const WEBGL_SHADERS: &str = concat!(
-     include_str!("shaders.wgsl"),
-     include_str!("shaders_webgl.wgsl"),
-+    include_str!("shaders_native_view.wgsl"),
- );
- 
- /// Subpixel text rendering requires dual-source blending, which WebGL2 lacks, so
-@@ -131,6 +134,7 @@ struct WgpuPipelines {
-     poly_sprites: wgpu::RenderPipeline,
-     #[allow(dead_code)]
-     surfaces: wgpu::RenderPipeline,
-+    native_view_holes: wgpu::RenderPipeline,
-     premultiplied_alpha: bool,
- }
- 
-@@ -166,6 +170,7 @@ struct InstanceBindings {
-     monochrome_sprites: InstanceBinding,
-     subpixel_sprites: InstanceBinding,
-     polychrome_sprites: InstanceBinding,
-+    native_view_holes: InstanceBinding,
- }
- 
- struct WgpuBindGroupLayouts {
-@@ -223,6 +228,10 @@ struct WgpuRendererCore {
-     transient_attachments: bool,
-     adapter_info: wgpu::AdapterInfo,
-     depth_texture: Option<DepthTexture>,
-+    /// How far each native view's hole is cut inside the view's bounds, so the platform's
-+    /// rounding of the view to whole logical pixels can't show a seam. See
-+    /// [`WgpuRenderer::set_native_view_hole_inset`].
-+    native_view_hole_inset: ScaledPixels,
-     /// Read by the headless renderer to create its render target.
-     #[cfg(all(
-         not(target_family = "wasm"),
-@@ -260,6 +269,11 @@ pub struct WgpuRenderer {
-     atlas: Arc<WgpuAtlas>,
-     transparent_alpha_mode: wgpu::CompositeAlphaMode,
-     opaque_alpha_mode: wgpu::CompositeAlphaMode,
-+    /// The transparency the window asked for. The surface also blends while the last
-+    /// drawn scene showed native views, which `shows_native_views` tracks.
-+    transparent: bool,
-+    shows_native_views: bool,
-+    native_view_hole_inset: ScaledPixels,
-     max_texture_size: u32,
-     is_bgr: bool,
-     failed_frame_count: u32,
-@@ -513,6 +527,9 @@ impl WgpuRenderer {
-             atlas,
-             transparent_alpha_mode,
-             opaque_alpha_mode,
-+            transparent: config.transparent,
-+            shows_native_views: false,
-+            native_view_hole_inset: ScaledPixels(0.),
-             max_texture_size,
-             is_bgr: false,
-             failed_frame_count: 0,
-@@ -981,6 +998,19 @@ impl WgpuRendererCore {
-             &shader_module,
-         );
- 
-+        let native_view_holes = create_pipeline(
-+            "native_view_holes",
-+            "vs_native_view_hole",
-+            "fs_native_view_hole",
-+            &layouts.globals,
-+            &layouts.instances,
-+            None,
-+            wgpu::PrimitiveTopology::TriangleStrip,
-+            &[Some(native_view_hole::color_target(surface_format))],
-+            false,
-+            &shader_module,
-+        );
-+
-         WgpuPipelines {
-             quads,
-             opaque_quads,
-@@ -991,6 +1021,7 @@ impl WgpuRendererCore {
-             subpixel_sprites,
-             poly_sprites,
-             surfaces,
-+            native_view_holes,
-             premultiplied_alpha,
-         }
-     }
-@@ -1032,7 +1063,23 @@ impl WgpuRenderer {
-     }
- 
-     pub fn update_transparency(&mut self, transparent: bool) {
--        let new_alpha_mode = if transparent {
-+        self.transparent = transparent;
-+        self.apply_alpha_mode();
-+    }
-+
-+    /// Cuts every native view's hole this far inside the view's bounds.
-+    ///
-+    /// A platform that places native views in whole logical pixels, as Wayland does, sets
-+    /// a physical pixel here at a fractional scale, so the window's own pixels cover the
-+    /// view's rounded edges instead of a seam showing there.
-+    pub fn set_native_view_hole_inset(&mut self, inset: ScaledPixels) {
-+        self.native_view_hole_inset = inset;
-+    }
-+
-+    fn apply_alpha_mode(&mut self) {
-+        // A native view shows through its hole only where the compositor blends the
-+        // window, so the surface is transparent while one shows, and opaque again after.
-+        let new_alpha_mode = if self.transparent || self.shows_native_views {
-             self.transparent_alpha_mode
-         } else {
-             self.opaque_alpha_mode
-@@ -1101,9 +1148,19 @@ impl WgpuRenderer {
-         // Android background/rotation transitions).  Attempting to acquire
-         // a texture from an unconfigured surface can block indefinitely on
-         // some drivers (Adreno).
-+        let shows_native_views = !scene.native_views.is_empty();
-+        if shows_native_views != self.shows_native_views {
-+            self.shows_native_views = shows_native_views;
-+            self.apply_alpha_mode();
-+            if shows_native_views {
-+                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
-+            }
-+        }
-+
-         let RendererState::Ready { surface, core } = &mut self.state else {
-             return false;
-         };
-+        core.native_view_hole_inset = self.native_view_hole_inset;
- 
-         if let Some(error) = self.last_surface_error.take().or_else(|| {
-             self.device_errors
-@@ -1293,6 +1350,7 @@ impl WgpuRendererCore {
-             transient_attachments: context.supports_transient_attachments(),
-             adapter_info: context.adapter.get_info(),
-             depth_texture: None,
-+            native_view_hole_inset: ScaledPixels(0.),
-             #[cfg(all(
-                 not(target_family = "wasm"),
-                 any(test, feature = "bench-support", feature = "test-support")
-@@ -1544,8 +1602,14 @@ impl WgpuRendererCore {
-                     // Surfaces are macOS-only for video playback and are not
-                     // implemented by the WGPU renderer.
-                     PrimitiveBatch::Surfaces(_surfaces) => {}
--                    // Native views are only composited by the Metal renderer.
--                    PrimitiveBatch::NativeViews(_) => {}
-+                    // The platform composites the views beneath the window; the
-+                    // renderer only cuts their holes, in paint order.
-+                    PrimitiveBatch::NativeViews(range) => self.draw_instances(
-+                        &instance_bindings.native_view_holes,
-+                        &self.resources().pipelines.native_view_holes,
-+                        instance_range(range),
-+                        &mut pass,
-+                    ),
-                 }
-             }
-         }
-@@ -1629,6 +1693,11 @@ impl WgpuRendererCore {
-                 instance_offset,
-                 &scene.polychrome_sprites,
-             )?,
-+            native_view_holes: self.write_instance_binding(
-+                "native_view_holes_bind_group",
-+                instance_offset,
-+                &native_view_hole::holes(&scene.native_views, self.native_view_hole_inset),
-+            )?,
-         })
-     }
- 
-@@ -2109,7 +2178,8 @@ impl WgpuRenderer {
-         let width = (config.size.width.0 as u32).max(1);
-         let height = (config.size.height.0 as u32).max(1);
- 
--        let alpha_mode = if config.transparent {
-+        self.transparent = config.transparent;
-+        let alpha_mode = if self.transparent || self.shows_native_views {
-             self.transparent_alpha_mode
-         } else {
-             self.opaque_alpha_mode
-@@ -2573,6 +2643,8 @@ impl RenderingParameters {
- #[cfg(test)]
- mod tests {
-     use super::*;
-+
-+    mod native_view_hole;
-     use gpui::{
-         BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite, PathCurve,
-         PathPaint, PathTile, Point, PolychromeSprite, Quad, Shadow, Size, SubpixelSprite,
 diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
 new file mode 100644
-index 0000000..aebde2c
 --- /dev/null
 +++ b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
 @@ -0,0 +1,45 @@
@@ -303,7 +97,6 @@ index 0000000..aebde2c
 +}
 diff --git a/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
 new file mode 100644
-index 0000000..a9ff91b
 --- /dev/null
 +++ b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
 @@ -0,0 +1,77 @@
@@ -384,3 +177,209 @@ index 0000000..a9ff91b
 +    }
 +    Ok(())
 +}
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer.rs b/gpui-pre-wgpu/src/wgpu_renderer.rs
+--- a/gpui-pre-wgpu/src/wgpu_renderer.rs
++++ b/gpui-pre-wgpu/src/wgpu_renderer.rs
+@@ -17,6 +17,8 @@
+ use std::rc::Rc;
+ use std::sync::Arc;
+ 
++mod native_view_hole;
++
+ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+ 
+ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
+@@ -26,6 +28,7 @@
+ const STORAGE_BUFFER_SHADERS: &str = concat!(
+     include_str!("shaders.wgsl"),
+     include_str!("shaders_storage.wgsl"),
++    include_str!("shaders_native_view.wgsl"),
+ );
+ 
+ /// Shader variant for WebGL2, which has no storage buffers: the shared shader
+@@ -33,6 +36,7 @@
+ const WEBGL_SHADERS: &str = concat!(
+     include_str!("shaders.wgsl"),
+     include_str!("shaders_webgl.wgsl"),
++    include_str!("shaders_native_view.wgsl"),
+ );
+ 
+ /// Subpixel text rendering requires dual-source blending, which WebGL2 lacks, so
+@@ -131,6 +135,7 @@
+     poly_sprites: wgpu::RenderPipeline,
+     #[allow(dead_code)]
+     surfaces: wgpu::RenderPipeline,
++    native_view_holes: wgpu::RenderPipeline,
+     premultiplied_alpha: bool,
+ }
+ 
+@@ -166,6 +171,7 @@
+     monochrome_sprites: InstanceBinding,
+     subpixel_sprites: InstanceBinding,
+     polychrome_sprites: InstanceBinding,
++    native_view_holes: InstanceBinding,
+ }
+ 
+ struct WgpuBindGroupLayouts {
+@@ -223,6 +229,10 @@
+     transient_attachments: bool,
+     adapter_info: wgpu::AdapterInfo,
+     depth_texture: Option<DepthTexture>,
++    /// How far each native view's hole is cut inside the view's bounds, so the platform's
++    /// rounding of the view to whole logical pixels can't show a seam. See
++    /// [`WgpuRenderer::set_native_view_hole_inset`].
++    native_view_hole_inset: ScaledPixels,
+     /// Read by the headless renderer to create its render target.
+     #[cfg(all(
+         not(target_family = "wasm"),
+@@ -260,6 +270,11 @@
+     atlas: Arc<WgpuAtlas>,
+     transparent_alpha_mode: wgpu::CompositeAlphaMode,
+     opaque_alpha_mode: wgpu::CompositeAlphaMode,
++    /// The transparency the window asked for. The surface also blends while the last
++    /// drawn scene showed native views, which `shows_native_views` tracks.
++    transparent: bool,
++    shows_native_views: bool,
++    native_view_hole_inset: ScaledPixels,
+     max_texture_size: u32,
+     is_bgr: bool,
+     failed_frame_count: u32,
+@@ -513,6 +528,9 @@
+             atlas,
+             transparent_alpha_mode,
+             opaque_alpha_mode,
++            transparent: config.transparent,
++            shows_native_views: false,
++            native_view_hole_inset: ScaledPixels(0.),
+             max_texture_size,
+             is_bgr: false,
+             failed_frame_count: 0,
+@@ -981,6 +999,19 @@
+             &shader_module,
+         );
+ 
++        let native_view_holes = create_pipeline(
++            "native_view_holes",
++            "vs_native_view_hole",
++            "fs_native_view_hole",
++            &layouts.globals,
++            &layouts.instances,
++            None,
++            wgpu::PrimitiveTopology::TriangleStrip,
++            &[Some(native_view_hole::color_target(surface_format))],
++            false,
++            &shader_module,
++        );
++
+         WgpuPipelines {
+             quads,
+             opaque_quads,
+@@ -991,6 +1022,7 @@
+             subpixel_sprites,
+             poly_sprites,
+             surfaces,
++            native_view_holes,
+             premultiplied_alpha,
+         }
+     }
+@@ -1032,7 +1064,23 @@
+     }
+ 
+     pub fn update_transparency(&mut self, transparent: bool) {
+-        let new_alpha_mode = if transparent {
++        self.transparent = transparent;
++        self.apply_alpha_mode();
++    }
++
++    /// Cuts every native view's hole this far inside the view's bounds.
++    ///
++    /// A platform that places native views in whole logical pixels, as Wayland does, sets
++    /// a physical pixel here at a fractional scale, so the window's own pixels cover the
++    /// view's rounded edges instead of a seam showing there.
++    pub fn set_native_view_hole_inset(&mut self, inset: ScaledPixels) {
++        self.native_view_hole_inset = inset;
++    }
++
++    fn apply_alpha_mode(&mut self) {
++        // A native view shows through its hole only where the compositor blends the
++        // window, so the surface is transparent while one shows, and opaque again after.
++        let new_alpha_mode = if self.transparent || self.shows_native_views {
+             self.transparent_alpha_mode
+         } else {
+             self.opaque_alpha_mode
+@@ -1101,9 +1149,19 @@
+         // Android background/rotation transitions).  Attempting to acquire
+         // a texture from an unconfigured surface can block indefinitely on
+         // some drivers (Adreno).
++        let shows_native_views = !scene.native_views.is_empty();
++        if shows_native_views != self.shows_native_views {
++            self.shows_native_views = shows_native_views;
++            self.apply_alpha_mode();
++            if shows_native_views {
++                native_view_hole::log_alpha_mode(self.transparent_alpha_mode);
++            }
++        }
++
+         let RendererState::Ready { surface, core } = &mut self.state else {
+             return false;
+         };
++        core.native_view_hole_inset = self.native_view_hole_inset;
+ 
+         if let Some(error) = self.last_surface_error.take().or_else(|| {
+             self.device_errors
+@@ -1293,6 +1351,7 @@
+             transient_attachments: context.supports_transient_attachments(),
+             adapter_info: context.adapter.get_info(),
+             depth_texture: None,
++            native_view_hole_inset: ScaledPixels(0.),
+             #[cfg(all(
+                 not(target_family = "wasm"),
+                 any(test, feature = "bench-support", feature = "test-support")
+@@ -1544,8 +1603,14 @@
+                     // Surfaces are macOS-only for video playback and are not
+                     // implemented by the WGPU renderer.
+                     PrimitiveBatch::Surfaces(_surfaces) => {}
+-                    // Native views are only composited by the Metal renderer.
+-                    PrimitiveBatch::NativeViews(_) => {}
++                    // The platform composites the views beneath the window; the
++                    // renderer only cuts their holes, in paint order.
++                    PrimitiveBatch::NativeViews(range) => self.draw_instances(
++                        &instance_bindings.native_view_holes,
++                        &self.resources().pipelines.native_view_holes,
++                        instance_range(range),
++                        &mut pass,
++                    ),
+                 }
+             }
+         }
+@@ -1629,6 +1694,11 @@
+                 instance_offset,
+                 &scene.polychrome_sprites,
+             )?,
++            native_view_holes: self.write_instance_binding(
++                "native_view_holes_bind_group",
++                instance_offset,
++                &native_view_hole::holes(&scene.native_views, self.native_view_hole_inset),
++            )?,
+         })
+     }
+ 
+@@ -2109,7 +2179,8 @@
+         let width = (config.size.width.0 as u32).max(1);
+         let height = (config.size.height.0 as u32).max(1);
+ 
+-        let alpha_mode = if config.transparent {
++        self.transparent = config.transparent;
++        let alpha_mode = if self.transparent || self.shows_native_views {
+             self.transparent_alpha_mode
+         } else {
+             self.opaque_alpha_mode
+@@ -2573,6 +2644,8 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    mod native_view_hole;
+     use gpui::{
+         BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite, PathCurve,
+         PathPaint, PathTile, Point, PolychromeSprite, Quad, Shadow, Size, SubpixelSprite,
