@@ -17,12 +17,14 @@ Shared, patch [0051](../patches/0051-native-view-in-step.patch):
 
 - **In step.** A frame that moves, resizes, shows or hides a view is presented with the Core Animation transaction
   that places it (`MetalRenderer::draw_placing_native_views`), so hole and view reach the screen together; other
-  frames present on their own and pay nothing. iOS sets frames and the gap colour in one no-animation block.
-- **Edges.** gpui_apple's `native_view_placement.rs` places views for both backends, with Chromium's rule (as
-  Wayland's, [native-view.md](native-view.md)): where the screen resamples the layer the hole is cut one pixel inside
-  the view (`hole_inset`), so no gap-colour seam blends in. iOS: during a rotation's turn and under Display Zoom
-  (`nativeScale` != `scale`), decided by `Rotation::resamples` in `native_view_state.rs`; exact at 2x and 3x
-  otherwise. macOS has no API for a scaled display mode's resampling, so it never insets.
+  frames present on their own and pay nothing. iOS counts a restack as placing, and sets frames and the gap colour
+  in one no-animation block.
+- **Edges.** gpui_apple's `native_view_placement.rs` turns core's `visible` part of a view (whole device pixels
+  already, [native-view-placement.md](native-view-placement.md)) into frames in points for both backends, and where
+  the screen resamples the layer the hole is cut one pixel inside it (core's `hole_inset(true)`), so no gap-colour
+  seam blends in. iOS: during a rotation's turn and under Display Zoom (`nativeScale` != `scale`), decided by
+  `Rotation::resamples` in `native_view_state.rs`; exact at 2x and 3x otherwise. macOS has no API for a scaled
+  display mode's resampling, so it never insets.
 - **Alpha mode logged:** `metal layer alpha: opaque` / `premultiplied, native views show through` (target
   `gpui_apple`, info), each time a view shows or goes.
 

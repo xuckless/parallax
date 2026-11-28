@@ -40,9 +40,10 @@ finds exactly the 38 of 617 gap frames of the rotation before the rigid turn.
 
 ## Results (2026-11-28)
 
-iOS 26.5 simulator, iPhone 17 (3x) and iPad Air 11-inch M4 (2x): every row passes: idle at 0 GPUI and 63 view
-frames/s; 0 failing frames of 220, 493 and 387 (iPhone) and 219, 482 and 398 (iPad) still, moving and rotating;
-input (`slot: mouse down at Point { x: 44px, y: 190px }`, a scroll, the div's click alone); keyboard to GPUI's
-field after the drop. macOS needs a window server, which `ssh` doesn't have: the owner records the example
+iOS 26.5 simulator, iPhone 17 (3x) and iPad Air 11-inch M4 (2x), on core's shared placement module: every row
+passes: idle at 0 GPUI and 63 view frames/s; 0 failing frames of 218, 444 and 385 (iPhone) and 220, 446 and 394
+(iPad) still, moving and rotating; input (`slot: mouse down at Point { x: 44px, y: 190px }`, a scroll, the div's
+click alone); keyboard to GPUI's field after the drop. One iPhone run in three had one frame at the turn's start with
+a single gap-colour pixel (of 387); the other two had none. macOS needs a window server, which `ssh` doesn't have: the owner records the example
 (`screencapture -v`, moving and resizing the window) and runs the frame check on it, steps in
 `/Users/Shared/parallax/w15-fix-mobile-ios-macos/CHECK.md` on pixl-mac.

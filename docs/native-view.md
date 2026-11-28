@@ -17,8 +17,13 @@ where the view goes, and elements painted after it cover it. `NativeView::bounds
 last frame: the whole view, so pointer positions stay view-relative when a clip cuts it. A view its element's clip
 cuts (scrolled partly out of a container) shows only the part the clip leaves, at its full size and position, on
 every target (a clipping container on Apple, a clip visual on Windows, a crop on Wayland); clipped away entirely, it
-hides. `NativeView::set_buffer_size(size, window)` tells the size of the app's buffers, which only Wayland needs, for
-that crop ([native-view-wayland.md](native-view-wayland.md#clipped-views)); elsewhere it does nothing.
+hides. On Wayland the app commits every buffer through `gpui_linux::NativeViewBuffers`, which sets that crop for
+each buffer's size ([native-view-wayland.md](native-view-wayland.md#clipped-views)).
+
+## Placement
+
+What shows of a painted view (its visible part, rounding for a coarser grid, the hole inset, the background colour) is
+decided once, in gpui's `native_view_placement`: [native-view-placement.md](native-view-placement.md).
 
 ## The hole
 
@@ -51,8 +56,9 @@ every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract
 `view.bounds(window)`'s origin for view-relative positions. The hit test skips every hitbox behind the view whose
 element is not on the view's dispatch path (`Occlusion` in gpui's `window/native_view_input.rs`). Keys while the
-view's `FocusHandle` is focused dispatch from that element like any key, `reserve_action` bindings first, so the app
-forwards the rest to the view.
+view's `FocusHandle` is focused follow macOS's rule for its views: `reserve_action` bindings and the rest of a pending
+binding first, then the view's element's key listeners (forward the key to the view and stop its propagation), then
+key bindings with what the element leaves.
 
 ## Placement in step
 

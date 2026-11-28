@@ -3028,6 +3028,7 @@ dependencies = [
  "libc",
  "log",
  "parallax",
+ "parallax-gpui-linux",
  "raw-window-handle",
  "wayland-backend",
  "wayland-client",
