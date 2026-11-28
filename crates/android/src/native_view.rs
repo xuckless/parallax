@@ -11,7 +11,10 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use gpui::{NativeViewId, Scene, Window};
+use gpui::{
+    NativeViewId, Scene, Window,
+    native_view_placement::{background, visible},
+};
 use jni::{
     JNIEnv,
     objects::{GlobalRef, JObject, JValue},
@@ -75,7 +78,7 @@ pub(crate) struct NativeViews {
     host: OnceCell<Rc<GlobalRef>>,
     views: RefCell<Vec<Weak<AttachedView>>>,
     next_handle: Cell<i32>,
-    /// The underlay's colour as Java last set it ([`native_view_placement::background`]).
+    /// The underlay's colour as Java last set it ([`native_view_placement::argb`]).
     background: Cell<i32>,
 }
 
@@ -137,20 +140,21 @@ impl NativeViews {
             .iter()
             .filter_map(Weak::upgrade)
             .filter_map(|view| {
+                // Hidden too when the content mask leaves none of it.
                 let shown_at = scene
                     .native_views
                     .iter()
                     .enumerate()
                     .find(|(_, painted)| painted.id == view.id)
-                    .map(|(rank, painted)| (rank, painted.bounds));
+                    .and_then(|(rank, painted)| {
+                        visible(painted).map(|visible| (rank, painted.bounds, visible))
+                    });
                 let next = Placement::of(shown_at, scene.native_views.len());
                 (view.placement.replace(next) != next).then(|| next.record(view.handle))
             })
             .flatten()
             .collect();
-        let background = native_view_placement::background(
-            scene.native_views.iter().map(|painted| painted.background),
-        );
+        let background = native_view_placement::argb(background(&scene.native_views));
         let recoloured = self.background.replace(background) != background;
         let Some(host) = self
             .host
