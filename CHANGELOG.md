@@ -26,6 +26,10 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
   (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
+- Android: `NativeView` shows an app's `SurfaceControl` (API 29+, under GPUI's buffer, placed with GPUI's frame) or
+  any `View` (WebView, SurfaceView; laid out under GPUI's translucent surface), with no GPUI frame for the view's own;
+  `parallax_android::with_activity` builds views, `forward_touches` sends gestures that start on a view to it too
+  (React Native's `JSTouchDispatcher`, ported). Example: `examples/native-view-android` (docs/native-view-android.md).
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 
