@@ -1,12 +1,13 @@
 // Ported from flutter/flutter @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): test cases of
 // packages/flutter/test/widgets/text_selection_test.dart, packages/flutter/test/material/text_field_test.dart,
-// packages/flutter/test/material/magnifier_test.dart and packages/flutter/test/widgets/magnifier_test.dart, one row
+// packages/flutter/test/widgets/editable_text_test.dart, packages/flutter/test/material/magnifier_test.dart and
+// packages/flutter/test/widgets/magnifier_test.dart, one row
 // each, named after the Flutter test. Copyright 2014 The Flutter Authors. BSD-3-Clause, see
 // third_party/flutter/LICENSE.
 
 use std::ops::Range;
 
-use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, point, px, size};
+use gpui::{Bounds, Haptic, Pixels, Point, PointerDevice, constants::kTouchSlop, point, px, size};
 use parallax_platform::Target;
 use parallax_platform::behaviour::behaviour;
 
@@ -50,7 +51,7 @@ impl TextLayout for Mono {
         0..self.0.len()
     }
 
-    fn caret_rect(&self, offset: usize) -> Bounds<Pixels> {
+    fn caret_rect(&self, offset: usize, _: Affinity) -> Bounds<Pixels> {
         Bounds::new(
             point(px(offset as f32 * CHAR), px(0.)),
             size(px(2.), px(LINE)),
@@ -136,16 +137,28 @@ fn long_move(offset: usize) -> Input {
     }
 }
 
-/// A handle drag from just off the handle's endpoint (the bottom of the line at `offset`) to `offset_to`.
-fn drag_handle(handle: Handle, from: usize, to: usize) -> [Input; 3] {
+/// A touch on the handle at `offset`, just off its endpoint (the bottom of the line).
+fn handle_down(handle: Handle, offset: usize) -> Input {
+    Input::HandleDown {
+        handle,
+        position: point(px(offset as f32 * CHAR + 1.), px(LINE + 1.)),
+        touch_slop: kTouchSlop,
+    }
+}
+
+/// A handle drag from just off the handle's endpoint to `to`: the first move passes the slop and starts the drag
+/// where it lands (`DragStartBehavior.start`), the second updates it.
+fn drag_handle(handle: Handle, from: usize, to: usize) -> [Input; 4] {
     [
-        Input::HandleDragStart {
-            handle,
-            position: point(px(from as f32 * CHAR + 1.), px(LINE + 1.)),
-        },
-        Input::HandleDragUpdate { position: at(to) },
-        Input::HandleDragEnd,
+        handle_down(handle, from),
+        Input::HandleMove { position: at(to) },
+        Input::HandleMove { position: at(to) },
+        Input::HandleUp,
     ]
+}
+
+fn tap_handle(offset: usize) -> [Input; 2] {
+    [handle_down(Handle::Start, offset), Input::HandleUp]
 }
 
 /// What a row checks once its inputs ran.
@@ -209,18 +222,21 @@ struct Start {
     text: &'static str,
     selection: (usize, usize),
     focused: bool,
+    visibility: TextVisibility,
 }
 
 const ABC: Start = Start {
     text: "abc def ghi",
     selection: (0, 0),
     focused: false,
+    visibility: TextVisibility::Plain,
 };
 
 const ATWATER: Start = Start {
     text: "Atwater Peel Sherbrooke Bonaventure",
     selection: (0, 0),
     focused: false,
+    ..ABC
 };
 
 /// Runs `inputs` on `target`'s engine the way an app does: it applies each selection, and a keyboard request
@@ -236,6 +252,7 @@ fn run(target: Target, start: &Start, inputs: &[Input]) -> Expected {
         },
         focused: start.focused,
         lines: Lines::Single,
+        text: start.visibility,
         screen: Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.))),
     };
     let mut haptic = None;
@@ -267,11 +284,12 @@ fn flutter_selection_gesture_tests_pass() {
         text,
         selection: (base, extent),
         focused: true,
+        ..ABC
     };
     let unfocused_at = |text, offset| Start {
         text,
         selection: (offset, offset),
-        focused: false,
+        ..ABC
     };
     // (Flutter test name, target, start, inputs, expected)
     let rows: Vec<(&str, Target, Start, Vec<Input>, Expected)> = vec![
@@ -505,7 +523,7 @@ fn flutter_selection_gesture_tests_pass() {
             "cancelling long press hides magnifier",
             Android,
             ABC,
-            vec![long_press(5), Input::LongPressCancel],
+            vec![long_press(5), Input::Cancel],
             range(4, 7),
         ),
         (
@@ -541,12 +559,17 @@ fn flutter_selection_gesture_tests_pass() {
             vec![
                 long_press(5),
                 Input::LongPressEnd,
-                Input::HandleDragStart {
+                Input::HandleDown {
                     handle: Handle::End,
                     position: point(px(74.), px(LINE)),
+                    touch_slop: kTouchSlop,
                 },
-                Input::HandleDragUpdate { position: at(5) },
-                Input::HandleDragUpdate { position: at(2) },
+                // Past the slop, straight down: the drag starts with the selection as it was.
+                Input::HandleMove {
+                    position: point(px(74.), px(LINE * 2.)),
+                },
+                Input::HandleMove { position: at(5) },
+                Input::HandleMove { position: at(2) },
             ],
             Expected {
                 haptic: Some(Haptic::SelectionClick),
@@ -768,7 +791,7 @@ fn flutter_selection_gesture_tests_pass() {
             ABC,
             steps([
                 &[long_press(5), Input::LongPressEnd],
-                &drag_handle(Handle::End, 7, 11)[..2],
+                &drag_handle(Handle::End, 7, 11)[..3],
             ]),
             Expected {
                 haptic: Some(Haptic::SelectionClick),
@@ -781,6 +804,100 @@ fn flutter_selection_gesture_tests_pass() {
             ABC,
             steps([&tap(5, Touch, 1), &[Input::Typed]]),
             no_overlay(caret(5)),
+        ),
+        (
+            "Tapping selection handles toggles the toolbar: a tap shows it, with no magnifier",
+            Android,
+            ABC,
+            steps([&tap(5, Touch, 1), &tap_handle(5)]),
+            with_toolbar(caret(5)),
+        ),
+        (
+            "Tapping selection handles toggles the toolbar: a second tap hides it (toggleToolbar hides the handles)",
+            Android,
+            ABC,
+            steps([&tap(5, Touch, 1), &tap_handle(5), &tap_handle(5)]),
+            no_overlay(caret(5)),
+        ),
+        (
+            "Parallax: a handle touch within the slop neither drags nor shows the magnifier",
+            Android,
+            ABC,
+            steps([
+                &tap(5, Touch, 1),
+                &[
+                    handle_down(Handle::Start, 5),
+                    Input::HandleMove {
+                        position: point(px(60.), px(LINE + 1.)),
+                    },
+                ],
+            ]),
+            caret(5),
+        ),
+        (
+            "Parallax: a cancelled handle touch neither taps nor drags",
+            Android,
+            ABC,
+            steps([
+                &tap(5, Touch, 1),
+                &[handle_down(Handle::Start, 5), Input::Cancel],
+            ]),
+            caret(5),
+        ),
+        (
+            "An obscured TextField is selected as one word",
+            Android,
+            Start {
+                text: "abcde fghi",
+                visibility: TextVisibility::Obscured,
+                ..ABC
+            },
+            vec![long_press(1), Input::LongPressEnd],
+            with_toolbar(range(0, 10)),
+        ),
+        (
+            "Parallax: a drag GPUI's recognizer let the field win moves the caret at once, within the engine's slop",
+            Android,
+            Start {
+                text: "I love flutter!",
+                ..ABC
+            },
+            steps([
+                &tap(4, Touch, 1),
+                &[Input::DragWon {
+                    origin: at(4),
+                    position: point(px(52.), px(LINE / 2.)),
+                    device: Touch,
+                }],
+            ]),
+            with_magnifier(caret(5)),
+        ),
+        (
+            "Parallax: a cancelled won drag ends without a tap: the caret stays, the magnifier goes",
+            Android,
+            Start {
+                text: "I love flutter!",
+                ..ABC
+            },
+            steps([
+                &tap(4, Touch, 1),
+                &[
+                    Input::DragWon {
+                        origin: at(4),
+                        position: at(7),
+                        device: Touch,
+                    },
+                    Input::Cancel,
+                ],
+            ]),
+            caret(7),
+        ),
+        (
+            "Parallax: a cancelled press places no caret (onCancel, not onSingleTapUp)",
+            Android,
+            ABC,
+            vec![down(5, Touch, 1), Input::Cancel],
+            no_overlay(caret(0)),
         ),
     ];
     for (name, target, start, inputs, expected) in rows {
@@ -1045,4 +1162,157 @@ fn shift_within_bounds_table() {
             "should shift {input:?} to {output:?} for bounds {bounds:?}"
         );
     }
+}
+
+#[test]
+fn toolbar_buttons_table() {
+    use ToolbarButton::{Copy, Cut, Paste, SelectAll};
+    use parallax_platform::Target::{Android, MacOs};
+    // (Flutter test or rule, target, text, selection, visibility, clipboard, expected buttons)
+    let rows = [
+        (
+            "getEditableButtonItems: a selected word offers all four, in order",
+            Android,
+            "abc def",
+            (0, 3),
+            TextVisibility::Plain,
+            Clipboard::Pasteable,
+            vec![Cut, Copy, Paste, SelectAll],
+        ),
+        (
+            "cut and copy are disabled in obscured mode even if explicitly set",
+            Android,
+            "blah blah",
+            (0, 4),
+            TextVisibility::Obscured,
+            Clipboard::Pasteable,
+            vec![Paste, SelectAll],
+        ),
+        (
+            "copyEnabled / cutEnabled: a caret has nothing to copy",
+            Android,
+            "abc def",
+            (3, 3),
+            TextVisibility::Plain,
+            Clipboard::NotPasteable,
+            vec![SelectAll],
+        ),
+        (
+            "selectAllEnabled: not once all is selected",
+            Android,
+            "abc def",
+            (0, 7),
+            TextVisibility::Plain,
+            Clipboard::NotPasteable,
+            vec![Cut, Copy],
+        ),
+        (
+            "selectAllEnabled: never on macOS",
+            MacOs,
+            "abc def",
+            (3, 3),
+            TextVisibility::Plain,
+            Clipboard::Pasteable,
+            vec![Paste],
+        ),
+    ];
+    for (name, target, text, (base, extent), visibility, clipboard, expected) in rows {
+        let row = behaviour(Some(target)).expect("every engine target has a row");
+        let engine = TextSelection::for_behaviour(row).expect("the row uses Flutter's selection");
+        let field = Field {
+            selection: Selection { base, extent },
+            focused: true,
+            lines: Lines::Single,
+            text: visibility,
+            screen: Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.))),
+        };
+        assert_eq!(
+            engine.toolbar_buttons(&field, &Mono(text), clipboard),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+/// A monospace layout wrapped every `WRAP` characters, standing in for a multi-line `RenderEditable`: line `k`
+/// holds offsets `5k..5k + 5`, so offset 5 is a soft wrap with two carets.
+struct Wrapped(&'static str);
+
+const WRAP: usize = 5;
+
+impl TextLayout for Wrapped {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn position_for_point(&self, point: Point<Pixels>) -> usize {
+        let line = (point.y.as_f32() / LINE).floor().max(0.) as usize;
+        let column = ((point.x.as_f32() / CHAR).round().max(0.) as usize).min(WRAP);
+        (line * WRAP + column).min(self.0.len())
+    }
+
+    fn word_boundary(&self, offset: usize) -> Range<usize> {
+        offset..offset
+    }
+
+    fn line_at(&self, offset: usize) -> Range<usize> {
+        let start = offset / WRAP * WRAP;
+        start..(start + WRAP).min(self.0.len())
+    }
+
+    fn paragraph_at(&self, _offset: usize) -> Range<usize> {
+        0..self.0.len()
+    }
+
+    fn caret_rect(&self, offset: usize, affinity: Affinity) -> Bounds<Pixels> {
+        let at_wrap = offset > 0 && offset.is_multiple_of(WRAP);
+        let (line, column) = match (at_wrap, affinity) {
+            (true, Affinity::Upstream) => (offset / WRAP - 1, WRAP),
+            (true, Affinity::Downstream) | (false, _) => (offset / WRAP, offset % WRAP),
+        };
+        Bounds::new(
+            point(px(column as f32 * CHAR), px(line as f32 * LINE)),
+            size(px(2.), px(LINE)),
+        )
+    }
+
+    fn preferred_line_height(&self) -> Pixels {
+        px(LINE)
+    }
+
+    fn bounds(&self) -> Bounds<Pixels> {
+        Bounds::new(point(px(0.), px(0.)), size(px(400.), px(LINE * 3.)))
+    }
+}
+
+#[test]
+fn affinity_at_a_soft_wrap_table() {
+    let layout = Wrapped("abcdefghijklmno");
+    // (Flutter source, selection, expected [start, end] endpoints)
+    let endpoints = [
+        (
+            "getEndpointsForSelection: a range that ends at a soft wrap ends on its own line (the last box's end)",
+            Selection { base: 1, extent: 5 },
+            [point(px(10.), px(20.)), point(px(50.), px(20.))],
+        ),
+        (
+            "getEndpointsForSelection: a range that starts at a soft wrap starts on the next line (the first box)",
+            Selection { base: 5, extent: 7 },
+            [point(px(0.), px(40.)), point(px(20.), px(40.))],
+        ),
+        (
+            "getEndpointsForSelection: a caret at a soft wrap is downstream",
+            Selection::collapsed(5),
+            [point(px(0.), px(40.)), point(px(0.), px(40.))],
+        ),
+    ];
+    for (name, selection, expected) in endpoints {
+        assert_eq!(selection_endpoints(&layout, selection), expected, "{name}");
+    }
+    let info = magnifier_info(&layout, point(px(45.), px(10.)), 2);
+    assert_eq!(
+        info.current_line_boundaries,
+        Bounds::from_corners(point(px(1.), px(0.)), point(px(51.), px(20.))),
+        "_buildMagnifier: the line's end is upstream, so the loupe's line runs to its right end"
+    );
 }

@@ -142,7 +142,25 @@ pub struct SelectionRules {
     /// needs them, and the pointer decides (AGENTS.md, "Desktop touch"), so desktop rows take Material's.
     pub handle_size: Pixels,
     /// Material `TextField._handleSelectionChanged`: a drag hides the toolbar on desktop.
-    pub drag_hides_toolbar: bool,
+    pub drag_toolbar: DragToolbar,
+    /// `EditableTextState.selectAllEnabled`: when the toolbar offers Select all.
+    pub select_all: SelectAllButton,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragToolbar {
+    /// Mobile: a drag leaves the toolbar as it is.
+    Keeps,
+    /// Desktop: a drag that changes the selection hides it.
+    Hides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectAllButton {
+    /// Android, Linux, Windows: while the text is not empty and not all selected.
+    UnlessAllSelected,
+    /// macOS: never.
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +246,8 @@ const ANDROID_SELECTION: SelectionRules = SelectionRules {
     handle_drag: HandleDrag::Ordered,
     magnifier: MagnifierKind::Material,
     handle_size: kHandleSize,
-    drag_hides_toolbar: false,
+    drag_toolbar: DragToolbar::Keeps,
+    select_all: SelectAllButton::UnlessAllSelected,
 };
 
 /// Windows' arms; Linux and macOS differ in a few.
@@ -244,7 +263,8 @@ const WINDOWS_SELECTION: SelectionRules = SelectionRules {
     handle_drag: HandleDrag::Ordered,
     magnifier: MagnifierKind::None,
     handle_size: kHandleSize,
-    drag_hides_toolbar: true,
+    drag_toolbar: DragToolbar::Hides,
+    select_all: SelectAllButton::UnlessAllSelected,
 };
 
 const NO_HAPTICS: Haptics = Haptics {
@@ -309,6 +329,7 @@ pub const TABLE: [Behaviour; 5] = [
             tap_count: TapCount::Hold,
             secondary_tap: SecondaryTap::AppleSelectWord,
             handle_drag: HandleDrag::AppleExtent,
+            select_all: SelectAllButton::Never,
             ..WINDOWS_SELECTION
         }),
     },
@@ -688,13 +709,28 @@ mod tests {
     #[test]
     fn text_selection_table() {
         use TextSelectionControls::{Flutter, Native};
-        // (row name with its Flutter switches, target, expected)
+        // (row name with its Flutter switches, target, expected), every field spelled out: a row states what the
+        // target's Flutter switches return, never what another row holds.
         let rows = [
             (
                 "android: tap up selects, extend, long press word, taps cycle, finger drag moves the caret, horizontal \
-                 drag, paragraphs, Material magnifier",
+                 drag, paragraphs, Material magnifier, a drag keeps the toolbar",
                 Target::Android,
-                Flutter(ANDROID_SELECTION),
+                Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Up,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
+                    tap_count: TapCount::Cycle,
+                    touch_drag: TouchDragSelects::CaretWhenFocused,
+                    drag_recognizer: TouchDragKind::Horizontal,
+                    triple_tap: TextBoundaryKind::Paragraph,
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::Material,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Keeps,
+                    select_all: SelectAllButton::UnlessAllSelected,
+                }),
             ),
             (
                 "ios: UITextInteraction (AGENTS.md, iOS text selection)",
@@ -703,7 +739,7 @@ mod tests {
             ),
             (
                 "macos: tap down selects, Apple expand, long press caret when focused, taps hold at 3, secondary tap \
-                 selects the word, handles cross, no magnifier",
+                 selects the word, handles cross, no magnifier, no Select all",
                 Target::MacOs,
                 Flutter(SelectionRules {
                     tap_selects_on: TapEdge::Down,
@@ -717,24 +753,46 @@ mod tests {
                     handle_drag: HandleDrag::AppleExtent,
                     magnifier: MagnifierKind::None,
                     handle_size: px(22.),
-                    drag_hides_toolbar: true,
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::Never,
                 }),
             ),
             (
-                "windows: double and triple alternate, pan drag, paragraphs",
+                "windows: tap down selects, double and triple alternate, pan drag, paragraphs, no magnifier",
                 Target::Windows,
                 Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Down,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
                     tap_count: TapCount::Alternate,
-                    ..WINDOWS_SELECTION
+                    touch_drag: TouchDragSelects::Range,
+                    drag_recognizer: TouchDragKind::Pan,
+                    triple_tap: TextBoundaryKind::Paragraph,
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::None,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::UnlessAllSelected,
                 }),
             ),
             (
-                "linux: taps cycle, triple tap selects a line",
+                "linux: tap down selects, taps cycle, pan drag, triple tap selects a line, no magnifier",
                 Target::Linux,
                 Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Down,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
                     tap_count: TapCount::Cycle,
+                    touch_drag: TouchDragSelects::Range,
+                    drag_recognizer: TouchDragKind::Pan,
                     triple_tap: TextBoundaryKind::Line,
-                    ..WINDOWS_SELECTION
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::None,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::UnlessAllSelected,
                 }),
             ),
         ];

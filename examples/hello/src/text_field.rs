@@ -19,8 +19,9 @@ use parallax::gpui::{
 };
 use parallax::parallax_platform::behaviour::current_behaviour;
 use parallax_ext::text_selection::{
-    Field, Handle, HandleGeometry, HandleType, Input, Lines, MagnifierGeometry, Selection,
-    TextLayout, TextSelection, toolbar_origin,
+    Affinity, Clipboard, Field, Handle, HandleGeometry, HandleType, Input, Lines,
+    MagnifierGeometry, Selection, TextLayout, TextSelection, TextVisibility, ToolbarButton,
+    toolbar_origin,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -50,11 +51,17 @@ pub fn bind_keys(cx: &mut App) {
 /// What a toolbar button does to the field.
 type ToolbarAction = fn(&mut TextField, &mut Window, &mut Context<TextField>);
 
-/// The selection toolbar's buttons, in order. To add one: a row with its label and what it does.
-const TOOLBAR: [(&str, ToolbarAction); 3] = [
-    ("Copy", TextField::copy),
-    ("Paste", TextField::paste),
-    ("Select all", TextField::select_all),
+/// What each toolbar button the engine offers shows and does (the engine picks which, in Flutter's order). To add
+/// one: a row with its label and action.
+const TOOLBAR: [(ToolbarButton, &str, ToolbarAction); 4] = [
+    (ToolbarButton::Cut, "Cut", TextField::cut),
+    (ToolbarButton::Copy, "Copy", TextField::copy),
+    (ToolbarButton::Paste, "Paste", TextField::paste),
+    (
+        ToolbarButton::SelectAll,
+        "Select all",
+        TextField::select_all,
+    ),
 ];
 
 const ACCENT: u32 = 0x3b82f6;
@@ -118,7 +125,8 @@ impl TextLayout for ShapedField<'_> {
         0..self.content.len()
     }
 
-    fn caret_rect(&self, offset: usize) -> Bounds<Pixels> {
+    // One line: no soft wraps, so both affinities are the same caret.
+    fn caret_rect(&self, offset: usize, _: Affinity) -> Bounds<Pixels> {
         Bounds::new(
             point(self.bounds.left() + self.x(offset), self.bounds.top()),
             size(px(2.), self.bounds.size.height),
@@ -158,6 +166,21 @@ impl TextField {
 
     fn selected(&self) -> Range<usize> {
         self.selection.start()..self.selection.end()
+    }
+
+    /// The field as the selection engine sees it.
+    fn engine_field(&self, window: &Window) -> Field {
+        Field {
+            selection: self.selection,
+            focused: self.focus_handle.is_focused(window),
+            lines: Lines::Single,
+            text: if self.configuration.secure {
+                TextVisibility::Obscured
+            } else {
+                TextVisibility::Plain
+            },
+            screen: Bounds::new(Point::default(), window.viewport_size()),
+        }
     }
 
     fn move_to(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -202,6 +225,7 @@ impl TextField {
 
     /// Runs one pointer input through Flutter's selection engine and applies what it asks for.
     fn selection_input(&mut self, input: Input, window: &mut Window, cx: &mut Context<Self>) {
+        let field = self.engine_field(window);
         let (Some(engine), Some(bounds)) = (self.selection_ui.as_mut(), self.last_bounds) else {
             return;
         };
@@ -209,12 +233,6 @@ impl TextField {
             content: &self.content,
             line: self.last_layout.as_ref(),
             bounds,
-        };
-        let field = Field {
-            selection: self.selection,
-            focused: self.focus_handle.is_focused(window),
-            lines: Lines::Single,
-            screen: Bounds::new(Point::default(), window.viewport_size()),
         };
         let effects = engine.handle(input, &field, &layout);
         if let Some(selection) = effects.selection {
@@ -246,21 +264,21 @@ impl TextField {
     ) {
         cx.stop_propagation();
         if self.selection_ui.is_some() {
-            let device = window
-                .pointer_source()
-                .map_or(PointerDevice::Mouse, |source| source.device);
+            let device = pointer_device(window);
             let input = match event.button {
-                MouseButton::Right => Input::SecondaryTap {
-                    position: event.position,
-                    device,
-                },
-                _ => Input::Down {
+                MouseButton::Left => Input::Down {
                     position: event.position,
                     device,
                     tap_count: event.click_count,
                     shift: event.modifiers.shift,
                     touch_slop: window.gesture_tuning().touch_slop,
                 },
+                MouseButton::Right => Input::SecondaryTap {
+                    position: event.position,
+                    device,
+                },
+                // Only the left and right buttons are listened to.
+                MouseButton::Middle | MouseButton::Navigate(_) => return,
             };
             return self.selection_input(input, window, cx);
         }
@@ -280,6 +298,12 @@ impl TextField {
         cx.write_to_clipboard(ClipboardItem::new_string(
             self.content[self.selected()].to_string(),
         ));
+    }
+
+    fn cut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy(window, cx);
+        self.replace_text_in_range(None, "", window, cx);
+        window.notify_text_input_changed(&self.focus_handle);
     }
 
     fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -520,7 +544,7 @@ struct TextElement {
 
 /// One toolbar button: its label, shaped, and where it sits.
 #[derive(Clone)]
-struct ToolbarButton {
+struct DrawnButton {
     label: ShapedLine,
     bounds: Bounds<Pixels>,
     action: ToolbarAction,
@@ -537,7 +561,7 @@ struct Prepaint {
 #[derive(Clone)]
 struct DrawnOverlay {
     handles: Vec<HandleGeometry>,
-    toolbar: Vec<ToolbarButton>,
+    toolbar: Vec<DrawnButton>,
     magnifier: Option<MagnifierGeometry>,
 }
 
@@ -638,30 +662,29 @@ impl Element for TextElement {
                 rgba(0x3b82f640),
             )
         };
-        let focused = field.focus_handle.is_focused(window);
         let layout = ShapedField {
             content: &field.content,
             line: (!field.content.is_empty()).then_some(&line),
             bounds,
         };
-        let overlay = field.selection_ui.as_ref().map(|engine| {
-            engine.overlay(
-                &Field {
-                    selection: field.selection,
-                    focused,
-                    lines: Lines::Single,
-                    screen: Bounds::new(Point::default(), window.viewport_size()),
-                },
-                &layout,
-            )
-        });
+        let engine_field = field.engine_field(window);
+        let overlay = field
+            .selection_ui
+            .as_ref()
+            .map(|engine| (engine, engine.overlay(&engine_field, &layout)));
         let (handles, toolbar, magnifier) = match overlay {
-            Some(overlay) => (
+            Some((engine, overlay)) => (
                 overlay.handles,
                 overlay.toolbar.map_or_else(Vec::new, |anchors| {
-                    let labels: Vec<_> = TOOLBAR
+                    let clipboard = match cx.read_from_clipboard().and_then(|item| item.text()) {
+                        Some(_) => Clipboard::Pasteable,
+                        None => Clipboard::NotPasteable,
+                    };
+                    let buttons = engine.toolbar_buttons(&engine_field, &layout, clipboard);
+                    let labels: Vec<_> = buttons
                         .iter()
-                        .map(|(label, action)| {
+                        .filter_map(|button| TOOLBAR.iter().find(|(kind, _, _)| kind == button))
+                        .map(|(_, label, action)| {
                             let runs = [TextRun {
                                 len: label.len(),
                                 color: hsla(0., 0., 1., 1.),
@@ -699,7 +722,7 @@ impl Element for TextElement {
                             let bounds =
                                 Bounds::new(point(x, origin.y), size(width, TOOLBAR_HEIGHT));
                             x += width;
-                            ToolbarButton {
+                            DrawnButton {
                                 label,
                                 bounds,
                                 action,
@@ -778,6 +801,14 @@ impl Element for TextElement {
             window.invalidate_character_coordinates();
         }
     }
+}
+
+/// The device of the pointer event being dispatched: a touch or pen's, or the mouse's (the platform reports no
+/// source for a real mouse).
+fn pointer_device(window: &Window) -> PointerDevice {
+    window
+        .pointer_source()
+        .map_or(PointerDevice::Mouse, |source| source.device)
 }
 
 /// Draws the overlay `parallax_ext` laid out, as plain shapes: Material's handle (a circle with a square in the
@@ -882,7 +913,7 @@ fn listen_for_selection_gestures(
                 position: event.position,
             },
             TouchPhase::Ended => Input::LongPressEnd,
-            TouchPhase::Cancelled => Input::LongPressCancel,
+            TouchPhase::Cancelled => Input::Cancel,
         };
         send(&entity, input, window, cx);
     });
@@ -899,7 +930,8 @@ fn listen_for_selection_gestures(
         if phase != DispatchPhase::Bubble {
             return;
         }
-        // A drag claimed at touch down is a handle's; one won past the slop moves the caret (or selects).
+        // A touch claimed at down is a handle's (the engine tells its tap from its drag); a drag won past the slop
+        // moves the caret (or selects).
         let input = match (event.start, event.phase) {
             (TouchDragStart::Down, TouchPhase::Started) => {
                 let toolbar = on_toolbar
@@ -909,13 +941,15 @@ fn listen_for_selection_gestures(
                     .iter()
                     .find(|(_, hit)| hit.contains(&event.start_position));
                 match (toolbar, handle) {
-                    // Claims the touch: a drag on a handle never becomes a tap or a scroll.
+                    // Claims the touch: a touch on a handle never becomes a field tap or a scroll, as Flutter's
+                    // handle sits in its own overlay arena.
                     (false, Some(&(handle, _))) => {
                         window.prevent_default();
                         cx.stop_propagation();
-                        Input::HandleDragStart {
+                        Input::HandleDown {
                             handle,
                             position: event.start_position,
+                            touch_slop: window.gesture_tuning().touch_slop,
                         }
                     }
                     // Competes, as Flutter's tap-and-drag recognizer does: taps and long presses stay the
@@ -935,41 +969,29 @@ fn listen_for_selection_gestures(
                     (true, _) | (false, None) => return,
                 }
             }
-            (TouchDragStart::Down, TouchPhase::Moved) => Input::HandleDragUpdate {
+            (TouchDragStart::Down, TouchPhase::Moved) => Input::HandleMove {
                 position: event.position,
             },
-            (TouchDragStart::Down, TouchPhase::Ended | TouchPhase::Cancelled) => {
-                Input::HandleDragEnd
-            }
+            (TouchDragStart::Down, TouchPhase::Ended) => Input::HandleUp,
+            (TouchDragStart::Down, TouchPhase::Cancelled) => Input::Cancel,
             // Every field listens: a won drag is this field's only if it started on it.
             (TouchDragStart::PastSlop(_), _) if !pressable.contains(&event.start_position) => {
                 return;
             }
-            // Won: the press the drag grew from, where the touch started, then the move that won it.
+            // Won: GPUI judged the slop, so the engine starts the drag at once.
             (TouchDragStart::PastSlop(_), TouchPhase::Started) => {
                 cx.stop_propagation();
-                send(
-                    &entity,
-                    Input::Down {
-                        position: event.start_position,
-                        device: window
-                            .pointer_source()
-                            .map_or(PointerDevice::Touch, |source| source.device),
-                        tap_count: 1,
-                        shift: false,
-                        touch_slop: window.gesture_tuning().touch_slop,
-                    },
-                    window,
-                    cx,
-                );
-                Input::Move {
+                Input::DragWon {
+                    origin: event.start_position,
                     position: event.position,
+                    device: pointer_device(window),
                 }
             }
             (TouchDragStart::PastSlop(_), TouchPhase::Moved) => Input::Move {
                 position: event.position,
             },
-            (TouchDragStart::PastSlop(_), TouchPhase::Ended | TouchPhase::Cancelled) => Input::Up,
+            (TouchDragStart::PastSlop(_), TouchPhase::Ended) => Input::Up,
+            (TouchDragStart::PastSlop(_), TouchPhase::Cancelled) => Input::Cancel,
         };
         send(&entity, input, window, cx);
     });
@@ -1025,6 +1047,15 @@ mod tests {
         [Mouse::Down(offset, count, false), Mouse::Up(offset)]
     }
 
+    /// Where `offset` sits in the drawn `field`: on its caret, mid-line.
+    fn at(field: &Entity<TextField>, cx: &mut VisualTestContext, offset: usize) -> Point<Pixels> {
+        field.read_with(cx, |field, _| {
+            let bounds = field.last_bounds.expect("the field was drawn");
+            let line = field.last_layout.as_ref().expect("the field has text");
+            point(bounds.left() + line.x_for_index(offset), bounds.center().y)
+        })
+    }
+
     #[gpui::test]
     fn mouse_selects_by_the_desktop_row(cx: &mut TestAppContext) {
         use Mouse::{Down, Drag, Up};
@@ -1067,13 +1098,7 @@ mod tests {
                 ..TextField::new("", TextInputConfiguration::default(), cx)
             });
             cx.run_until_parked();
-            let at = |cx: &mut VisualTestContext, offset| {
-                field.read_with(cx, |field, _| {
-                    let bounds = field.last_bounds.expect("the field was drawn");
-                    let line = field.last_layout.as_ref().expect("the field has text");
-                    point(bounds.left() + line.x_for_index(offset), bounds.center().y)
-                })
-            };
+            let at = |cx: &mut VisualTestContext, offset| at(&field, cx, offset);
             for event in events {
                 match event {
                     Down(offset, click_count, shift) => {
@@ -1168,13 +1193,7 @@ mod tests {
             });
             cx.run_until_parked();
             let [field, other] = fields.read_with(cx, |fields, _| fields.0.clone());
-            let at = |cx: &mut VisualTestContext, offset| {
-                field.read_with(cx, |field, _| {
-                    let bounds = field.last_bounds.expect("the field was drawn");
-                    let line = field.last_layout.as_ref().expect("the field has text");
-                    point(bounds.left() + line.x_for_index(offset), bounds.center().y)
-                })
-            };
+            let at = |cx: &mut VisualTestContext, offset| at(&field, cx, offset);
             for (id, touch) in touches.into_iter().enumerate() {
                 // A frame apart, and each touch later than a double tap's interval after the last.
                 let send = |cx: &mut VisualTestContext, phase, position| {
