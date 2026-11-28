@@ -104,6 +104,8 @@ Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_win
   breaks (Flutter's fixes, patch 0029).
 - iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
   secure text entry (patch 0030).
+- iOS hardware keyboard (patch 0031): a key pressed across an IME composition is no longer swallowed (Option-e e e
+  typed "é" and lost the second e), and a key's up goes to UIKit only when its down did.
 - Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
   (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
   and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).

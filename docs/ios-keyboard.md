@@ -16,8 +16,11 @@ Three patches to gpui_ios. Two are ported from Flutter's iOS embedder (ledger:
 - **GPUI first, then UIKit.** Each press is GPUI's event first. One GPUI leaves unhandled (`propagate` still set)
   goes to `super`, and so to UIKit's text system, which types it into the focused field. A key is delivered once:
   `a` is a `KeyDown` nobody binds, then `insertText:`; a field's Backspace binding takes the `KeyDown` and UIKit
-  never deletes. While the field composes (marked text) presses are UIKit's alone, as gpui_macos sends them to the
-  input method first, so Enter commits instead of reaching a binding.
+  never deletes. A key's up and cancel go to UIKit exactly when its down did (`KeyResponder` keeps the keys UIKit
+  has down), so UIKit is never left holding a key. While the field composes (marked text) downs are UIKit's alone,
+  as gpui_macos sends them to the input method first, so Enter commits instead of reaching a binding; the presses
+  still run through `KeyResponder`, so a key whose down came before the composition and its up during it (Option-e,
+  a dead key) is not left down for GPUI, and the next e is typed.
 - **Which event.** `KeyResponder` is Flutter's `FlutterEmbedderKeyResponder` with GPUI's events: a non-modifier key
   is `KeyDown` / `KeyUp`, a modifier or Caps Lock press is `ModifiersChanged`, and Flutter's synthesized modifier
   events (iOS flags a modifier with no press for it, e.g. Alt released before its letter) are one
