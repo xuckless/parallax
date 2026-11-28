@@ -74,11 +74,11 @@ sleep 4
 on_device logcat -d >"$out/still.log"
 grep -q 'surface frames/s [1-9][0-9]' "$out/still.log" && ! grep 'gpui frames/s' "$out/still.log" | tail -4 | grep -q 'gpui frames/s [1-9]' \
   && pass "0 GPUI frames/s while the surface draws" || fail "GPUI drew while only the surface changed"
-alpha=$(grep -o 'window surface alpha mode [A-Za-z]*' "$out/still.log" | head -1 || true)
+alpha=$(grep -oE 'window surface alpha mode [A-Za-z]*|offers no premultiplied alpha mode, only Opaque' "$out/still.log" | tail -1 || true)
 [[ -n $alpha ]] && pass "$alpha logged" || fail "no alpha mode logged"
 shot "$out/still.raw"
 read -r width height <<<"$(px "$out/still.raw" size)"
-if grep -q 'native views show black' "$out/still.log"; then
+if [[ $alpha == *'only Opaque' ]]; then
   # GL below API 30 on the emulator: no Vulkan to move to (backend.rs FOR_NATIVE_VIEWS). Real devices use Vulkan.
   echo "skip: holes are black on this device's GL (API $api), the pixel rows can't see the views"
   black=1
