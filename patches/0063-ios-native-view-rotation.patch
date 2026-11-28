@@ -9,6 +9,9 @@ What:
   coordinator's completion), during which the holes are cut a pixel inside the views (core's `hole_inset`, through
   0061's `set_native_view_hole_inset`), since Core Animation resamples the turning edges; the frame after the turn
   cuts them exactly again. Display Zoom (`nativeScale` != `scale`) gets the same inset.
+- While turning, the host shows no gap colour (`Rotation::shows_background`): Core Animation antialiases the
+  turning window's edge layer by layer, so the colour under a view at that edge fringed it for a frame (one
+  gap-colour pixel at a turn's start in about one check run of five); the rigid turn leaves no gap for it to cover.
 
 Where: new files behind one-line hooks in upstream's window.rs and ios.rs: ios/window/rotation.rs (the nesting, the
 turn, the inset, the resized frame) and ios/native_view_state.rs (`Rotation` as a pure transition, table-tested on
@@ -26,7 +29,7 @@ Why: Flutter's FlutterViewController.mm (`viewWillTransitionToSize:withTransitio
 viewport update to halfway through a turn, which halves the stretch; rendering the new size at once keeps the views
 in step instead.
 
-Tests: `Rotation::resamples`'s table (settled, turning, Display Zoom). Checked (0062–c together) on the iOS
+Tests: `Rotation::resamples`'s table (settled, turning, Display Zoom) and `shows_background`'s. Checked (0062–0064 together) on the iOS
 simulator as 0062 says, also through a rotation to landscape and back.
 
 Upstream PR: not filed (filing paused, patch rule 14).
@@ -45,10 +48,10 @@ index e3d1b02..9ffb21b 100644
  mod text_input;
 diff --git a/gpui-pre-ios/src/ios/native_view_state.rs b/gpui-pre-ios/src/ios/native_view_state.rs
 new file mode 100644
-index 0000000..eae9a2e
+index 0000000..fda3fc2
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/native_view_state.rs
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,76 @@
 +//! The lifecycle native views add to an iOS window, as a plain value: whether UIKit is turning the window. Pure,
 +//! so scripts/patch-test.sh runs its tests on the host (`ios-pure`).
 +
@@ -68,6 +71,16 @@ index 0000000..eae9a2e
 +        match self {
 +            Rotation::Turning => true,
 +            Rotation::Settled => scale != native_scale,
++        }
++    }
++
++    /// Whether the host view shows the views' gap colour (`NativeView::set_background`). Not while turning: Core
++    /// Animation antialiases the turning window's edge layer by layer, so a colour under a view at that edge would
++    /// fringe it for a frame; the rigid turn leaves no gap for the colour to cover.
++    pub(super) fn shows_background(self) -> bool {
++        match self {
++            Rotation::Turning => false,
++            Rotation::Settled => true,
 +        }
 +    }
 +}
@@ -100,6 +113,18 @@ index 0000000..eae9a2e
 +        ];
 +        for (name, rotation, scale, native_scale, resamples) in cases {
 +            assert_eq!(rotation.resamples(scale, native_scale), resamples, "{name}");
++        }
++    }
++
++    #[test]
++    fn the_gap_colour_shows_only_while_settled() {
++        // (name, rotation, shows the background)
++        let cases = [
++            ("settled", Rotation::Settled, true),
++            ("turning: it would fringe the turning edge", Rotation::Turning, false),
++        ];
++        for (name, rotation, shows) in cases {
++            assert_eq!(rotation.shows_background(), shows, "{name}");
 +        }
 +    }
 +}
@@ -189,7 +214,7 @@ index b895621..4feb8e8 100644
  }
  
 diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
-index 795b40b..a2702bc 100644
+index 795b40b..a4fc5e9 100644
 --- a/gpui-pre-ios/src/ios/window/native_views.rs
 +++ b/gpui-pre-ios/src/ios/window/native_views.rs
 @@ -2,7 +2,7 @@
@@ -219,12 +244,70 @@ index 795b40b..a2702bc 100644
      let place = block2::RcBlock::new(|| {
          for (view, container, placement) in &placements {
              match placement {
+@@ -195,21 +197,7 @@ fn apply_layout(
+             }
+         }
+         if let (Some(background), Some(host)) = (background, &host) {
+-            // SAFETY: `+[UIColor colorWithRed:green:blue:alpha:]` returns a
+-            // UIColor; the host is live, on the main thread. Nil clears it.
+-            unsafe {
+-                let color: *mut AnyObject = match background {
+-                    Some(Rgba { r, g, b, .. }) => msg_send![
+-                        objc2::class!(UIColor),
+-                        colorWithRed: r as f64,
+-                        green: g as f64,
+-                        blue: b as f64,
+-                        alpha: 1.0f64
+-                    ],
+-                    None => std::ptr::null_mut(),
+-                };
+-                let _: () = msg_send![&**host, setBackgroundColor: color];
+-            }
++            colour_host(host, background.filter(|_| window.rotation.get().shows_background()));
+         }
+     });
+     UIView::performWithoutAnimation(&place, objc2::MainThreadMarker::from(gpui_view));
+@@ -224,3 +212,34 @@ fn apply_layout(
+         }
+     }
+ }
++
++/// Gives GPUI's host view the views' gap colour, or none.
++fn colour_host(host: &UIView, colour: Option<Rgba>) {
++    // SAFETY: `+[UIColor colorWithRed:green:blue:alpha:]` returns a
++    // UIColor; the host is live, on the main thread. Nil clears it.
++    unsafe {
++        let color: *mut AnyObject = match colour {
++            Some(Rgba { r, g, b, .. }) => msg_send![
++                objc2::class!(UIColor),
++                colorWithRed: r as f64,
++                green: g as f64,
++                blue: b as f64,
++                alpha: 1.0f64
++            ],
++            None => std::ptr::null_mut(),
++        };
++        let _: () = msg_send![host, setBackgroundColor: color];
++    }
++}
++
++/// The window starts or ends turning: the host shows the gap colour only while settled (`Rotation::shows_background`).
++pub(super) fn rotation_changed(window: &IosWindowState) {
++    let Some(host) = window.view.superview() else {
++        return;
++    };
++    let colour = window.native_views.borrow().background;
++    let recolour = block2::RcBlock::new(|| {
++        colour_host(&host, colour.filter(|_| window.rotation.get().shows_background()))
++    });
++    UIView::performWithoutAnimation(&recolour, objc2::MainThreadMarker::from(&*host));
++}
 diff --git a/gpui-pre-ios/src/ios/window/rotation.rs b/gpui-pre-ios/src/ios/window/rotation.rs
 new file mode 100644
-index 0000000..4ef1855
+index 0000000..cf2d6a1
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/window/rotation.rs
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,111 @@
 +//! The window's view nesting and how it turns, kept out of upstream's window.rs behind one-line hooks.
 +//!
 +//! GPUI's view fills a host view, where native views go beneath it (native_views.rs), and the host sits in the view
@@ -324,6 +407,7 @@ index 0000000..4ef1855
 +    /// UIKit starts or ends turning the window. The frame drawn when it ends cuts the holes exactly again.
 +    fn set_rotation(&self, rotation: Rotation) {
 +        self.rotation.set(rotation);
++        super::native_views::rotation_changed(self);
 +        self.update_hole_inset();
 +        self.force_next_frame.set(true);
 +    }
