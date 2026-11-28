@@ -3,7 +3,7 @@
 Part of [native-view.md](native-view.md).
 
 Every backend decides what shows of a painted view from gpui's pure `native_view_placement` module (patch
-[0048](../patches/0048-native-view-window-input.patch), table-tested by [patch-test.sh](../scripts/patch-test.sh)).
+[0050](../patches/0050-native-view-placement.patch), table-tested by [patch-test.sh](../scripts/patch-test.sh)).
 A `PaintNativeView`'s bounds and content mask are whole device pixels already (the element snaps both), so a backend
 never rounds them again; only a coarser grid does.
 

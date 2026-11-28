@@ -1,6 +1,6 @@
 # Native views on the web
 
-Patch [0054](../patches/0054-web-native-view.patch): a DOM element (an iframe, a video, a canvas) shown under GPUI's
+Patch [0067](../patches/0067-web-native-view-slots.patch): a DOM element (an iframe, a video, a canvas) shown under GPUI's
 canvas through the wgpu renderer's hole ([native-view.md](native-view.md)). Code: gpui_web's new `native_views.rs`
 (the DOM shell) and `native_view_layout.rs` (pure decisions); the slot lifecycle is ported from Flutter's
 `content_manager.dart` and `slots.dart` ([PORTED.md](../third_party/flutter/PORTED.md)). Checks and results:
@@ -50,7 +50,7 @@ colour fills that frame (white for most pages). With no colour the page behind t
   field again.
 - **Scale emulation.** DevTools' device mode and Playwright's `deviceScaleFactor` scale `devicePixelRatio` but not
   `devicePixelContentBoxSize`; gpui_web now trusts that box only where it agrees with the CSS box times the ratio
-  (patch [0055](../patches/0055-web-canvas-device-pixel-size.patch)).
+  (patch [0070](../patches/0070-web-canvas-device-pixel-size.patch)).
 
 Costs: the capture listeners (and a non-passive document `wheel` listener) exist only while a view is attached; frames
 that place nothing write no style; the shields are rebuilt only when GPUI's hitboxes over a view change.

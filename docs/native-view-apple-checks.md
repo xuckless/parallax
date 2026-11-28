@@ -3,7 +3,7 @@
 [apple-native-view-checks.sh](../scripts/apple-native-view-checks.sh) runs
 [examples/native-view-apple](../examples/native-view-apple/) ([native-view-apple.md](native-view-apple.md#the-example))
 on an iOS simulator on pixl-mac and checks the acceptance list of
-[ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview) for patches 0051–0052. It rsyncs the repo (with
+[ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview) for patches 0059–0064. It rsyncs the repo (with
 `build/parallax-gpui`, so run [apply-patches.sh](../scripts/apply-patches.sh) first), builds the example as a bare
 .app from upstream's example Info.plist, drives it with idb as [traces.md](traces.md) does, and shuts its simulator
 and idb companion down after.
@@ -34,7 +34,7 @@ its top band (the window around a turning screen, the Dynamic Island). A frame w
 isn't cut loses the view's colour. Colour classes and thresholds are tables at its top.
 
 Shown to fail: with the example's view drawing nothing, every frame of the still, moving and rotating rows fails
-(no view colour, up to 220 000 gap-colour pixels); with 0052's drop not handing the keyboard back, the keyboard row
+(no view colour, up to 220 000 gap-colour pixels); with 0064's drop not handing the keyboard back, the keyboard row
 fails (`text field submitted: 0 bytes`: Return reached GPUI, the text didn't). On the previous lane's recordings it
 finds exactly the 38 of 617 gap frames of the rotation before the rigid turn.
 

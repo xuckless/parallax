@@ -16,9 +16,10 @@ Test: on macOS, `cargo build --manifest-path build/parallax-gpui/Cargo.toml -p p
 Upstream: Zed's own manifest already has both (nothing to file); the gpui-pre packaging drops them.
 
 diff --git a/gpui-pre/Cargo.toml b/gpui-pre/Cargo.toml
+index b37d3f9..f5fc32f 100644
 --- a/gpui-pre/Cargo.toml
 +++ b/gpui-pre/Cargo.toml
-@@ -664,6 +664,13 @@
+@@ -664,6 +664,13 @@ optional = true
  version = "0.3"
  optional = true
  

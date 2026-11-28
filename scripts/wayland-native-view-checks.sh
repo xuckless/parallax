@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime checks of NativeView on Wayland (patches 0047-0049, docs/native-view-wayland.md): runs
+# Runtime checks of NativeView on Wayland (patches 0047-0055, docs/native-view-wayland.md): runs
 # examples/native-view-wayland in a private headless GNOME Shell (mutter as a compositor, its own D-Bus session,
 # runtime dir and settings, so nothing of a desktop session is touched), injects pointer input through the Shell's
 # Eval, reads its screenshots back with scripts/pixels.py, and asserts on pixels and on what the example logged.

@@ -25,7 +25,7 @@ counterpart in Zed's tree:
   manifest's diff, e.g. 0018's UIKit features in Zed's workspace `Cargo.toml`).
   [`sync-fork.sh`](../scripts/sync-fork.sh) translates every patch with `--drop-manifests` and appends that file; it
   stops when a patch changes a `Cargo.toml` and has none. Change it only when the patch's manifest hunk changes.
-  When Zed's manifest already has the change (0053: dev-dependencies the gpui-pre package dropped), the file holds
+  When Zed's manifest already has the change (0065: dev-dependencies the gpui-pre package dropped), the file holds
   only its header and the patch's Zed commit is empty.
 - **Packaging artifacts: refused.** `Cargo.toml.orig`, `Cargo.lock`, `.cargo-checksum.json` exist only in the vendored copy.
 - **gpui-pre's own files: refused.** `gpui-pre-apple/vendor/` (a copy of `crates/gpui` sources for its `build.rs`;

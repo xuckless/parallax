@@ -10,46 +10,46 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 
 - Native views on Linux (Wayland): `NativeView::new` takes a `wl_surface` the app made on GPUI's connection and shows
   it as a subsurface under the window, in step with GPUI's frames, with no GPUI frame for the view's own
-  (docs/native-view-wayland.md, fork patches 0047–0049). The wgpu renderer cuts native views' holes for every wgpu
+  (docs/native-view-wayland.md, fork patches 0047–0055). The wgpu renderer cuts native views' holes for every wgpu
   target. Example: `examples/native-view-wayland`.
 - `NativeView::bounds` and `NativeViewInput`: where the window gets input over a view (Wayland, Windows, iOS), its
   element's listeners and its ancestors' hear it, and the view occludes elements painted behind it like a solid
-  element (`HitboxBehavior::BlockMouseExceptAncestors`, fork patch 0048, docs/native-view.md).
+  element (`HitboxBehavior::BlockMouseExceptAncestors`, fork patch 0049, docs/native-view.md).
 - Windows: `NativeView` shows an app's composition swap chain (or any DirectComposition content) under GPUI's
   content, with no child window and no GPUI frame for the view's own presents; input over it reaches the view's
-  element (patch 0050, docs/native-view-windows.md, examples/native-view-windows). While a view shows, GPUI's frame
+  element (patches 0056–0058, docs/native-view-windows.md, examples/native-view-windows). While a view shows, GPUI's frame
   goes through a DirectComposition surface, so a moving view and its hole change in the same composition frame,
   and leaves it over two frames, so no stale frame flashes when the last view hides. A window without views keeps
   upstream's swap chain exactly (premultiplied alpha). A view dropped while the window draws leaves at the next frame.
 - Windows: a WebView2 page as a `NativeView`: `gpui_windows::composition_device` gives GPUI's DirectComposition
   device, and `NativeView::new` takes a visual made on it, such as a WebView2 composition controller's root visual
-  target (patch 0056, docs/native-view-webview2.md, examples/native-view-webview2).
+  target (patch 0071, docs/native-view-webview2.md, examples/native-view-webview2).
   `gpui_windows::on_composition_device_changed` tells the app when a lost GPU device replaced that device, so it
   makes its visual again; the example does, places the page with its window position (popups, IME), and follows a
   drag on the page until the release.
 - iOS: `gpui::NativeView` shows an app's `UIView` under GPUI's content; touches over it reach the element's listeners
-  (patch 0052, [docs/native-view-apple.md](docs/native-view-apple.md)).
+  (patches 0062–0064, [docs/native-view-apple.md](docs/native-view-apple.md)).
 - macOS and iOS: a frame that moves, resizes, shows or hides a native view is presented in step with the view, so
-  no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0051).
+  no gap shows for a frame; the Metal layer's alpha mode is logged (patch 0060).
 - iOS native views turn with GPUI's content through a rotation, at the new size, with no stretch and no gap; where
   the screen resamples (a rotation's turn, Display Zoom) holes are cut a pixel inside their views, so no seam shows
-  (patches 0051, 0052).
+  (patches 0060, 0061 and 0063).
 - iOS: a native view can take the keyboard: while its focus handle is focused, GPUI's text input stays out of first
   responder, so the app can make its `UIView` (a `UITextField`, a `WKWebView`) first responder; focus back on a GPUI
-  field takes it back (patch 0052, docs/native-view-apple.md#keyboard-on-ios).
+  field takes it back (patch 0064, docs/native-view-apple.md#keyboard-on-ios).
 - `native-view-apple` example (iOS: also a GPUI field next to a native `UITextField`).
 - Web: `NativeView::new` takes a DOM element (`web_sys::HtmlElement`: an iframe, a video, a canvas) and shows it under
   GPUI's canvas, placed in GPUI's frame; the browser gives pointer input over an uncovered view to the element itself
-  (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patch 0054,
+  (trusted clicks, wheel scrolls, text selection), and GPUI's elements over it keep theirs (fork patches 0066–0069,
   docs/native-view-web.md, examples/native-view-web). `scripts/web-checks.mjs` gains a `native-view` suite.
 - macOS: upstream's `native_view` and `native_view_appkit_field` examples build from the `parallax-gpui` fork crate
-  (fork patch 0053). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
+  (fork patch 0065). CI's `linux-touch` job runs the Wayland native view checks in a headless GNOME Shell
   (docs/native-view-wayland-checks.md).
 - Wayland: a native view its element's clip cuts (scrolled partly out of a container) shows only its visible part,
   cropped from the app's buffer, as on the other platforms. The app commits every buffer through
   `gpui_linux::NativeViewBuffers::of(&view).commit_buffer(&surface, &buffer, size)`, from any thread: its commits and
   GPUI's take turns under one lock, so each carries a crop that fits its buffer (a resize's stale frames included)
-  and the compositor never ends the connection (fork patch 0049, docs/native-view-wayland.md#clipped-views). Views
+  and the compositor never ends the connection (fork patches 0054 and 0055, docs/native-view-wayland.md#clipped-views). Views
   stack in paint order, a view shown again reuses its subsurface, and `NativeView::set_background` fills an opaque
   window's holes where a view hasn't drawn (GPUI's underlay subsurface).
   `scripts/wayland-native-view-checks.sh --mesa-compositor` runs the checks with the compositor on Mesa too.
@@ -68,24 +68,34 @@ All notable changes to the published crates (`parallax`, `parallax-platform`, `p
 ### Fixed (0.1.10)
 
 - Web: under scale emulation (DevTools' device mode, Playwright's `deviceScaleFactor`) GPUI sized its canvas for
-  scale 1 and drew at the square of the scale (fork patch 0055).
+  scale 1 and drew at the square of the scale (fork patch 0070).
 - Web: where a browser's WebGPU canvases show nothing (Chromium 158 with its Vulkan feature on NVIDIA's Linux driver
   drew GPUI's window all black), GPUI detects it with a test clear read back at startup and draws with WebGL2,
-  logging why (fork patch 0057, docs/web-webgpu.md).
+  logging why (fork patch 0072, docs/web-webgpu.md).
 
 - iOS: dropping the focused native view hands the keyboard back to GPUI, so a GPUI field focused next gets it; the
   native-view rotation and host-view code moved out of upstream's window.rs, and a restack-only frame presents in
-  step (fork patch 0052).
+  step (fork patches 0059-0064).
 - Web native views leave the rest of the page's pointer events alone, follow a canvas that isn't at the page's
   origin, and give their layer, listeners and canvas styles back when the last view goes. GPUI's fields get keys
   back after focus was in an iframe or in a view that was dropped, and GPUI focusing a view no longer moves focus out
-  of an `<input>` inside it. They are placed from the core's `native_view_placement` (fork patch 0054).
+  of an `<input>` inside it. They are placed from the core's `native_view_placement` (fork patches 0066-0069).
 - Web: when the WebGPU canvas probe reads blank and WebGL2 fails too, the window still opens on WebGPU, logging both
-  failures (fork patch 0057).
+  failures (fork patch 0072).
 - Android native views: Android focus follows GPUI's focused native view and Back reaches GPUI first (a tapped
   WebView no longer swallows it); views stack in GPUI's paint order and are clipped by GPUI's content mask
   (`SurfaceControl` crop on API 33+); on GL (API 30+) the renderer moves to Vulkan when a native view first shows, so
   holes are no longer black; a `NativeView` kept past its Activity no longer keeps the Activity alive.
+- macOS and iOS: a frame that could not be presented (no drawable) no longer moves the native views; the next frame
+  places them (fork patch 0060). macOS and iOS plan native view layouts with one shared copy in gpui_apple (fork
+  patch 0059).
+- Web: when the WebGPU canvas probe reads blank and WebGL2 fails, WebGL2 is tried once more after the next animation
+  frame before the window stays on WebGPU (fork patch 0072).
+
+### Changed (0.1.10)
+
+- The NativeView fork patches are split by concern and renumbered 0047–0072 (docs/patch-list.md); the patched GPUI
+  they build is byte-identical to before the split.
 
 ## [0.1.9] - 2026-11-27 — Gate 4: text input and selection
 

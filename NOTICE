@@ -45,13 +45,13 @@ parallax-gpui-web includes code ported from GoogleChromeLabs/page-lifecycle
 (patch 0035, page_lifecycle.rs), licensed under the Apache License 2.0. Copyright 2018 Google Inc.
 
 parallax-gpui-linux includes code ported from Chromium (https://chromium.googlesource.com/chromium/src),
-its Wayland subsurface handling (patch 0049, ui/ozone/platform/wayland/host/wayland_subsurface.cc and
+its Wayland subsurface handling (patch 0053, ui/ozone/platform/wayland/host/wayland_subsurface.cc and
 wayland_frame_manager.cc, wayland/window/native_view.rs), licensed under the BSD 3-Clause License
 (LICENSE-CHROMIUM in parallax-gpui-linux, third_party/chromium/LICENSE). Copyright The Chromium Authors.
 
 parallax-gpui-windows includes code adapted from Chromium (https://chromium.googlesource.com/chromium/src)
 @ 4fc26f32cd03f0e8443c4aa11d6859a901d90659: its DirectComposition overlay tree (ui/gl/dc_layer_tree.cc) and
-underlay hole punch (components/viz/service/display/dc_layer_overlay.cc), for native views (patch 0050),
+underlay hole punch (components/viz/service/display/dc_layer_overlay.cc), for native views (patches 0056 and 0057),
 licensed under the BSD 3-Clause License. See third_party/chromium/LICENSE (LICENSE-CHROMIUM in
 parallax-gpui-windows) and third_party/chromium/PORTED.md. Copyright The Chromium Authors.
 

@@ -1,0 +1,175 @@
+Native views: place a view in step with the frame that moves its hole, and log the Metal layer's alpha (needs 0059).
+
+What:
+- gpui_apple `MetalRenderer::draw_placing_native_views(scene, places_native_views)` (`draw` passes false): a frame
+  that moves, resizes, shows or hides a native view is presented with the Core Animation transaction that places the
+  view (`presentsWithTransaction` for that frame only, as upstream's live resize does for every frame), so hole and
+  view reach the screen together; every other frame presents on its own. It logs the layer's alpha mode
+  (`metal layer alpha: opaque` / `premultiplied, native views show through`) each time a native view shows or goes.
+  It returns whether the scene was presented; when it wasn't (no drawable, a failed render), macOS and iOS leave
+  their views where they were, so a view never moves to a hole that never reached the screen, and the next scene
+  plans them again.
+- 0059's `Layout::places_views()` says whether the scene must present in step.
+- macOS: `draw` passes `Layout::places_views()`.
+
+Why: upstream presents every frame on its own, so a view's new frame reaches the screen a frame or two before the
+hole that moves with it (upstream's own comment in macOS's native_views.rs); the gap shows the window's background.
+Measured on the iOS simulator (0062) with the view's slot moving every frame: 28 of 442 recorded frames showed the
+gap colour presented on their own, 0 of 212 (and 0 of 228 after this revision) presented in step. Idle frames are
+untouched, so a window whose native view alone changes still renders 0 GPUI frames.
+
+Tests: 0059's `plan_layout` table also checks `places_views()` on every row.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
+index 33c5299..b662aa2 100644
+--- a/gpui-pre-apple/src/metal_renderer.rs
++++ b/gpui-pre-apple/src/metal_renderer.rs
+@@ -509,13 +509,22 @@ impl MetalRenderer {
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
++        self.draw_placing_native_views(scene, false);
++    }
++
++    /// Draws `scene`. `places_native_views` says whether the platform moves, resizes, shows or hides a native view
++    /// with this scene: such a frame is presented with the Core Animation transaction that places the view, so the
++    /// hole and the view reach the screen together. Every other frame presents on its own, as `draw` does, so a
++    /// window waits for the GPU only on frames that place a view. Returns whether the scene was presented: when it
++    /// wasn't, the platform must not place its views either.
++    pub fn draw_placing_native_views(&mut self, scene: &Scene, places_native_views: bool) -> bool {
+         let layer = match &self.layer {
+             Some(l) => l.clone(),
+             None => {
+                 log::error!(
+                     "draw() called on headless renderer - use render_scene_to_image() instead"
+                 );
+-                return;
++                return false;
+             }
+         };
+         // Native views sit beneath the layer, so it can only be opaque, and
+@@ -524,12 +533,25 @@ impl MetalRenderer {
+         if shows_native_views != self.shows_native_views {
+             self.shows_native_views = shows_native_views;
+             layer.setOpaque(self.opaque && !shows_native_views);
++            // The pixels are premultiplied BGRA either way; only whether Core Animation blends them changes.
++            log::info!(
++                "metal layer alpha: {}",
++                if layer.isOpaque() {
++                    "opaque"
++                } else {
++                    "premultiplied, native views show through"
++                }
++            );
++        }
++        let with_transaction = self.presents_with_transaction || places_native_views;
++        if layer.presentsWithTransaction() != with_transaction {
++            layer.setPresentsWithTransaction(with_transaction);
+         }
+         let drawable = match &mut self.display_link_mode {
+             DisplayLinkMode::Attached { drawable } => {
+                 let Some(drawable) = drawable.take() else {
+                     log::error!("skipped a frame drawn outside its display link's update");
+-                    return;
++                    return false;
+                 };
+                 drawable
+             }
+@@ -539,7 +561,7 @@ impl MetalRenderer {
+                         "failed to retrieve next drawable, drawable size: {:?}",
+                         layer.drawableSize()
+                     );
+-                    return;
++                    return false;
+                 };
+                 drawable
+             }
+@@ -556,11 +578,11 @@ impl MetalRenderer {
+             Ok(command_buffer) => command_buffer,
+             Err(error) => {
+                 log::error!("failed to render: {error:#}");
+-                return;
++                return false;
+             }
+         };
+ 
+-        if self.presents_with_transaction {
++        if with_transaction {
+             command_buffer.commit();
+             command_buffer.waitUntilScheduled();
+             drawable.present();
+@@ -568,6 +590,7 @@ impl MetalRenderer {
+             command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
+             command_buffer.commit();
+         }
++        true
+     }
+ 
+     fn render_frame(
+diff --git a/gpui-pre-apple/src/native_view_placement.rs b/gpui-pre-apple/src/native_view_placement.rs
+index a679e63..16ca7a7 100644
+--- a/gpui-pre-apple/src/native_view_placement.rs
++++ b/gpui-pre-apple/src/native_view_placement.rs
+@@ -70,6 +70,14 @@ pub struct Layout {
+     pub stacking: Option<Vec<NativeViewId>>,
+ }
+ 
++impl Layout {
++    /// Whether the scene moves, resizes, shows, hides or restacks a view, whose frame must then reach the screen with
++    /// the scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
++    pub fn places_views(&self) -> bool {
++        !self.placements.is_empty() || self.stacking.is_some()
++    }
++}
++
+ /// Works out which attached views the scene moves, shows, hides, or restacks. `attached` is each attached view with
+ /// where it was last placed, `stacking` the order the last scene showed them in, back to front.
+ pub fn plan_layout(
+@@ -267,6 +275,7 @@ mod tests {
+             let mut scene = Scene::default();
+             scene.native_views = shown;
+             let layout = plan_layout(attached, &stacking, &scene, 1., [0., 0., 100., 100.], YAxis::Down);
++            assert_eq!(layout.places_views(), !placements.is_empty() || restacked.is_some(), "{name}");
+             assert_eq!(layout.placements, placements, "{name}");
+             assert_eq!(layout.stacking, restacked, "{name}");
+         }
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 7c0c918..2e14571 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -2219,9 +2219,15 @@ impl PlatformWindow for MacWindow {
+         let native_view_layout = native_views::plan_layout(&this, scene);
+         native_views::update_background(&mut this, scene);
+         native_views::scene_drawn(&mut this, scene);
+-        this.renderer.draw(scene);
++        let presented = this
++            .renderer
++            .draw_placing_native_views(scene, native_view_layout.places_views());
+         drop(this);
+-        native_views::apply_layout(&self.0, native_view_layout);
++        // A scene that never reached the screen has no opening for the views to
++        // move to; the next one plans them again.
++        if presented {
++            native_views::apply_layout(&self.0, native_view_layout);
++        }
+     }
+ 
+     unsafe fn attach_native_view(
+diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
+index bd5dbea..b6b0ad9 100644
+--- a/gpui-pre-macos/src/window/native_views.rs
++++ b/gpui-pre-macos/src/window/native_views.rs
+@@ -281,8 +281,9 @@ extern "C" fn container_perform_key_equivalent(_: &AnyObject, _: Sel, _: *mut An
+ /// A view's frame change reaches the screen a frame or two before the scene
+ /// that moves its opening, so the opening briefly uncovers whatever is behind
+ /// the views. That is the window's background, which is given the color the
+-/// scene asks for. Presenting scenes in step with AppKit would close the gap,
+-/// but costs every frame of a window that shows a native view.
++/// scene asks for. A scene that places a view is presented in step with
++/// AppKit's transaction, which closes the gap; the color still covers any
++/// frame the compositor shows early.
+ ///
+ /// The color stays until a scene without native views is drawn. The last
+ /// view's opening is still on screen when the view goes, and would show the

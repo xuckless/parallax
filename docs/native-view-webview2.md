@@ -1,6 +1,6 @@
 # WebView2 as a NativeView
 
-Patch [0056](../patches/0056-windows-native-view-visuals.patch) lets a WebView2 page be a `NativeView` on Windows,
+Patch [0071](../patches/0071-windows-native-view-visuals.patch) lets a WebView2 page be a `NativeView` on Windows,
 through WebView2's visual hosting: the page renders into a DirectComposition visual in GPUI's own tree, under GPUI's
 hole, with no child window over GPUI's ([native-view-windows.md](native-view-windows.md) is the rest of the design).
 [examples/native-view-webview2](../examples/native-view-webview2/src/) is the whole pattern.
@@ -26,7 +26,7 @@ hole, with no child window over GPUI's ([native-view-windows.md](native-view-win
 
 WebView2's visual hosting takes no spatial input itself; the app sends it
 ([Microsoft's docs](https://learn.microsoft.com/microsoft-edge/webview2/concepts/windowed-vs-visual-hosting)).
-The view element's listeners do (`NativeViewInput::Window`, patch 0048): `on_mouse_move`, `on_mouse_down` /
+The view element's listeners do (`NativeViewInput::Window`, patch 0049): `on_mouse_move`, `on_mouse_down` /
 `on_mouse_up` per button (one table, `BUTTONS` in the example's `app.rs`), `on_scroll` and `on_hover` (leave) become
 `ICoreWebView2CompositionController::SendMouseInput`, at the position in the element × scale, rounded. The view's
 element hears the pointer only over it, so a button pressed on the page is followed with window-level capture-phase

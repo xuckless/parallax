@@ -2,86 +2,54 @@ Show native views on Windows: the app's composition content under GPUI's frame, 
 
 What: `WindowsWindow::attach_native_view` takes any COM object `IDCompositionVisual::SetContent` takes (usually a
 composition swap chain the app presents to on its own device and thread) and returns an attachment whose drop takes
-it out again; `native_view_input` is 0048's `Window`, as a DirectComposition visual takes no input. The renderer's
+it out again; `native_view_input` is 0049's `Window`, as a DirectComposition visual takes no input. The renderer's
 DirectComposition tree becomes, back to front under one root visual: a background visual, a container of one
 subtree per native view (a clip visual holding a content visual, after Chromium's `VisualSubtree`), and GPUI's own
-visual. While a view shows, GPUI's frame is rendered into its swap chain's back buffer as always, then copied into a
-DirectComposition surface (`IDCompositionSurface::BeginDraw`/`EndDraw`) that GPUI's visual shows instead of the
-swap chain (`native_view_surface.rs`, one table `native_views::present_step`): a surface changes only on `Commit`,
-while a swap chain's `Present` and a `Commit` are not atomic, so through the surface GPUI's frame, its holes and the
-views' placement change in one `Commit`. With no view shown the swap chain presents as upstream (no copy, no commit).
-The surface is left over two frames, so no stale swap chain frame flashes: the frame the last view goes is still
-copied into the surface and committed with the views' removal, and presented to the swap chain too; the next frame
-presents and shows the swap chain again, which already holds that hole-less frame. The switch either way is logged
-at info. Each frame, `NativeViewTree::place_views` (named after macOS's
-`Layout::places_views`) compares the scene's views
+visual, which shows its swap chain as upstream (0058 keeps it in step with the views). Each frame,
+`NativeViewTree::place_views` (named after macOS's `Layout::places_views`) compares the scene's views
 (`native_views.rs`: placement from core's `native_view_placement::visible`, back-to-front order, background colour from
 `native_view_placement::background`, black when none asks) with what the tree
 shows, restacks only when the views or their order change, places only the views that moved, and the frame commits
 once after (Chromium's `DCLayerTree::CommitAndClearPendingOverlays` order: present, then build and commit the tree).
-`PrimitiveBatch::NativeViews` draws a hole: a `native_view` shader writing transparent black with
-blending off, at the batch's fixed depth with the depth test on, so opaque quads painted after the view (drawn
-first by the opaque pass) keep their pixels and everything painted before it is erased, as Metal's
-`native_view_fragment` does. The swap chain keeps upstream's premultiplied alpha mode for every window (the
-surface is premultiplied too), so a window without views behaves exactly as upstream. `NativeView::set_background`'s colour
+`NativeView::set_background`'s colour
 (black by default, as on macOS) fills a 1×1 swap chain stretched under the views, shown only for an opaque window
 while a view is shown, where a view's content hasn't caught up with its element. A lost device rebuilds every view's
 visuals from the content the app gave. A view whose last handle is dropped while the renderer is borrowed (it draws)
-is taken out of the tree when the next frame starts, never left behind. The code is in three new files, `native_views.rs` (pure decisions),
-`directx_renderer/native_view_tree.rs` (the visual tree, the hole pipeline, the attachment) and
-`directx_renderer/native_view_surface.rs` (swap chain or surface); `directx_renderer.rs` and `window.rs` get only
-hooks (a field, a call per stage, the shader module row).
+is taken out of the tree when the next frame starts, never left behind. The code is in `native_views.rs` (pure
+decisions, new) and `directx_renderer/native_view_tree.rs` (the visual tree and the attachment, next to 0056's hole
+pipeline); `directx_renderer.rs`, `window.rs` and `gpui_windows.rs` get only hooks (fields, a call per stage, the
+module rows).
 
-Why: issue #1 (NativeView on every desktop). GPUI on Windows already presents through DirectComposition, so the
+Why: GPUI on Windows already presents through DirectComposition, so the
 app's content is one more visual in the same tree: no child window (no airspace problem: GPUI's window keeps all
 input), no copy of the app's frames, and the app's presents reach the screen without GPUI drawing or committing
-(DWM picks up a composition swap chain's present by itself). A frame that moves a view keeps hole and view in step
-(owner decision 2026-11-27: with the swap chain alone, about one frame in 20–40 of a sliding view showed a 3 px gap).
-The cost is one GPU copy of GPUI's own frame and one `Commit` per GPUI frame while a view shows, never per frame of
-a view's content (an idle window draws no GPUI frame, so copies nothing); a window with no view shown pays nothing.
-Upstream's `PrimitiveBatch::NativeViews` arm was a no-op. Modelled on Chromium's ui/gl/dc_layer_tree.cc @
-4fc26f32cd03f0e8443c4aa11d6859a901d90659 (BSD-3-Clause, third_party/chromium/PORTED.md).
+(DWM picks up a composition swap chain's present by itself).
+Modelled on Chromium's ui/gl/dc_layer_tree.cc @
+4fc26f32cd03f0e8443c4aa11d6859a901d90659 (BSD-3-Clause, third_party/chromium/PORTED.md). Over 200 lines: the tree
+(attach, place, restack, recover after a lost device) is one concern that splits no further, and it is modelled on
+Chromium rather than a near-verbatim port, so patch rule 4's port exemption does not cover it; flagged for the owner.
 
-Test: `native_views.rs`'s tables (placement per layout, the present step per (showing, views) pair, frame stacking
-and background) run on any host through `scripts/patch-test.sh` (windows-pure). Live:
-`scripts/windows-native-view-checks.sh` on CI's Windows runner reads the composed screen back at 100 and 125 %: the
-hole shows the view, the div over it covers it, one device pixel past each edge is GPUI's, no gap colour in any of
-100 screenshots while the view slides, nor after a resize; one surface copy per GPUI frame while it slides; input
-over the view reaches its element with positions in the view; 0 GPUI frames (so 0 copies) per second while only the
-view presents; the alpha mode is logged (docs/native-view-windows.md).
+Test: `native_views.rs`'s tables (placement per layout, frame stacking and background) run on any host through
+`scripts/patch-test.sh` (windows-pure). Live: `scripts/windows-native-view-checks.sh` on CI's Windows runner reads
+the composed screen back at 100 and 125 % (docs/native-view-windows.md); this patch's checks: input over the view
+reaches its element with positions in the view; 0 GPUI frames per second while only the view presents.
 
-Upstream: not filed (patch rule 14).
+Upstream PR: not filed (filing paused, patch rule 14).
 
-diff --git a/gpui-pre-windows/build.rs b/gpui-pre-windows/build.rs
-index 4b5c3d6..b29b426 100644
---- a/gpui-pre-windows/build.rs
-+++ b/gpui-pre-windows/build.rs
-@@ -40,6 +40,7 @@ mod shader_compilation {
-             "monochrome_sprite",
-             "subpixel_sprite",
-             "polychrome_sprite",
-+            "native_view",
-         ];
- 
-         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);
 diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
-index 5ab9167..2eb4df6 100644
+index 228c719..3875504 100644
 --- a/gpui-pre-windows/src/directx_renderer.rs
 +++ b/gpui-pre-windows/src/directx_renderer.rs
-@@ -20,8 +20,12 @@ use windows::{
+@@ -20,7 +20,7 @@ use windows::{
      core::{HSTRING, Interface},
  };
  
+-use crate::directx_renderer::native_view_tree::NativeViewHole;
 +use crate::directx_renderer::native_view_tree::{NativeViewHole, NativeViewTree, NativeViews};
  use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
  use crate::*;
-+
-+mod native_view_surface;
-+mod native_view_tree;
- use gpui::*;
  
- pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
-@@ -43,6 +47,7 @@ pub(crate) struct DirectXRenderer {
+@@ -46,6 +46,7 @@ pub(crate) struct DirectXRenderer {
      globals: DirectXGlobalElements,
      pipelines: DirectXRenderPipelines,
      direct_composition: Option<DirectComposition>,
@@ -89,15 +57,7 @@ index 5ab9167..2eb4df6 100644
      font_info: &'static FontInfo,
  
      width: u32,
-@@ -90,6 +95,7 @@ struct DirectXRenderPipelines {
-     mono_sprites: PipelineState<MonochromeSprite>,
-     subpixel_sprites: PipelineState<SubpixelSprite>,
-     poly_sprites: PipelineState<PolychromeSprite>,
-+    native_view_holes: PipelineState<NativeViewHole>,
- }
- 
- struct DirectXGlobalElements {
-@@ -113,10 +119,13 @@ impl Drop for Annotation<'_> {
+@@ -117,10 +118,13 @@ impl Drop for Annotation<'_> {
      }
  }
  
@@ -112,7 +72,7 @@ index 5ab9167..2eb4df6 100644
  }
  
  impl DirectXRendererDevices {
-@@ -164,8 +173,15 @@ impl DirectXRenderer {
+@@ -168,8 +172,15 @@ impl DirectXRenderer {
              .context("Creating DirectX devices")?;
          let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
  
@@ -130,7 +90,7 @@ index 5ab9167..2eb4df6 100644
          let globals = DirectXGlobalElements::new(&devices.device)
              .context("Creating DirectX global elements")?;
          let pipelines = DirectXRenderPipelines::new(&devices.device)
-@@ -190,6 +206,7 @@ impl DirectXRenderer {
+@@ -194,6 +205,7 @@ impl DirectXRenderer {
              globals,
              pipelines,
              direct_composition,
@@ -138,7 +98,7 @@ index 5ab9167..2eb4df6 100644
              font_info: Self::get_font_info(),
              width: 1,
              height: 1,
-@@ -323,9 +340,10 @@ impl DirectXRenderer {
+@@ -327,9 +339,10 @@ impl DirectXRenderer {
          let direct_composition = if disable_direct_composition {
              None
          } else {
@@ -150,7 +110,7 @@ index 5ab9167..2eb4df6 100644
              Some(composition)
          };
  
-@@ -357,8 +375,9 @@ impl DirectXRenderer {
+@@ -361,8 +374,9 @@ impl DirectXRenderer {
              // and so likely do not have the textures anymore that are required for drawing
              return Ok(());
          }
@@ -161,42 +121,7 @@ index 5ab9167..2eb4df6 100644
      }
  
      /// Clear the render target for `background_appearance` and encode every
-@@ -438,8 +457,7 @@ impl DirectXRenderer {
-                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
-                 }
-                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
--                // Native views are only composited on macOS.
--                PrimitiveBatch::NativeViews(_) => Ok(()),
-+                PrimitiveBatch::NativeViews(range) => self.draw_native_view_holes(range),
-             }
-             .with_context(|| {
-                 format!(
-@@ -697,7 +715,7 @@ impl DirectXRenderer {
-             )?;
-         }
- 
--        Ok(())
-+        self.upload_native_view_holes(scene)
-     }
- 
-     fn draw_shadows(&mut self, start: usize, len: usize) -> Result<()> {
-@@ -1014,6 +1032,7 @@ impl DirectXRenderPipelines {
-             create_blend_state(device)?,
-         )?;
-         let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
-+        let native_view_holes = native_view_tree::hole_pipeline(device)?;
- 
-         Ok(Self {
-             shadow_pipeline,
-@@ -1026,6 +1045,7 @@ impl DirectXRenderPipelines {
-             mono_sprites,
-             subpixel_sprites,
-             poly_sprites,
-+            native_view_holes,
-         })
-     }
- }
-@@ -1034,19 +1054,26 @@ impl DirectComposition {
+@@ -1039,19 +1053,26 @@ impl DirectComposition {
      pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
          let comp_device = get_comp_device(dxgi_device)?;
          let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, false) }?;
@@ -225,191 +150,13 @@ index 5ab9167..2eb4df6 100644
              self.comp_device.Commit()?;
          }
          Ok(())
-@@ -1741,6 +1768,7 @@ pub(crate) mod shader_resources {
-         MonochromeSprite,
-         SubpixelSprite,
-         PolychromeSprite,
-+        NativeView,
-     }
- 
-     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-@@ -1814,6 +1842,10 @@ pub(crate) mod shader_resources {
-                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
-                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
-                 },
-+                ShaderModule::NativeView => match target {
-+                    ShaderTarget::Vertex => NATIVE_VIEW_VERTEX_BYTES,
-+                    ShaderTarget::Fragment => NATIVE_VIEW_FRAGMENT_BYTES,
-+                },
-             };
-             Self { inner: bytes }
-         }
-@@ -1894,6 +1926,7 @@ pub(crate) mod shader_resources {
-                 ShaderModule::MonochromeSprite => "monochrome_sprite",
-                 ShaderModule::SubpixelSprite => "subpixel_sprite",
-                 ShaderModule::PolychromeSprite => "polychrome_sprite",
-+                ShaderModule::NativeView => "native_view",
-             }
-         }
-     }
-diff --git a/gpui-pre-windows/src/directx_renderer/native_view_surface.rs b/gpui-pre-windows/src/directx_renderer/native_view_surface.rs
-new file mode 100644
-index 0000000..42febcb
---- /dev/null
-+++ b/gpui-pre-windows/src/directx_renderer/native_view_surface.rs
-@@ -0,0 +1,146 @@
-+//! GPUI's frame while native views show (docs/native-view-windows.md in Parallax): copied into a DirectComposition
-+//! surface, which changes only on `Commit`, so the frame, its holes and the views' placement reach the screen in the
-+//! same composition frame. With no view shown, the swap chain presents as upstream. `crate::native_views::present_step`
-+//! decides each frame's step; this file applies it.
-+
-+use anyhow::{Context as _, Result};
-+use windows::Win32::{
-+    Foundation::POINT,
-+    Graphics::{
-+        Direct3D11::{ID3D11DeviceContext, ID3D11Texture2D},
-+        DirectComposition::{IDCompositionDevice, IDCompositionSurface, IDCompositionVisual},
-+        Dxgi::{Common::DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_PRESENT},
-+    },
-+};
-+
-+use super::{DirectXResources, RENDER_TARGET_FORMAT};
-+use crate::native_views::{PresentStep, Showing, present_step};
-+
-+/// What GPUI's own visual shows (`Showing`, with the surface).
-+pub(super) enum Presenting {
-+    /// GPUI's swap chain.
-+    SwapChain,
-+    /// `surface`, `size` device px (the swap chain's size when it was made), which each GPUI frame is copied into.
-+    Surface {
-+        surface: IDCompositionSurface,
-+        size: [u32; 2],
-+    },
-+    /// Still `surface`, the frame after the last view went (`Showing::LeavingSurface`).
-+    LeavingSurface {
-+        surface: IDCompositionSurface,
-+        size: [u32; 2],
-+    },
-+}
-+
-+impl Presenting {
-+    fn showing(&self) -> Showing {
-+        match self {
-+            Self::SwapChain => Showing::SwapChain,
-+            Self::Surface { .. } => Showing::Surface,
-+            Self::LeavingSurface { .. } => Showing::LeavingSurface,
-+        }
-+    }
-+
-+    /// Shows this frame, rendered into the swap chain's back buffer, by `present_step`. Returns the step, which says
-+    /// whether it needs a `Commit`.
-+    pub(super) fn show(
-+        &mut self,
-+        shows_views: bool,
-+        comp_device: &IDCompositionDevice,
-+        comp_visual: &IDCompositionVisual,
-+        resources: &DirectXResources,
-+        context: &ID3D11DeviceContext,
-+        size: [u32; 2],
-+    ) -> Result<PresentStep> {
-+        let (step, next) = present_step(self.showing(), shows_views);
-+        let present = || {
-+            // SAFETY: the swap chain is live and its back buffer holds this frame.
-+            unsafe { resources.swap_chain.Present(0, DXGI_PRESENT(0)) }
-+                .ok()
-+                .context("Presenting swap chain failed")
-+        };
-+        let old = std::mem::replace(self, Self::SwapChain);
-+        *self = match (step, next) {
-+            (PresentStep::Present, _) => {
-+                present()?;
-+                Self::SwapChain
-+            }
-+            (PresentStep::PresentAndShowSwapChain, _) => {
-+                present()?;
-+                log::info!("native views: GPUI's frame presents through its swap chain again");
-+                // SAFETY: the visual belongs to this device and the swap chain is live.
-+                unsafe { comp_visual.SetContent(&resources.swap_chain) }?;
-+                Self::SwapChain
-+            }
-+            (PresentStep::CopyToSurface | PresentStep::CopyToSurfaceAndPresent, next) => {
-+                let surface = match old {
-+                    Self::Surface { surface, size: made } | Self::LeavingSurface { surface, size: made }
-+                        if made == size =>
-+                    {
-+                        surface
-+                    }
-+                    Self::SwapChain | Self::Surface { .. } | Self::LeavingSurface { .. } => {
-+                        if let Self::SwapChain = old {
-+                            log::info!(
-+                                "native views: GPUI's frame shows through a composition surface, alpha mode Premultiplied"
-+                            );
-+                        }
-+                        let [width, height] = size;
-+                        // SAFETY: plain creation on a live device; the visual belongs to it, and what it shows
-+                        // changes only on the commit after this frame is drawn into the surface.
-+                        unsafe {
-+                            let surface = comp_device.CreateSurface(
-+                                width,
-+                                height,
-+                                RENDER_TARGET_FORMAT,
-+                                DXGI_ALPHA_MODE_PREMULTIPLIED,
-+                            )?;
-+                            comp_visual.SetContent(&surface)?;
-+                            surface
-+                        }
-+                    }
-+                };
-+                copy(&surface, resources, context)?;
-+                if step == PresentStep::CopyToSurfaceAndPresent {
-+                    present()?;
-+                }
-+                match next {
-+                    Showing::LeavingSurface => Self::LeavingSurface { surface, size },
-+                    Showing::Surface | Showing::SwapChain => Self::Surface { surface, size },
-+                }
-+            }
-+        };
-+        Ok(step)
-+    }
-+}
-+
-+/// Copies the frame in the swap chain's back buffer into `surface`.
-+fn copy(
-+    surface: &IDCompositionSurface,
-+    resources: &DirectXResources,
-+    context: &ID3D11DeviceContext,
-+) -> Result<()> {
-+    let render_target = resources
-+        .render_target
-+        .as_ref()
-+        .context("missing render target")?;
-+    let mut offset = POINT::default();
-+    // SAFETY: a whole-surface update (no rect) is filled entirely by the copy of a back buffer of the surface's
-+    // size; both textures are on GPUI's device and share RENDER_TARGET_FORMAT.
-+    unsafe {
-+        let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset)?;
-+        context.CopySubresourceRegion(
-+            &texture,
-+            0,
-+            offset.x as u32,
-+            offset.y as u32,
-+            0,
-+            render_target,
-+            0,
-+            None,
-+        );
-+        surface.EndDraw()?;
-+    }
-+    log::debug!("native views: GPUI frame copied into the surface");
-+    Ok(())
-+}
 diff --git a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-new file mode 100644
-index 0000000..1786a1d
---- /dev/null
+index 4b69595..ae69fdd 100644
+--- a/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
 +++ b/gpui-pre-windows/src/directx_renderer/native_view_tree.rs
-@@ -0,0 +1,390 @@
+@@ -1,13 +1,51 @@
+-//! The hole each native view shows through in GPUI's frame (docs/native-view-windows.md in Parallax), cleared in
+-//! paint order as the Metal renderer's `native_views` pipeline does.
 +//! Native views in the renderer's DirectComposition tree (docs/native-view-windows.md in Parallax). Each view is the
 +//! app's content (a composition swap chain or anything `IDCompositionVisual::SetContent` takes) in a subtree under
 +//! GPUI's own swap chain visual, shown through a hole the renderer clears in paint order. What to show is decided on
@@ -418,15 +165,18 @@ index 0000000..1786a1d
 +//! Modelled on Chromium's ui/gl/dc_layer_tree.cc @ 4fc26f32cd03f0e8443c4aa11d6859a901d90659 (`VisualTree::BuildTree`,
 +//! `VisualSubtree::Update`, `CommitAndClearPendingOverlays`). Copyright 2019 The Chromium Authors. BSD-3-Clause, see
 +//! LICENSE-CHROMIUM.
-+
+ 
+-use std::ops::Range;
 +use std::{
 +    any::Any,
 +    cell::RefCell,
 +    ops::Range,
 +    rc::{Rc, Weak},
 +};
-+
-+use anyhow::{Context as _, Result};
+ 
+ use anyhow::{Context as _, Result};
+-use gpui::{Bounds, ScaledPixels, Scene};
+-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 +use gpui::{Bounds, NativeViewId, ScaledPixels, Scene, WindowBackgroundAppearance};
 +use gpui_util::ResultExt as _;
 +use windows::{
@@ -440,15 +190,15 @@ index 0000000..1786a1d
 +    },
 +    core::IUnknown,
 +};
-+
+ 
+-use super::{DirectXRenderer, PipelineState, create_opaque_blend_state, shader_resources::ShaderModule};
 +use super::{
 +    DirectComposition, DirectXRenderer, DirectXRendererDevices, PipelineState,
 +    create_opaque_blend_state, create_render_target_and_its_view,
 +    create_swap_chain_for_composition, shader_resources::ShaderModule,
 +};
 +use crate::WindowsWindowInner;
-+use super::native_view_surface::Presenting;
-+use crate::native_views::{Frame, Placement, PresentStep};
++use crate::native_views::{Frame, Placement};
 +
 +/// What the renderer keeps of its native views across devices.
 +#[derive(Default)]
@@ -459,27 +209,13 @@ index 0000000..1786a1d
 +    /// next frame starts. Shared with each `NativeViewAttachment`.
 +    detached: Rc<RefCell<Vec<NativeViewId>>>,
 +}
-+
-+/// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
-+/// renderer's `native_views` pipeline does, so elements painted after the view still cover it.
-+#[derive(Clone, Copy)]
-+#[repr(C)]
-+pub(super) struct NativeViewHole {
-+    bounds: Bounds<ScaledPixels>,
-+    content_mask: Bounds<ScaledPixels>,
-+}
-+
-+/// Writes with blending off at the batch's fixed depth, the depth test on, as every non-quad batch draws.
-+pub(super) fn hole_pipeline(device: &ID3D11Device) -> Result<PipelineState<NativeViewHole>> {
-+    PipelineState::new(
-+        device,
-+        "native_view_hole_pipeline",
-+        ShaderModule::NativeView,
-+        4,
-+        create_opaque_blend_state(device)?,
-+    )
-+}
-+
+ 
+ /// The part of the swap chain a native view shows through: cleared to transparent in paint order, as the Metal
+ /// renderer's `native_views` pipeline does, so elements painted after the view still cover it.
+@@ -29,7 +67,268 @@ pub(super) fn hole_pipeline(device: &ID3D11Device) -> Result<PipelineState<Nativ
+     )
+ }
+ 
 +/// How far the 1×1 background swap chain is stretched: past any window's size, so it never needs resizing.
 +const BACKGROUND_SCALE: f32 = 32768.;
 +
@@ -494,8 +230,6 @@ index 0000000..1786a1d
 +    views: Vec<(NativeViewId, ViewVisuals)>,
 +    /// What the tree shows now; a frame that shows the same changes nothing and commits nothing.
 +    shown: Frame,
-+    /// What GPUI's own visual shows: its swap chain, or while views show, the surface its frames are copied into.
-+    pub(super) presenting: Presenting,
 +}
 +
 +/// One view's subtree, after Chromium's `VisualSubtree`: the clip sits on an untransformed parent, and the content
@@ -531,8 +265,6 @@ index 0000000..1786a1d
 +                background: None,
 +                views: Vec::new(),
 +                shown: Frame::default(),
-+                // `DirectComposition::set_swap_chain` shows the swap chain on a new device.
-+                presenting: Presenting::SwapChain,
 +            })
 +        }
 +    }
@@ -686,7 +418,7 @@ index 0000000..1786a1d
 +    }
 +}
 +
-+impl DirectXRenderer {
+ impl DirectXRenderer {
 +    /// Shows `content` under the window's GPUI content once a scene paints the native view `id`. The attachment
 +    /// returned keeps it there.
 +    pub(crate) fn attach_native_view(
@@ -730,76 +462,25 @@ index 0000000..1786a1d
 +        Ok(Frame::new(&scene.native_views, appearance))
 +    }
 +
-+    /// After a frame renders: shows it (`Presenting::show`), then changes the visual tree and commits once, after
-+    /// Chromium's DCLayerTree, which presents its swap chains, then builds and commits the tree. Through the surface,
-+    /// the frame, its holes and the views' new placement change in that one commit. A swap chain frame that moves no
-+    /// view commits nothing, and the views' own presents never need GPUI: DWM picks up a swap chain's present by
-+    /// itself.
++    /// After a frame renders: presents it, then changes the visual tree and commits once, after Chromium's
++    /// DCLayerTree, which presents its swap chains, then builds and commits the tree. A frame that moves no view
++    /// commits nothing, and the views' own presents never need GPUI: DWM picks up a swap chain's present by itself.
 +    pub(super) fn present_native_views(&mut self, frame: Frame) -> Result<()> {
++        self.present()?;
 +        let Some(composition) = &mut self.direct_composition else {
-+            return self.present();
++            return Ok(());
 +        };
 +        let devices = self.devices.as_ref().context("devices missing")?;
-+        let resources = self.resources.as_ref().context("resources missing")?;
-+        let step = composition.view_tree.presenting.show(
-+            !frame.views.is_empty(),
-+            &composition.comp_device,
-+            &composition.comp_visual,
-+            resources,
-+            &devices.device_context,
-+            [self.width, self.height],
-+        )?;
-+        let placed = composition.view_tree.place_views(frame, devices)?;
-+        // step → whether it changes what DirectComposition shows. Only a plain present doesn't.
-+        let commits = match step {
-+            PresentStep::Present => placed,
-+            PresentStep::CopyToSurface
-+            | PresentStep::CopyToSurfaceAndPresent
-+            | PresentStep::PresentAndShowSwapChain => true,
-+        };
-+        if commits {
++        if composition.view_tree.place_views(frame, devices)? {
 +            // SAFETY: plain call on a live device.
 +            unsafe { composition.comp_device.Commit() }?;
 +        }
 +        Ok(())
 +    }
 +
-+    pub(super) fn upload_native_view_holes(&mut self, scene: &Scene) -> Result<()> {
-+        if scene.native_views.is_empty() {
-+            return Ok(());
-+        }
-+        let devices = self.devices.as_ref().context("devices missing")?;
-+        let holes: Vec<_> = scene
-+            .native_views
-+            .iter()
-+            .map(|native_view| NativeViewHole {
-+                bounds: native_view.bounds,
-+                content_mask: native_view.content_mask.bounds,
-+            })
-+            .collect();
-+        self.pipelines
-+            .native_view_holes
-+            .update_buffer(&devices.device, &devices.device_context, &holes)
-+    }
-+
-+    /// Opaque quads painted after the view, which the opaque pass drew first, are nearer than the batch's depth and
-+    /// keep their pixels; everything painted before it is erased.
-+    pub(super) fn draw_native_view_holes(&mut self, range: Range<usize>) -> Result<()> {
-+        if range.is_empty() {
-+            return Ok(());
-+        }
-+        let devices = self.devices.as_ref().context("devices missing")?;
-+        self.pipelines.native_view_holes.draw_range(
-+            &devices.device_context,
-+            self.globals
-+                .batch_params_buffer
-+                .as_ref()
-+                .context("batch params buffer missing")?,
-+            range.start as u32,
-+            range.len() as u32,
-+        )
-+    }
-+}
+     pub(super) fn upload_native_view_holes(&mut self, scene: &Scene) -> Result<()> {
+         if scene.native_views.is_empty() {
+             return Ok(());
 diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
 index bff01be..150a617 100644
 --- a/gpui-pre-windows/src/gpui_windows.rs
@@ -814,10 +495,10 @@ index bff01be..150a617 100644
  mod system_settings;
 diff --git a/gpui-pre-windows/src/native_views.rs b/gpui-pre-windows/src/native_views.rs
 new file mode 100644
-index 0000000..1455dbf
+index 0000000..5c1ac59
 --- /dev/null
 +++ b/gpui-pre-windows/src/native_views.rs
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,159 @@
 +//! What DirectComposition shows of a window's native views, decided on plain values so it is tested on any host
 +//! (Parallax's `scripts/patch-test.sh` builds this file on its own); `directx_renderer.rs` applies it to the visual
 +//! tree. Modelled on Chromium's `ui/gl/dc_layer_tree.cc` (`VisualTree::BuildTree`, `VisualSubtree::Update`): every
@@ -848,48 +529,6 @@ index 0000000..1455dbf
 +            origin: [view.bounds.origin.x.0, view.bounds.origin.y.0],
 +            clip: [visible.origin.x.0, visible.origin.y.0, corner.x.0, corner.y.0],
 +        })
-+    }
-+}
-+
-+/// What GPUI's own visual shows, as a plain value (`directx_renderer`'s `Presenting` holds the surface).
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum Showing {
-+    /// GPUI's swap chain, as upstream.
-+    SwapChain,
-+    /// The composition surface GPUI's frames are copied into while a view shows.
-+    Surface,
-+    /// Still the surface, the frame after the last view went; the swap chain already holds that frame.
-+    LeavingSurface,
-+}
-+
-+/// How a frame reaches DirectComposition. A swap chain's `Present` and a `Commit` are not atomic (DComp has no API to
-+/// tie them), so a frame that moves a view could show its new hole a composition frame before or after the view's new
-+/// placement. A composition surface changes only on `Commit`, so GPUI's frame, its holes and the views' placement
-+/// change together, at one GPU copy of GPUI's frame per GPUI frame (never per frame of a view's own content).
-+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+pub(crate) enum PresentStep {
-+    /// `Present` on GPUI's swap chain, as upstream: no copy, no `Commit`.
-+    Present,
-+    /// Copy into the surface (made first, or again at a new size) and commit it with the views' placement.
-+    CopyToSurface,
-+    /// The last view went: this hole-less frame is copied into the surface and committed with the views' removal,
-+    /// and presented to the swap chain too, so the swap chain holds it when it shows again.
-+    CopyToSurfaceAndPresent,
-+    /// Present, then show the swap chain again (`SetContent` and a `Commit`): it already holds the previous
-+    /// hole-less frame, so whichever of the two frames DWM composes first is current, never a stale one.
-+    PresentAndShowSwapChain,
-+}
-+
-+/// `showing × whether the frame shows a view → (step, showing next)`. A window pays for the surface only while it
-+/// shows a native view, and leaves it over two frames, so no stale swap chain frame ever flashes.
-+pub(crate) fn present_step(showing: Showing, shows_views: bool) -> (PresentStep, Showing) {
-+    match (showing, shows_views) {
-+        (Showing::SwapChain, false) => (PresentStep::Present, Showing::SwapChain),
-+        (Showing::SwapChain | Showing::Surface | Showing::LeavingSurface, true) => {
-+            (PresentStep::CopyToSurface, Showing::Surface)
-+        }
-+        (Showing::Surface, false) => (PresentStep::CopyToSurfaceAndPresent, Showing::LeavingSurface),
-+        (Showing::LeavingSurface, false) => (PresentStep::PresentAndShowSwapChain, Showing::SwapChain),
 +    }
 +}
 +
@@ -968,24 +607,6 @@ index 0000000..1455dbf
 +    }
 +
 +    #[test]
-+    fn present_steps() {
-+        use PresentStep::*;
-+        use Showing::*;
-+        // (row name, showing, the frame shows a view, step, showing next). One row per (showing, views) pair.
-+        let rows = [
-+            ("no view: the swap chain, as upstream", SwapChain, false, Present, SwapChain),
-+            ("the first view: the surface", SwapChain, true, CopyToSurface, Surface),
-+            ("views go on showing", Surface, true, CopyToSurface, Surface),
-+            ("the last view goes: the surface once more, the swap chain primed", Surface, false, CopyToSurfaceAndPresent, LeavingSurface),
-+            ("the frame after: the swap chain again", LeavingSurface, false, PresentAndShowSwapChain, SwapChain),
-+            ("a view shows again while leaving: the surface stays", LeavingSurface, true, CopyToSurface, Surface),
-+        ];
-+        for (name, showing, shows_views, step, next) in rows {
-+            assert_eq!(present_step(showing, shows_views), (step, next), "{name}");
-+        }
-+    }
-+
-+    #[test]
 +    fn frame_of_a_scene() {
 +        let view = |id: u64, x: f32, background: Hsla| PaintNativeView {
 +            order: 0 as DrawOrder,
@@ -1036,40 +657,6 @@ index 0000000..1455dbf
 +            assert_eq!(Frame::new(&views, appearance), expected, "{name}");
 +        }
 +    }
-+}
-diff --git a/gpui-pre-windows/src/shaders.hlsl b/gpui-pre-windows/src/shaders.hlsl
-index e849773..bdc868a 100644
---- a/gpui-pre-windows/src/shaders.hlsl
-+++ b/gpui-pre-windows/src/shaders.hlsl
-@@ -1370,3 +1370,29 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
-     color.a *= input.opacity * saturate(0.5 - distance);
-     return color;
- }
-+
-+/*
-+**
-+**              Native views
-+**
-+*/
-+
-+struct NativeViewHole {
-+    Bounds bounds;
-+    Bounds content_mask;
-+};
-+
-+StructuredBuffer<NativeViewHole> native_view_holes: register(t1);
-+
-+float4 native_view_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID): SV_Position {
-+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
-+    NativeViewHole hole = native_view_holes[batch_start_index + instance_id];
-+    ClippedVertex vertex = clip_to_mask(unit_vertex, hole.bounds, hole.content_mask);
-+    return to_device_position_impl(vertex.position);
-+}
-+
-+// The pipeline does not blend, so this erases what was drawn beneath the view, as the Metal renderer's
-+// native_view_fragment does.
-+float4 native_view_fragment(float4 position: SV_Position): SV_Target {
-+    return float4(0.0, 0.0, 0.0, 0.0);
 +}
 diff --git a/gpui-pre-windows/src/window.rs b/gpui-pre-windows/src/window.rs
 index 175a9e7..5688de9 100644

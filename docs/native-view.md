@@ -34,8 +34,8 @@ The renderer turns `PrimitiveBatch::NativeViews` into a hole: the view's bounds,
 what was painted beneath with transparent black, in paint order (Chromium's `ReplaceExistingQuadWithHolePunch`,
 Metal's `native_view_fragment`).
 
-- **Metal** (macOS, iOS): upstream's; patch [0051](../patches/0051-native-view-in-step.patch) presents in step.
-- **Direct3D 11** (Windows): patch [0050](../patches/0050-windows-native-view.patch)'s `native_view` shader.
+- **Metal** (macOS, iOS): upstream's; patch [0060](../patches/0060-apple-native-view-in-step-present.patch) presents in step.
+- **Direct3D 11** (Windows): patch [0056](../patches/0056-windows-native-view-hole.patch)'s `native_view` shader.
 - **wgpu** (Linux, Android, web): patch [0047](../patches/0047-wgpu-native-view-hole.patch), one hole for every wgpu
   target, in gpui_wgpu's new `wgpu_renderer/native_view_hole.rs` and `shaders_native_view.wgsl`. Holes are `Quad`s,
   so both instance transports (storage buffers, WebGL2) decode them; the pipeline doesn't blend, and its depth test
@@ -53,11 +53,11 @@ Metal's `native_view_fragment`).
 ## Input
 
 `PlatformWindow::native_view_input()` says who gets pointer input over a shown view (`NativeViewInput`, one switch for
-every backend, patch [0048](../patches/0048-native-view-window-input.patch)):
+every backend, patch [0049](../patches/0049-native-view-input-occlusion.patch)):
 
 | `NativeViewInput` | Targets | Pointer input over the view |
 |---|---|---|
-| `View` | macOS, web | the view (AppKit hit-tests it; the browser does, with the canvas's `pointer-events` toggled by GPUI's hit test, patch [0054](../patches/0054-web-native-view.patch)); the view's element blocks the mouse from everything behind |
+| `View` | macOS, web | the view (AppKit hit-tests it; the browser does, with the canvas's `pointer-events` toggled by GPUI's hit test, patch [0068](../patches/0068-web-native-view-pointer.patch)); the view's element blocks the mouse from everything behind |
 | `Window` | Wayland, Windows, iOS, Android | GPUI: the view's element occludes like a solid element (`HitboxBehavior::BlockMouseExceptAncestors`), so it and its ancestors hear the input, elements painted before it don't, elements painted after it keep theirs |
 
 With `Window`, add listeners to the view's element (`view.clone().into_element().on_mouse_move(…)`) and subtract
@@ -80,8 +80,8 @@ GPUI.
 
 - `wgpu_renderer::tests::native_view_hole::native_view_hole_is_cut_in_paint_order` (patch 0047): a table of pixels on
   the headless renderer (outside, under a quad painted after, erased opaque and translucent quads, the clip, the inset).
-- `window::native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element` (patch 0048): one
+- `window::native_view::tests::window_input::window_input_over_a_native_view_reaches_its_element` (patch 0051): one
   row per input, with an element painted under the view that must hear none of it; `window::native_view_input::tests`:
-  the hitbox behaviour per mode. A focused native view that is dropped hands focus back (0048's
-  `focused_native_view_sent`); iOS also hands the keyboard back itself when the view goes (0052).
+  the hitbox behaviour per mode. A focused native view that is dropped hands focus back (0051's
+  `focused_native_view_sent`); iOS also hands the keyboard back itself when the view goes (0064).
 - Both run in [scripts/patch-test.sh](../scripts/patch-test.sh) ([patch-tests.md](patch-tests.md)).

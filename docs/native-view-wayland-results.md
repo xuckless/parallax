@@ -1,6 +1,6 @@
 # Native views on Wayland: what was measured
 
-Part of [native-view-wayland.md](native-view-wayland.md): the setups patch 0049 ran on, the alpha mode each offered,
+Part of [native-view-wayland.md](native-view-wayland.md): the setups patches 0053–0055 ran on, the alpha mode each offered,
 and what a native view costs. The repeatable checks are [native-view-wayland-checks.md](native-view-wayland-checks.md).
 
 ## Checked (2026-11-27)

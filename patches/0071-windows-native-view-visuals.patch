@@ -24,11 +24,7 @@ Test: `scripts/windows-native-view-checks.sh` runs examples/native-view-webview2
 them back through `WebMessageReceived`), and GPUI draws 0 frames per second while only the page animates
 (docs/native-view-windows.md).
 
-Also, doc only: `NativeView`'s comment states patch 0048's key order for `NativeViewInput::Window` (the element's key
-listeners before key bindings). It lives here, after patch 0054's edits of the same comment, until the NativeView
-patches are split.
-
-Upstream: not filed (patch rule 14).
+Upstream PR: not filed (filing paused, patch rule 14).
 
 diff --git a/gpui-pre-windows/src/directx_renderer.rs b/gpui-pre-windows/src/directx_renderer.rs
 index 2eb4df6..a1c0a24 100644
@@ -234,10 +230,10 @@ index 5688de9..522d766 100644
          &self,
          id: NativeViewId,
 diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
-index be65081..dfe048b 100644
+index 5a2abe2..dfe048b 100644
 --- a/gpui-pre/src/window/native_view.rs
 +++ b/gpui-pre/src/window/native_view.rs
-@@ -42,18 +42,22 @@ impl NativeViewId {
+@@ -42,11 +42,12 @@ impl NativeViewId {
  ///
  /// macOS shows an `NSView`, iOS a `UIView`, Windows DirectComposition
  /// content (usually a composition swap chain), Wayland a `wl_surface` the
@@ -253,19 +249,7 @@ index be65081..dfe048b 100644
  /// over the view is hit-tested like any solid element's: listeners added to
  /// the element this handle becomes (`view.into_element().on_mouse_move(…)`)
  /// and its ancestors hear it, elements painted before the view hear nothing
- /// over it, elements painted after the view take theirs, and
- /// [`bounds`](Self::bounds) makes positions view-relative. Keys pressed while
--/// the view's [`FocusHandle`] is focused are dispatched from that element like
--/// any other key press, so the app forwards the ones it wants to the view.
-+/// the view's [`FocusHandle`] is focused reach that element's key listeners
-+/// before key bindings, as they reach the view itself on macOS, so the app
-+/// forwards the ones it wants to the view and stops their propagation; key
-+/// bindings get the rest. Bindings for reserved actions and the rest of a
-+/// pending binding apply first, as described below.
- /// The rest of this comment describes macOS and the web
- /// ([`crate::NativeViewInput::View`]), where the browser gives pointer input
- /// over an uncovered view to its element.
-@@ -111,8 +115,9 @@ impl NativeView {
+@@ -114,8 +115,9 @@ impl NativeView {
      ///
      /// # Errors
      ///
@@ -277,7 +261,7 @@ index be65081..dfe048b 100644
      ///
      /// # Safety
      ///
-@@ -120,11 +125,16 @@ impl NativeView {
+@@ -123,7 +125,9 @@ impl NativeView {
      /// embeds, which is an `NSView` on macOS, and that view must not be in
      /// another view hierarchy. On iOS it is a `UIView`. On Windows it is a
      /// COM object (`IUnknown`) that `IDCompositionVisual::SetContent` takes,
@@ -288,11 +272,3 @@ index be65081..dfe048b 100644
      /// On Wayland it is a `wl_proxy` of a `wl_surface`
      /// made on the window's own `wl_display`, with no role, no `wp_viewport`
      /// and no subsurfaces of its own; GPUI makes it a subsurface of the window
--    /// and places it, and the app attaches and commits its buffers. On the web
-+    /// and places it, and the app commits every buffer through
-+    /// `gpui_linux::NativeViewBuffers`, from a thread it stops and joins before
-+    /// GPUI's connection closes (in `cx.on_app_quit`, or when the window
-+    /// closes). On the web
-     /// it is a `web_sys::HtmlElement`, which GPUI moves into a slot under the
-     /// canvas (moving an `<iframe>` already in the document reloads it).
-     ///

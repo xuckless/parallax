@@ -1,7 +1,7 @@
 # WebGPU on the web: the canvas probe
 
 gpui_web picks WebGPU first and WebGL2 when WebGPU fails (`WebBackendPreference::Auto`). A browser can give a working
-WebGPU device whose canvases show nothing, so patch [0057](../patches/0057-web-webgpu-canvas-probe.patch) adds one
+WebGPU device whose canvases show nothing, so patch [0072](../patches/0072-web-webgpu-canvas-probe.patch) adds one
 check before a window commits to WebGPU: `webgpu_canvas_probe::shows_drawing` (its own file, one hook in
 platform.rs) clears a detached 4x4 WebGPU canvas to red and reads it back through a 2D `OffscreenCanvas` in the same
 task. Anything but opaque red tries WebGL2 and logs

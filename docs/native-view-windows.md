@@ -1,10 +1,10 @@
 # NativeView on Windows
 
-Patch [0050](../patches/0050-windows-native-view.patch) shows an app's own content under GPUI's window through
+Patch [0057](../patches/0057-windows-native-view-tree.patch) shows an app's own content under GPUI's window through
 DirectComposition, which GPUI already presents with. No child window (no airspace: GPUI's `HWND` keeps all input), no
 copy of the app's frames, and the app's presents reach the screen with no GPUI frame. Input goes to the view's element
-([0048](../patches/0048-native-view-window-input.patch), `NativeViewInput::Window`). Plan: ROADMAP "Phase: NativeView".
-A WebView2 page is a NativeView too (patch 0056): [native-view-webview2.md](native-view-webview2.md).
+([0049](../patches/0049-native-view-input-occlusion.patch), `NativeViewInput::Window`). Plan: ROADMAP "Phase: NativeView".
+A WebView2 page is a NativeView too (patch 0071): [native-view-webview2.md](native-view-webview2.md).
 
 ## How an app uses it
 
@@ -26,7 +26,7 @@ copies nor draws for it.
 
 | Piece | Where |
 |---|---|
-| Visual tree, back to front under one root: background, the views (a clip visual over a content visual each, after Chromium's `VisualSubtree`), GPUI's own visual | `directx_renderer/native_view_tree.rs` (new in 0050), `DirectComposition::new` |
+| Visual tree, back to front under one root: background, the views (a clip visual over a content visual each, after Chromium's `VisualSubtree`), GPUI's own visual | `directx_renderer/native_view_tree.rs` (new in 0056–0058), `DirectComposition::new` |
 | What a frame shows (placement from core's `native_view_placement`, order, background) and the present step (`present_step`, one table), as plain values with host tests | `native_views.rs` (pure, in [patch-test.sh](../scripts/patch-test.sh)'s windows-pure row) |
 | The hole: `PrimitiveBatch::NativeViews` writes transparent black, blending off, at the batch's depth, so later opaque quads keep their pixels | `native_view_*` in `shaders.hlsl` |
 | GPUI's frame: rendered into the swap chain's back buffer; while a view shows, copied into a DComp surface instead of presented | `directx_renderer/native_view_surface.rs` (`Presenting::show`) |

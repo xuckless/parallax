@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime checks of NativeView on Windows (patches 0048, 0050 and 0056, docs/native-view-windows.md): runs
+# Runtime checks of NativeView on Windows (patches 0049, 0056-0058 and 0071, docs/native-view-windows.md): runs
 # examples/native-view-windows (a composition swap chain) and examples/native-view-webview2 (a WebView2 page) on the
 # desktop, reads the composed screen back through crates/touch-inject, injects mouse and key input, and asserts on
 # pixels and on what the examples logged. Each scale relaunches each example; logs and screenshots land in

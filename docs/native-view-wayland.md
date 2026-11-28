@@ -1,6 +1,6 @@
 # Native views on Wayland
 
-Patch [0049](../patches/0049-wayland-native-view.patch): the app's `wl_surface` as a `wl_subsurface` below the window,
+Patch [0053](../patches/0053-wayland-native-view-subsurface.patch): the app's `wl_surface` as a `wl_subsurface` below the window,
 its hole cut by the wgpu renderer ([native-view.md](native-view.md)). Ported from Chromium's
 `wayland_subsurface.cc` and `wayland_frame_manager.cc` ([third_party/chromium/PORTED.md](../third_party/chromium/PORTED.md))
 into gpui_linux's new `wayland/window/native_view.rs`; `window.rs` holds the hooks. X11 and XWayland: no native views.

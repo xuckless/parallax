@@ -7,13 +7,13 @@ frame. The plan and acceptance list: [ROADMAP.md, Phase: NativeView](../ROADMAP.
 
 | | macOS | iOS |
 |---|---|---|
-| Code | upstream's [native_views.rs](../upstream/gpui-pre-macos/src/window/native_views.rs) | patch [0052](../patches/0052-ios-native-view.patch): `ios/window/native_views.rs`, `ios/window/rotation.rs`, `ios/native_view_state.rs`, one-line hooks in upstream's files |
+| Code | upstream's [native_views.rs](../upstream/gpui-pre-macos/src/window/native_views.rs) | patch [0062](../patches/0062-ios-native-view.patch): `ios/window/native_views.rs`, `ios/window/rotation.rs`, `ios/native_view_state.rs`, one-line hooks in upstream's files |
 | Where the view goes | a clipping container below GPUI's `NSView` | a clipping container below GPUI's `UIView`, in a host view inside the view controller's plain root view |
 | Pointer input over it | the view's (AppKit hit-tests it): `NativeViewInput::View` | GPUI's view stays on top and takes every touch, so the element's listeners hear it: `NativeViewInput::Window`. The view gets none unless the app forwards touches |
 | Keyboard | the view takes keys while its focus handle is focused (upstream) | the app makes its view first responder ([below](#keyboard-on-ios)) |
 | Gap colour | `NativeView::set_background` colours the window behind the views | the same, on the host view right behind GPUI's view |
 
-Shared, patch [0051](../patches/0051-native-view-in-step.patch):
+Shared, patches [0059](../patches/0059-apple-native-view-placement.patch)–[0061](../patches/0061-apple-native-view-hole-inset.patch):
 
 - **In step.** A frame that moves, resizes, shows or hides a view is presented with the Core Animation transaction
   that places it (`MetalRenderer::draw_placing_native_views`), so hole and view reach the screen together; other
@@ -31,7 +31,7 @@ Shared, patch [0051](../patches/0051-native-view-in-step.patch):
   `gpui_apple`, info), each time a view shows or goes.
 
 Who takes input over a view (`NativeViewInput`, iOS's `Window`) is patch
-[0048](../patches/0048-native-view-window-input.patch)'s: [native-view.md](native-view.md#input). Lifecycle, clipping
+[0049](../patches/0049-native-view-input-occlusion.patch)'s: [native-view.md](native-view.md#input). Lifecycle, clipping
 and z-order on iOS follow Flutter's `FlutterPlatformViewsController.mm` (oracle only: Flutter draws over its views,
 Parallax draws under them). An app that wants the view to get touches forwards them from the element's listeners, as
 Flutter's touch interceptor and React Native's `RCTSurfaceTouchHandler.mm` do; the element's bounds are the view's
@@ -70,5 +70,5 @@ scripts/apple-native-view-checks.sh "iPhone 17"    # iOS simulator on pixl-mac, 
 ```
 
 Its checks: [native-view-apple-checks.md](native-view-apple-checks.md). Upstream's macOS examples build from the
-fork crate (patch [0053](../patches/0053-macos-native-view-examples.patch)):
+fork crate (patch [0065](../patches/0065-macos-native-view-examples.patch)):
 `cargo run --manifest-path build/parallax-gpui/Cargo.toml -p parallax-gpui --example native_view`.

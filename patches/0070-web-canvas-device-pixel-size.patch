@@ -7,7 +7,7 @@ What:
   square of the scale and holes landed 1.25x off at 1.25.
 
 Tests: scripts/web-checks.mjs's `native-view` suite at scale 1.25 (CDP `Emulation.setDeviceMetricsOverride`), which
-checks the hole lands on the view (docs/native-view-web.md). Independent of patch 0054: applies before or after it.
+checks the hole lands on the view (docs/native-view-web.md). Independent of patches 0066-0069: applies before or after them.
 
 Why: under scale emulation GPUI sized its canvas for scale 1 and drew at the square of the scale; the sizing is
 private to gpui_web's window (no extension point).

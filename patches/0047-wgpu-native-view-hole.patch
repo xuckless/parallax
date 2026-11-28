@@ -16,7 +16,7 @@ surface's mode, or a WebGL2 canvas's premultiplied context whatever mode wgpu re
 with the typed `NativeViewsUnsupported` on a surface that offers no blending mode (NVIDIA's Vulkan WSI being the
 known risk), so a platform can fail `NativeView::new` and the app fall back.
 `set_native_view_hole_inset` (kept only on the renderer's core) cuts holes inside the views' bounds, for a platform
-that rounds views to whole logical pixels (Wayland, patch 0049).
+that rounds views to whole logical pixels (Wayland, patch 0053).
 
 New files: `shaders_native_view.wgsl` (concatenated after each transport), `wgpu_renderer/native_view_hole.rs` (the
 hole quads, the pipeline's colour target, the alpha-mode log), `wgpu_renderer/tests/native_view_hole.rs` (table test
@@ -408,7 +408,7 @@ index 41be0d3..fd1ff67 100644
      use gpui::{
          BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite, PathCurve,
          PathPaint, PathTile, Point, PolychromeSprite, Quad, Shadow, Size, SubpixelSprite,
-diff --git a/home/xuckl/Dev/parallax/.claude/worktrees/agent-a485a30bc14a932fe/build/gpui-patched/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/native_view_hole.rs
 new file mode 100644
 index 0000000..ad6219f
 --- /dev/null
@@ -508,7 +508,7 @@ index 0000000..ad6219f
 +        Err(unsupported) => log::warn!("native views: {unsupported}"),
 +    }
 +}
-diff --git a/home/xuckl/Dev/parallax/.claude/worktrees/agent-a485a30bc14a932fe/build/gpui-patched/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
+diff --git a/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs b/gpui-pre-wgpu/src/wgpu_renderer/tests/native_view_hole.rs
 new file mode 100644
 index 0000000..d8720ea
 --- /dev/null
