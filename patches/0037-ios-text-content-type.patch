@@ -1,0 +1,105 @@
+Tell iOS what a field holds: TextInputConfiguration's autofill hint as `textContentType`.
+
+Ported from flutter/flutter engine/src/flutter/shell/platform/darwin/ios/framework/Source/FlutterTextInputPlugin.mm
+@ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `ToUITextContentType` and `configureWithDictionary:`'s
+`textContentType`. Copyright 2014 The Flutter Authors. BSD-3-Clause.
+
+What: GPUITextInputView's `textContentType` maps GPUI's `AutofillHint` through Flutter's table (by Flutter's hint
+names: username, password, newPassword, oneTimeCode, email, telephoneNumber, name, fullStreetAddress, postalCode,
+creditCardNumber), and no hint to "", Flutter's value for a field without autofill, which turns iOS's autofill off.
+The view had no content type, so iOS offered no password, one-time-code or contact autofill.
+
+Why: patch 0005 added the hint; Android (Parallax) and the web (patch 0034) already read it.
+
+Test: patch 0028's table gains testDisablingAutofillOnInputClient and a row checking every GPUI hint against UIKit's
+constant, on the iOS simulator (`scripts/ios-text-oracle.sh` in Parallax).
+
+Upstream PR: not filed yet (needs 0005 upstream first).
+
+diff --git a/gpui-pre-ios/src/ios/text_input.rs b/gpui-pre-ios/src/ios/text_input.rs
+index 679a712..643fd65 100644
+--- a/gpui-pre-ios/src/ios/text_input.rs
++++ b/gpui-pre-ios/src/ios/text_input.rs
+@@ -1,7 +1,7 @@
+ use super::window::{IosWindowState, WindowReference};
+ use gpui::{
+-    Autocapitalize, KeyboardType, PlatformInputHandler, TextInputAction, TextInputConfiguration,
+-    TextInputStateChange, px,
++    Autocapitalize, AutofillHint, KeyboardType, PlatformInputHandler, TextInputAction,
++    TextInputConfiguration, TextInputStateChange, px,
+ };
+ use objc2::rc::{Retained, Weak};
+ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+@@ -344,6 +344,30 @@ define_class!(
+                 KeyboardType::Search => UIKeyboardType::WebSearch,
+             }
+         }
++        // Ported from flutter/flutter FlutterTextInputPlugin.mm's `ToUITextContentType` @ 3.50.1, for GPUI's hints
++        // under Flutter's names (`username` is UIKit's own value, which Flutter passes through). No hint is Flutter's
++        // `autofill == nil`: "", which turns autofill off. Copyright 2014 The Flutter Authors. BSD-3-Clause, see
++        // third_party/flutter/LICENSE.
++        #[unsafe(method_id(textContentType))]
++        fn text_content_type(&self) -> Retained<NSString> {
++            // SAFETY: UIKit's content type constants are immutable strings.
++            let content_type: &NSString = unsafe {
++                match self.ivars().configuration.borrow().autofill {
++                    None => ns_string!(""),
++                    Some(AutofillHint::Username) => UITextContentTypeUsername,
++                    Some(AutofillHint::Password) => UITextContentTypePassword,
++                    Some(AutofillHint::NewPassword) => UITextContentTypeNewPassword,
++                    Some(AutofillHint::OneTimeCode) => UITextContentTypeOneTimeCode,
++                    Some(AutofillHint::Email) => UITextContentTypeEmailAddress,
++                    Some(AutofillHint::Phone) => UITextContentTypeTelephoneNumber,
++                    Some(AutofillHint::Name) => UITextContentTypeName,
++                    Some(AutofillHint::PostalAddress) => UITextContentTypeFullStreetAddress,
++                    Some(AutofillHint::PostalCode) => UITextContentTypePostalCode,
++                    Some(AutofillHint::CreditCardNumber) => UITextContentTypeCreditCardNumber,
++                }
++            };
++            content_type.copy()
++        }
+         #[unsafe(method(isSecureTextEntry))]
+         fn is_secure_text_entry(&self) -> bool { self.ivars().configuration.borrow().secure }
+         #[unsafe(method(autocorrectionType))]
+diff --git a/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs b/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
+index 4cd922f..ecfc426 100644
+--- a/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
++++ b/gpui-pre-ios/src/ios/text_input_flutter_oracle.rs
+@@ -272,6 +272,8 @@ enum Step {
+     RespondsTo(&'static str, bool),
+     KeyboardType(UIKeyboardType),
+     Secure(bool),
++    /// `textContentType`, compared as a string.
++    ContentType(&'static str),
+     Autocorrection(UITextAutocorrectionType),
+     SpellChecking(UITextSpellCheckingType),
+     InlinePrediction(UITextInlinePredictionType),
+@@ -638,6 +640,18 @@ fn rows() -> Vec<Row> {
+             configuration(|c| c.keyboard_type = gpui::KeyboardType::Search),
+             KeyboardType(UIKeyboardType::WebSearch),
+         ]),
++        row("testDisablingAutofillOnInputClient", vec![
++            configuration(|c| c.secure = true),
++            ContentType(""),
++        ]),
++        // Not a Flutter test: Flutter's `ToUITextContentType` for each GPUI hint, as UIKit's constant values.
++        row("ToUITextContentType for GPUI's hints", [
++            (AutofillHint::Username, "username"), (AutofillHint::Password, "password"),
++            (AutofillHint::NewPassword, "new-password"), (AutofillHint::OneTimeCode, "one-time-code"),
++            (AutofillHint::Email, "email"), (AutofillHint::Phone, "tel"), (AutofillHint::Name, "name"),
++            (AutofillHint::PostalAddress, "street-address"), (AutofillHint::PostalCode, "postal-code"),
++            (AutofillHint::CreditCardNumber, "cc-number"),
++        ].into_iter().flat_map(|(hint, content_type)| [configuration(|c| c.autofill = Some(hint)), ContentType(content_type)]).collect()),
+         row("testUpdateSecureTextEntry", vec![
+             configuration(|c| c.secure = true),
+             Secure(true),
+@@ -921,6 +935,9 @@ fn run_step(view: &TextInputView, field: &Rc<RefCell<Field>>, step: &Step) -> Re
+         }
+         Step::KeyboardType(want) => check("keyboardType", view.keyboardType(), *want)?,
+         Step::Secure(want) => check("isSecureTextEntry", view.isSecureTextEntry(), *want)?,
++        Step::ContentType(want) => {
++            check("textContentType", view.textContentType().to_string(), want.to_string())?
++        }
+         Step::Autocorrection(want) => {
+             check("autocorrectionType", view.autocorrectionType(), *want)?
+         }

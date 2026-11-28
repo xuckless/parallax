@@ -1,0 +1,53 @@
+# The patches
+
+One row per file in [`patches/`](../patches/), in order; the header of each says what and why. How to write one:
+[patches.md](patches.md).
+
+| Patch | Concern |
+|---|---|
+| [0001](../patches/0001-export-priority-queue-android.patch) | export `PriorityQueueSender`/`Receiver` on Android |
+| [0002](../patches/0002-cosmic-text-system-with-font-system.patch) | `CosmicTextSystem::new_with_font_system` |
+| [0003](../patches/0003-pointer-source.patch) | `TouchEvent::device`, `Window::pointer_source()` ([core-patches.md](core-patches.md)) |
+| [0004](../patches/0004-touch-opt-out.patch) | `on_touch` opts an element out of touch → mouse, `Window::leave_touch_to_gestures`; taps click as `ClickEvent::Touch` ([core-patches.md](core-patches.md)) |
+| [0005](../patches/0005-text-input-keyboard-type.patch) | keyboard type, secure entry, autofill hint in `TextInputConfiguration` ([core-patches.md](core-patches.md)) |
+| [0006](../patches/0006-claim-back-gesture-after-key-input.patch) | `on_back_gesture` claims after key input ([android-keys.md](android-keys.md#back)) |
+| [0007](../patches/0007-cosmic-text-system-font-database-id.patch) | `CosmicTextSystem::font_database_id`, so Android can draw emoji ([android-emoji.md](android-emoji.md)) |
+| [0008](../patches/0008-back-gesture-source.patch) | `BackGestureEvent::source`: edge swipe or key ([core-patches.md](core-patches.md)) |
+| [0009](../patches/0009-text-system-invalidate-fonts.patch) | `TextSystem::invalidate_fonts`, for Android's locale font order ([android-fonts.md](android-fonts.md)) |
+| [0010](../patches/0010-end-composition-on-focus-loss.patch) | a field that focus leaves ends its IME composition ([core-patches.md](core-patches.md)) |
+| [0011](../patches/0011-flutter-velocity-tracker.patch) | Flutter's velocity trackers and least-squares solver, `GestureTuning::velocity_tracker`, with Flutter's tests ([velocity-tracking.md](velocity-tracking.md)) |
+| [0012](../patches/0012-flutter-scroll-simulations.patch) | `ScrollPhysics` is Flutter's (`Bouncing { deceleration_rate }`, `Clamping`), with its simulations and Flutter's physics module on GPUI's springs ([scroll-physics.md](scroll-physics.md)) |
+| [0013](../patches/0013-gesture-recognizer-flutter-oracle.patch) | Flutter's gesture constants, slops, per-target double-tap counting and fling rule in the touch recognizer, executor clock, Flutter recognizer test rows, `gpui::play_trace` ([gesture-recognizers.md](gesture-recognizers.md)) |
+| [0014](../patches/0014-app-gesture-tuning-override.patch) | `App::set_gesture_tuning` overrides the platform's gesture tuning; `GestureTuning::max_fling_velocity` ([gesture-tuning.md](gesture-tuning.md)) |
+| [0015](../patches/0015-scale-and-overscroll-ports.patch) | Flutter's scale recognizer and overscroll indicators, new modules only ([scale-and-overscroll.md](scale-and-overscroll.md)) |
+| [0016](../patches/0016-touch-pinch.patch) | touch pinch: the scale recognizer in touch dispatch with Flutter's arena outcomes, `PinchEvent::touch` / `touch_owner()` / `new`, `on_pinch` for fingers, `Window::join_pinch` ([pinch.md](pinch.md)) |
+| [0017](../patches/0017-overscroll-in-scroll-containers.patch) | overscroll (bounce, stretch, glow) in `div` scroll containers for touches and trackpads, holds, jumps and resizes, `GestureTuning::overscroll`, `.overscroll(..)` ([overscroll.md](overscroll.md)) |
+| [0018](../patches/0018-haptic-feedback.patch) | `gpui::Haptic`, `PlatformWindow::perform_haptic` / `Window::perform_haptic`, `GestureTuning::long_press_haptic` on a claimed long press; iOS and web backends ([haptics.md](haptics.md)) |
+| [0019](../patches/0019-window-set-gesture-tuning.patch) | `Window::set_gesture_tuning` / `gesture_tuning` retune an open window and its backend (`PlatformWindow::set_gesture_tuning`), for Android's device touch slop ([gesture-tuning.md](gesture-tuning.md#0019-retune-an-open-window)) |
+| [0020](../patches/0020-touch-event-timestamp.patch) | `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, filled by iOS and the web, read by velocity tracking ([touch-time-stamps.md](touch-time-stamps.md)) |
+| [0021](../patches/0021-touch-windows.patch) | Windows touch and pen from `WM_POINTER` (winit's handling) as `TouchEvent`s, the mouse messages Windows makes from them dropped ([desktop-touch-windows.md](desktop-touch-windows.md)) |
+| [0022](../patches/0022-touch-wayland.patch) | Wayland `wl_touch` → `TouchEvent` in `gpui_linux`, ported from winit ([desktop-touch-linux.md](desktop-touch-linux.md#wayland)) |
+| [0023](../patches/0023-touch-x11.patch) | X11 XInput 2 touch → `TouchEvent` in gpui_linux, emulated pointer events dropped, from winit ([desktop-touch-linux.md](desktop-touch-linux.md#x11)) |
+| [0024](../patches/0024-uptime-instant-apple.patch) | gpui_apple `uptime_instant`: an uptime-clock event time on GPUI's clock, for iOS and macOS touches ([touch-time-stamps.md](touch-time-stamps.md)) |
+| [0025](../patches/0025-touch-macos-translation.patch) | macOS direct touch decisions on plain values: phase table, `TouchIds`, recognizer state transitions, touch queue, AppKit's touch copies ([desktop-touch-macos.md](desktop-touch-macos.md)) |
+| [0026](../patches/0026-touch-macos-recognizer.patch) | `GPUITouchRecognizer` on GPUIView feeds macOS 27 direct touches to GPUI; touch copies dropped, `mouseCancelled:` ([desktop-touch-macos.md](desktop-touch-macos.md)) |
+| [0027](../patches/0027-touch-ids-ios.patch) | iOS `TouchId` per `UITouch` lifetime, not its reused address, from Flutter's pointer identifiers ([traces-desktop.md](traces-desktop.md#touch-identity)) |
+| [0028](../patches/0028-ios-text-input-flutter-oracle.patch) | Flutter's `FlutterTextInputPluginTest.mm` cases as a table against gpui_ios's `UITextInput` view, in upstream's simulator harness; `PlatformInputHandler::for_focused_field` (test-support) ([ios-text-input.md](ios-text-input.md)) |
+| [0029](../patches/0029-ios-text-input-flutter-editing.patch) | Flutter's iOS editing fixes in gpui_ios: Thai/emoji `deleteBackward`, the partial-emoji workaround, UTF-16-safe strings, `textInRange:` clamping, `unmarkText`, line tokenizer ([ios-text-input.md](ios-text-input.md)) |
+| [0030](../patches/0030-ios-keyboard-type-secure-entry.patch) | gpui_ios reads `TextInputConfiguration::keyboard_type` (Flutter's `ToUIKeyboardType`) and `secure` ([ios-text-input.md](ios-text-input.md)) |
+| [0031](../patches/0031-ios-hardware-keyboard.patch) | iOS hardware keyboard: `pressesBegan:` … → `KeyDown` / `KeyUp` / `ModifiersChanged` from Flutter's key responder, unhandled presses to UIKit's text system, key repeat for keys GPUI took, `capslock()` ([ios-keyboard.md](ios-keyboard.md)) |
+| [0032](../patches/0032-ios-keyboard-inset.patch) | iOS keyboard inset: Flutter's docked-keyboard intersection in screen space (floating, split, Slide Over, Stage Manager) and the inset animated with the keyboard on its spring curve (React Native's, MIT, via Flutter) ([ios-keyboard.md](ios-keyboard.md#keyboard-inset-0032)) |
+| [0033](../patches/0033-ios-keyboard-layout-change.patch) | iOS `on_keyboard_layout_change`: UIKit's input-mode notification, deferred to the foreground executor ([ios-keyboard.md](ios-keyboard.md#layout-change-0033)) |
+| [0034](../patches/0034-web-text-input.patch) | web IME mirror: Flutter's `autocomplete`, `enterkeyhint` and `inputmode` rules, the mirror placed on the caret ([web-text-input.md](web-text-input.md)) |
+| [0035](../patches/0035-web-lifecycle-and-keyboard-inset.patch) | web `on_app_lifecycle` (Page Lifecycle states, Flutter's phases) and `WindowInsets::ime` from the visual viewport ([web-lifecycle.md](web-lifecycle.md)) |
+| [0036](../patches/0036-ios-edit-actions.patch) | gpui_ios `cut:` / `copy:` / `paste:` / `delete:` / `selectAll:` and `canPerformAction:withSender:`, from Flutter ([ios-text-input.md](ios-text-input.md)) |
+| [0037](../patches/0037-ios-text-content-type.patch) | gpui_ios `textContentType` from `TextInputConfiguration::autofill` (Flutter's `ToUITextContentType`) ([ios-text-input.md](ios-text-input.md)) |
+| [0038](../patches/0038-ios-text-interaction.patch) | gpui_ios `UITextInteraction`: UIKit's handles, loupe and edit menu on a focused field (the app paints caret and highlight); the text input view covers GPUI's view and claims only touches on the text ([ios-text-selection.md](ios-text-selection.md)) |
+| [0039](../patches/0039-os-accessibility-display-settings.patch) | `Platform::accessibility_display_settings` and its change hook feed `App::reduce_motion` and the new `App::reduce_transparency`; a report applies only the settings that moved, a late startup read fills only what the app has not set ([os-settings.md](os-settings.md)) |
+| [0040](../patches/0040-apple-accessibility-display.patch) | macOS and iOS read the OS settings and follow their notifications (React Native's `RCTAccessibilityManager.mm` on iOS) ([os-settings.md](os-settings.md)) |
+| [0041](../patches/0041-linux-reduce-motion.patch) | Linux reduce motion from the desktop portal (`reduced-motion`, GNOME `enable-animations`), its startup read the app's startup value ([os-settings.md](os-settings.md)) |
+| [0042](../patches/0042-windows-accessibility-display.patch) | Windows settings: Animation and Transparency effects, `WM_SETTINGCHANGE` ([os-settings.md](os-settings.md)) |
+| [0043](../patches/0043-web-accessibility-display.patch) | web settings: `prefers-reduced-motion` / `-transparency` ([os-settings.md](os-settings.md)) |
+| [0044](../patches/0044-touch-drag-offer.patch) | `Window::compete_for_touch_drag`: a touch drag won past its slop (Flutter's tap-and-drag recognizers), `TouchDragEvent::start`, `TouchDragKind`, with `tap_and_drag_test.dart` rows ([touch-drag.md](touch-drag.md)) |
+| [0045](../patches/0045-pan-follows-scroll-axes.patch) | the touch pan accepts on a one-axis scroll container's axis only (monodrag.dart; divs and `list()` report their axes), and taps and long presses reject past the touch slop (`PressSlop`) ([touch-drag.md](touch-drag.md)) |
+| [0046](../patches/0046-web-ime-mirror-os.patch) | web: the browser's OS read once per window; the IME mirror lets clicks through (`pointer-events: none`) ([web-text-input.md](web-text-input.md)) |

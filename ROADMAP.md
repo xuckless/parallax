@@ -1,6 +1,6 @@
 # ROADMAP
 
-Parallax ships in eight phases, in order, across two rolling release lines. Each phase ends with a gate, and the
+Parallax ships in twelve phases (0–10 plus NativeView), in order, across three rolling release lines. Each phase ends with a gate, and the
 next phase starts only after the gate passes. Each phase uses only what earlier phases produced.
 No dates are set. Tick a box only when the work is merged and verified (see `AGENTS.md`).
 
@@ -11,16 +11,18 @@ adapters and build tooling.**
 
 ## Releases
 
-Two rolling release lines on crates.io. A release goes out whenever `main` is green and holds something new; there is
+Three rolling release lines on crates.io. A release goes out whenever `main` is green and holds something new; there is
 no fixed schedule and no planned last number.
 
 | Line | Phases | First release |
 |---|---|---|
 | v0.1.x | 0–5 and NativeView: foundation, Android, gestures and behaviour, desktop touch, text input, native views, tooling | 0.1.1: the working prototype skeleton (Phase 1) |
 | v0.2.x | 6: accessibility | the first accessibility adapter that lands |
+| v0.3.x | 7–10: motion, stylable widgets, real OS UI, OS style presets | 0.3.0: the motion library (Phase 7) |
 
 - Every gate that passes ships a release. Merged, verified work between gates may ship one too.
-- The v0.1.x line ends when Gate 5 passes; v0.2.x starts then.
+- The v0.1.x line ends when Gate 5 passes; v0.2.x starts then. v0.3.x starts when Gate 6 passes (owner decision,
+  2026-11-27).
 - Every release: CI green on all six targets, `NOTICE` and `third_party/flutter/PORTED.md` current, crate license
   fields right, no GPL editor code, a `CHANGELOG.md` entry.
 
@@ -33,7 +35,10 @@ Phase 0 and the 0.1.1 skeleton. Through Wave 12, up to 5 agents per wave; after 
 unsafe or overloading (owner decision, 2026-11-26).
 
 **Port before write** (owner decision, 2026-11-26): every remaining item names the proven code it ports (upstream
-GPUI, Flutter, winit, AccessKit); new code is only the glue.
+GPUI, Flutter, winit, AccessKit, React Native, gpui-component); new code is only the glue. Any permissive licence (MIT,
+BSD, Apache-2.0, ISC, Zlib) may be ported, with its credit; copyleft code is reference only (owner, 2026-11-27).
+React Native's Android code is Kotlin: small modules are translated to Java; the Kotlin Gradle plugin comes in only if a
+phase ports a lot of it.
 
 | Wave | Phase | Parallel work | Ships |
 |---|---|---|---|
@@ -47,6 +52,10 @@ GPUI, Flutter, winit, AccessKit); new code is only the glue.
 | 15 | NativeView | Native views under GPUI: Wayland subsurface, wgpu hole, Windows DirectComposition, iOS, Android, web (from Chromium and Flutter) | 0.1.10 = **NativeView gate** |
 | 16 | 5 | Tooling + docs: `cargo parallax run ios` / `run web`, Android release signing + App Bundle (from `flutter_tools`), getting-started docs | 0.1.11 = **Gate 5**, closes v0.1.x |
 | 17 | 6 | Accessibility: AccessKit adapters (Android, iOS), web semantics DOM | first 0.2.x |
+| 18 | 7 | Motion library: retargetable values, drivers (curves, springs, decay, gestures, app-supplied), chains as data, page transitions (from Flutter, flutter_animate, Reanimated) | 0.3.0 = **Gate 7** |
+| 19 | 8 | Stylable widgets: dropdown, popover, text field, date picker and friends, theme as data (from gpui-component) | 0.3.1 = **Gate 8** |
+| 20 | 9 | Real OS UI: menus, alerts, pickers, share, file dialogs on every OS (from React Native, Expo, react-native-macos/-windows, upstream GPUI) | 0.3.2 = **Gate 9** |
+| 21+ | 10 | OS style presets: one material shader, live system colours, one or two OS looks per release | 0.3.x = **Gate 10** |
 
 Known limits of this plan:
 
@@ -309,31 +318,58 @@ patch to our published fork, with a draft kept in `drafts/upstream/`. Sources: F
 fixes (39 + 15 cases), web `text_editing.dart` strategies and tests, Flutter's selection behaviour, native
 `UITextInteraction`.
 
-- [ ] iOS text input: the 39 `UITextInput` behaviour cases from `FlutterTextInputPluginTest.mm` as a table against
+- [x] iOS text input: the 39 `UITextInput` behaviour cases from `FlutterTextInputPluginTest.mm` as a table against
       `gpui_ios`, then the 15 mapped cases (text traits, update counts); patch the failures. The other 81 test Flutter
       internals and are skipped. Limit: once these patches total about 800 lines (the "Zed rejects 3" trigger returns if upstreaming resumes), move iOS text
       input into its own Parallax crate.
-- [ ] iOS hardware keyboard: `pressesBegan`/`pressesEnded` → `KeyDown`/`KeyUp`, shortcuts and arrow keys.
-- [ ] iOS keyboard inset: intersect the keyboard frame with the window (floating iPad keyboards) and animate it.
-- [ ] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`
+- [x] iOS hardware keyboard: `pressesBegan`/`pressesEnded` → `KeyDown`/`KeyUp`, shortcuts and arrow keys.
+- [x] iOS keyboard inset: intersect the keyboard frame with the window (floating iPad keyboards) and animate it.
+- [x] Web text editing: `text_editing.dart` per-browser strategies and their tests → tests against `gpui_web`
       (`ime_mirror.rs`); patch or `parallax-web`.
-- [ ] Web: app lifecycle (`visibilitychange`) and the on-screen keyboard inset.
-- [ ] Text selection: native `UITextInteraction` (handles, magnifier, edit menu) on iOS; Flutter's selection
+- [x] Web: app lifecycle (`visibilitychange`) and the on-screen keyboard inset.
+- [x] Text selection: native `UITextInteraction` (handles, magnifier, edit menu) on iOS; Flutter's selection
       behaviour ported for Android and touch desktops (no Material/Cupertino look).
-- [ ] Remaining lifecycle and safe-area gaps from the audit, as patches.
-- [ ] Gboard select mode (Shift + arrows) extends the selection (deferred from Gate 1).
-- [ ] Android multi-window (deferred past Gate 2): one GPUI window per process, so in split-screen only the most
+- [x] Remaining lifecycle and safe-area gaps from the audit, as patches.
+- [x] Gboard select mode (Shift + arrows) extends the selection (deferred from Gate 1).
+- [x] Android multi-window (deferred past Gate 2): one GPUI window per process, so in split-screen only the most
       recently started Activity draws; decide whether to support a window per Activity.
-- [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`).
+- [ ] `parallax-ext`: extension traits only where the audit shows real friction (e.g. `.hit_slop()`). Moved to Phase 8
+      (stylable widgets), where the friction shows; Wave 14 put the selection engine in `parallax-ext` instead.
 
-**Gate 4** (0.1.9): the ported Flutter text-input tables pass on every target.
+Follow-ups found by Wave 14's first batch (second batch):
+
+- [x] OS reduce-motion and reduce-transparency settings, on every target. Upstream has `App::reduce_motion` and its
+      animation element obeys it, but no platform sets it. Sources: React Native's `RCTAccessibilityManager.mm` and
+      `AccessibilityInfoModule.kt` (MIT); macOS `accessibilityDisplayShouldReduceMotion` / `…ReduceTransparency`,
+      Windows `SPI_GETCLIENTAREAANIMATION` and its transparency setting, web `prefers-reduced-motion` /
+      `prefers-reduced-transparency`. Phase 7's motion and Phase 10's materials read them.
+- [x] Android clipboard (a stub today, so Copy and Paste do nothing): `ClipboardManager` over JNI, from React Native's
+      `ClipboardModule.kt`.
+- [x] iOS edit actions (cut, copy, paste, select all): the four `Open` rows of the iOS oracle table, with
+      `UITextInteraction`. iOS autofill hint → `textContentType`.
+- [x] Web secure fields: the IME mirror becomes `<input type=password>` for secure input. Safari (pixl-mac) and
+      Firefox checks of the web text tables.
+- [x] Android finger drag moves the caret: a fork patch offering a touch drag after the slop, so a field needn't claim
+      every touch at touch-down.
+- [x] Android API 28–29: the keyboard inset never arrives.
+- [ ] Owner's iPad check (signed build + checklist under `/Users/Shared/parallax`): hardware keyboard chords, Caps Lock,
+      key repeat, floating and split keyboards, selection. Owed, not part of the gate.
+
+**Gate 4** (0.1.9): the ported Flutter text-input tables pass on every target (iOS: on the simulator, owner decision
+2026-11-27).
+
+**Gate 4 passed 2026-11-27** ([gate-4.md](docs/gate-4.md)): iOS oracle 47/47 on the simulator, web tables in Chromium
+and Firefox, Android Java and selection checks on the emulator, desktop selection under Weston. Owner checks owed: iPad
+checklist, Mac WebKit/Safari, macOS Sidecar re-check, macOS Japanese IME.
 
 ## Phase: NativeView
 
 Wave 15, from [issue #1](https://github.com/xuckless/parallax/issues/1). A zero-overhead cutout: an OS-native view
 (a browser page, video, map) shows under GPUI's content through a hole GPUI paints, and the view's own frames cause
 no GPUI render. Upstream has it on macOS only. Sources: Chromium's overlay and subsurface code (BSD-3), Flutter's
-platform views, WebView2's visual hosting.
+platform views, WebView2's visual hosting. Helpers: React Native's `RCTSurfaceTouchHandler.mm` and `JSTouchDispatcher.kt`
+(touch into native views), `RCTComponentViewRegistry.mm` and `SurfaceMountingManager.kt` (view lifecycle), all MIT;
+gpui-component's `gpui-webview` crate (Apache-2.0) as a reference.
 
 - [ ] Wayland: the view as a `wl_subsurface` placed below the window's surface, with an empty input region;
       `set_sync` only for frames that move, resize, show or hide it, `desync` otherwise; `wp_viewport` for its size;
@@ -354,6 +390,8 @@ platform views, WebView2's visual hosting.
 - [ ] Input over the view reaches the element's listeners with view-relative positions; elements painted over it
       take their own input.
 - [ ] The view's own frames cause 0 GPUI renders.
+- [ ] macOS: upstream's native view checked against the acceptance below; patch the gaps (owner wants native views on
+      every desktop, 2026-11-27).
 - [ ] X11: deferred (no underlay); `NativeView::new` keeps failing there.
 
 Acceptance (issue #1, per target): an example with a view under the window showing a buffer that changes every frame
@@ -392,6 +430,75 @@ tests are the oracle.
       Orca, and patch the gaps.
 
 **Gate 6:** VoiceOver, TalkBack and a desktop screen reader can operate the example app.
+
+## Phase 7: Motion library (v0.3.x)
+
+Wave 18. A programmable, general-purpose motion library with platform defaults, where the app can replace every part
+(owner, 2026-11-27). Built on GPUI's own animation element, never a second system beside it. Sources: Flutter's
+`curves.dart`, `tween.dart`, `animation_controller.dart` (BSD-3); flutter_animate's chains (MIT); React Native
+Reanimated's presets (`FadeIn.duration(300).delay(100).springify()`), `withSpring`, `withDecay`, layout and
+shared-element transitions (MIT); our ported springs and friction (Waves 11–12).
+
+- [ ] Animated values that retarget mid-flight and keep their velocity.
+- [ ] Drivers: time and curve (every `curves.dart` curve, or any function), spring, decay, gesture and scroll position
+      (velocity handed over from the velocity tracker), or a driver trait the app implements.
+- [ ] Chains as data (`.fade_in().slide_x().then().scale()`), app-defined effects, stagger.
+- [ ] Implicit animation when a value changes; layout and shared-element transitions.
+- [ ] Page transitions per platform as behaviour-table rows (iOS slide with swipe back, Android predictive back via patch
+      0008).
+- [ ] Obeys the OS reduce-motion setting (Phase 4); schedules no frames while nothing animates.
+
+**Gate 7** (0.3.0): the ported curve, tween and simulation tables pass; the motion demo runs on every target with no
+frames while idle.
+
+## Phase 8: Stylable widgets (v0.3.x)
+
+Wave 19. Everyday widgets with no fixed look, so they fit any design. Ported from longbridge/gpui-component
+(Apache-2.0, built on `gpui-pre` 0.3.14 like our fork); keyboard behaviour from the WAI-ARIA Authoring Practices.
+Phase 4's selection engine is inside the text field, Phase 6's accessibility roles in every widget, Phase 7's motion
+in every open and close.
+
+- [ ] Dropdown and select, combobox, popover, tooltip, menu, dialog, sheet.
+- [ ] Text field, date picker and calendar, slider, switch, checkbox, radio.
+- [ ] Theme as data: colour, size, radius, motion and material tokens read by every widget.
+
+**Gate 8** (0.3.1): every widget works by keyboard, touch, mouse and screen reader on every target.
+
+## Phase 9: Real OS UI (v0.3.x)
+
+Wave 20. A native-UI plugin crate: UI the OS draws itself, called from GPUI, falling back to the Phase 8 widget where an
+OS has none. Upstream GPUI's `prompt`, `prompt_for_paths` and `set_menus` first. Sources: React Native core
+(`RCTAlertController.mm`, `RCTActionSheetManager.mm`, `DialogModule.kt`, `ShareModule.kt`), `react-native-datetimepicker`,
+`react-native-menu`, Expo modules, `react-native-macos` and `react-native-windows` (all MIT); `muda` and `rfd` on
+desktop; xdg-desktop-portal through `ashpd` on Linux.
+
+- [ ] Menus and context menus.
+- [ ] Alerts and action sheets.
+- [ ] Date and time pickers.
+- [ ] Share; file, image and colour pickers.
+- [ ] Every item on iOS, Android, macOS 27, Windows 11 and Linux.
+
+**Gate 9** (0.3.2): each item opens the OS's own UI, or the fallback widget, on every target.
+
+## Phase 10: OS style presets (v0.3.x)
+
+Wave 21 onwards, one or two OS looks per release. Each OS's look is theme data over the Phase 8 widgets, drawn by GPUI:
+iOS 27, Android (latest Material), macOS 27, Windows 11, Linux (GNOME libadwaita). Crate and preset names stay
+neutral (no Apple, Google or Microsoft marks).
+
+- [ ] One material shader for glass, frosted and blur looks: read what is behind, shrink and blur (dual Kawase), raise
+      saturation and tint, add grain, optionally bend the edges and add a rim highlight (Liquid Glass). Each OS look is a
+      row of parameters, not its own shader. Written once per GPUI shader language (Metal, WGSL, HLSL) in one
+      backdrop renderer patch. Port Flutter Impeller's backdrop filter (BSD-3); KWin's blur is GPL, reference only.
+      `expo-blur` and `callstack/liquid-glass` (MIT) give each OS's blur values.
+- [ ] Window backdrops stay with the OS (upstream `WindowBackgroundAppearance::Blurred`, `MicaBackdrop`,
+      `MicaAltBackdrop`).
+- [ ] Fallback tiers (full glass, blur only, solid tint), chosen by GPU tier and the OS reduce-transparency setting.
+- [ ] Live system colours and dark mode, from React Native's `PlatformColor` / `DynamicColorIOS`
+      (`ColorPropConverter.kt`, `RCTConvert`) and `RCTAppearance.mm` / `AppearanceModule.kt`.
+- [ ] Presets: iOS 27, Android, macOS 27, Windows 11, Linux.
+
+**Gate 10:** each preset matches its OS's reference screenshots for the Phase 8 widgets in light and dark mode.
 
 ## Open questions
 
@@ -446,3 +553,8 @@ Facts about upstream (GPUI and Flutter) that shaped this plan. Add a line when u
 | 2026-11-26 | zed `f126950f` | `notify` inside a focus listener (`on_blur`, …) is ignored: listeners run in the draw's Focus phase, where `invalidate_view` marks nothing dirty. Defer it (`defer_in`). |
 | 2026-11-26 | zed `f126950f` | `ScrollPhysics::android()` ran AOSP's `SplineOverScroller` spline, which Flutter replaced (flutter/flutter#120338) because it is not ballistic (starts below the release velocity, stops with a jump): fails Flutter's clamping tests. Patch 0012 runs Flutter's `ClampingScrollSimulation`. |
 | 2026-11-26 | gpui-pre 0.3.14 | `gpui_platform`'s `font-kit` feature is off by default and is the only thing that gives `gpui_macos` a real text system; without it macOS silently uses `NoopTextSystem` (one `log::warn!`). `gpui_linux` and `gpui_ios` turn their font-kit on themselves. |
+| 2026-11-27 | zed `f126950f` | `Window::invalidate_character_coordinates` queries `selected_bounds` in an `on_next_frame` callback, which runs before that frame's layout: called where the selection changes, it reports the caret's previous position. Call it after the paint that moved the caret (hello's text field does). On the web, `update_ime_position` was a no-op and `on_app_lifecycle` / `on_insets_changed` were never registered (patches 0034, 0035). |
+| 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | `gpui-pre-ios`'s own `tests/text_input.rs` (a `harness = false` UIKit binary for the simulator) does not build as published: the package dropped its `slotmap` dev-dependency and objc2-ui-kit's `UIConversationContext` feature. Patch 0028 adds them back. |
+| 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | gpui_ios's `insertText:`/`setMarkedText:`/`replaceRange:` used `NSString::to_string`, which for half a surrogate pair (what iOS 16's partial-emoji bug sends) reads a NULL `UTF8String`: undefined behaviour, an abort in debug builds. Patch 0029. |
+| 2026-11-27 | Flutter `3.50.1` | Flutter's `KeyCodeMap.g.mm` maps `UIKeyInputEnd` to Enter's logical key (a table bug); patch 0031 maps it to End. |
+| 2026-11-27 | gpui-pre 0.3.14 = zed `f126950` | GPUI's `SpringConfig` treats the iOS keyboard spring (mass 3, stiffness 1000, damping 500) as overdamped (about 70% of the way in 0.6 s), so it cannot stand in for Flutter's keyboard-inset spring; patch 0032 samples the keyboard's presentation layer instead. |

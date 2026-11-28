@@ -1,14 +1,16 @@
 //! The Activity lifecycle as GPUI sees it: one state, one transition function. Pure, so it is tested on any host.
 //! The shell in `host.rs` feeds it `ParallaxActivity` callbacks and carries out the returned [`Effect`].
-//! Phases follow Flutter's `LifecycleChannel`: the app is `Active` only while resumed *and* focused, so the
-//! notification shade or a system dialog makes it `Inactive` without an `onPause`. How it maps: docs/android-lifecycle.md.
+//! Each live Activity owns one GPUI window; its window's activity and visibility follow its own stage, and the app's
+//! phase follows the most foreground of them. Phases follow Flutter's `LifecycleChannel`: an Activity is `Active`
+//! only while resumed *and* focused, so the notification shade or a system dialog makes it `Inactive` without an
+//! `onPause`. How it maps: docs/android-lifecycle.md.
 
 use gpui::{AppLifecyclePhase, WindowVisibility};
 
 /// Which `ParallaxActivity` instance an event comes from. Each `onCreate` gets the next one, never reused, so a
 /// destroyed Activity's late callbacks match nothing. Several can be live at once: a deep link stacks a second
 /// one on the first, a clear-task relaunch overlaps the old and the new, multi-window shows two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActivityId(pub i32);
 
 /// Where one live Activity is. `focused` is its last `onWindowFocusChanged`: kept in every stage, because focus
@@ -30,18 +32,15 @@ pub struct Activity {
     pub stage: Stage,
 }
 
-/// The app's Activities. GPUI has one window; the Activity that most recently ran `onStart` owns it, and only
-/// the owner's stage reaches GPUI.
+/// The app's Activities, each with its own GPUI window.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lifecycle {
     /// Before the first `onCreate`: JNI_OnLoad runs inside it, and `Create` follows.
     Loaded,
-    /// At least one Activity is live. `below` are the others, the most recently started last (one never started
-    /// sits below every started one); when the owner is destroyed, the last of them takes the window.
-    /// `newest` is the last id handed out.
+    /// At least one Activity is live: `activities` in creation order, never empty. `newest` is the last id handed
+    /// out.
     Live {
-        owner: Activity,
-        below: Vec<Activity>,
+        activities: Vec<Activity>,
         newest: ActivityId,
     },
     /// Every Activity was destroyed. The process and GPUI live on; a new Activity in this process starts again
@@ -52,7 +51,7 @@ pub enum Lifecycle {
 /// What happened, and to which Activity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ActivityEvent {
-    /// `onCreate`: a new live Activity, which owns the window once it starts (or when it is the only one).
+    /// `onCreate`: a new live Activity, whose window GPUI opens on its first surface.
     Create,
     /// A callback from Activity `from`.
     From(ActivityId, Callback),
@@ -72,15 +71,16 @@ pub enum Callback {
     TrimMemory(i32),
 }
 
-/// What the shell does after a transition. Window activity and visibility follow from the state itself
-/// ([`Lifecycle::is_active`], [`Lifecycle::visibility`]).
+/// What the shell does for the app after a transition. Each window's activity and visibility follow from the state
+/// itself ([`Lifecycle::is_active`], [`Lifecycle::visibility`]); a destroyed Activity's window closes
+/// ([`Lifecycle::contains`]).
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     /// Tell GPUI's `on_app_lifecycle` observers these phases, in order.
     Phases(&'static [AppLifecyclePhase]),
     /// Tell GPUI's `on_memory_warning` observers.
     MemoryWarning,
-    /// A legal event that changes nothing GPUI sees.
+    /// A legal event that changes nothing the app sees.
     Nothing,
     /// The event makes no sense in this state; nothing changes.
     Reject { why: &'static str },
@@ -92,8 +92,8 @@ pub enum Effect {
 /// warnings before its first frame; here GPUI has no observers before launch, and launch is one vsync before it.
 const TRIM_MEMORY_RUNNING_LOW: i32 = 10;
 
-/// What GPUI sees of the owner, lowest first: no Activity, hidden (`Created`), visible (`Started`, or resumed
-/// without focus), active (resumed and focused).
+/// What GPUI sees of an Activity, lowest first: no Activity, hidden (`Created`), visible (`Started`, or resumed
+/// without focus), active (resumed and focused). The app's level is its highest Activity's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Level {
     Gone,
@@ -103,8 +103,8 @@ enum Level {
 }
 
 /// The phases heard climbing into `Visible` and `Active`, and falling out of `Active`, `Visible` and `Hidden`.
-/// A move of several levels hears each step's phase, so the owner changing (another Activity starts, or takes
-/// over when the owner is destroyed) reports what GPUI missed. To add a level: a row in each, in level order.
+/// A move of several levels hears each step's phase, so a fallback (the foreground Activity destroyed while a
+/// resumed one lives) reports what GPUI missed. To add a level: a row in each, in level order.
 const UP: [AppLifecyclePhase; 2] = [AppLifecyclePhase::Foreground, AppLifecyclePhase::Active];
 const DOWN: [AppLifecyclePhase; 3] = [
     AppLifecyclePhase::Inactive,
@@ -121,6 +121,16 @@ fn phases(from: Level, to: Level) -> &'static [AppLifecyclePhase] {
         &UP[up(from)..up(to)]
     } else {
         &DOWN[down(from)..down(to)]
+    }
+}
+
+impl Stage {
+    fn level(self) -> Level {
+        match self {
+            Stage::Created { .. } => Level::Hidden,
+            Stage::Started { .. } | Stage::Resumed { focused: false } => Level::Visible,
+            Stage::Resumed { focused: true } => Level::Active,
+        }
     }
 }
 
@@ -150,85 +160,70 @@ impl Lifecycle {
         }
     }
 
-    /// The Activity that owns the window, if any.
-    pub fn owner(&self) -> Option<ActivityId> {
+    fn activities(&self) -> &[Activity] {
         match self {
-            Lifecycle::Live { owner, .. } => Some(owner.id),
-            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => None,
+            Lifecycle::Live { activities, .. } => activities,
+            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => &[],
         }
     }
 
-    /// The one rule for events from a view (surface, frame, insets, touch, keys): only the owner's count.
-    pub fn accepts(&self, from: ActivityId) -> bool {
-        self.owner() == Some(from)
+    fn stage(&self, id: ActivityId) -> Option<Stage> {
+        self.activities()
+            .iter()
+            .find(|activity| activity.id == id)
+            .map(|activity| activity.stage)
     }
 
+    /// Whether Activity `id` is live: the one rule for events from a view (surface, frame, insets, touch, keys),
+    /// which reach that Activity's window.
+    pub fn contains(&self, id: ActivityId) -> bool {
+        self.stage(id).is_some()
+    }
+
+    fn level_of(&self, id: ActivityId) -> Level {
+        self.stage(id).map_or(Level::Gone, Stage::level)
+    }
+
+    /// The app's level: its most foreground Activity's.
     fn level(&self) -> Level {
-        match self {
-            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => Level::Gone,
-            Lifecycle::Live { owner, .. } => match owner.stage {
-                Stage::Created { .. } => Level::Hidden,
-                Stage::Started { .. } | Stage::Resumed { focused: false } => Level::Visible,
-                Stage::Resumed { focused: true } => Level::Active,
-            },
-        }
+        self.activities()
+            .iter()
+            .map(|activity| activity.stage.level())
+            .max()
+            .unwrap_or(Level::Gone)
     }
 
     /// The only place the lifecycle changes: state × event → next state and the effect that goes with it.
-    /// Each Activity moves through its own stages; the window follows the most recently started one, and GPUI
-    /// hears the owner's level change. To add a callback: add the variant, and the compiler lists the arms.
+    /// Each Activity moves through its own stages; the app hears its level change. To add a callback: add the
+    /// variant, and the compiler lists the arms.
     pub fn next(self, event: ActivityEvent) -> (Self, Effect) {
         use Callback as C;
         use Lifecycle as L;
         use Stage as S;
         let before = self.level();
-        let (from, callback, owner, mut below, newest) = match (self, event) {
+        let (from, callback, mut activities, newest) = match (self, event) {
             (state, ActivityEvent::Create) => {
                 let newest = ActivityId(state.newest().map_or(0, |id| id.0).wrapping_add(1));
-                let created = Activity {
+                let mut activities = state.activities().to_vec();
+                activities.push(Activity {
                     id: newest,
                     stage: S::Created { focused: false },
-                };
-                let next = match state {
-                    L::Loaded | L::Disconnected { .. } => L::Live {
-                        owner: created,
-                        below: Vec::new(),
-                        newest,
-                    },
-                    L::Live {
-                        owner, mut below, ..
-                    } => {
-                        below.insert(0, created);
-                        L::Live {
-                            owner,
-                            below,
-                            newest,
-                        }
-                    }
-                };
-                return (next, Effect::Nothing);
+                });
+                return (L::Live { activities, newest }, Effect::Nothing);
             }
             (state @ (L::Loaded | L::Disconnected { .. }), ActivityEvent::From(..)) => {
                 let why = "event without a live Activity";
                 return (state, Effect::Reject { why });
             }
-            (
-                L::Live {
-                    owner,
-                    below,
-                    newest,
-                },
-                ActivityEvent::From(from, callback),
-            ) => (from, callback, owner, below, newest),
+            (L::Live { activities, newest }, ActivityEvent::From(from, callback)) => {
+                (from, callback, activities, newest)
+            }
         };
-        let found = std::iter::once(&owner)
-            .chain(&below)
-            .find(|activity| activity.id == from)
-            .map(|activity| activity.stage);
-        // One Activity's own step: its next stage, `None` once destroyed.
-        let step = match found {
+        let found = activities.iter().position(|activity| activity.id == from);
+        // One Activity's own step: where it is in `activities` and its next stage, `None` once destroyed.
+        let step = match found.map(|index| (index, activities[index].stage)) {
             None => Err("event from a destroyed Activity"),
-            Some(stage) => match (stage, callback) {
+            Some((index, stage)) => match (stage, callback) {
                 (stage, C::TrimMemory(_)) => Ok(Some(stage)),
                 (S::Created { focused }, C::Start) => Ok(Some(S::Started { focused })),
                 (S::Started { focused }, C::Resume) => Ok(Some(S::Resumed { focused })),
@@ -245,68 +240,30 @@ impl Lifecycle {
                 (S::Created { .. }, C::Stop) => Err("stop while not started"),
                 (S::Resumed { .. }, C::Stop) => Err("stop before pause"),
                 (S::Started { .. } | S::Resumed { .. }, C::Destroy) => Err("destroy before stop"),
-            },
+            }
+            .map(|stage| (index, stage)),
         };
-        let stage = match step {
-            Ok(stage) => stage,
-            Err(why) => {
-                let state = L::Live {
-                    owner,
-                    below,
-                    newest,
-                };
-                return (state, Effect::Reject { why });
-            }
+        let (index, stage) = match step {
+            Ok(step) => step,
+            Err(why) => return (L::Live { activities, newest }, Effect::Reject { why }),
         };
-        let is_owner = from == owner.id;
-        let next = match (stage, is_owner) {
-            // The owner is gone: the most recently started live Activity takes the window.
-            (None, true) => match below.pop() {
-                Some(owner) => L::Live {
-                    owner,
-                    below,
-                    newest,
-                },
-                None => L::Disconnected { newest },
-            },
-            (None, false) => {
-                below.retain(|activity| activity.id != from);
-                L::Live {
-                    owner,
-                    below,
-                    newest,
-                }
+        let next = match stage {
+            Some(stage) => {
+                activities[index].stage = stage;
+                L::Live { activities, newest }
             }
-            (Some(stage), true) => L::Live {
-                owner: Activity { id: from, stage },
-                below,
-                newest,
-            },
-            // The window follows the Activity that most recently ran onStart (back from the back stack, or the
-            // newer of two in multi-window).
-            (Some(stage), false) if callback == C::Start => {
-                below.retain(|activity| activity.id != from);
-                below.push(owner);
-                L::Live {
-                    owner: Activity { id: from, stage },
-                    below,
-                    newest,
-                }
-            }
-            (Some(stage), false) => {
-                for activity in below.iter_mut().filter(|activity| activity.id == from) {
-                    activity.stage = stage;
-                }
-                L::Live {
-                    owner,
-                    below,
-                    newest,
+            None => {
+                activities.remove(index);
+                match activities.is_empty() {
+                    true => L::Disconnected { newest },
+                    false => L::Live { activities, newest },
                 }
             }
         };
+        // Android sends every live Activity the same onTrimMemory; the oldest one's alone warns, once.
+        let is_oldest = index == 0;
         let effect = match callback {
-            // Every live Activity gets onTrimMemory; the owner's alone warns.
-            C::TrimMemory(level) if is_owner && level >= TRIM_MEMORY_RUNNING_LOW => {
+            C::TrimMemory(level) if is_oldest && level >= TRIM_MEMORY_RUNNING_LOW => {
                 Effect::MemoryWarning
             }
             C::TrimMemory(_) => Effect::Nothing,
@@ -320,28 +277,33 @@ impl Lifecycle {
         (next, effect)
     }
 
-    /// GPUI's `PlatformWindow::is_active`: the owner is resumed and focused.
-    pub fn is_active(&self) -> bool {
-        self.level() == Level::Active
+    /// GPUI's `PlatformWindow::is_active` for Activity `id`'s window: it is resumed and focused.
+    pub fn is_active(&self, id: ActivityId) -> bool {
+        self.level_of(id) == Level::Active
     }
 
-    /// GPUI's `PlatformWindow::visibility`: the owner is between `onStart` and `onStop`.
-    pub fn visibility(&self) -> WindowVisibility {
-        match self.level() {
+    /// The Activity whose window is active, if any (GPUI's `Platform::active_window`).
+    pub fn active(&self) -> Option<ActivityId> {
+        self.activities()
+            .iter()
+            .find(|activity| activity.stage.level() == Level::Active)
+            .map(|activity| activity.id)
+    }
+
+    /// GPUI's `PlatformWindow::visibility` for Activity `id`'s window: it is between `onStart` and `onStop`.
+    pub fn visibility(&self, id: ActivityId) -> WindowVisibility {
+        match self.level_of(id) {
             Level::Visible | Level::Active => WindowVisibility::Visible,
             Level::Gone | Level::Hidden => WindowVisibility::Hidden,
         }
     }
 
-    /// Whether the owner's view runs frames: Java posts them between `onResume` and `onPause`, and pulls GPUI's
+    /// Whether Activity `id`'s view runs frames: Java posts them between `onResume` and `onPause`, and pulls GPUI's
     /// framework calls with each. Haptics are kept only then: Flutter plays none while its app is not in front.
-    pub fn runs_frames(&self) -> bool {
-        match self {
-            Lifecycle::Live { owner, .. } => match owner.stage {
-                Stage::Resumed { .. } => true,
-                Stage::Created { .. } | Stage::Started { .. } => false,
-            },
-            Lifecycle::Loaded | Lifecycle::Disconnected { .. } => false,
+    pub fn runs_frames(&self, id: ActivityId) -> bool {
+        match self.stage(id) {
+            Some(Stage::Resumed { .. }) => true,
+            Some(Stage::Created { .. } | Stage::Started { .. }) | None => false,
         }
     }
 
@@ -359,7 +321,8 @@ mod tests {
     use Callback as C;
     use Effect::{MemoryWarning, Nothing, Phases, Reject};
 
-    /// `A` is the first live Activity in the rows, `B` the one stacked on it, `C3` a third; `OLD` was destroyed.
+    /// `A` is the first live Activity in the rows, `B` the second (stacked on it, or beside it in multi-window),
+    /// `C3` a third; `OLD` was destroyed.
     const OLD: ActivityId = ActivityId(1);
     const A: ActivityId = ActivityId(2);
     const B: ActivityId = ActivityId(3);
@@ -377,24 +340,19 @@ mod tests {
     const fn of(id: ActivityId, stage: Stage) -> Activity {
         Activity { id, stage }
     }
-    fn live(owner: Activity, below: &[Activity], newest: ActivityId) -> Lifecycle {
+    fn live(activities: &[Activity], newest: ActivityId) -> Lifecycle {
         Lifecycle::Live {
-            owner,
-            below: below.to_vec(),
+            activities: activities.to_vec(),
             newest,
         }
     }
     /// A alone.
     fn one(stage: Stage) -> Lifecycle {
-        live(of(A, stage), &[], A)
+        live(&[of(A, stage)], A)
     }
-    /// B owns the window with A below it.
-    fn on_a(b: Stage, a: Stage) -> Lifecycle {
-        live(of(B, b), &[of(A, a)], B)
-    }
-    /// A owns the window with B below it.
-    fn under_b(a: Stage, b: Stage) -> Lifecycle {
-        live(of(A, a), &[of(B, b)], B)
+    /// A, then B.
+    fn two(a: Stage, b: Stage) -> Lifecycle {
+        live(&[of(A, a), of(B, b)], B)
     }
     const D: Lifecycle = Lifecycle::Disconnected { newest: A };
     const fn on(callback: Callback) -> ActivityEvent {
@@ -409,29 +367,37 @@ mod tests {
 
     #[test]
     fn runs_frames_table() {
-        // (row name, lifecycle, whether the owner's view runs frames and so keeps GPUI's haptics)
+        // (row name, lifecycle, Activity, whether its view runs frames and so keeps GPUI's haptics)
         let rows = [
-            ("loaded: no view", Lifecycle::Loaded, false),
-            ("created: stopped", one(c(true)), false),
-            ("started, or paused: stopFrames ran", one(s(true)), false),
-            ("resumed without focus: frames run", one(r(false)), true),
-            ("resumed and focused", one(r(true)), true),
+            ("loaded: no view", Lifecycle::Loaded, A, false),
+            ("created: stopped", one(c(true)), A, false),
+            ("started, or paused: stopFrames ran", one(s(true)), A, false),
+            ("resumed without focus: frames run", one(r(false)), A, true),
+            ("resumed and focused", one(r(true)), A, true),
             (
-                "the owner is paused, another resumed below it",
-                on_a(s(true), r(true)),
+                "each Activity its own: A paused",
+                two(s(true), r(true)),
+                A,
                 false,
             ),
-            ("disconnected: no view", D, false),
+            (
+                "each Activity its own: B resumed",
+                two(s(true), r(true)),
+                B,
+                true,
+            ),
+            ("destroyed: no view", one(r(true)), OLD, false),
+            ("disconnected: no view", D, A, false),
         ];
-        for (name, lifecycle, runs) in rows {
-            assert_eq!(lifecycle.runs_frames(), runs, "{name}");
+        for (name, lifecycle, id, runs) in rows {
+            assert_eq!(lifecycle.runs_frames(id), runs, "{name}");
         }
     }
 
     #[test]
     fn trim_levels() {
         // (ComponentCallbacks2 level name, value, warns?) as Flutter 3.50.1 decides: level >= RUNNING_LOW.
-        // The owner's stage does not matter for memory; every stage is checked against every level.
+        // The Activity's stage does not matter for memory; every stage is checked against every level.
         let levels = [
             ("RUNNING_MODERATE", 5, false),
             ("RUNNING_LOW", 10, true),
@@ -456,14 +422,14 @@ mod tests {
     #[test]
     fn transitions() {
         // (row name, state, event, expected state, expected effect). One row per (stage, callback) of a lone
-        // Activity A, rejected included; then the rows with several live Activities. c/s/r are A's (or B's)
+        // Activity A, rejected included; then the rows with several live Activities. c/s/r are an Activity's
         // Created/Started/Resumed stage with the focus flag; D is every Activity destroyed.
         // Kept one row per line (rustfmt::skip) so the table reads as a table.
         #[rustfmt::skip]
         let cases: Vec<(&str, Lifecycle, ActivityEvent, Lifecycle, Effect)> = vec![
-            ("loaded_create_owns_activity_1", Lifecycle::Loaded, ActivityEvent::Create, live(of(ActivityId(1), c(false)), &[], ActivityId(1)), Nothing),
+            ("loaded_create_makes_activity_1", Lifecycle::Loaded, ActivityEvent::Create, live(&[of(ActivityId(1), c(false))], ActivityId(1)), Nothing),
             ("loaded_event_rejected", Lifecycle::Loaded, on(C::Start), Lifecycle::Loaded, no("event without a live Activity")),
-            ("disconnected_create_takes_next_id", D, ActivityEvent::Create, live(of(B, c(false)), &[], B), Nothing),
+            ("disconnected_create_takes_next_id", D, ActivityEvent::Create, live(&[of(B, c(false))], B), Nothing),
             ("created_start_foregrounds", one(c(false)), on(C::Start), one(s(false)), Phases(&[P::Foreground])),
             ("created_start_keeps_early_focus", one(c(true)), on(C::Start), one(s(true)), Phases(&[P::Foreground])),
             ("created_resume_rejected", one(c(false)), on(C::Resume), one(c(false)), no("resume before start")),
@@ -500,27 +466,31 @@ mod tests {
             ("destroyed_destroy_rejected", one(r(true)), by(OLD, C::Destroy), one(r(true)), no("event from a destroyed Activity")),
             ("destroyed_trim_rejected", one(r(true)), by(OLD, C::TrimMemory(80)), one(r(true)), no("event from a destroyed Activity")),
             ("never_created_rejected", one(r(true)), by(B, C::Pause), one(r(true)), no("event from a destroyed Activity")),
-            // Several live: a deep link stacks B on A, then back.
-            ("stacked_create_waits_below", one(s(true)), ActivityEvent::Create, under_b(s(true), c(false)), Nothing),
-            ("stacked_start_takes_window", under_b(s(true), c(false)), by(B, C::Start), on_a(s(false), s(true)), Nothing),
-            ("stacked_resume_unfocused_waits", on_a(s(false), s(true)), by(B, C::Resume), on_a(r(false), s(true)), Nothing),
-            ("covered_unfocus_quiet", on_a(r(true), s(true)), on(C::Focus(false)), on_a(r(true), s(false)), Nothing),
-            ("covered_stop_quiet", on_a(r(true), s(false)), on(C::Stop), on_a(r(true), c(false)), Nothing),
-            ("covered_trim_quiet", on_a(r(true), c(false)), on(C::TrimMemory(80)), on_a(r(true), c(false)), Nothing),
-            ("covered_rejected_event_rejected", on_a(r(true), c(false)), on(C::Resume), on_a(r(true), c(false)), no("resume before start")),
-            ("back_start_takes_window_back", on_a(s(true), c(false)), on(C::Start), under_b(s(false), s(true)), Nothing),
-            ("back_resume_activates", under_b(s(true), s(false)), on(C::Resume), under_b(r(true), s(false)), Phases(&[P::Active])),
-            ("back_covering_stop_quiet", under_b(r(true), s(false)), by(B, C::Stop), under_b(r(true), c(false)), Nothing),
-            ("destroy_of_non_owner_quiet", under_b(r(true), c(false)), by(B, C::Destroy), live(of(A, r(true)), &[], B), Nothing),
-            ("create_with_two_live_goes_to_bottom", on_a(r(true), c(false)), ActivityEvent::Create, live(of(B, r(true)), &[of(C3, c(false)), of(A, c(false))], C3), Nothing),
-            // Two live in multi-window: the newer start owns the window; the older one's callbacks are quiet.
-            ("multi_window_newer_start_deactivates", under_b(r(true), c(false)), by(B, C::Start), on_a(s(false), r(true)), Phases(&[P::Inactive])),
-            ("multi_window_newer_focus_activates", on_a(r(false), r(false)), by(B, C::Focus(true)), on_a(r(true), r(false)), Phases(&[P::Active])),
-            ("multi_window_older_focus_quiet", on_a(r(true), r(false)), on(C::Focus(true)), on_a(r(true), r(true)), Nothing),
-            // The owner destroyed while another is live: the most recently started one takes the window.
-            ("destroy_of_owner_falls_back_hidden", on_a(c(false), c(false)), by(B, C::Destroy), live(of(A, c(false)), &[], B), Nothing),
-            ("destroy_of_owner_falls_back_active", on_a(c(false), r(true)), by(B, C::Destroy), live(of(A, r(true)), &[], B), Phases(&[P::Foreground, P::Active])),
-            ("destroy_of_owner_skips_never_started", live(of(B, c(false)), &[of(C3, c(false)), of(A, s(false))], C3), by(B, C::Destroy), live(of(A, s(false)), &[of(C3, c(false))], C3), Phases(&[P::Foreground])),
+            // A deep link stacks B on A: A pauses, B starts and resumes and takes focus, A stops; back reverses it.
+            ("second_create_goes_last", one(r(true)), ActivityEvent::Create, two(r(true), c(false)), Nothing),
+            ("covered_pause_deactivates", two(r(true), c(false)), on(C::Pause), two(s(true), c(false)), Phases(&[P::Inactive])),
+            ("covered_unfocus_quiet", two(s(true), c(false)), on(C::Focus(false)), two(s(false), c(false)), Nothing),
+            ("covering_start_quiet", two(s(false), c(false)), by(B, C::Start), two(s(false), s(false)), Nothing),
+            ("covering_resume_unfocused_quiet", two(s(false), s(false)), by(B, C::Resume), two(s(false), r(false)), Nothing),
+            ("covering_focus_activates", two(s(false), r(false)), by(B, C::Focus(true)), two(s(false), r(true)), Phases(&[P::Active])),
+            ("covered_stop_quiet", two(s(false), r(true)), on(C::Stop), two(c(false), r(true)), Nothing),
+            ("covered_trim_quiet_for_second", two(c(false), r(true)), by(B, C::TrimMemory(80)), two(c(false), r(true)), Nothing),
+            ("covered_trim_warns_for_oldest", two(c(false), r(true)), on(C::TrimMemory(80)), two(c(false), r(true)), MemoryWarning),
+            ("covered_rejected_event_rejected", two(c(false), r(true)), on(C::Resume), two(c(false), r(true)), no("resume before start")),
+            ("back_covering_pause_deactivates", two(c(false), r(true)), by(B, C::Pause), two(c(false), s(true)), Phases(&[P::Inactive])),
+            ("back_covered_start_quiet", two(c(false), s(true)), on(C::Start), two(s(false), s(true)), Nothing),
+            ("back_covered_resume_focused_activates", two(s(true), s(false)), on(C::Resume), two(r(true), s(false)), Phases(&[P::Active])),
+            ("back_covering_stop_quiet", two(r(true), s(false)), by(B, C::Stop), two(r(true), c(false)), Nothing),
+            ("back_covering_destroy_quiet", two(r(true), c(false)), by(B, C::Destroy), live(&[of(A, r(true))], B), Nothing),
+            ("third_create_goes_last", two(r(true), c(false)), ActivityEvent::Create, live(&[of(A, r(true)), of(B, c(false)), of(C3, c(false))], C3), Nothing),
+            // Split screen: both resumed and visible, focus moves between them; the app stays Foreground.
+            ("split_focus_leaves_a", two(r(true), r(false)), on(C::Focus(false)), two(r(false), r(false)), Phases(&[P::Inactive])),
+            ("split_focus_reaches_b", two(r(false), r(false)), by(B, C::Focus(true)), two(r(false), r(true)), Phases(&[P::Active])),
+            ("split_unfocused_pause_quiet", two(r(false), r(true)), on(C::Pause), two(s(false), r(true)), Nothing),
+            ("split_focused_pause_deactivates", two(r(false), r(true)), by(B, C::Pause), two(r(false), s(true)), Phases(&[P::Inactive])),
+            ("split_other_stop_keeps_foreground", two(r(false), s(true)), by(B, C::Stop), two(r(false), c(true)), Nothing),
+            ("split_other_destroy_quiet", two(r(false), c(true)), by(B, C::Destroy), live(&[of(A, r(false))], B), Nothing),
+            ("last_of_two_stop_backgrounds", two(c(false), s(false)), by(B, C::Stop), two(c(false), c(false)), Phases(&[P::Background])),
         ];
         for (name, state, event, expected_state, expected_effect) in cases {
             assert_eq!(
@@ -532,42 +502,61 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_the_owner() {
-        // (row name, state, event's Activity, accepted?). Every view event goes through the same rule.
+    fn contains_live_activities() {
+        // (row name, state, event's Activity, live?). Every view event goes through the same rule.
         #[rustfmt::skip]
         let cases: [(&str, Lifecycle, ActivityId, bool); 6] = [
-            ("loaded_rejects_any_view", Lifecycle::Loaded, A, false),
-            ("owner_accepted", one(r(true)), A, true),
-            ("destroyed_rejected", one(r(true)), OLD, false),
-            ("covered_rejected", on_a(r(true), c(false)), A, false),
-            ("newer_owner_accepted", on_a(r(true), c(false)), B, true),
-            ("disconnected_rejects_its_last", D, A, false),
+            ("loaded_has_none", Lifecycle::Loaded, A, false),
+            ("lone_activity", one(r(true)), A, true),
+            ("destroyed", one(r(true)), OLD, false),
+            ("covered_still_live", two(c(false), r(true)), A, true),
+            ("covering", two(c(false), r(true)), B, true),
+            ("disconnected_has_none", D, A, false),
         ];
-        for (name, state, from, accepted) in cases {
-            assert_eq!(state.accepts(from), accepted, "{name}");
+        for (name, state, from, live) in cases {
+            assert_eq!(state.contains(from), live, "{name}");
         }
     }
 
     #[test]
-    fn window_and_launch_phases() {
+    fn windows_and_launch_phases() {
         use WindowVisibility::{Hidden, Visible};
-        // (row name, state, is_active, visibility, phases replayed at launch)
+        // (row name, state, Activity, its window's is_active and visibility, the active Activity, the phases
+        // replayed at launch)
+        type Row = (
+            &'static str,
+            Lifecycle,
+            ActivityId,
+            bool,
+            WindowVisibility,
+            Option<ActivityId>,
+            &'static [AppLifecyclePhase],
+        );
         #[rustfmt::skip]
-        let cases: [(&str, Lifecycle, bool, WindowVisibility, &[AppLifecyclePhase]); 9] = [
-            ("loaded", Lifecycle::Loaded, false, Hidden, &[]),
-            ("created", one(c(false)), false, Hidden, &[]),
-            ("created_focused", one(c(true)), false, Hidden, &[]),
-            ("started", one(s(false)), false, Visible, &[P::Foreground]),
-            ("started_focused", one(s(true)), false, Visible, &[P::Foreground]),
-            ("resumed_unfocused", one(r(false)), false, Visible, &[P::Foreground]),
-            ("resumed_focused", one(r(true)), true, Visible, &[P::Foreground, P::Active]),
-            ("owner_counts_not_below", on_a(c(false), r(true)), false, Hidden, &[]),
-            ("disconnected", D, false, Hidden, &[]),
+        let cases: [Row; 13] = [
+            ("loaded", Lifecycle::Loaded, A, false, Hidden, None, &[]),
+            ("created", one(c(false)), A, false, Hidden, None, &[]),
+            ("created_focused", one(c(true)), A, false, Hidden, None, &[]),
+            ("started", one(s(false)), A, false, Visible, None, &[P::Foreground]),
+            ("started_focused", one(s(true)), A, false, Visible, None, &[P::Foreground]),
+            ("resumed_unfocused", one(r(false)), A, false, Visible, None, &[P::Foreground]),
+            ("resumed_focused", one(r(true)), A, true, Visible, Some(A), &[P::Foreground, P::Active]),
+            ("covered_window_hidden", two(c(false), r(true)), A, false, Hidden, Some(B), &[P::Foreground, P::Active]),
+            ("covering_window_active", two(c(false), r(true)), B, true, Visible, Some(B), &[P::Foreground, P::Active]),
+            ("split_unfocused_window_visible", two(r(false), r(true)), A, false, Visible, Some(B), &[P::Foreground, P::Active]),
+            ("split_focused_window_active", two(r(false), r(true)), B, true, Visible, Some(B), &[P::Foreground, P::Active]),
+            ("destroyed_window_hidden", one(r(true)), OLD, false, Hidden, Some(A), &[P::Foreground, P::Active]),
+            ("disconnected", D, A, false, Hidden, None, &[]),
         ];
-        for (name, state, active, visibility, phases) in cases {
+        for (name, state, id, active, visibility, foreground, phases) in cases {
             assert_eq!(
-                (state.is_active(), state.visibility(), state.launch_phases()),
-                (active, visibility, phases),
+                (
+                    state.is_active(id),
+                    state.visibility(id),
+                    state.active(),
+                    state.launch_phases()
+                ),
+                (active, visibility, foreground, phases),
                 "{name}"
             );
         }

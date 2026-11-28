@@ -1,0 +1,866 @@
+Web page lifecycle and keyboard inset: `on_app_lifecycle` and `WindowInsets::ime` in gpui_web.
+
+What (gpui_web only):
+- `page_lifecycle.rs` (new, pure): Chrome's Page Lifecycle states (active, passive, hidden, frozen, terminated),
+  ported from GoogleChromeLabs/page-lifecycle's Lifecycle.mjs (Apache-2.0): its legal transition paths, so every
+  state a browser skips is still reported, and its rules for `focus`, `blur`, `visibilitychange`, `freeze`,
+  `resume`, `pageshow` and `pagehide`. Each step maps to `AppLifecyclePhase`s with Flutter web's mapping
+  (app_lifecycle_state.dart: focused is resumed, blurred inactive, hidden hidden): active → `Active`, passive →
+  `Inactive`, hidden → `Background`, climbing → `Foreground`, terminated → `Disconnected`.
+- `WebPlatform::on_app_lifecycle` (was the trait's no-op): listens to those seven events and delivers the phases
+  synchronously (`pagehide` is a closing page's last chance).
+- `keyboard_inset.rs` (new, pure): Flutter's `computeKeyboardInsets` (full_page_dimensions_provider.dart): the
+  keyboard is what the visual viewport lost at the bottom, measured from the canvas's bottom edge; none on iOS
+  while not editing (Flutter's `_iOSHeight` rule), none without a visual viewport, none while pinch-zoomed
+  (gpui_web's own rule from `keyboard_likely_dismissed`).
+- `WebViewport::update` fills `WindowInsets::ime.bottom`; `WebWindow::on_insets_changed` (was a no-op) fires from
+  the viewport listeners when the insets change, never from `prepare_frame`.
+- Table tests: 17 lifecycle transitions (Flutter's listeners plus Page Lifecycle's), the current-state rule, one
+  check that every legal step has phases, 8 keyboard rows (3 of Flutter's). They run on the host through
+  scripts/patch-test.sh's `web-pure` crate.
+
+Why: the gap audit found no `on_app_lifecycle` on the web (only window visibility) and `ime` always zero, so apps
+could not save state when a tab hid, froze or unloaded, nor keep a field above the on-screen keyboard.
+
+Ported from flutter/flutter 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7), Copyright 2014 The Flutter Authors,
+BSD-3-Clause; and GoogleChromeLabs/page-lifecycle 0.1.2 (a32563d198a7e4f5c2338fe6a53a02fd5857992b), Copyright 2018
+Google Inc., Apache-2.0.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-web/src/gpui_web.rs b/gpui-pre-web/src/gpui_web.rs
+index 3769038..82157d4 100644
+--- a/gpui-pre-web/src/gpui_web.rs
++++ b/gpui-pre-web/src/gpui_web.rs
+@@ -24,8 +24,12 @@ mod ime_mirror;
+ #[cfg(target_family = "wasm")]
+ mod keyboard;
+ #[cfg(target_family = "wasm")]
++mod keyboard_inset;
++#[cfg(target_family = "wasm")]
+ mod logging;
+ #[cfg(target_family = "wasm")]
++mod page_lifecycle;
++#[cfg(target_family = "wasm")]
+ mod platform;
+ #[cfg(any(target_family = "wasm", test))]
+ mod run_replacements;
+diff --git a/gpui-pre-web/src/keyboard_inset.rs b/gpui-pre-web/src/keyboard_inset.rs
+new file mode 100644
+index 0000000..b4d989e
+--- /dev/null
++++ b/gpui-pre-web/src/keyboard_inset.rs
+@@ -0,0 +1,136 @@
++// Ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/view_embedder/dimensions_provider/
++// full_page_dimensions_provider.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): `computeKeyboardInsets`
++// and its use of `_iOSHeight`; the test rows from engine/src/flutter/lib/web_ui/test/engine/view_embedder/
++// dimensions_provider/full_page_dimensions_provider_test.dart @ 3.50.1. Copyright 2014 The Flutter Authors.
++// BSD-3-Clause, see third_party/flutter/LICENSE.
++
++//! How much of the canvas the on-screen keyboard covers, from the visual viewport. Pure, so it is tested on any
++//! host; `viewport.rs` measures the inputs and reports the result as `WindowInsets::ime`.
++//!
++//! Browsers shrink the visual viewport, not the layout viewport, for the keyboard (`interactive-widget=
++//! resizes-visual`, the default), so Flutter reports the difference as the keyboard's inset. Flutter takes the
++//! page's height; a GPUI canvas need not fill the page, so here it is the canvas's bottom edge.
++
++/// The visual viewport, in layout CSS pixels (`window.visualViewport`).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) struct VisualViewport {
++    pub(crate) offset_top: f64,
++    pub(crate) height: f64,
++    pub(crate) scale: f64,
++}
++
++/// The keyboard's inset from the canvas's bottom edge, in CSS pixels, never negative.
++///
++/// `canvas_bottom` is the canvas's bottom edge in the layout viewport. Flutter's rules, then GPUI's:
++/// - no visual viewport (old browsers): Flutter measures `innerHeight`, which the keyboard doesn't shrink: none;
++/// - iOS while not editing: Flutter measures the view's own height (`_iOSHeight`), so no keyboard shows; a visual
++///   viewport iOS has not resized back (a rotation, the toolbar) must not read as one;
++/// - pinch-zoomed (scale ≠ 1): none. Zoom shrinks the visual viewport too; Flutter's pages can't zoom, and
++///   gpui_web infers nothing while zoomed (`keyboard_likely_dismissed`).
++pub(crate) fn keyboard_inset(
++    canvas_bottom: f64,
++    viewport: Option<VisualViewport>,
++    ios: bool,
++    is_editing_on_mobile: bool,
++) -> f64 {
++    let Some(viewport) = viewport else {
++        return 0.;
++    };
++    if (ios && !is_editing_on_mobile) || (viewport.scale - 1.).abs() >= 0.001 {
++        return 0.;
++    }
++    (canvas_bottom - (viewport.offset_top + viewport.height)).max(0.)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn viewport(height: f64) -> Option<VisualViewport> {
++        Some(VisualViewport {
++            offset_top: 0.,
++            height,
++            scale: 1.,
++        })
++    }
++
++    /// (Flutter test or GPUI rule, canvas bottom, viewport, iOS, editing, inset). Flutter's iPhone rows use its
++    /// fake: `documentElement.clientHeight` 775 (the canvas fills it), visual viewport heights as in each test.
++    #[test]
++    fn insets() {
++        let rows: [(&str, f64, Option<VisualViewport>, bool, bool, f64); 8] = [
++            (
++                "from viewport physical size (simulated keyboard)",
++                700.,
++                viewport(600.),
++                false,
++                false,
++                100.,
++            ),
++            (
++                "reports no keyboard inset when the browser toolbar collapses",
++                775.,
++                viewport(815.),
++                true,
++                false,
++                0.,
++            ),
++            (
++                "reports the keyboard inset while editing",
++                775.,
++                viewport(426.),
++                true,
++                true,
++                775. - 426.,
++            ),
++            (
++                "iOS: a shorter visual viewport while not editing is no keyboard",
++                775.,
++                viewport(426.),
++                true,
++                false,
++                0.,
++            ),
++            ("GPUI: no visual viewport", 700., None, false, false, 0.),
++            (
++                "GPUI: the visual viewport scrolled down by the keyboard",
++                700.,
++                Some(VisualViewport {
++                    offset_top: 50.,
++                    height: 400.,
++                    scale: 1.,
++                }),
++                false,
++                true,
++                250.,
++            ),
++            (
++                "GPUI: pinch-zoomed is no keyboard",
++                700.,
++                Some(VisualViewport {
++                    offset_top: 0.,
++                    height: 350.,
++                    scale: 2.,
++                }),
++                false,
++                true,
++                0.,
++            ),
++            (
++                "GPUI: a canvas above the keyboard",
++                300.,
++                viewport(400.),
++                false,
++                true,
++                0.,
++            ),
++        ];
++        for (name, canvas_bottom, viewport, ios, editing, inset) in rows {
++            assert_eq!(
++                keyboard_inset(canvas_bottom, viewport, ios, editing),
++                inset,
++                "{name}"
++            );
++        }
++    }
++}
+diff --git a/gpui-pre-web/src/page_lifecycle.rs b/gpui-pre-web/src/page_lifecycle.rs
+new file mode 100644
+index 0000000..0f0e237
+--- /dev/null
++++ b/gpui-pre-web/src/page_lifecycle.rs
+@@ -0,0 +1,339 @@
++// Ported from GoogleChromeLabs/page-lifecycle src/Lifecycle.mjs @ a32563d198a7e4f5c2338fe6a53a02fd5857992b
++// (0.1.2): its states, `LEGAL_STATE_TRANSITIONS`, `getLegalStateTransitionPath`, `getCurrentState` and the event
++// rules of `_handleEvents`. Copyright 2018 Google Inc. Apache-2.0.
++// The phases follow flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_dispatcher/
++// app_lifecycle_state.dart @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7): focus is resumed, blur inactive,
++// a hidden page hidden. Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
++
++//! The page's lifecycle (Chrome's Page Lifecycle states) and the [`AppLifecyclePhase`]s GPUI hears for it. Pure,
++//! so it is tested on any host; `platform.rs` feeds it DOM events and passes the phases on.
++//!
++//! Flutter's web engine listens to `focus`, `blur` and `visibilitychange` only. Page Lifecycle adds `freeze`,
++//! `resume`, `pagehide` and `pageshow`, so a page entering the back/forward cache or unloading is heard too, and it
++//! reports every state a browser skips (a tab closed while active still hears `Inactive` and `Background`).
++
++use gpui::AppLifecyclePhase;
++
++/// Page Lifecycle's states (`discarded` is never observed by a running page).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum PageState {
++    /// Visible and focused.
++    Active,
++    /// Visible, not focused.
++    Passive,
++    /// Not visible.
++    Hidden,
++    /// Suspended by the browser, or in the back/forward cache.
++    Frozen,
++    /// Unloading.
++    Terminated,
++}
++
++/// The DOM events Page Lifecycle listens to.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum PageEvent {
++    Focus,
++    Blur,
++    VisibilityChange,
++    Freeze,
++    Resume,
++    PageShow,
++    /// `pagehide`; `persisted` when the page goes into the back/forward cache.
++    PageHide {
++        persisted: bool,
++    },
++}
++
++/// What the document says when an event arrives: `getCurrentState`'s inputs.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Document {
++    /// `document.visibilityState == "hidden"`.
++    pub(crate) hidden: bool,
++    /// `document.hasFocus()`.
++    pub(crate) has_focus: bool,
++}
++
++/// `LEGAL_STATE_TRANSITIONS`: the orders a browser moves through. A change from one state to a later one in an
++/// order passes every state between; browsers skip events, so the skipped states are reported too.
++const LEGAL_STATE_TRANSITIONS: [&[PageState]; 6] = {
++    use PageState::*;
++    [
++        // The normal unload process.
++        &[Active, Passive, Hidden, Terminated],
++        // An active page transitioning to frozen, or an unloading page going into the bfcache.
++        &[Active, Passive, Hidden, Frozen],
++        // A hidden page transitioning back to active.
++        &[Hidden, Passive, Active],
++        // A frozen page being resumed.
++        &[Frozen, Hidden],
++        // A frozen (bfcached) page navigated back to.
++        &[Frozen, Active],
++        &[Frozen, Passive],
++    ]
++};
++
++/// The phases GPUI hears for each step of a legal path, Flutter's mapping: `Active` is resumed, `Passive` inactive,
++/// `Hidden` hidden. Frozen is still hidden to GPUI. Every step of [`LEGAL_STATE_TRANSITIONS`] has a row (the
++/// `every_legal_step_has_phases` test checks); to add a state, add its steps here.
++const STEP_PHASES: [(PageState, PageState, &[AppLifecyclePhase]); 9] = {
++    use AppLifecyclePhase as Phase;
++    use PageState::*;
++    [
++        (Active, Passive, &[Phase::Inactive]),
++        (Passive, Hidden, &[Phase::Background]),
++        (Hidden, Terminated, &[Phase::Disconnected]),
++        (Hidden, Frozen, &[]),
++        (Hidden, Passive, &[Phase::Foreground]),
++        (Passive, Active, &[Phase::Active]),
++        (Frozen, Hidden, &[]),
++        (Frozen, Active, &[Phase::Foreground, Phase::Active]),
++        (Frozen, Passive, &[Phase::Foreground]),
++    ]
++};
++
++impl PageState {
++    /// `getCurrentState`.
++    pub(crate) fn current(document: Document) -> Self {
++        if document.hidden {
++            Self::Hidden
++        } else if document.has_focus {
++            Self::Active
++        } else {
++            Self::Passive
++        }
++    }
++
++    /// `_handleEvents` then `_dispatchChangesIfNeeded`: the state after `event`, and the phases GPUI hears on the
++    /// way. A change with no legal path changes nothing.
++    pub(crate) fn on(self, event: PageEvent, document: Document) -> (Self, Vec<AppLifecyclePhase>) {
++        let target = match event {
++            PageEvent::PageShow | PageEvent::Resume => Some(Self::current(document)),
++            PageEvent::Focus => Some(Self::Active),
++            // The `blur` event can fire while the page is being unloaded, so the state only changes from active.
++            PageEvent::Blur => (self == Self::Active).then(|| Self::current(document)),
++            PageEvent::PageHide { persisted: true } => Some(Self::Frozen),
++            PageEvent::PageHide { persisted: false } => Some(Self::Terminated),
++            // `visibilityState` turns hidden as the page unloads; that changes nothing.
++            PageEvent::VisibilityChange => {
++                (!matches!(self, Self::Frozen | Self::Terminated)).then(|| Self::current(document))
++            }
++            PageEvent::Freeze => Some(Self::Frozen),
++        };
++        let Some(path) = target.and_then(|target| legal_path(self, target)) else {
++            return (self, Vec::new());
++        };
++        let phases = path
++            .windows(2)
++            .flat_map(|step| step_phases(step[0], step[1]))
++            .copied()
++            .collect();
++        (path[path.len() - 1], phases)
++    }
++}
++
++/// `getLegalStateTransitionPath`: the first order holding `old` before `new`, from `old` to `new` inclusive.
++fn legal_path(old: PageState, new: PageState) -> Option<&'static [PageState]> {
++    LEGAL_STATE_TRANSITIONS.iter().find_map(|order| {
++        let old_index = order.iter().position(|&state| state == old)?;
++        let new_index = order.iter().position(|&state| state == new)?;
++        (new_index > old_index).then(|| &order[old_index..=new_index])
++    })
++}
++
++fn step_phases(from: PageState, to: PageState) -> &'static [AppLifecyclePhase] {
++    STEP_PHASES
++        .iter()
++        .find(|(step_from, step_to, _)| (*step_from, *step_to) == (from, to))
++        .map_or(&[], |(_, _, phases)| phases)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use AppLifecyclePhase as Phase;
++    use PageEvent::*;
++    use PageState::*;
++
++    const FOCUSED: Document = Document {
++        hidden: false,
++        has_focus: true,
++    };
++    const UNFOCUSED: Document = Document {
++        hidden: false,
++        has_focus: false,
++    };
++    const HIDDEN: Document = Document {
++        hidden: true,
++        has_focus: false,
++    };
++
++    /// One row per (state, event, document) → (next state, phases), rejected events included. Rows named after
++    /// app_lifecycle_state.dart's listeners are Flutter's; the rest are Page Lifecycle's.
++    #[test]
++    fn transitions() {
++        let rows: [(&str, PageState, PageEvent, Document, PageState, &[Phase]); 17] = [
++            (
++                "Flutter: focus is resumed",
++                Passive,
++                Focus,
++                FOCUSED,
++                Active,
++                &[Phase::Active],
++            ),
++            (
++                "Flutter: blur is inactive",
++                Active,
++                Blur,
++                UNFOCUSED,
++                Passive,
++                &[Phase::Inactive],
++            ),
++            (
++                "Flutter: hidden is hidden",
++                Active,
++                VisibilityChange,
++                HIDDEN,
++                Hidden,
++                &[Phase::Inactive, Phase::Background],
++            ),
++            (
++                "Flutter: visible is resumed",
++                Hidden,
++                VisibilityChange,
++                FOCUSED,
++                Active,
++                &[Phase::Foreground, Phase::Active],
++            ),
++            (
++                "visible without focus is passive",
++                Hidden,
++                VisibilityChange,
++                UNFOCUSED,
++                Passive,
++                &[Phase::Foreground],
++            ),
++            (
++                "blur only counts from active",
++                Passive,
++                Blur,
++                UNFOCUSED,
++                Passive,
++                &[],
++            ),
++            (
++                "an element's blur keeps a focused page active",
++                Active,
++                Blur,
++                FOCUSED,
++                Active,
++                &[],
++            ),
++            (
++                "freezing a hidden page",
++                Hidden,
++                Freeze,
++                HIDDEN,
++                Frozen,
++                &[],
++            ),
++            (
++                "resuming a frozen hidden page",
++                Frozen,
++                Resume,
++                HIDDEN,
++                Hidden,
++                &[],
++            ),
++            (
++                "a frozen page ignores visibility",
++                Frozen,
++                VisibilityChange,
++                FOCUSED,
++                Frozen,
++                &[],
++            ),
++            (
++                "into the back/forward cache from active",
++                Active,
++                PageHide { persisted: true },
++                HIDDEN,
++                Frozen,
++                &[Phase::Inactive, Phase::Background],
++            ),
++            (
++                "back from the back/forward cache",
++                Frozen,
++                PageShow,
++                FOCUSED,
++                Active,
++                &[Phase::Foreground, Phase::Active],
++            ),
++            (
++                "back from the cache without focus",
++                Frozen,
++                PageShow,
++                UNFOCUSED,
++                Passive,
++                &[Phase::Foreground],
++            ),
++            (
++                "unloading an active page",
++                Active,
++                PageHide { persisted: false },
++                HIDDEN,
++                Terminated,
++                &[Phase::Inactive, Phase::Background, Phase::Disconnected],
++            ),
++            (
++                "unloading a hidden page",
++                Hidden,
++                PageHide { persisted: false },
++                HIDDEN,
++                Terminated,
++                &[Phase::Disconnected],
++            ),
++            (
++                "a terminated page ignores focus",
++                Terminated,
++                Focus,
++                FOCUSED,
++                Terminated,
++                &[],
++            ),
++            (
++                "the first pageshow changes nothing",
++                Active,
++                PageShow,
++                FOCUSED,
++                Active,
++                &[],
++            ),
++        ];
++        for (name, state, event, document, next, phases) in rows {
++            assert_eq!(state.on(event, document), (next, phases.to_vec()), "{name}");
++        }
++    }
++
++    #[test]
++    fn current_state() {
++        assert_eq!(PageState::current(FOCUSED), Active);
++        assert_eq!(PageState::current(UNFOCUSED), Passive);
++        assert_eq!(PageState::current(HIDDEN), Hidden);
++    }
++
++    #[test]
++    fn every_legal_step_has_phases() {
++        for order in LEGAL_STATE_TRANSITIONS {
++            for step in order.windows(2) {
++                assert!(
++                    STEP_PHASES
++                        .iter()
++                        .any(|(from, to, _)| (*from, *to) == (step[0], step[1])),
++                    "no STEP_PHASES row for {:?} → {:?}",
++                    step[0],
++                    step[1]
++                );
++            }
++        }
++    }
++}
+diff --git a/gpui-pre-web/src/platform.rs b/gpui-pre-web/src/platform.rs
+index b496aa4..ab7419e 100644
+--- a/gpui-pre-web/src/platform.rs
++++ b/gpui-pre-web/src/platform.rs
+@@ -4,17 +4,18 @@ use crate::display::WebDisplay;
+ use crate::events::EventListenerHandle;
+ use crate::http_client::FetchHttpClient;
+ use crate::keyboard::WebKeyboardLayout;
++use crate::page_lifecycle::{Document, PageEvent, PageState};
+ use crate::text_system::WebTextSystem;
+ use crate::window::WebWindow;
+ use anyhow::Result;
+ use futures::channel::oneshot;
+ use gpui::{
+-    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardItem,
+-    ClipboardReadError, ClipboardString, CursorStyle, DummyKeyboardMapper, ForegroundExecutor,
+-    GestureTuning, Image, ImageFormat, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
+-    PlatformDisplay, PlatformGestures, PlatformKeyboardLayout, PlatformKeyboardMapper,
+-    PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState, WindowAppearance,
+-    WindowKind, WindowParams, popup::PopupNotSupportedError,
++    Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardEntry,
++    ClipboardItem, ClipboardReadError, ClipboardString, CursorStyle, DummyKeyboardMapper,
++    ForegroundExecutor, GestureTuning, Image, ImageFormat, Keymap, Menu, MenuItem,
++    PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
++    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState,
++    WindowAppearance, WindowKind, WindowParams, popup::PopupNotSupportedError,
+ };
+ use gpui_wgpu::{PreparedWebGraphics, WebBackendPreference, WgpuContext, wgpu};
+ use std::{
+@@ -46,6 +47,8 @@ pub struct WebPlatform {
+     last_cursor_css: Rc<Cell<&'static str>>,
+     gestures: Rc<WebGestures>,
+     _cursor_restore_listeners: Vec<EventListenerHandle>,
++    lifecycle: Rc<WebLifecycle>,
++    _lifecycle_listeners: Vec<EventListenerHandle>,
+ }
+ 
+ /// Gesture feel for the browser, chosen so touch scrolling matches the host
+@@ -192,6 +195,11 @@ impl WebPlatform {
+         let gestures = Rc::new(WebGestures::from_user_agent(
+             &browser_window.navigator().user_agent().unwrap_or_default(),
+         ));
++        let lifecycle = Rc::new(WebLifecycle {
++            state: Cell::new(PageState::current(page_document(&browser_window))),
++            callback: RefCell::new(None),
++        });
++        let lifecycle_listeners = lifecycle_listeners(&browser_window, &lifecycle);
+ 
+         Self {
+             browser_window,
+@@ -210,6 +218,8 @@ impl WebPlatform {
+             last_cursor_css,
+             gestures,
+             _cursor_restore_listeners: cursor_restore_listeners,
++            lifecycle,
++            _lifecycle_listeners: lifecycle_listeners,
+         }
+     }
+ 
+@@ -517,6 +527,12 @@ impl Platform for WebPlatform {
+         self.callbacks.borrow_mut().reopen = Some(callback);
+     }
+ 
++    /// The page's lifecycle (`page_lifecycle.rs`): focus, visibility, the
++    /// back/forward cache and unloading.
++    fn on_app_lifecycle(&self, callback: Box<dyn FnMut(AppLifecyclePhase)>) {
++        *self.lifecycle.callback.borrow_mut() = Some(callback);
++    }
++
+     // Browsers expose no system sleep or wake signal; the nearest thing is the
+     // Page Visibility API, which drives `WindowVisibility` instead.
+     fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {}
+@@ -820,6 +836,87 @@ fn cursor_restore_listeners(
+     handles
+ }
+ 
++/// The page's lifecycle and the `on_app_lifecycle` observer it reports to.
++///
++/// Phases are delivered synchronously from the DOM event: `pagehide` is the
++/// last chance a closing page gets. Focus moving between the page's own
++/// elements (the IME mirror's focus cycling) changes no state, so it never
++/// calls the observer from inside a GPUI dispatch.
++struct WebLifecycle {
++    state: Cell<PageState>,
++    callback: RefCell<Option<Box<dyn FnMut(AppLifecyclePhase)>>>,
++}
++
++impl WebLifecycle {
++    fn handle(&self, event: PageEvent, browser_window: &web_sys::Window) {
++        let document = page_document(browser_window);
++        let (state, phases) = self.state.get().on(event, document);
++        self.state.set(state);
++        // Taken for the call, so an observer that re-enters the platform
++        // finds the slot empty instead of a borrowed `RefCell`.
++        let Some(mut callback) = self.callback.borrow_mut().take() else {
++            return;
++        };
++        for phase in phases {
++            callback(phase);
++        }
++        self.callback.borrow_mut().get_or_insert(callback);
++    }
++}
++
++fn page_document(browser_window: &web_sys::Window) -> Document {
++    Document {
++        hidden: !crate::window::document_visibility(browser_window).is_visible(),
++        has_focus: browser_window
++            .document()
++            .and_then(|document| document.has_focus().ok())
++            .unwrap_or(true),
++    }
++}
++
++/// Page Lifecycle's event listeners: `focus`, `blur`, `pageshow` and
++/// `pagehide` fire on the window, the others on the document. To listen to
++/// another event: a row here and a `PageEvent`.
++fn lifecycle_listeners(
++    browser_window: &web_sys::Window,
++    lifecycle: &Rc<WebLifecycle>,
++) -> Vec<EventListenerHandle> {
++    let Some(document) = browser_window.document() else {
++        return Vec::new();
++    };
++    let window_target: &web_sys::EventTarget = browser_window.as_ref();
++    let document_target: &web_sys::EventTarget = document.as_ref();
++    let rows: [(
++        &web_sys::EventTarget,
++        &'static str,
++        fn(&JsValue) -> PageEvent,
++    ); 7] = [
++        (window_target, "focus", |_| PageEvent::Focus),
++        (window_target, "blur", |_| PageEvent::Blur),
++        (window_target, "pageshow", |_| PageEvent::PageShow),
++        (window_target, "pagehide", |event| PageEvent::PageHide {
++            persisted: js_sys::Reflect::get(event, &"persisted".into())
++                .ok()
++                .and_then(|persisted| persisted.as_bool())
++                .unwrap_or(false),
++        }),
++        (document_target, "visibilitychange", |_| {
++            PageEvent::VisibilityChange
++        }),
++        (document_target, "freeze", |_| PageEvent::Freeze),
++        (document_target, "resume", |_| PageEvent::Resume),
++    ];
++    rows.into_iter()
++        .map(|(target, event_name, page_event)| {
++            let lifecycle = Rc::clone(lifecycle);
++            let browser_window = browser_window.clone();
++            EventListenerHandle::add(target, event_name, move |event: JsValue| {
++                lifecycle.handle(page_event(&event), &browser_window);
++            })
++        })
++        .collect()
++}
++
+ fn show_graphics_unavailable_message(browser_window: &web_sys::Window, error: &anyhow::Error) {
+     let Some(document) = browser_window.document() else {
+         return;
+diff --git a/gpui-pre-web/src/viewport.rs b/gpui-pre-web/src/viewport.rs
+index e8a75c8..537775c 100644
+--- a/gpui-pre-web/src/viewport.rs
++++ b/gpui-pre-web/src/viewport.rs
+@@ -7,6 +7,8 @@
+ use gpui::{Bounds, Edges, Pixels, WindowInsets, point, px, size};
+ use wasm_bindgen::JsCast;
+ 
++use crate::keyboard_inset::{VisualViewport, keyboard_inset};
++
+ pub(crate) struct WebViewport {
+     safe_area_probes: [web_sys::HtmlElement; 4],
+     pub(crate) visible_bounds: Bounds<Pixels>,
+@@ -40,10 +42,13 @@ impl WebViewport {
+         }
+     }
+ 
++    /// `ios` and `is_editing_on_mobile` are [`keyboard_inset`]'s.
+     pub(crate) fn update(
+         &mut self,
+         window: &web_sys::Window,
+         canvas: &web_sys::HtmlCanvasElement,
++        ios: bool,
++        is_editing_on_mobile: bool,
+     ) -> anyhow::Result<bool> {
+         let canvas_bounds = canvas.get_bounding_client_rect();
+         let document = window
+@@ -54,7 +59,8 @@ impl WebViewport {
+             .ok_or_else(|| anyhow::anyhow!("Missing root"))?;
+         let layout_width = root.client_width() as f64;
+         let layout_height = root.client_height() as f64;
+-        let (left, top, width, height) = match window.visual_viewport() {
++        let visual_viewport = window.visual_viewport();
++        let (left, top, width, height) = match &visual_viewport {
+             Some(viewport) => (
+                 viewport.offset_left(),
+                 viewport.offset_top(),
+@@ -85,8 +91,22 @@ impl WebViewport {
+             bottom: px((canvas_bounds.bottom() - layout_height + bottom).max(0.) as f32),
+             left: px((left - canvas_bounds.left()).max(0.) as f32),
+         };
++        let keyboard = keyboard_inset(
++            canvas_bounds.bottom(),
++            visual_viewport.map(|viewport| VisualViewport {
++                offset_top: viewport.offset_top(),
++                height: viewport.height(),
++                scale: viewport.scale(),
++            }),
++            ios,
++            is_editing_on_mobile,
++        );
+         let insets = WindowInsets {
+             safe_area,
++            ime: Edges {
++                bottom: px(keyboard as f32),
++                ..Edges::default()
++            },
+             ..WindowInsets::default()
+         };
+         let changed = self.visible_bounds != visible_bounds || self.insets != insets;
+diff --git a/gpui-pre-web/src/window.rs b/gpui-pre-web/src/window.rs
+index 1131916..3fe95b9 100644
+--- a/gpui-pre-web/src/window.rs
++++ b/gpui-pre-web/src/window.rs
+@@ -28,6 +28,7 @@ pub(crate) struct WebWindowCallbacks {
+     pub(crate) hover_status_change: Option<Box<dyn FnMut(bool)>>,
+     pub(crate) resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
+     pub(crate) visual_viewport_changed: Option<Box<dyn FnMut()>>,
++    pub(crate) insets_changed: Option<Box<dyn FnMut(WindowInsets)>>,
+     pub(crate) moved: Option<Box<dyn FnMut()>>,
+     pub(crate) should_close: Option<Box<dyn FnMut() -> bool>>,
+     pub(crate) close: Option<Box<dyn FnOnce()>>,
+@@ -58,7 +59,11 @@ pub(crate) struct WebWindowInner {
+     pub(crate) viewport: RefCell<WebViewport>,
+     pub(crate) has_device_pixel_support: bool,
+     pub(crate) is_mac: bool,
++    /// iOS measures the keyboard only while editing (`keyboard_inset`).
++    pub(crate) is_ios: bool,
+     pub(crate) touch_input: bool,
++    /// The insets `on_insets_changed` last reported.
++    pub(crate) reported_insets: RefCell<WindowInsets>,
+     pub(crate) state: RefCell<WebWindowMutableState>,
+     pub(crate) callbacks: RefCell<WebWindowCallbacks>,
+     pub(crate) click_state: RefCell<ClickState>,
+@@ -180,13 +185,15 @@ impl WebWindow {
+             .ok()
+             .flatten()
+             .is_some_and(|query| query.matches());
++        let os = crate::events::platform_info(&browser_window).os;
+         let mobile = matches!(
+-            crate::events::platform_info(&browser_window).os,
++            os,
+             gpui::OperatingSystem::Ios | gpui::OperatingSystem::Android
+         );
++        let is_ios = os == gpui::OperatingSystem::Ios;
+         let ime_mirror = ImeMirror::new(&document, &body, touch_input, mobile)?;
+         let mut viewport = WebViewport::new(&document)?;
+-        viewport.update(&browser_window, &canvas)?;
++        viewport.update(&browser_window, &canvas, is_ios, false)?;
+ 
+         let display: Rc<dyn PlatformDisplay> = Rc::new(WebDisplay::new(browser_window.clone()));
+ 
+@@ -220,7 +227,9 @@ impl WebWindow {
+             viewport: RefCell::new(viewport),
+             has_device_pixel_support,
+             is_mac,
++            is_ios,
+             touch_input,
++            reported_insets: RefCell::new(WindowInsets::default()),
+             state: RefCell::new(mutable_state),
+             callbacks: RefCell::new(WebWindowCallbacks::default()),
+             click_state: RefCell::new(ClickState::default()),
+@@ -408,11 +417,14 @@ impl WebWindow {
+ 
+ impl WebWindowInner {
+     fn sample_viewport(&self) -> bool {
+-        match self
+-            .viewport
+-            .borrow_mut()
+-            .update(&self.browser_window, &self.canvas)
+-        {
++        // Flutter's `isEditingOnMobile`: touch input with the keyboard enabled.
++        let is_editing_on_mobile = self.touch_input && self.ime_mirror.virtual_keyboard_enabled();
++        match self.viewport.borrow_mut().update(
++            &self.browser_window,
++            &self.canvas,
++            self.is_ios,
++            is_editing_on_mobile,
++        ) {
+             Ok(changed) => changed,
+             Err(error) => {
+                 log::warn!("Failed to update browser viewport: {error:#}");
+@@ -422,6 +434,19 @@ impl WebWindowInner {
+     }
+ 
+     pub(crate) fn notify_viewport_changed(&self) {
++        // `on_insets_changed` observers update the window, so the insets are
++        // sampled and reported here, between frames, never from
++        // `prepare_frame` (which may sample a change first: hence the record
++        // of what was last reported).
++        self.sample_viewport();
++        let insets = self.viewport.borrow().insets.clone();
++        if *self.reported_insets.borrow() != insets {
++            *self.reported_insets.borrow_mut() = insets.clone();
++            self.with_callback(
++                |callbacks| &mut callbacks.insets_changed,
++                |callback| callback(insets),
++            );
++        }
+         self.with_callback(
+             |callbacks| &mut callbacks.visual_viewport_changed,
+             |callback| callback(),
+@@ -658,7 +683,7 @@ fn current_appearance(browser_window: &web_sys::Window) -> WindowAppearance {
+ 
+ /// The Page Visibility API: `hidden` when the tab is in the background or the
+ /// browser window is minimized. A missing document reads as visible.
+-fn document_visibility(browser_window: &web_sys::Window) -> WindowVisibility {
++pub(crate) fn document_visibility(browser_window: &web_sys::Window) -> WindowVisibility {
+     let is_visible = browser_window
+         .document()
+         .and_then(|document| js_sys::Reflect::get(&document, &"visibilityState".into()).ok())
+@@ -890,6 +915,10 @@ impl PlatformWindow for WebWindow {
+         self.inner.viewport.borrow().insets.clone()
+     }
+ 
++    fn on_insets_changed(&self, callback: Box<dyn FnMut(WindowInsets)>) {
++        self.inner.callbacks.borrow_mut().insets_changed = Some(callback);
++    }
++
+     fn text_input_state_changed(&self, change: TextInputStateChange) {
+         // React to editability transitions, not each frame: manually dismissing
+         // the keyboard must remain effective until another editing gesture.

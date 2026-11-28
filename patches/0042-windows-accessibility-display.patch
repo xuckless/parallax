@@ -1,0 +1,222 @@
+Windows reduce-motion and reduce-transparency settings, for 0039's platform hook.
+
+What (needs 0039):
+- gpui_windows: `accessibility_display.rs` (new, pure): `SPI_GETCLIENTAREAANIMATION` off (Settings > Accessibility >
+  Visual effects > Animation effects) reduces motion; `EnableTransparency` = 0 under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (Personalization > Colors > Transparency
+  effects) reduces transparency; an unreadable or missing value reduces neither. platform.rs reads both at startup
+  (windows-registry, already a dependency) and again on `WM_SETTINGCHANGE`, which the platform's hidden top-level
+  window receives; it posts itself `WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED` (`WM_USER + 11`) first, as for display
+  changes, and calls the app back only when the settings moved. Table test runs on the host through
+  scripts/patch-test.sh's `windows-pure` crate.
+
+Why: 0039 gives GPUI a platform hook for the OS's reduce-motion and reduce-transparency settings; Windows reported
+neither. The platform's message handling is private to gpui_windows.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-windows/src/accessibility_display.rs b/gpui-pre-windows/src/accessibility_display.rs
+new file mode 100644
+--- /dev/null
++++ b/gpui-pre-windows/src/accessibility_display.rs
+@@ -0,0 +1,49 @@
++//! Windows' animation and transparency settings as GPUI's [`AccessibilityDisplaySettings`]. The decision lives here,
++//! on plain values, so it is tested on any host (Parallax's `scripts/patch-test.sh` builds this file on its own);
++//! `platform.rs` reads the OS and follows `WM_SETTINGCHANGE`.
++
++use gpui::AccessibilityDisplaySettings;
++
++/// `client_area_animation`: `SPI_GETCLIENTAREAANIMATION` (Settings > Accessibility > Visual effects > Animation
++/// effects), `None` when the call failed. `enable_transparency`: `EnableTransparency` under
++/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (Settings > Personalization > Colors >
++/// Transparency effects), `None` when the value is missing, as before the user first changes it: Windows then draws
++/// transparency.
++pub(crate) fn settings(
++    client_area_animation: Option<bool>,
++    enable_transparency: Option<u32>,
++) -> AccessibilityDisplaySettings {
++    AccessibilityDisplaySettings {
++        reduce_motion: client_area_animation == Some(false),
++        reduce_transparency: enable_transparency == Some(0),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn settings_from_windows_values() {
++        // (name, SPI_GETCLIENTAREAANIMATION, EnableTransparency, reduce_motion, reduce_transparency). Extend with a
++        // row per new value Windows reports.
++        let rows = [
++            ("defaults", Some(true), Some(1), false, false),
++            ("animation effects off", Some(false), Some(1), true, false),
++            ("transparency effects off", Some(true), Some(0), false, true),
++            ("both off", Some(false), Some(0), true, true),
++            ("animation unreadable", None, Some(1), false, false),
++            ("transparency never set", Some(true), None, false, false),
++        ];
++        for (name, animation, transparency, reduce_motion, reduce_transparency) in rows {
++            assert_eq!(
++                settings(animation, transparency),
++                AccessibilityDisplaySettings {
++                    reduce_motion,
++                    reduce_transparency
++                },
++                "{name}"
++            );
++        }
++    }
++}
+diff --git a/gpui-pre-windows/src/events.rs b/gpui-pre-windows/src/events.rs
+--- a/gpui-pre-windows/src/events.rs
++++ b/gpui-pre-windows/src/events.rs
+@@ -64,6 +64,7 @@
+ pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
+ pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
+ pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
++pub(crate) const WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED: u32 = WM_USER + 11;
+ 
+ const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
+ 
+diff --git a/gpui-pre-windows/src/gpui_windows.rs b/gpui-pre-windows/src/gpui_windows.rs
+--- a/gpui-pre-windows/src/gpui_windows.rs
++++ b/gpui-pre-windows/src/gpui_windows.rs
+@@ -1,5 +1,6 @@
+ #![cfg(target_os = "windows")]
+ 
++mod accessibility_display;
+ mod clipboard;
+ mod destination_list;
+ mod dialog;
+diff --git a/gpui-pre-windows/src/platform.rs b/gpui-pre-windows/src/platform.rs
+--- a/gpui-pre-windows/src/platform.rs
++++ b/gpui-pre-windows/src/platform.rs
+@@ -99,6 +99,8 @@
+     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
+     directx_devices: RefCell<Option<DirectXDevices>>,
+     low_power_mode_enabled: Cell<bool>,
++    /// As last read; `WM_SETTINGCHANGE` reads them again.
++    accessibility_display: Cell<AccessibilityDisplaySettings>,
+ }
+ 
+ #[derive(Default)]
+@@ -114,6 +116,7 @@
+     system_wake: Cell<Option<Box<dyn FnMut()>>>,
+     low_power_mode_change: Cell<Option<Box<dyn FnMut()>>>,
+     displays_changed: Cell<Option<Box<dyn FnMut()>>>,
++    accessibility_display_change: Cell<Option<Box<dyn FnMut(AccessibilityDisplaySettings)>>>,
+ }
+ 
+ impl WindowsPlatformState {
+@@ -130,6 +133,7 @@
+             draw_coordinator: Rc::new(DrawCoordinator::new()),
+             directx_devices: RefCell::new(directx_devices),
+             low_power_mode_enabled: Cell::new(false),
++            accessibility_display: Cell::new(read_accessibility_display_settings()),
+             menus: RefCell::new(Vec::new()),
+         }
+     }
+@@ -876,6 +880,21 @@
+         }
+     }
+ 
++    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
++        Some(self.inner.state.accessibility_display.get())
++    }
++
++    fn on_accessibility_display_settings_change(
++        &self,
++        callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
++    ) {
++        self.inner
++            .state
++            .callbacks
++            .accessibility_display_change
++            .set(Some(callback));
++    }
++
+     fn on_power_mode_change(&self, callback: Box<dyn FnMut()>) {
+         self.inner
+             .state
+@@ -1216,8 +1235,10 @@
+             | WM_GPUI_DOCK_MENU_ACTION
+             | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
+             | WM_GPUI_DISPLAYS_CHANGED
++            | WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED
+             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(msg, wparam, lparam),
+             WM_POWERBROADCAST => self.handle_power_broadcast(wparam, lparam),
++            WM_SETTINGCHANGE => self.handle_setting_change(handle),
+             WM_DISPLAYCHANGE => self.handle_display_change(handle),
+             WM_QUERYENDSESSION => Some(1),
+             WM_ENDSESSION if wparam.0 != 0 => self.handle_end_session(),
+@@ -1244,6 +1265,7 @@
+             WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
+             WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
+             WM_GPUI_DISPLAYS_CHANGED => self.handle_displays_changed(),
++            WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED => self.handle_accessibility_display_changed(),
+             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
+             _ => unreachable!(),
+         }
+@@ -1264,6 +1286,33 @@
+         Some(0)
+     }
+ 
++    /// `WM_SETTINGCHANGE`, broadcast to every top-level window, this hidden one too: Animation effects sends it with
++    /// `SPI_SETCLIENTAREAANIMATION`, Transparency effects with "ImmersiveColorSet". Like a display change, it is
++    /// reported from the message loop, since a broadcast can arrive mid-update.
++    fn handle_setting_change(&self, handle: HWND) -> Option<isize> {
++        unsafe {
++            PostMessageW(
++                Some(handle),
++                WM_GPUI_ACCESSIBILITY_DISPLAY_CHANGED,
++                WPARAM(self.validation_number),
++                LPARAM(0),
++            )
++            .log_err();
++        }
++        Some(0)
++    }
++
++    fn handle_accessibility_display_changed(&self) -> Option<isize> {
++        let settings = read_accessibility_display_settings();
++        if self.state.accessibility_display.replace(settings) != settings {
++            self.with_callback(
++                |callbacks| &callbacks.accessibility_display_change,
++                |callback| callback(settings),
++            );
++        }
++        Some(0)
++    }
++
+     fn handle_displays_changed(&self) -> Option<isize> {
+         self.with_callback(
+             |callbacks| &callbacks.displays_changed,
+@@ -1629,6 +1678,26 @@
+     Ok(Some(paths))
+ }
+ 
++fn read_accessibility_display_settings() -> AccessibilityDisplaySettings {
++    let mut animation = BOOL(1);
++    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL through pvParam, which points at `animation`.
++    let animation = unsafe {
++        SystemParametersInfoW(
++            SPI_GETCLIENTAREAANIMATION,
++            0,
++            Some((&mut animation) as *mut BOOL as *mut std::ffi::c_void),
++            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
++        )
++    }
++    .log_err()
++    .map(|()| animation.as_bool());
++    let transparency = windows_registry::CURRENT_USER
++        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
++        .and_then(|key| key.get_u32("EnableTransparency"))
++        .ok();
++    accessibility_display::settings(animation, transparency)
++}
++
+ fn file_save_dialog(
+     directory: PathBuf,
+     suggested_name: Option<String>,

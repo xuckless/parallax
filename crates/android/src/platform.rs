@@ -2,7 +2,6 @@
 //! Stubs are marked "Not yet on Android" (a no-op or [`Error::NotYet`]) and listed in `docs/android.md`.
 
 use std::{
-    cell::Cell,
     ffi::OsString,
     path::{Path, PathBuf},
     rc::Rc,
@@ -12,14 +11,19 @@ use std::{
 
 use futures::channel::oneshot;
 use gpui::{
-    Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, Bounds,
-    ClipboardItem, CursorStyle, DisplayId, DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu,
-    MenuItem, OperatingSystem, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformInfo,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem,
-    PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
+    AccessibilityDisplaySettings, Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase,
+    BackgroundExecutor, Bounds, ClipboardItem, CursorStyle, DisplayId, DummyKeyboardMapper,
+    ForegroundExecutor, Keymap, Menu, MenuItem, OperatingSystem, PathPromptOptions, Pixels,
+    Platform, PlatformDisplay, PlatformInfo, PlatformKeyboardLayout, PlatformKeyboardMapper,
+    PlatformTarget, PlatformTextSystem, PlatformWindow, Task, ThermalState, WindowAppearance,
+    WindowParams,
 };
 
 use gpui_wgpu::CosmicTextSystem;
+use jni::{
+    JNIEnv,
+    objects::{JObject, JString, JValue},
+};
 
 use crate::{
     Error, dispatcher::AndroidDispatcher, host::Shell, metrics::Metrics,
@@ -31,7 +35,6 @@ pub(crate) struct AndroidPlatform {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
-    active_window: Cell<Option<AnyWindowHandle>>,
 }
 
 impl AndroidPlatform {
@@ -52,12 +55,29 @@ impl AndroidPlatform {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
-            active_window: Cell::new(None),
         })
+    }
+
+    /// Runs `f` with the newest Activity's Java `PlatformPlugin` (the clipboard is the system's, not one Activity's,
+    /// so any live one serves) in its own local frame; `None` with no live Activity. A Java exception becomes an
+    /// error and is cleared.
+    fn platform_plugin<T>(
+        &self,
+        f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>,
+    ) -> Result<Option<T>, Error> {
+        let Some(window) = self.shell.newest_window() else {
+            return Ok(None);
+        };
+        let mut env = self.shell.vm.get_env()?;
+        let result = env.with_local_frame(8, |env| f(env, window.platform_plugin.as_obj()));
+        if result.is_err() && env.exception_check()? {
+            env.exception_clear()?;
+        }
+        Ok(Some(result?))
     }
 }
 
-/// The one display: the Activity's window as Android last reported it.
+/// The one display: an Activity's window as Android last reported it.
 #[derive(Debug)]
 pub(crate) struct AndroidDisplay {
     bounds: Bounds<Pixels>,
@@ -157,7 +177,11 @@ impl Platform for AndroidPlatform {
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        Some(Rc::new(AndroidDisplay::from(self.shell.metrics.get())))
+        let metrics = self
+            .shell
+            .newest_window()
+            .map_or(Metrics::BEFORE_FIRST_SURFACE, |window| window.metrics.get());
+        Some(Rc::new(AndroidDisplay::from(metrics)))
     }
 
     fn on_displays_changed(&self, _callback: Box<dyn FnMut()>) {
@@ -165,18 +189,20 @@ impl Platform for AndroidPlatform {
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        self.active_window.get()
+        self.shell.active_window()
     }
 
+    // One window per Activity: the app's `open_window` (`android_main!`), run on that Activity's first surface,
+    // opens it.
     fn open_window(
         &self,
         handle: AnyWindowHandle,
         _options: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
-        let atlas = self.shell.open_window()?;
-        self.active_window.set(Some(handle));
+        let (window, atlas) = self.shell.open_window(handle)?;
         Ok(Box::new(AndroidWindow {
             shell: self.shell.clone(),
+            window,
             atlas,
         }))
     }
@@ -248,6 +274,20 @@ impl Platform for AndroidPlatform {
         self.shell.callbacks.memory_warning.set(callback);
     }
 
+    fn accessibility_display_settings(&self) -> Option<AccessibilityDisplaySettings> {
+        Some(self.shell.accessibility_display.get())
+    }
+
+    fn on_accessibility_display_settings_change(
+        &self,
+        callback: Box<dyn FnMut(AccessibilityDisplaySettings)>,
+    ) {
+        self.shell
+            .callbacks
+            .accessibility_display_change
+            .set(callback);
+    }
+
     fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {
         // Android has no menu bar.
     }
@@ -304,12 +344,56 @@ impl Platform for AndroidPlatform {
         true // Android hides scrollbars when idle
     }
 
+    // Plain text, as Flutter's Android clipboard: `PlatformPlugin.getClipboardData` with no format (its
+    // channel's default, plain text) (docs/android-clipboard.md).
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        None // Not yet on Android: ClipboardManager over JNI.
+        let read = self.platform_plugin(|env, plugin| {
+            let format = JObject::null();
+            let text = env
+                .call_method(
+                    plugin,
+                    "getClipboardData",
+                    "(Lio/github/xuckless/parallax/PlatformChannel$ClipboardContentFormat;)Ljava/lang/CharSequence;",
+                    &[JValue::Object(&format)],
+                )?
+                .l()?;
+            if text.is_null() {
+                return Ok(None);
+            }
+            let text = JString::from(
+                env.call_method(&text, "toString", "()Ljava/lang/String;", &[])?
+                    .l()?,
+            );
+            Ok(Some(String::from(env.get_string(&text)?)))
+        });
+        match read {
+            Ok(text) => text.flatten().map(ClipboardItem::new_string),
+            Err(error) => {
+                log::error!("parallax: cannot read the clipboard: {error}");
+                None
+            }
+        }
     }
 
-    fn write_to_clipboard(&self, _item: ClipboardItem) {
-        // Not yet on Android: ClipboardManager over JNI.
+    // `PlatformPlugin.setClipboardData`: the item's text; GPUI's metadata and images do not reach Android's
+    // clipboard (docs/android-clipboard.md).
+    fn write_to_clipboard(&self, item: ClipboardItem) {
+        let Some(text) = item.text() else {
+            return log::warn!("parallax: only text reaches the Android clipboard");
+        };
+        let written = self.platform_plugin(|env, plugin| {
+            let text = env.new_string(text)?;
+            env.call_method(
+                plugin,
+                "setClipboardData",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&text)],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = written {
+            log::error!("parallax: cannot write the clipboard: {error}");
+        }
     }
 
     fn write_credentials(

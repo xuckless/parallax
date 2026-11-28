@@ -560,16 +560,6 @@ impl Session {
         }
     }
 
-    /// Another Activity's view took the window: its `TextInputPlugin` has no client, so a focused field is
-    /// announced again, from scratch.
-    pub(crate) fn owner_changed(&mut self) {
-        self.mirror = None;
-        self.pending = match self.field {
-            Field::Focused(_) => Pending::default().next(Notice::Focused),
-            Field::Blurred => Pending::default(),
-        };
-    }
-
     /// The calls to send now, emptied; `None` when there are none and no autofill rect can have moved. The shell then
     /// reads GPUI's state if they carry it ([`Pending::sends_state`]) and the field's bounds if they need them
     /// ([`Self::reads_bounds`]), with the session free (GPUI may re-enter the window), and calls [`Self::send`].
@@ -1521,35 +1511,6 @@ mod tests {
             }
             assert_eq!(session.field, want_field, "{name}: field");
             assert_eq!(session.pending, want_pending, "{name}: pending");
-        }
-    }
-
-    #[test]
-    fn session_owner_changed() {
-        // (name, field) → what the new Activity's view gets. Its TextInputPlugin starts with no client.
-        let rows = [
-            ("blurred: nothing", Field::Blurred, EMPTY),
-            (
-                "focused: the field again",
-                Field::Focused(Some(focus_id(1))),
-                EMPTY.next(Notice::Focused),
-            ),
-            (
-                "focused, no id yet: the field again",
-                Field::Focused(None),
-                EMPTY.next(Notice::Focused),
-            ),
-        ];
-        for (name, field, want) in rows {
-            let mut session = Session {
-                field,
-                pending: EMPTY.next(Notice::Hide),
-                mirror: Some(state("ab", (2, 2), (-1, -1))),
-                ..Session::default()
-            };
-            session.owner_changed();
-            assert_eq!(session.pending, want, "{name}: pending");
-            assert_eq!(session.mirror, None, "{name}: no mirror");
         }
     }
 

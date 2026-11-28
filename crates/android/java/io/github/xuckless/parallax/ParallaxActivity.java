@@ -31,6 +31,7 @@ public class ParallaxActivity extends Activity {
   private static final int EVENT_TRIM_MEMORY = 6;
 
   private ParallaxSurfaceView view;
+  private AccessibilityInfoModule accessibilityInfo;
 
   /** This instance's id from nativeActivityCreated: Rust ignores events from a replaced Activity. */
   private int activity;
@@ -40,10 +41,13 @@ public class ParallaxActivity extends Activity {
     super.onCreate(savedInstanceState);
     // The app's JNI_OnLoad (android_main!) runs here, on the main thread, and binds the natives.
     System.loadLibrary(libName());
-    activity = ParallaxSurfaceView.nativeActivityCreated();
+    PlatformPlugin platformPlugin = new PlatformPlugin(this);
+    activity = ParallaxSurfaceView.nativeActivityCreated(platformPlugin);
+    accessibilityInfo = new AccessibilityInfoModule(getContentResolver());
+    accessibilityInfo.initialize();
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     drawEdgeToEdge(getWindow());
-    view = new ParallaxSurfaceView(this, activity, new PlatformPlugin(this));
+    view = new ParallaxSurfaceView(this, activity, platformPlugin);
     setContentView(view);
   }
 
@@ -57,12 +61,14 @@ public class ParallaxActivity extends Activity {
   protected void onResume() {
     super.onResume();
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_RESUME, 0);
+    accessibilityInfo.onHostResume();
     view.startFrames();
   }
 
   @Override
   protected void onPause() {
     view.stopFrames();
+    accessibilityInfo.onHostPause();
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_PAUSE, 0);
     super.onPause();
   }
@@ -73,7 +79,8 @@ public class ParallaxActivity extends Activity {
     super.onStop();
   }
 
-  // Not quit: the process and GPUI may outlive this Activity, and a new one reattaches (docs/android-lifecycle.md).
+  // Closes this Activity's GPUI window. Not quit: the process and GPUI may outlive it, and a new
+  // Activity opens a new window (docs/android-multi-window.md).
   @Override
   protected void onDestroy() {
     ParallaxSurfaceView.nativeActivityEvent(activity, EVENT_DESTROY, 0);

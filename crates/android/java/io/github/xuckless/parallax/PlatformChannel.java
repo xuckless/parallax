@@ -7,13 +7,14 @@
 // @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors.
 // BSD-3-Clause, see third_party/flutter/LICENSE.
 //
-// Parallax changes: package. Only HapticFeedbackType is kept. The `flutter/platform`
-// MethodChannel becomes JNI: Rust (GPUI) hands over the `HapticFeedback.vibrate` calls in the
-// return value of ParallaxSurfaceView.nativeFrameworkCalls, and the view plays each as the
-// channel's handler did. Dropped: the channel and its MethodCallHandler, PlatformMessageHandler
-// and every other call (sounds, system chrome, orientation, clipboard, share, navigation) with
-// their types; androidx annotations; io.flutter.Log. The bridge: docs/haptics.md. Ledger:
-// third_party/flutter/PORTED.md.
+// Parallax changes: package. Only HapticFeedbackType and ClipboardContentFormat (without its
+// fromValue: Rust passes no format, the channel's default) are kept. The `flutter/platform`
+// MethodChannel becomes JNI: Rust (GPUI) hands over the `HapticFeedback.vibrate` and
+// `SystemNavigator.pop` calls in the return value of ParallaxSurfaceView.nativeFrameworkCalls, and
+// the view plays each as the channel's handler did. Dropped: the channel and its
+// MethodCallHandler, PlatformMessageHandler and every other call (sounds, system chrome,
+// orientation, the clipboard calls, share, other navigation) with their types; androidx annotations;
+// io.flutter.Log. The bridge: docs/haptics.md. Ledger: third_party/flutter/PORTED.md.
 
 package io.github.xuckless.parallax;
 
@@ -46,6 +47,17 @@ public class PlatformChannel {
     private final String encodedName;
 
     HapticFeedbackType(String encodedName) {
+      this.encodedName = encodedName;
+    }
+  }
+
+  /** Data formats of clipboard content. */
+  public enum ClipboardContentFormat {
+    PLAIN_TEXT("text/plain");
+
+    private String encodedName;
+
+    ClipboardContentFormat(String encodedName) {
       this.encodedName = encodedName;
     }
   }

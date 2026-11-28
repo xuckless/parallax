@@ -12,12 +12,13 @@ surface and GPU device loss: [android-surface.md](android-surface.md). The backe
    [host.rs](../crates/android/src/host.rs)). `value` is the focus flag or the trim level; `activity` is the id
    `nativeActivityCreated` returned in `onCreate`, which the view's surface, frame and inset natives carry too.
 2. **State machine.** [lifecycle.rs](../crates/android/src/lifecycle.rs): `Lifecycle::{Loaded, Live, Disconnected}`;
-   `Live` holds the owner and the other live Activities, each with its `Stage::{Created, Started, Resumed}` and last
-   focus flag. One `next(state, event) → (state, effect)`; the phases are the owner's level change, read from the
-   `UP` and `DOWN` tables. Pure, tested row by row on the host (`cargo test -p parallax-android`), rejected events
+   `Live` holds every live Activity, in creation order, each with its `Stage::{Created, Started, Resumed}` and last
+   focus flag. One `next(state, event) → (state, effect)`; the phases are the app's level change (its most
+   foreground Activity's), read from the `UP` and `DOWN` tables. Pure, tested row by row on the host (`cargo test -p parallax-android`), rejected events
    included.
-3. **Shell.** `Shell::lifecycle` stores the new state, tells the window (`on_active_status_change`,
-   `on_visibility_change`) when `is_active()` or `visibility()` changed, then the app (`Platform::on_app_lifecycle` or
+3. **Shell.** `Shell::lifecycle` stores the new state, tells that Activity's window (`on_active_status_change`,
+   `on_visibility_change`) when its `is_active(id)` or `visibility(id)` changed, adds a window on `onCreate` and closes
+   it on `onDestroy` ([android-multi-window.md](android-multi-window.md)), then tells the app (`Platform::on_app_lifecycle` or
    `on_memory_warning`). Apps observe them with upstream's `cx.on_app_lifecycle` and `cx.on_memory_warning`.
 
 ## The mapping
@@ -40,27 +41,29 @@ surface and GPU device loss: [android-surface.md](android-surface.md). The backe
 - **Launch.** GPUI starts on the first surface, after `onStart` and usually `onResume`; right after launch the shell
   replays `launch_phases()` (`Foreground`, then `Active` if resumed and focused), as iOS reports them after its scene
   connects.
-- **`onDestroy` is `Disconnected`, not quit.** Android may create a new Activity in the same process (back on the
-  root, "Don't keep activities"), and GPUI's quit path (`App::shutdown`) closes every window for good; so GPUI keeps
-  running, the surface was already released in `surfaceDestroyed`, and the next `onStart` reattaches. `on_quit` never
+- **`onDestroy` closes the Activity's window; the last one is `Disconnected`, not quit.** Android may create a new
+  Activity in the same process (back on the root, "Don't keep activities"), and GPUI's quit path (`App::shutdown`)
+  ends the app for good; so GPUI keeps running, and the new Activity's launch opens a new window. `on_quit` never
   fires: Android kills processes without notice, so save state on `Background`.
 - Back is the keys port's (`on_should_close`); `quit` (`Activity.finish()`) is still a stub ([android.md](android-stubs.md)).
 
 ## Several Activities
 
-GPUI has one window; the Activity that most recently ran `onStart` owns it. Others are live too: a deep link stacks a
+Each live Activity has its own GPUI window ([android-multi-window.md](android-multi-window.md)): a deep link stacks a
 second `ParallaxActivity` (the template's `launchMode="singleTop"`, as in Flutter's, stops only a repeat on top), a
-clear-task relaunch overlaps the old and the new, multi-window shows two.
+clear-task relaunch overlaps the old and the new, split screen shows two.
 
-- **Ownership moves on `onStart`.** Back from a stacked Activity restarts the one below, which takes the window back
-  before the top one stops. A new Activity owns nothing until it starts.
-- **The owner destroyed** while others live: the most recently started of them takes over, and GPUI hears the step
-  between the two (e.g. `Foreground`, `Active` when the fallback is resumed in multi-window).
-- **Everyone else's callbacks** update only their own stage, quietly; ids are never reused, so a destroyed Activity's
-  late callbacks are rejected.
-- **`Lifecycle::accepts`** is the one rule for view events: surface, frame, insets, touch and keys count only from the
-  owner's view (the ported `AndroidTouchProcessor` and `KeyEmbedderResponder` carry the id in place of Flutter's
-  renderer and messenger). In multi-window the other one stays still.
+- **Windows follow their own Activity.** A window is active while its Activity is resumed and focused, visible from
+  `onStart` to `onStop`; a covered Activity's window is hidden, the covering one's active.
+- **The app follows the most foreground Activity.** Its phase moves only when the highest level among the live
+  Activities moves: focus passing between two split-screen halves is `Inactive` then `Active`; the covering Activity
+  stopping while the covered one is resumed changes nothing.
+- **Memory warnings** come from the oldest live Activity's `onTrimMemory` only: Android sends every Activity the same
+  call.
+- **Late callbacks** from a destroyed Activity are rejected; ids are never reused.
+- **`Lifecycle::contains`** is the one rule for view events: surface, frame, insets, touch and keys reach the window
+  of a live Activity (the ported `AndroidTouchProcessor` and `KeyEmbedderResponder` carry the id in place of
+  Flutter's renderer and messenger).
 
 To add a callback: an `EVENT_*` constant in `ParallaxActivity`, a row in `Callback::from_java`, the variant, and
 the arms the compiler then asks for in `Lifecycle::next`, each with a test row.

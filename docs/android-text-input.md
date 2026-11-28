@@ -15,9 +15,9 @@ ported ([AGENTS.md](../AGENTS.md#flutter-is-the-second-source-of-truth); ledger 
   is Flutter's channel with JNI in place of the `MethodChannel`.
   [`ImeSyncDeferringInsetsCallback`](../crates/android/java/io/github/xuckless/parallax/ImeSyncDeferringInsetsCallback.java)
   animates the `ime` inset (API 30+), which reaches GPUI through `Window::insets()` ([android.md](android.md)).
-- **Rust.** [text_input.rs](../crates/android/src/text_input.rs) decides (pure, host-tested); `Shell` in
-  [host.rs](../crates/android/src/host.rs) calls GPUI's `PlatformInputHandler`, which the window keeps in the shell
-  so the IME's JNI calls reach it ([window.rs](../crates/android/src/window.rs)). Offsets are UTF-16 on both sides.
+- **Rust.** [text_input.rs](../crates/android/src/text_input.rs) decides (pure, host-tested); `ActivityWindow` in
+  [activity_window.rs](../crates/android/src/activity_window.rs) calls GPUI's `PlatformInputHandler`, which the window
+  keeps there so the IME's JNI calls reach it ([window.rs](../crates/android/src/window.rs)). Offsets are UTF-16 on both sides.
 
 ## The sync protocol
 
@@ -49,8 +49,8 @@ mirror as Rust last knew it: the state Java was sent, or the state Java sent.
    edit for a client GPUI is replacing (a new field or none pending) is dropped: it belongs to the field GPUI left.
 
 Focus shows the keyboard, blur hides it (as `gpui_ios`). Only a field that takes text input counts (between GPUI's
-`FocusGained` and `FocusLost`). When another Activity takes the window, its view's `TextInputPlugin` has no client, so
-a focused field is announced again (`Session::owner_changed`). Editor actions (`performEditorAction`) reach GPUI as an
+`FocusGained` and `FocusLost`). Each Activity's window has its own session, talking to its own view's
+`TextInputPlugin` ([android-multi-window.md](android-multi-window.md)). Editor actions (`performEditorAction`) reach GPUI as an
 Enter press, every action alike until GPUI has an action table; GPUI's `TextInputAction` only labels the key.
 `CursorAnchorInfo` gets GPUI's caret (`nativeBoundsForRange`); `update_ime_position` is not used.
 

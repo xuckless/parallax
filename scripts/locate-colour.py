@@ -4,8 +4,9 @@ GPUI draws everything itself, so there is no view tree to query: the smoke and t
 colour (docs/android-smoke.md, docs/traces.md). Reads the image on stdin: a raw Android `screencap` (RGBA_8888 after
 a 12- or 16-byte header) or a PNG (8-bit RGB or RGBA, not interlaced: what Chromium and `simctl io screenshot` write).
 
-Usage: python3 -I scripts/locate-colour.py <rrggbb> < screenshot
-Exits 1 when no band of that colour is on screen.
+Usage: python3 -I scripts/locate-colour.py <rrggbb> [ink] < screenshot
+With `ink`, prints "x0 x1 y" instead: the horizontal extent of what is drawn on that band (weston-selection-checks.sh
+finds a text field's glyphs so). Exits 1 when no band of that colour is on screen.
 """
 
 import struct
@@ -59,19 +60,32 @@ data = sys.stdin.buffer.read()
 width, height, channels, rows = (png_rows if data.startswith(PNG_SIGNATURE) else raw_rows)(data)
 want = bytes.fromhex(sys.argv[1])
 
-band = []  # (y, mean x) of matching rows in the first band
+
+def matches(row, x):
+    return all(abs(p - w) <= TOLERANCE for p, w in zip(row[x * channels : x * channels + 3], want))
+
+
+band = []  # (y, sampled matching xs) of matching rows in the first band
 for y in range(0, height, STEP):
-    row = rows[y]
-    xs = [
-        x
-        for x in range(0, width, STEP)
-        if all(abs(p - w) <= TOLERANCE for p, w in zip(row[x * channels : x * channels + 3], want))
-    ]
+    xs = [x for x in range(0, width, STEP) if matches(rows[y], x)]
     # A band row: at least a quarter of the sampled pixels match, so status bar icons and glyphs never count.
     if len(xs) * STEP * 4 >= width:
-        band.append((y, sum(xs) // len(xs)))
+        band.append((y, xs))
     elif band:
         break
 if not band:
     sys.exit("no band of colour " + sys.argv[1] + " on screen")
-print(band[len(band) // 2][1], band[len(band) // 2][0])
+y, xs = band[len(band) // 2]
+if sys.argv[2:] != ["ink"]:
+    print(sum(xs) // len(xs), y)
+    sys.exit()
+# "ink": what is drawn on the band (a text field's glyphs) as "x0 x1 y", its leftmost and rightmost pixel not of the
+# band's colour, every pixel of its sampled rows looked at between that row's first and last pixel of the colour (so
+# the band's anti-aliased edges and rounded corners are not ink).
+ink = []
+for row in rows[band[0][0] : band[-1][0] + 1]:
+    painted = [x for x in range(max(xs[0] - STEP, 0), min(xs[-1] + STEP, width)) if matches(row, x)]
+    ink += [x for x in range(painted[0], painted[-1]) if not matches(row, x)]
+if not ink:
+    sys.exit("nothing drawn on the band of colour " + sys.argv[1])
+print(min(ink), max(ink), y)

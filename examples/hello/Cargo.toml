@@ -30,3 +30,7 @@ wasm-bindgen = "0.2.120"
 # Desktop and iOS log to stderr (main.rs); Android logs to logcat and the web to the console (lib.rs).
 [target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
 env_logger = "0.11"
+
+# The text field's mouse selection test (src/text_field.rs) drives GPUI's test platform.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

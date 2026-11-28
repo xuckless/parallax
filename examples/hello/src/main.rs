@@ -7,5 +7,8 @@ fn main() -> Result<(), parallax::parallax_platform::Error> {
     #[cfg(not(any(target_os = "android", target_family = "wasm")))]
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,hello=info"))
         .init();
-    parallax::run(hello::launch)
+    parallax::run(|cx| {
+        hello::launch(cx);
+        hello::open_window(cx);
+    })
 }

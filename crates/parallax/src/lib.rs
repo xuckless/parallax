@@ -3,6 +3,7 @@
 
 pub use gpui;
 pub use parallax_android;
+pub use parallax_ext;
 pub use parallax_platform;
 
 use parallax_platform::behaviour::{TuningSource, current_behaviour};
@@ -45,11 +46,16 @@ pub fn apply_platform_behaviour(cx: &mut gpui::App) {
     }
 }
 
-/// The device's touch slop changed to `touch_slop` while the app runs (Android, a density change): sets the behaviour
-/// row's new slop on the app's tuning and on each open window's own tuning, while the platform owns the tuning
-/// (`Behaviour::retune`). What [`android_main!`] hands parallax-android; public only for the macro.
+/// An Activity's view reported a new device touch slop, `touch_slop`, while the app runs (Android, a density change):
+/// sets the behaviour row's new slop on the app's tuning (windows opened later) and on that Activity's `window`'s
+/// own tuning (`None` before it opens), while the platform owns the tuning (`Behaviour::retune`). What
+/// [`android_main!`] hands parallax-android; public only for the macro.
 #[doc(hidden)]
-pub fn device_touch_slop_changed(cx: &mut gpui::App, touch_slop: gpui::Pixels) {
+pub fn device_touch_slop_changed(
+    cx: &mut gpui::App,
+    window: Option<gpui::AnyWindowHandle>,
+    touch_slop: gpui::Pixels,
+) {
     let reported = Some(touch_slop);
     let behaviour = match current_behaviour() {
         Ok(behaviour) => behaviour,
@@ -66,7 +72,7 @@ pub fn device_touch_slop_changed(cx: &mut gpui::App, touch_slop: gpui::Pixels) {
         );
         cx.set_gesture_tuning(tuning);
     }
-    for window in cx.windows() {
+    if let Some(window) = window {
         let retuned = window.update(cx, |_, window, _| {
             if let Some(tuning) = behaviour.retune(source, window.gesture_tuning(), reported) {
                 window.set_gesture_tuning(tuning);
@@ -91,16 +97,22 @@ pub fn run(launch: impl FnOnce(&mut gpui::App) + 'static) -> Result<(), parallax
 }
 
 /// Android entry point: `parallax_android::android_main!`, applying the platform behaviour row before `launch` and
-/// again when the device's touch slop changes (the facade's job: `parallax_android`'s own macro can't read the table,
-/// which `parallax_platform` builds on it).
+/// again, per window, when the device's touch slop changes (the facade's job: `parallax_android`'s own macro can't
+/// read the table, which `parallax_platform` builds on it).
+///
+/// Both functions are required. `launch` sets the app up (keys, globals) once per process, as desktop GPUI's
+/// launch does; `open_window` opens one window and runs for every `ParallaxActivity`, the first one's right after
+/// `launch` (docs/android-multi-window.md). The desktop equivalent is
+/// `parallax::run(|cx| { launch(cx); open_window(cx) })`.
 #[macro_export]
 macro_rules! android_main {
-    ($launch:expr) => {
+    ($launch:expr, $open_window:expr) => {
         $crate::parallax_android::android_main!(
             |cx: &mut $crate::gpui::App| {
                 $crate::apply_platform_behaviour(cx);
                 ($launch)(cx)
             },
+            $open_window,
             $crate::device_touch_slop_changed
         );
     };

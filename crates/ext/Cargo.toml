@@ -1,12 +1,19 @@
 [package]
 name = "parallax-ext"
-description = "Extension traits on GPUI elements. Sugar only, no hidden behaviour."
+description = "Extension traits on GPUI elements, and Flutter's text selection behaviour as a pure state machine."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-license.workspace = true
-# Stub: not published yet (0.0.0 name placeholder on crates.io).
-publish = false
+# The text selection engine ports code from Flutter (LICENSE-FLUTTER).
+license = "Apache-2.0 AND BSD-3-Clause"
+repository.workspace = true
+readme = "README.md"
+keywords = ["gpui", "text-selection", "touch", "android", "flutter"]
+categories = ["gui"]
 
 [lints]
 workspace = true
+
+[dependencies]
+gpui.workspace = true
+parallax-platform.workspace = true

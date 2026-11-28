@@ -1,10 +1,142 @@
 # Changelog
 
-All notable changes to the published crates (`parallax`, `parallax-platform`, `parallax-android`,
+All notable changes to the published crates (`parallax`, `parallax-platform`, `parallax-android`, `parallax-ext`,
 `cargo-parallax`). Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (pre-1.0: a minor bump may break). Release lines: [ROADMAP.md](ROADMAP.md#releases).
 
-## [Unreleased]
+## [Unreleased] (0.1.9)
+
+Wave 14 (Phase 4: text input and selection), fork `parallax-gpui*` 0.3.14-parallax.11 (patches 0028–0046).
+
+Breaking changes (details under Changed): `parallax_android::TouchSlopChanged` takes the reporting Activity's
+window; `android_main!` takes a required `open_window` next to `launch`.
+
+Migration: move the `cx.open_window(...)` call out of `launch` into `fn open_window(cx: &mut App)`, then write
+`parallax::android_main!(launch, open_window)` and, on desktop, iOS and the web,
+`parallax::run(|cx| { launch(cx); open_window(cx) })`.
+
+### Added
+
+- `parallax-ext::text_selection`: Flutter's text selection behaviour for Android and touch desktops as a pure state
+  machine (taps, double and triple taps, long press, shift-tap, mouse drags, handle drags, toolbar anchors, the
+  Material magnifier's position), with the per-platform rules as a new `text_selection` column of the behaviour
+  table (`TextSelectionControls`; iOS is `Native`). hello's text field uses it and draws plain handles, a loupe and
+  a Copy / Paste / Select all toolbar ([docs/text-selection.md](docs/text-selection.md)).
+- iOS hardware keyboard: presses reach GPUI as `KeyDown`, `KeyUp` and `ModifiersChanged` (shortcuts, arrows,
+  Escape, Tab); keys GPUI leaves unhandled still type into the focused field, once; Caps Lock state is reported
+  (patch 0031, ported from Flutter's iOS key responder).
+- iOS keyboard inset: `WindowInsets::ime` counts only the docked keyboard's part over the window (floating and
+  undocked iPad keyboards, Split View, Slide Over, Stage Manager) and follows the keyboard's animation instead of
+  jumping, frame-exact on the keyboard's own spring curve (patch 0032, ported from Flutter's keyboard inset
+  manager and its React Native spring).
+- iOS: `App::on_keyboard_layout_change` fires when the user switches keyboard layout or language (patch 0033).
+- iOS text input: Flutter's `FlutterTextInputPluginTest.mm` cases run as a table against gpui_ios on the iOS simulator
+  (`scripts/ios-text-oracle.sh`, patch 0028, [docs/ios-text-input.md](docs/ios-text-input.md)): all 47 rows pass.
+- iOS native text selection (patch 0038): a focused GPUI field gets UIKit's own selection UI through
+  `UITextInteraction`: caret, double tap for a word, highlight and draggable handles, the loupe, and UIKit's edit menu
+  ([docs/ios-text-selection.md](docs/ios-text-selection.md)).
+- iOS edit actions (patch 0036, from Flutter): Cut, Copy, Paste, Delete and Select All from the edit menu and the
+  hardware shortcuts; paste only offers text, copy and cut are off in secure fields.
+- iOS autofill (patch 0037): `TextInputConfiguration::autofill` becomes `textContentType` (Flutter's
+  `ToUITextContentType`), so iOS offers passwords, one-time codes and contact details; no hint turns autofill off.
+- Web app lifecycle (patch 0035): `App::on_app_lifecycle` now hears the page's focus, visibility, freeze and
+  resume, the back/forward cache and unloading, as Chrome's Page Lifecycle states mapped to Flutter web's phases
+  (docs/web-lifecycle.md).
+- Web keyboard inset (patch 0035): `WindowInsets::ime.bottom` is the on-screen keyboard's height from the visual
+  viewport, Flutter's rule, and `on_insets_changed` fires when it changes.
+- OS reduce-motion and reduce-transparency settings on every target (patches 0039–0043, `parallax-android`):
+  `App::reduce_motion` now starts as the OS setting and follows changes (iOS, macOS, Android's Remove animations,
+  Windows' Animation effects, Linux's desktop portal, the web's `prefers-reduced-motion`), so GPUI's animations,
+  animated SVGs and images stop moving when the user asks; new `App::reduce_transparency` /
+  `set_reduce_transparency` likewise (iOS, macOS, Windows, Chromium), for translucent materials. An app's own
+  `set_reduce_*` holds until the user changes that setting: an OS report in which it did not move keeps it, and
+  Linux's late portal read never undoes one made in `launch` ([docs/os-settings.md](docs/os-settings.md)).
+- Web IME placement (patch 0034): the hidden IME element follows the caret on desktop browsers, so CJK candidate
+  windows open at the text; apps call `Window::invalidate_character_coordinates` when the caret moves. The element
+  lets clicks through to the canvas (patch 0046).
+- Web secure fields (patch 0034): while a `secure` field is focused the hidden IME element is an
+  `<input type=password>`, so browsers and keyboards neither show nor learn what is typed; Enter in it submits on
+  touch keyboards too. hello gains a password field.
+- A finger drag moves the caret on Android (patch 0044): `Window::compete_for_touch_drag(kind)` lets an element win
+  a touch drag once the touch passes the drag's slop, as Flutter's tap-and-drag recognizers do, so a text field keeps
+  its taps and long presses. `TouchDragEvent` gains `start` (`TouchDragStart::Down` or `PastSlop(kind)`);
+  `TextSelection::touch_drag_kind` gives the field's kind; hello's text field uses it ([docs/touch-drag.md](docs/touch-drag.md)).
+- Touch pans in a scroll container that scrolls on one axis start only on that axis' travel, as Flutter's
+  `VerticalDragGestureRecognizer` / `HorizontalDragGestureRecognizer` do (patch 0045; divs and `list()`), so a
+  sideways drag in a vertical list (a field's caret drag, a desktop field's selection pan) is no longer taken as a
+  scroll, and, as Flutter's tap and long press, a touch that strays past the touch slop is no tap or long press
+  (a sideways swipe in a vertical list never clicks its row).
+- `parallax-ext` is published, and the facade re-exports it as `parallax::parallax_ext`. Its text selection taps a
+  caret's handle to toggle the toolbar (a handle drag and the magnifier start past the touch slop), treats obscured
+  text as one word, offers the toolbar's buttons (`TextSelection::toolbar_buttons`: no Cut or Copy for a password),
+  puts a range's end and the magnifier's line end upstream at a soft wrap (`TextLayout::caret_rect` takes an
+  `Affinity`), starts a drag GPUI already won at once (`Input::DragWon`) and never places the caret for a cancelled
+  touch (`Input::Cancel`). hello's toolbar gains Cut.
+
+### Changed
+
+- `parallax-android`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: its reduce-motion reading is ported from
+  React Native's `AccessibilityInfoModule.kt` (MIT), with `LICENSE-REACT-NATIVE`.
+- `parallax-gpui-ios`'s licence is now `Apache-2.0 AND BSD-3-Clause AND MIT`: it ships React Native's keyboard
+  spring (MIT) as Flutter does, with `LICENSE-REACT-NATIVE`.
+- Android: one GPUI window per `ParallaxActivity` (was one per process, drawn only by the most recently started
+  Activity). Two Activities in split screen both draw and take touch and text; each gets its window from the app's
+  `open_window` (below). `onDestroy` closes the Activity's window, and an app closing its window finishes its
+  Activity at once, even while it is paused or stopped (Flutter's `SystemNavigator.pop`). The app's lifecycle phase follows its most foreground Activity
+  (`parallax-android`, docs/android-multi-window.md).
+- Breaking: `parallax_android::TouchSlopChanged` takes the reporting Activity's window
+  (`fn(&mut App, Option<AnyWindowHandle>, Pixels)`), and the facade retunes that window instead of every window
+  (`parallax`). Apps using `parallax::android_main!` need no change for it.
+- Breaking: `parallax::android_main!(launch, open_window)` and `parallax_android::android_main!(launch, open_window
+  [, touch_slop_changed])` take the window opener as a required second argument (`parallax_android::on_load` too).
+  `launch` sets the app up once per process; `open_window` opens one window and runs for every `ParallaxActivity`,
+  the first one's right after `launch`, so a later Activity never silently re-runs `launch` (re-binding keys and
+  globals). Migration: see the top of this section. hello's `launch` and `open_window` are shared by every target.
+
+### Deprecated
+
+- `parallax_android::Error::OneWindow`, no longer constructed; opening a window with no Activity waiting for one is
+  the new `Error::NoActivityForWindow`.
+
+### Fixed
+
+- iOS: Select All in UIKit's edit menu selects the field's text; it left a caret at the end (patch 0036 tells the
+  keyboard before an edit action moves the selection, not after).
+- Android 9–10 (API 28–29): `WindowInsets::ime` now reports the on-screen keyboard (it stayed 0), and the
+  keyboard no longer counts as bottom safe area: Flutter's `guessBottomKeyboardInset`, ported, and the generated
+  manifest's `android:windowSoftInputMode="adjustResize"` (Flutter's app template), without which the keyboard never
+  reached the view's insets (`parallax-android`, `cargo-parallax`).
+- Android: Copy and Paste work: `read_from_clipboard` / `write_to_clipboard` reach `ClipboardManager` through
+  Flutter's ported `PlatformPlugin` clipboard methods (plain text; `parallax-android`, docs/android-clipboard.md).
+- Android: Gboard's select mode (text-editing panel, Select on) extends the selection: a key event's meta state now
+  reaches GPUI's keystroke, since Flutter's responder synthesizes no Shift for a virtual keyboard
+  (`parallax-android`; Gate 1's known limit 5).
+- iOS: backspace deletes a Thai vowel, not its whole grapheme, and whole emoji; half an emoji from iOS no longer
+  aborts or corrupts the text; `textInRange:` clamps; line granularity of the tokenizer follows the text's line
+  breaks (Flutter's fixes, patch 0029).
+- iOS: fields show the keyboard their `TextInputConfiguration::keyboard_type` asks for, and `secure` fields are
+  secure text entry (patch 0030).
+- iOS hardware keyboard (patch 0031): a key pressed across an IME composition is no longer swallowed (Option-e e e
+  typed "é" and lost the second e), and a key's up goes to UIKit only when its down did.
+- iOS hardware keyboard (patch 0031): holding Backspace, an arrow or a shortcut repeats it again (`KeyDown` with
+  `is_held`, 500 ms then every 100 ms); it did one step since GPUI took the keys from UIKit.
+- iOS native selection (patch 0038): removing the `UITextInteraction` no longer holds its slot borrowed while UIKit
+  calls back into `hitTest:` (a borrow panic there would abort).
+- iOS native selection (patch 0038): the selection UI also comes when UIKit itself makes the text input view first
+  responder (`becomeFirstResponder` installs it), not only when GPUI focuses a field.
+- iOS native selection (patch 0038): while a field edits, the text input view claims only touches on the field's
+  text (the app's rects for the whole document) or a selection handle; an app whose `character_index_for_point`
+  clamps no longer has every touch on the screen taken by UIKit.
+- iOS native selection (patch 0038): one caret and one highlight. UIKit's caret and selection highlight no longer
+  draw over the app's own (Flutter's clear `selectionHighlightColor`, and an empty cursor view for iOS 17+'s
+  selection display); handles, loupe and edit menu stay UIKit's. Apps paint their caret and selection on iOS too.
+- Web text input (patch 0034): `TextInputConfiguration::keyboard_type` now picks the software keyboard
+  (`inputmode`), `autofill` sets `autocomplete` (else `off`), and the action key (`enterkeyhint`) is set only on iOS
+  and Android, Flutter's rules; tested by rows from Flutter's text_editing_test.dart (docs/web-text-input.md).
+- macOS direct touch (patches 0025, 0026), from the owner's Sidecar check: each finger keeps one id for its
+  whole life (a finger landing or lifting while another moved was handled twice: started, cancelled and started
+  again, or moved twice); a touch the system cancels is cancelled where it last was, not at (0, -32). `hello` logs
+  `trackpad pinch end`.
 
 ## [0.1.8] - 2026-11-27 — Gate 3: desktop touch
 

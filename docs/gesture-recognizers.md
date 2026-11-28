@@ -39,7 +39,8 @@ their time. Run it with `scripts/patch-test.sh recognizer` ([patch-tests.md](pat
 | `expected` | `(ms, Seen)`: `Tap(click_count)`, `Scroll(phase, dx, dy)`, `LongPress(phase, x, y)`, `TouchDrag(phase, x, y)` |
 
 Flutter's arena maps to claims: a drag recognizer alone in its arena wins at the down event (a claimed `TouchDrag`);
-one competing with a tap waits for the slop (a pan, `Scroll`).
+one competing with a tap waits for the slop (a pan, `Scroll`). `Compete(kind)` and `LongPressAndCompete(kind)` rows
+(patch 0044, `tap_and_drag_test.dart`) compete for the drag instead: [touch-drag.md](touch-drag.md).
 
 ## Trace format
 

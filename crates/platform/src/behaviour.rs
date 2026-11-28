@@ -4,7 +4,10 @@
 // cupertino/constants.dart; Android's touch slop from engine/src/flutter/shell/platform/android/io/flutter/embedding/
 // android/FlutterView.java; the desktop embedders' missing touch slop from engine/src/flutter/shell/platform/embedder/
 // embedder.h; desktop tap targets read from material/theme_data.dart; the browser OS detection of
-// engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/browser_detection.dart and foundation/_platform_web.dart.
+// engine/src/flutter/lib/web_ui/lib/ui_web/src/ui_web/browser_detection.dart and foundation/_platform_web.dart; the
+// text selection rules of widgets/text_selection.dart (TextSelectionGestureDetectorBuilder,
+// TextSelectionGestureDetector, TextSelectionOverlay), material/text_selection.dart (_kHandleSize) and
+// material/magnifier.dart (TextMagnifier.adaptiveMagnifierConfiguration).
 // Ledger rows: third_party/flutter/PORTED.md.
 // Copyright 2014 The Flutter Authors. BSD-3-Clause, see third_party/flutter/LICENSE.
 
@@ -19,7 +22,7 @@
 /// GPUI's haptic kinds (Flutter's `HapticFeedback` calls), the one type the table's haptics rows hold.
 pub use gpui::Haptic;
 use gpui::{
-    GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics,
+    GestureTuning, Pixels, PointerDevice, ScrollDecelerationRate, ScrollPhysics, TouchDragKind,
     VelocityTrackerKind, px, slops,
 };
 
@@ -94,7 +97,175 @@ pub struct Behaviour {
     /// Flutter shrink-wraps for every pointer; Parallax keeps the touch size there, since a pointer's kind decides
     /// (AGENTS.md, "Desktop touch"). macOS takes Apple's own touch value instead: Flutter has none for a macOS touch.
     pub min_touch_target: Pixels,
+    /// Who handles text selection gestures and draws the overlay: Flutter's rules, ported in `parallax-ext`
+    /// (`parallax_ext::text_selection`), or the platform's own (iOS's `UITextInteraction`).
+    pub text_selection: TextSelectionControls,
 }
+
+/// Who handles a text field's selection gestures (tap, double tap, long press, handles) on a target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextSelectionControls {
+    /// The platform's native selection UI (iOS: `UITextInteraction`); `parallax_ext::text_selection` is not used.
+    Native,
+    /// Flutter's selection behaviour with these per-platform rules, run by `parallax_ext::text_selection`.
+    Flutter(SelectionRules),
+}
+
+/// Flutter's per-`TargetPlatform` text selection choices: each field names the `switch (defaultTargetPlatform)` in
+/// widgets/text_selection.dart it comes from. `parallax_ext::text_selection` reads them; docs/text-selection.md.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectionRules {
+    /// `onTapDown` places the caret on desktop; `onSingleTapUp` does on mobile.
+    pub tap_selects_on: TapEdge,
+    /// Shift + tap or drag: `_extendSelection` (the base stays) or, on Apple platforms, `_expandSelection` (grows
+    /// from the nearer end; a shift drag that inverts reverts to the selection the tap started from).
+    pub shift_select: ShiftSelect,
+    /// `onSingleLongTapStart` / `onSingleLongTapMoveUpdate`.
+    pub long_press: LongPressSelects,
+    /// `_TextSelectionGestureDetectorState._getEffectiveConsecutiveTapCount`.
+    pub tap_count: TapCount,
+    /// `onDragSelectionStart` / `onDragSelectionUpdate` for a finger.
+    pub touch_drag: TouchDragSelects,
+    /// The recognizer `TextSelectionGestureDetector` builds for drags, which sets the slop a drag needs to start:
+    /// GPUI's `TouchDragKind` (`Horizontal`: `TapAndHorizontalDragGestureRecognizer`, `Pan`:
+    /// `TapAndPanGestureRecognizer`), the drag a field competes for (`Window::compete_for_touch_drag`).
+    pub drag_recognizer: TouchDragKind,
+    /// `onTripleTapDown` / three-tap drags in a multi-line field (a single-line field selects all).
+    pub triple_tap: TextBoundaryKind,
+    /// `onSecondaryTap`.
+    pub secondary_tap: SecondaryTap,
+    /// `TextSelectionOverlay._handleSelection{Start,End}HandleDragUpdate`.
+    pub handle_drag: HandleDrag,
+    /// `TextMagnifier.adaptiveMagnifierConfiguration`: the loupe shown while selecting by touch.
+    pub magnifier: MagnifierKind,
+    /// `TextSelectionControls.getHandleSize`. Flutter's desktop controls draw no handles (size zero); a touch
+    /// needs them, and the pointer decides (AGENTS.md, "Desktop touch"), so desktop rows take Material's.
+    pub handle_size: Pixels,
+    /// Material `TextField._handleSelectionChanged`: a drag hides the toolbar on desktop.
+    pub drag_toolbar: DragToolbar,
+    /// `EditableTextState.selectAllEnabled`: when the toolbar offers Select all.
+    pub select_all: SelectAllButton,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragToolbar {
+    /// Mobile: a drag leaves the toolbar as it is.
+    Keeps,
+    /// Desktop: a drag that changes the selection hides it.
+    Hides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectAllButton {
+    /// Android, Linux, Windows: while the text is not empty and not all selected.
+    UnlessAllSelected,
+    /// macOS: never.
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapEdge {
+    Down,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftSelect {
+    Extend,
+    AppleExpand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LongPressSelects {
+    /// Select the word, then word by word as the press moves.
+    Word,
+    /// Apple: a focused field moves the caret to the press (the floating cursor); an unfocused one selects words.
+    AppleCaretWhenFocused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapCount {
+    /// Android, Linux: a fourth tap starts again at one.
+    Cycle,
+    /// Apple: past three, the count holds at three.
+    Hold,
+    /// Windows: past three, double and triple alternate.
+    Alternate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchDragSelects {
+    /// Android: a finger drag moves the caret, only in a focused field.
+    CaretWhenFocused,
+    /// Desktop: a drag by any pointer selects from where it started.
+    Range,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextBoundaryKind {
+    Paragraph,
+    Line,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryTap {
+    /// Non-Apple: an unfocused field places the caret; the toolbar toggles.
+    CaretWhenUnfocused,
+    /// Apple: selects the word unless the tap is on the selection; the toolbar shows.
+    AppleSelectWord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleDrag {
+    /// The dragged handle stays on its side: a drag past the other handle is ignored.
+    Ordered,
+    /// Apple: the dragged handle becomes the extent, so handles may cross.
+    AppleExtent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagnifierKind {
+    None,
+    /// Material's `TextMagnifier` (Android 12's loupe).
+    Material,
+}
+
+/// Material's handle (`_kHandleSize`, material/text_selection.dart), which every Flutter-ruled row draws.
+pub const kHandleSize: Pixels = px(22.0);
+
+/// Android's and Fuchsia's arms of each `defaultTargetPlatform` switch.
+const ANDROID_SELECTION: SelectionRules = SelectionRules {
+    tap_selects_on: TapEdge::Up,
+    shift_select: ShiftSelect::Extend,
+    long_press: LongPressSelects::Word,
+    tap_count: TapCount::Cycle,
+    touch_drag: TouchDragSelects::CaretWhenFocused,
+    drag_recognizer: TouchDragKind::Horizontal,
+    triple_tap: TextBoundaryKind::Paragraph,
+    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+    handle_drag: HandleDrag::Ordered,
+    magnifier: MagnifierKind::Material,
+    handle_size: kHandleSize,
+    drag_toolbar: DragToolbar::Keeps,
+    select_all: SelectAllButton::UnlessAllSelected,
+};
+
+/// Windows' arms; Linux and macOS differ in a few.
+const WINDOWS_SELECTION: SelectionRules = SelectionRules {
+    tap_selects_on: TapEdge::Down,
+    shift_select: ShiftSelect::Extend,
+    long_press: LongPressSelects::Word,
+    tap_count: TapCount::Alternate,
+    touch_drag: TouchDragSelects::Range,
+    drag_recognizer: TouchDragKind::Pan,
+    triple_tap: TextBoundaryKind::Paragraph,
+    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+    handle_drag: HandleDrag::Ordered,
+    magnifier: MagnifierKind::None,
+    handle_size: kHandleSize,
+    drag_toolbar: DragToolbar::Hides,
+    select_all: SelectAllButton::UnlessAllSelected,
+};
 
 const NO_HAPTICS: Haptics = Haptics {
     tap: None,
@@ -120,6 +291,7 @@ pub const TABLE: [Behaviour; 5] = [
             ..NO_HAPTICS
         },
         min_touch_target: kMinInteractiveDimension,
+        text_selection: TextSelectionControls::Flutter(ANDROID_SELECTION),
     },
     Behaviour {
         target: Target::Ios,
@@ -135,6 +307,8 @@ pub const TABLE: [Behaviour; 5] = [
             ..NO_HAPTICS
         },
         min_touch_target: kMinInteractiveDimensionCupertino,
+        // iOS keeps UIKit's own selection (AGENTS.md, Decisions: "iOS text selection").
+        text_selection: TextSelectionControls::Native,
     },
     Behaviour {
         target: Target::MacOs,
@@ -149,6 +323,15 @@ pub const TABLE: [Behaviour; 5] = [
         overscroll: Overscroll::Bounce,
         haptics: NO_HAPTICS,
         min_touch_target: APPLE_MACOS_MIN_TOUCH_TARGET,
+        text_selection: TextSelectionControls::Flutter(SelectionRules {
+            shift_select: ShiftSelect::AppleExpand,
+            long_press: LongPressSelects::AppleCaretWhenFocused,
+            tap_count: TapCount::Hold,
+            secondary_tap: SecondaryTap::AppleSelectWord,
+            handle_drag: HandleDrag::AppleExtent,
+            select_all: SelectAllButton::Never,
+            ..WINDOWS_SELECTION
+        }),
     },
     Behaviour {
         target: Target::Windows,
@@ -158,6 +341,7 @@ pub const TABLE: [Behaviour; 5] = [
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
+        text_selection: TextSelectionControls::Flutter(WINDOWS_SELECTION),
     },
     Behaviour {
         target: Target::Linux,
@@ -167,6 +351,11 @@ pub const TABLE: [Behaviour; 5] = [
         overscroll: Overscroll::None,
         haptics: NO_HAPTICS,
         min_touch_target: kMinInteractiveDimension,
+        text_selection: TextSelectionControls::Flutter(SelectionRules {
+            tap_count: TapCount::Cycle,
+            triple_tap: TextBoundaryKind::Line,
+            ..WINDOWS_SELECTION
+        }),
     },
 ];
 
@@ -514,6 +703,102 @@ mod tests {
                 slops(Touch, row.touch_slop.resolve(None)).hit,
                 "{name}: the touch recognizer takes the touch hit slop"
             );
+        }
+    }
+
+    #[test]
+    fn text_selection_table() {
+        use TextSelectionControls::{Flutter, Native};
+        // (row name with its Flutter switches, target, expected), every field spelled out: a row states what the
+        // target's Flutter switches return, never what another row holds.
+        let rows = [
+            (
+                "android: tap up selects, extend, long press word, taps cycle, finger drag moves the caret, horizontal \
+                 drag, paragraphs, Material magnifier, a drag keeps the toolbar",
+                Target::Android,
+                Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Up,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
+                    tap_count: TapCount::Cycle,
+                    touch_drag: TouchDragSelects::CaretWhenFocused,
+                    drag_recognizer: TouchDragKind::Horizontal,
+                    triple_tap: TextBoundaryKind::Paragraph,
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::Material,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Keeps,
+                    select_all: SelectAllButton::UnlessAllSelected,
+                }),
+            ),
+            (
+                "ios: UITextInteraction (AGENTS.md, iOS text selection)",
+                Target::Ios,
+                Native,
+            ),
+            (
+                "macos: tap down selects, Apple expand, long press caret when focused, taps hold at 3, secondary tap \
+                 selects the word, handles cross, no magnifier, no Select all",
+                Target::MacOs,
+                Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Down,
+                    shift_select: ShiftSelect::AppleExpand,
+                    long_press: LongPressSelects::AppleCaretWhenFocused,
+                    tap_count: TapCount::Hold,
+                    touch_drag: TouchDragSelects::Range,
+                    drag_recognizer: TouchDragKind::Pan,
+                    triple_tap: TextBoundaryKind::Paragraph,
+                    secondary_tap: SecondaryTap::AppleSelectWord,
+                    handle_drag: HandleDrag::AppleExtent,
+                    magnifier: MagnifierKind::None,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::Never,
+                }),
+            ),
+            (
+                "windows: tap down selects, double and triple alternate, pan drag, paragraphs, no magnifier",
+                Target::Windows,
+                Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Down,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
+                    tap_count: TapCount::Alternate,
+                    touch_drag: TouchDragSelects::Range,
+                    drag_recognizer: TouchDragKind::Pan,
+                    triple_tap: TextBoundaryKind::Paragraph,
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::None,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::UnlessAllSelected,
+                }),
+            ),
+            (
+                "linux: tap down selects, taps cycle, pan drag, triple tap selects a line, no magnifier",
+                Target::Linux,
+                Flutter(SelectionRules {
+                    tap_selects_on: TapEdge::Down,
+                    shift_select: ShiftSelect::Extend,
+                    long_press: LongPressSelects::Word,
+                    tap_count: TapCount::Cycle,
+                    touch_drag: TouchDragSelects::Range,
+                    drag_recognizer: TouchDragKind::Pan,
+                    triple_tap: TextBoundaryKind::Line,
+                    secondary_tap: SecondaryTap::CaretWhenUnfocused,
+                    handle_drag: HandleDrag::Ordered,
+                    magnifier: MagnifierKind::None,
+                    handle_size: px(22.),
+                    drag_toolbar: DragToolbar::Hides,
+                    select_all: SelectAllButton::UnlessAllSelected,
+                }),
+            ),
+        ];
+        for (name, target, expected) in rows {
+            let row = behaviour(Some(target)).expect("every row's target has a behaviour");
+            assert_eq!(row.text_selection, expected, "{name}");
         }
     }
 

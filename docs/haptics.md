@@ -17,7 +17,7 @@ embedder uses for it, ported (ledger: [PORTED.md](../third_party/flutter/PORTED.
 - The table's other rows (`tap`: none on every target, `selection_handle_drag`, `picker_item`) are data until GPUI
   has the widgets that play them (selection handles, pickers).
 
-To change the long-press haptic, override the tuning as [behaviour.md](behaviour.md#how-gpui-gets-it-automatically)
+To change the long-press haptic, override the tuning as [behaviour.md](behaviour-tuning.md)
 shows, e.g. `GestureTuning { long_press_haptic: None, ..cx.gesture_tuning() }`.
 
 ## Per platform

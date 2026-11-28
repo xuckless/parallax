@@ -20,7 +20,7 @@ and 35, with Gboard. First run 2026-11-26 on `wave-10` (10e6361) found failures 
 | 3. Composing left on focus change | pass (Korean ㅎ and 한국, Japanese か) | pass (Korean, Japanese) | pass (Korean, Japanese) |
 | 4. Tap moves caret; Gboard space-swipe | pass | pass | pass |
 | 4. Gboard arrows, home/end, copy/paste | pass | pass | pass |
-| 4. Gboard select mode (shift + arrows) | known limit (5) | known limit | known limit |
+| 4. Gboard select mode (shift + arrows) | known limit (5) | known limit | known limit; pass in Wave 14 (5) |
 | 4. Select all + replace via IME | pass | pass | pass |
 | 5. Emoji panel inserts colour emoji, backspace | pass | pass | pass |
 | 5. Multi-script line (Latin, CJK, Arabic, emoji) | pass | pass | pass |
@@ -47,8 +47,11 @@ The example has no long-press or double-tap selection; handles are Phase 4.
    [android-text-input.md](android-text-input.md)).
 3. ~~**API 28 rotation.**~~ Fixed: a resize makes a new surface ([android-surface.md](android-surface.md#resize)).
 4. ~~**Dimmed colours.**~~ Fixed: Android's default focus highlight is off.
-5. **Gboard select mode** (owner-deferred) sends Shift down/up, then plain arrows; a `TextView` keeps Shift as
-   sticky meta state, the ported `KeyboardManager` path does not, so the caret moves instead of extending.
+5. ~~**Gboard select mode**~~ (owner-deferred to Phase 4, fixed in Wave 14): Gboard sends a Shift press with meta
+   state 0, then arrows with `META_SHIFT_ON` and no Shift held; Flutter's responder trusts a virtual keyboard's meta
+   state and synthesizes no Shift, so GPUI got plain arrows. The meta state now reaches the keystroke
+   ([android-keys.md](android-keys.md)); checked on API 35 (Gboard 14.2): Select + arrows and Home extend, Select off
+   moves the caret.
 
 ## Rerun it
 

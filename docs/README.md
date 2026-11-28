@@ -8,7 +8,8 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [upstream.md](upstream.md) | upstream/ snapshot, apply-patches.sh, sync-upstream.sh, fixing patches that stop applying |
 | [zed-fork.md](zed-fork.md) | Our Zed fork's `parallax` branch on xuckless/zed (patches in Zed's layout, for upstream PRs), rebuilding it with sync-fork.sh, and how it differs from the published fork crates |
 | [gpui-fork-crates.md](gpui-fork-crates.md) | The published `parallax-gpui*` fork crates: naming, versioning and content hash, fork-crates.sh, fork-version.sh, publish-fork.sh, CI checks |
-| [patches.md](patches.md) | Writing, numbering and making patches; the patch table |
+| [patches.md](patches.md) | Writing, numbering and making patches |
+| [patch-list.md](patch-list.md) | The patch table: one row per patch |
 | [core-patches.md](core-patches.md) | Core patches 0003–0005, 0008, 0010 and 0014: pointer source, on_touch opt-out, TextInputConfiguration keyboard fields, composition ended on focus loss, the app's gesture tuning |
 | [pointer-source.md](pointer-source.md) | Patch 0003: `Window::pointer_source()`, how core and each backend set the device and synthesized flag, the web pen limit |
 | [gesture-tuning.md](gesture-tuning.md) | Patches 0014 and 0019: `App::set_gesture_tuning` for new windows, `Window::set_gesture_tuning` retunes an open one (Android's device touch slop), their tests |
@@ -17,17 +18,25 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [touch-time-stamps.md](touch-time-stamps.md) | Patch 0020: `TouchEvent::time_stamp`, the platform's event time on GPUI's clock, how Android, iOS and the web fill it, what reads it (velocity tracking), the fallback to dispatch time |
 | [desktop-touch-windows.md](desktop-touch-windows.md) | Patch 0021: Windows touch and pen (`WM_POINTER`, ported from winit) as `TouchEvent`s, dropping the mouse copies Windows makes, pen hover, cancels, time stamps, the pure `pointer.rs` and its host tests |
 | [windows-touch-harness.md](windows-touch-harness.md) | Gate 3 on Windows: touch-inject (synthetic touch and pen, mouse clicks, display scale), the Windows traces, windows-touch-checks.sh's runtime checks and what they found, the CI job |
-| [desktop-touch-macos.md](desktop-touch-macos.md) | Patches 0024–0026: direct touch on macOS 27 (touchscreen Macs, Sidecar iPads): the AppKit touch APIs, the touch recognizer on GPUIView, `NSIsTouchNative` and emulation, limits |
+| [desktop-touch-macos.md](desktop-touch-macos.md) | Patches 0024–0026: direct touch on macOS 27 (touchscreen Macs, Sidecar iPads): the AppKit touch APIs, the touch recognizer on GPUIView, limits |
+| [desktop-touch-macos-emulation.md](desktop-touch-macos-emulation.md) | macOS touch without a touch Mac: emulation and `NSIsTouchNative` |
 | [scale-and-overscroll.md](scale-and-overscroll.md) | Patch 0015: Flutter's scale (pinch/rotate) recognizer and glow and stretch overscroll state on 0012's physics; how to drive them, and what Wave 12 wires |
 | [pinch.md](pinch.md) | Patch 0016: touch pinch through upstream's `on_pinch` / `PinchEvent`, the pinch arena's states (which element and fingers pinch), each platform's multi-touch path, the trace tests |
 | [overscroll.md](overscroll.md) | Patch 0017: bounce, stretch and glow in `div` scroll containers, chosen by `GestureTuning::overscroll` from the behaviour table, the per-container `.overscroll(..)`, the ported `ScrollPosition` glue, limits and tests |
 | [patch-tests.md](patch-tests.md) | patch-test.sh: running GPUI's own lib tests (every patch's tests) on the fork crate, stand-in fonts, skipped tests, the CI job |
 | [gesture-recognizers.md](gesture-recognizers.md) | Patch 0013: Flutter's recognizer tests as table rows through the test platform, the tuning, slop, per-target tap-count and fling-distance fixes, the touch trace format for trace replay |
+| [touch-drag.md](touch-drag.md) | Patches 0044–0045: claiming a touch drag at touch down or competing for it past the slop (Flutter's tap-and-drag recognizers), the slop per `TouchDragKind`, who uses it, the tests |
 | [patch-translation.md](patch-translation.md) | patch-paths.sh: vendored ↔ Zed layout, refused files, the crate table |
 | [platform.md](platform.md) | Target → platform table, how an app gets its GPUI platform, adding a target, errors on unsupported targets |
+| [web-text-input.md](web-text-input.md) | Patch 0034: the web IME mirror, Flutter's per-field attribute rules, the password element, keyboard layout and IME placement on the caret, the ported test rows, checking in Chromium and Firefox |
+| [web-lifecycle.md](web-lifecycle.md) | Patch 0035: the page lifecycle (focus, visibility, freeze, back/forward cache, unload) as `AppLifecyclePhase`s, the keyboard inset from the visual viewport, tests and web-checks.mjs |
 | [haptics.md](haptics.md) | Patch 0018 and Android: `Window::perform_haptic`, the long-press haptic from the behaviour table, each kind per platform (Android, iOS, web), the Android pull, the tests |
 | [desktop-touch-behaviour.md](desktop-touch-behaviour.md) | Desktop touch on the macOS, Windows and Linux rows: Flutter's slops per pointer kind, drag devices, physics, touch target, what is not ported, the tests |
-| [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; how every entry point applies it automatically, overriding and extending it |
+| [text-selection.md](text-selection.md) | Flutter's text selection for Android and touch desktops (`parallax-ext`): the engine, how an app feeds it and draws its overlay, the per-platform rules |
+| [text-selection-tests.md](text-selection-tests.md) | Text selection's tests, live checks under Weston, what is not ported, other implementations |
+| [os-settings.md](os-settings.md) | Patches 0039–0043 and Android: the OS's reduce-motion and reduce-transparency settings as `App::reduce_motion` / `reduce_transparency`, what each target reads and how it follows changes, the app override, checking it |
+| [behaviour.md](behaviour.md) | Target → behaviour table (Flutter's `TargetPlatform` defaults): touch slop, scroll physics, tracker, overscroll, haptics, touch target; extending it |
+| [behaviour-tuning.md](behaviour-tuning.md) | How the behaviour row reaches GPUI's gesture tuning automatically, density changes on Android, overriding it, what GPUI reads |
 | [audits/gap-audit.md](audits/gap-audit.md) | What upstream GPUI lacks for touch, text input, lifecycle, insets and accessibility per platform, with source links and the phase that fixes each |
 | [ci.md](ci.md) | The eleven CI jobs (six targets, Java tests, patch tests, Linux touch, Windows touch, Android smoke), what each checks, when each runs, adding a target |
 | [ci-local.md](ci-local.md) | Running CI's checks locally: the commands, the Android NDK setup, desktop touch runs |
@@ -49,13 +58,20 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |
 | [android-keys.md](android-keys.md) | Android keys: ported KeyboardManager, key-data decoder and KEYS table, back → BackGestureEvent |
+| [ios-keyboard.md](ios-keyboard.md) | Patches 0031–0033: iOS hardware keyboard presses → GPUI key events (Flutter's key responder, GPUI first then UIKit's text system), the keyboard inset's docked-frame maths and animation, layout-change notifications, the host tables and simulator checks |
 | [android-fonts.md](android-fonts.md) | Android system fonts: fonts.xml parser, fallback table, runtime locale changes, the FontSystem from patch 0002 |
+| [ios-text-selection.md](ios-text-selection.md) | Patch 0038: UIKit's own selection UI on iOS (`UITextInteraction`): what each gesture does, how the text input view covers GPUI's view and claims only touches on the text, geometry from the input handler, checks, what is not done |
+| [ios-text-input.md](ios-text-input.md) | Patches 0028–0030, 0036, 0037: Flutter's `FlutterTextInputPluginTest.mm` cases as a table against gpui_ios's `UITextInput` view on the simulator (ios-text-oracle.sh), the failures and Flutter's fixes (edit actions, content type), cases left out, the size limit |
 | [android-text-input.md](android-text-input.md) | Android text input: ported TextInputPlugin/InputConnectionAdaptor, the Java↔GPUI sync protocol, configuration tables, limits |
+| [android-clipboard.md](android-clipboard.md) | Android clipboard: GPUI's clipboard calls → the ported PlatformPlugin clipboard methods over JNI, plain text only |
 | [android-autofill.md](android-autofill.md) | Android autofill: GPUI's hint → Flutter's `Configuration.Autofill`, the field id, AutofillManager calls, filled values through the merge path, the hint table |
 | [android-emoji.md](android-emoji.md) | Android colour emoji: fonts.xml emoji faces drawn by Android over JNI, one glyph per cluster, metrics, emoji-picker cost |
 | [android-lifecycle.md](android-lifecycle.md) | Android lifecycle: Activity callbacks → state machine → upstream lifecycle, memory and window hooks; onDestroy choice; several live Activities |
 | [android-surface.md](android-surface.md) | Android surface: the surface state machine and device-loss recovery |
+| [android-multi-window.md](android-multi-window.md) | Android multi-window: one GPUI window per Activity, routing by Activity id, `launch` once per process and `open_window` per Activity, an app-closed window finishing its Activity at once |
+| [android-multi-window-check.md](android-multi-window-check.md) | Checking Android multi-window on an emulator: split screen, rotation, Back |
 | [gate-1.md](gate-1.md) | Gate 1 on the Android emulator (API 28, 33, 35, Gboard): the results matrix, the failures found, and how to rerun it |
+| [gate-4.md](gate-4.md) | Gate 4: the ported Flutter text-input tables per target with pass counts, the selection checks, and the owner's device checks still owed |
 | [traces-desktop.md](traces-desktop.md) | Gate 3's desktop trace fixtures: the folders the replay reads, what a Windows, Wayland, X11 or macOS harness must write, the device column, the Weston headless harness for Wayland and X11, checking a harness |
 | [traces.md](traces.md) | Touch traces for Gate 2: hello's trace pad recorder, record-traces.sh on the Android emulator, headless Chromium (CDP) and the iOS simulator (idb), the replay test and its tolerance |
 | [scroll-physics.md](scroll-physics.md) | Patch 0012: GPUI's one `ScrollPhysics` (Flutter's bouncing and clamping physics) for flings, overscroll and the table, Flutter's physics module on GPUI's springs, what is not ported yet, the ported test tables |

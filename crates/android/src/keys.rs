@@ -257,9 +257,30 @@ pub(crate) enum Step {
     },
 }
 
-/// The keyboard as GPUI sees it: held modifiers, caps lock and the back press. Flutter's responder already
-/// synthesizes the events that bring held modifiers in line with Android's meta state, so following its events
-/// keeps this true.
+/// What the Android `KeyEvent` says that Flutter's key data does not carry; Java passes it next to the packet
+/// (false and 0 for the responder's synthesized events).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct KeyEventExtras {
+    /// `isCanceled()`: a cancelled back release does not go back.
+    pub(crate) canceled: bool,
+    /// `getMetaState()`.
+    pub(crate) meta_state: i32,
+}
+
+/// Android meta state bit (`KeyEvent.META_*_ON`) → the modifier it holds. To follow another modifier: add a row.
+const META: [(i32, Modifier); 5] = [
+    (0x1000, Modifier::Control),   // META_CTRL_ON
+    (0x02, Modifier::Alt),         // META_ALT_ON
+    (0x01, Modifier::Shift),       // META_SHIFT_ON
+    (0x10000, Modifier::Platform), // META_META_ON
+    (0x08, Modifier::Function),    // META_FUNCTION_ON
+];
+
+/// The keyboard as GPUI sees it: held modifiers, caps lock and the back press. Flutter's responder synthesizes the
+/// events that bring held modifiers in line with Android's meta state, except for virtual keyboards (Flutter 3.50.1
+/// trusts their meta state, to avoid stuck modifiers): Gboard's select mode sends a Shift press that the responder
+/// releases at once, then arrows with `META_SHIFT_ON`. So a keystroke's modifiers are the held ones plus its own
+/// event's meta state.
 #[derive(Debug, Default)]
 pub(crate) struct Keyboard {
     /// Held modifier keys by Flutter logical key; left and right are separate keys.
@@ -268,19 +289,26 @@ pub(crate) struct Keyboard {
     back: Back,
 }
 
+/// `modifiers` with each of `set` on.
+fn with<'a>(mut modifiers: Modifiers, set: impl IntoIterator<Item = &'a Modifier>) -> Modifiers {
+    for modifier in set {
+        match modifier {
+            Modifier::Control => modifiers.control = true,
+            Modifier::Alt => modifiers.alt = true,
+            Modifier::Shift => modifiers.shift = true,
+            Modifier::Platform => modifiers.platform = true,
+            Modifier::Function => modifiers.function = true,
+        }
+    }
+    modifiers
+}
+
 impl Keyboard {
     pub(crate) fn modifiers(&self) -> Modifiers {
-        let mut modifiers = Modifiers::default();
-        for (_, modifier) in &self.held {
-            match modifier {
-                Modifier::Control => modifiers.control = true,
-                Modifier::Alt => modifiers.alt = true,
-                Modifier::Shift => modifiers.shift = true,
-                Modifier::Platform => modifiers.platform = true,
-                Modifier::Function => modifiers.function = true,
-            }
-        }
-        modifiers
+        with(
+            Modifiers::default(),
+            self.held.iter().map(|(_, modifier)| modifier),
+        )
     }
 
     #[cfg_attr(
@@ -291,10 +319,14 @@ impl Keyboard {
         self.capslock
     }
 
-    /// Decides what GPUI gets for one packet. `canceled` is the Android event's `FLAG_CANCELED`, which Flutter's
-    /// key data does not carry. `back_at` is where a back press starts: GPUI hit-tests back gestures, and
-    /// Android's back key has no position.
-    pub(crate) fn input(&mut self, data: &KeyData, canceled: bool, back_at: Point<Pixels>) -> Step {
+    /// Decides what GPUI gets for one packet and what its Android event adds. `back_at` is where a back press
+    /// starts: GPUI hit-tests back gestures, and Android's back key has no position.
+    pub(crate) fn input(
+        &mut self,
+        data: &KeyData,
+        extras: KeyEventExtras,
+        back_at: Point<Pixels>,
+    ) -> Step {
         let unhandled = Step::Answer {
             input: None,
             handled: false,
@@ -316,7 +348,7 @@ impl Keyboard {
         };
         match key {
             Key::Back => {
-                let event = match (data.kind, canceled) {
+                let event = match (data.kind, extras.canceled) {
                     (KeyEventType::Up, true) => BackEvent::Cancel,
                     (kind, _) => BackEvent::Key(kind),
                 };
@@ -364,8 +396,10 @@ impl Keyboard {
                 }
                 KeyEventType::Up | KeyEventType::Repeat => unhandled,
             },
-            Key::Named(name) => self.keystroke(name.to_string(), data),
-            Key::Character(character) => self.keystroke(character.to_string(), data),
+            Key::Named(name) => self.keystroke(name.to_string(), data, extras.meta_state),
+            Key::Character(character) => {
+                self.keystroke(character.to_string(), data, extras.meta_state)
+            }
         }
     }
 
@@ -409,9 +443,13 @@ impl Keyboard {
         ]
     }
 
-    fn keystroke(&self, key: String, data: &KeyData) -> Step {
+    fn keystroke(&self, key: String, data: &KeyData, meta_state: i32) -> Step {
+        let meta = META
+            .iter()
+            .filter(|(bit, _)| meta_state & bit != 0)
+            .map(|(_, modifier)| modifier);
         let keystroke = Keystroke {
-            modifiers: self.modifiers(),
+            modifiers: with(self.modifiers(), meta),
             key,
             // Enter, tab and backspace carry control characters; GPUI's key_char is text only.
             key_char: data
@@ -476,6 +514,24 @@ mod tests {
         [fields.concat(), character.as_bytes().to_vec()].concat()
     }
 
+    /// A packet and its Android event's extras: not cancelled, meta state 0 (a hardware keyboard's, whose held
+    /// modifiers the responder synthesizes, or a synthesized event's).
+    fn key(kind: i64, logical: u64, character: &str) -> (Vec<u8>, KeyEventExtras) {
+        (packet(kind, logical, character), KeyEventExtras::default())
+    }
+
+    /// `key` with its event's meta state, as a virtual keyboard sends it.
+    fn meta(
+        (bytes, extras): (Vec<u8>, KeyEventExtras),
+        meta_state: i32,
+    ) -> (Vec<u8>, KeyEventExtras) {
+        let extras = KeyEventExtras {
+            meta_state,
+            ..extras
+        };
+        (bytes, extras)
+    }
+
     fn modifiers(modifiers: &Modifiers) -> String {
         [
             (modifiers.control, "ctrl-"),
@@ -522,15 +578,56 @@ mod tests {
         // whether Android is told it was handled).
         type Row = (
             &'static str,
-            Vec<(Vec<u8>, DispatchEventResult)>,
+            Vec<((Vec<u8>, KeyEventExtras), DispatchEventResult)>,
             Vec<(Option<&'static str>, bool)>,
         );
+        // KeyEvent.META_SHIFT_ON, and every bit of the `META` table, read from it.
+        let meta_shift_on = META
+            .iter()
+            .find(|(_, modifier)| *modifier == Modifier::Shift)
+            .map_or(0, |(bit, _)| *bit);
+        let meta_all = META.iter().fold(0, |all, (bit, _)| all | bit);
         let cases: Vec<Row> = vec![
+            (
+                // Gboard's text-editing panel with Select on (docs/gate-1.md, known limit 5): Shift down with meta
+                // state 0, which the responder releases at once (a synthesized up), then arrows with META_SHIFT_ON
+                // and no Shift key held. Unhandled (no shift-left binding), Java's InputConnectionAdaptor
+                // extends the selection, as Flutter's testSendKeyEvent_shiftLeftKeyStartsSelectionLeft.
+                "gboard_select_mode_arrow_keeps_shift",
+                vec![
+                    (key(DOWN, SHIFT_LEFT, ""), UNHANDLED),
+                    (key(UP, SHIFT_LEFT, ""), UNHANDLED),
+                    (meta(key(DOWN, ARROW_LEFT, ""), meta_shift_on), UNHANDLED),
+                    (meta(key(UP, ARROW_LEFT, ""), meta_shift_on), UNHANDLED),
+                ],
+                vec![
+                    (Some("modifiers shift-caps=false"), false),
+                    (Some("modifiers caps=false"), false),
+                    (Some("down shift-left None"), false),
+                    (Some("up shift-left None"), false),
+                ],
+            ),
+            (
+                "gboard_select_mode_off_arrow_moves",
+                vec![
+                    (meta(key(DOWN, ARROW_LEFT, ""), meta_shift_on), HANDLED),
+                    (key(DOWN, ARROW_LEFT, ""), HANDLED),
+                ],
+                vec![
+                    (Some("down shift-left None"), true),
+                    (Some("down left None"), true),
+                ],
+            ),
+            (
+                "meta_state_sets_each_modifier",
+                vec![(meta(key(DOWN, KEY_A, "a"), meta_all), UNHANDLED)],
+                vec![(Some(r#"down ctrl-alt-shift-cmd-fn-a Some("a")"#), false)],
+            ),
             (
                 "letter_down_up_unhandled",
                 vec![
-                    (packet(DOWN, KEY_A, "a"), UNHANDLED),
-                    (packet(UP, KEY_A, ""), UNHANDLED),
+                    (key(DOWN, KEY_A, "a"), UNHANDLED),
+                    (key(UP, KEY_A, ""), UNHANDLED),
                 ],
                 vec![
                     (Some(r#"down a Some("a")"#), false),
@@ -539,20 +636,20 @@ mod tests {
             ),
             (
                 "app_handles_letter",
-                vec![(packet(DOWN, KEY_A, "a"), HANDLED)],
+                vec![(key(DOWN, KEY_A, "a"), HANDLED)],
                 vec![(Some(r#"down a Some("a")"#), true)],
             ),
             (
                 "repeat_is_held",
-                vec![(packet(REPEAT, KEY_A, "a"), UNHANDLED)],
+                vec![(key(REPEAT, KEY_A, "a"), UNHANDLED)],
                 vec![(Some(r#"held a Some("a")"#), false)],
             ),
             (
                 "shift_letter",
                 vec![
-                    (packet(DOWN, SHIFT_LEFT, ""), UNHANDLED),
-                    (packet(DOWN, KEY_A, "A"), UNHANDLED),
-                    (packet(UP, SHIFT_LEFT, ""), UNHANDLED),
+                    (key(DOWN, SHIFT_LEFT, ""), UNHANDLED),
+                    (key(DOWN, KEY_A, "A"), UNHANDLED),
+                    (key(UP, SHIFT_LEFT, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("modifiers shift-caps=false"), false),
@@ -563,9 +660,9 @@ mod tests {
             (
                 "one_of_two_shifts_released",
                 vec![
-                    (packet(DOWN, SHIFT_LEFT, ""), UNHANDLED),
-                    (packet(DOWN, SHIFT_RIGHT, ""), UNHANDLED),
-                    (packet(UP, SHIFT_LEFT, ""), UNHANDLED),
+                    (key(DOWN, SHIFT_LEFT, ""), UNHANDLED),
+                    (key(DOWN, SHIFT_RIGHT, ""), UNHANDLED),
+                    (key(UP, SHIFT_LEFT, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("modifiers shift-caps=false"), false),
@@ -576,16 +673,16 @@ mod tests {
             (
                 "modifier_repeat_sends_nothing",
                 vec![
-                    (packet(DOWN, CONTROL_LEFT, ""), UNHANDLED),
-                    (packet(REPEAT, CONTROL_LEFT, ""), UNHANDLED),
+                    (key(DOWN, CONTROL_LEFT, ""), UNHANDLED),
+                    (key(REPEAT, CONTROL_LEFT, ""), UNHANDLED),
                 ],
                 vec![(Some("modifiers ctrl-caps=false"), false), (None, false)],
             ),
             (
                 "control_letter",
                 vec![
-                    (packet(DOWN, CONTROL_LEFT, ""), UNHANDLED),
-                    (packet(DOWN, KEY_A, ""), HANDLED),
+                    (key(DOWN, CONTROL_LEFT, ""), UNHANDLED),
+                    (key(DOWN, KEY_A, ""), HANDLED),
                 ],
                 vec![
                     (Some("modifiers ctrl-caps=false"), false),
@@ -595,9 +692,9 @@ mod tests {
             (
                 "caps_lock_toggles_on_down",
                 vec![
-                    (packet(DOWN, CAPS_LOCK, ""), UNHANDLED),
-                    (packet(UP, CAPS_LOCK, ""), UNHANDLED),
-                    (packet(DOWN, CAPS_LOCK, ""), UNHANDLED),
+                    (key(DOWN, CAPS_LOCK, ""), UNHANDLED),
+                    (key(UP, CAPS_LOCK, ""), UNHANDLED),
+                    (key(DOWN, CAPS_LOCK, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("modifiers caps=true"), false),
@@ -607,41 +704,41 @@ mod tests {
             ),
             (
                 "arrow_is_named",
-                vec![(packet(DOWN, ARROW_LEFT, ""), UNHANDLED)],
+                vec![(key(DOWN, ARROW_LEFT, ""), UNHANDLED)],
                 vec![(Some("down left None"), false)],
             ),
             (
                 "enter_has_no_key_char",
-                vec![(packet(DOWN, ENTER, "\n"), UNHANDLED)],
+                vec![(key(DOWN, ENTER, "\n"), UNHANDLED)],
                 vec![(Some("down enter None"), false)],
             ),
             (
                 "numpad_digit",
-                vec![(packet(DOWN, NUMPAD_1, "1"), UNHANDLED)],
+                vec![(key(DOWN, NUMPAD_1, "1"), UNHANDLED)],
                 vec![(Some(r#"down 1 Some("1")"#), false)],
             ),
             (
                 "volume_goes_to_android",
-                vec![(packet(DOWN, AUDIO_VOLUME_UP, ""), HANDLED)],
+                vec![(key(DOWN, AUDIO_VOLUME_UP, ""), HANDLED)],
                 vec![(None, false)],
             ),
             (
                 "android_plane_goes_to_android",
-                vec![(packet(DOWN, ANDROID_PLANE_KEY, ""), HANDLED)],
+                vec![(key(DOWN, ANDROID_PLANE_KEY, ""), HANDLED)],
                 vec![(None, false)],
             ),
             (
                 // KeyEmbedderResponder's empty event: logical and physical 0.
                 "empty_event_ignored",
-                vec![(packet(DOWN, 0, ""), HANDLED)],
+                vec![(key(DOWN, 0, ""), HANDLED)],
                 vec![(None, false)],
             ),
             (
                 "back_claimed",
                 vec![
-                    (packet(DOWN, GO_BACK, ""), CLAIMED),
-                    (packet(REPEAT, GO_BACK, ""), UNHANDLED),
-                    (packet(UP, GO_BACK, ""), UNHANDLED),
+                    (key(DOWN, GO_BACK, ""), CLAIMED),
+                    (key(REPEAT, GO_BACK, ""), UNHANDLED),
+                    (key(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("back Started Key"), true),
@@ -652,9 +749,9 @@ mod tests {
             (
                 "back_unclaimed_goes_to_android",
                 vec![
-                    (packet(DOWN, GO_BACK, ""), UNHANDLED),
-                    (packet(REPEAT, GO_BACK, ""), UNHANDLED),
-                    (packet(UP, GO_BACK, ""), UNHANDLED),
+                    (key(DOWN, GO_BACK, ""), UNHANDLED),
+                    (key(REPEAT, GO_BACK, ""), UNHANDLED),
+                    (key(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("back Started Key"), false),
@@ -666,18 +763,18 @@ mod tests {
                 // Propagation stopped without a back listener is not a claim.
                 "back_handled_not_claimed",
                 vec![
-                    (packet(DOWN, GO_BACK, ""), HANDLED),
-                    (packet(UP, GO_BACK, ""), UNHANDLED),
+                    (key(DOWN, GO_BACK, ""), HANDLED),
+                    (key(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![(Some("back Started Key"), false), (None, false)],
             ),
             (
                 "back_claimed_after_unclaimed",
                 vec![
-                    (packet(DOWN, GO_BACK, ""), UNHANDLED),
-                    (packet(UP, GO_BACK, ""), UNHANDLED),
-                    (packet(DOWN, GO_BACK, ""), CLAIMED),
-                    (packet(UP, GO_BACK, ""), UNHANDLED),
+                    (key(DOWN, GO_BACK, ""), UNHANDLED),
+                    (key(UP, GO_BACK, ""), UNHANDLED),
+                    (key(DOWN, GO_BACK, ""), CLAIMED),
+                    (key(UP, GO_BACK, ""), UNHANDLED),
                 ],
                 vec![
                     (Some("back Started Key"), false),
@@ -686,13 +783,33 @@ mod tests {
                     (Some("back Committed Key"), true),
                 ],
             ),
+            (
+                "back_claimed_release_cancelled",
+                vec![
+                    (key(DOWN, GO_BACK, ""), CLAIMED),
+                    (
+                        (
+                            packet(UP, GO_BACK, ""),
+                            KeyEventExtras {
+                                canceled: true,
+                                meta_state: 0,
+                            },
+                        ),
+                        UNHANDLED,
+                    ),
+                ],
+                vec![
+                    (Some("back Started Key"), true),
+                    (Some("back Cancelled Key"), true),
+                ],
+            ),
         ];
         let back_at = point(px(0.), px(400.));
         for (name, packets, expected) in cases {
             let mut keyboard = Keyboard::default();
             let mut got = Vec::new();
-            for (bytes, answer) in packets {
-                got.push(match keyboard.input(&decode(&bytes)?, false, back_at) {
+            for ((bytes, extras), answer) in packets {
+                got.push(match keyboard.input(&decode(&bytes)?, extras, back_at) {
                     Step::Ask(input) => (Some(describe(&input)), keyboard.reply(answer)),
                     Step::Answer { input, handled } => (input.as_ref().map(describe), handled),
                 });

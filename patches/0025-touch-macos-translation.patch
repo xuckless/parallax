@@ -4,10 +4,14 @@ What: a new `gpui_macos` module, `window/touch.rs`, with no AppKit calls; patch 
 - `PHASES`: `NSTouchPhase` bit → `TouchPhase` (Began → Started, Moved, Ended, Cancelled; stationary touches carry
   nothing new and have no row). `CHANGED` and `TOUCHING` are the phase masks the recognizer reads touches by.
 - `TouchIds<K>`: GPUI's ids for the live touches, keyed by `NSTouch.identity` (generic, so tested without AppKit),
-  with each touch's last position. `track` gives a begin the next `TouchId` (from 0, wrapping) and drops a move or
-  end with no live begin; a begin of an identity still live cancels that stale touch where it was, then starts its
-  own, the rule gpui_windows (0021) and gpui_linux's Wayland (0022) follow. `cancel_all` cancels every live touch
-  where it last was (AppKit reset the recognizer).
+  with each touch's last position. `track_callback` takes one `touches…WithEvent:` callback's touches: only those
+  in the callback's own phase, since AppKit calls every callback a touch of the event is in with the same event (a
+  finger landing while another moves calls `touchesBegan` and `touchesMoved`; read whole, each would start a
+  landing finger twice and move a moving one twice). Each touch gives a begin the next `TouchId` (from 0, wrapping)
+  and drops a move or end with no live begin; a begin of an identity still live cancels that stale touch where it
+  was, then starts its own, the rule gpui_windows (0021) and gpui_linux's Wayland (0022) follow. A cancel is where
+  the touch last was, as 0021's: AppKit puts a touch the system took at no real place ((0, -32) on Sidecar).
+  `cancel_all` cancels every live touch where it last was (AppKit reset the recognizer).
 - `RecognizerState` (NSGestureRecognizer.h's states, decoded from AppKit's `NSInteger` by `from_raw`) and
   `next_state(state, Left)`, one row per (state, what the event left: fingers `Touching`, the last `Lifted` or
   `Cancelled`): the recognizer claims a sequence from its first touch (`Began`, then `Changed`) and finishes
@@ -19,7 +23,8 @@ What: a new `gpui_macos` module, `window/touch.rs`, with no AppKit calls; patch 
   without `NSIsTouchNative`, dropped while the recognizer holds touches (mouse events by `subtype ==
   NSEventSubtypeTouch`; scroll and magnify carry no subtype, so any mid-touch), as 0021 drops `MI_WP_SIGNATURE`
   copies and 0023 `XIPointerEmulated` ones.
-Table tests: `touch_phases`, `recognizer_states`, `touch_ids`, `touch_queue`, `touch_copies` (run on a Mac:
+Table tests: `touch_phases`, `recognizer_states`, `touch_ids`, `appkit_callbacks` (the owner's Sidecar logs
+replayed: a finger landing or lifting while another moves, a system cancel), `touch_queue`, `touch_copies` (run on a Mac:
 `cargo test -p parallax-gpui-macos --features test-support --lib touch`). Nothing calls the module until 0026.
 
 Why: macOS 27 delivers direct touches (a touchscreen Mac, an iPad by Sidecar) to gesture recognizers only, and
@@ -46,12 +51,13 @@ new file mode 100644
 index 0000000..ead481e
 --- /dev/null
 +++ b/gpui-pre-macos/src/window/touch.rs
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,609 @@
 +//! Direct touches (a touchscreen Mac, or an iPad by Sidecar) as GPUI touches: the decisions, on plain values.
 +//! `touch_recognizer.rs` reads AppKit and acts on what these return.
 +//!
-+//! AppKit hands direct touches to gesture recognizers only, from macOS 27. Per event the recognizer turns each
-+//! changed `NSTouch` into a touch phase (`PHASES`), gives it GPUI's id (`TouchIds`), and moves its own
++//! AppKit hands direct touches to gesture recognizers only, from macOS 27. Per `touches…WithEvent:` callback the
++//! recognizer turns each changed `NSTouch` in that callback's phase into a touch phase (`PHASES`), gives it GPUI's
++//! id (`TouchIds::track_callback`), and moves its own
 +//! `NSGestureRecognizer` state (`next_state`). While it holds touches, the mouse, scroll and magnify events AppKit
 +//! makes from them are dropped (`is_touch_copy`).
 +
@@ -151,9 +157,36 @@ index 0000000..ead481e
 +}
 +
 +impl<K: PartialEq> TouchIds<K> {
++    /// The touches (id, phase, position) one `touches…WithEvent:` callback makes, for the callback's own
++    /// `NSTouchPhase` bit and the event's changed touches as (identity, phase bit, position): only the touches in
++    /// the callback's phase. AppKit calls every callback that one of the event's touches is in, each with the same
++    /// event (a finger landing while another moves calls `touchesBegan` and `touchesMoved`), so taking every changed
++    /// touch in each would handle it twice: the landing finger started, cancelled and started again, the moving one
++    /// moved twice.
++    pub(super) fn track_callback(
++        &mut self,
++        callback: NSUInteger,
++        touches: impl IntoIterator<Item = (K, NSUInteger, Point<Pixels>)>,
++    ) -> Vec<(TouchId, TouchPhase, Point<Pixels>)> {
++        let Some(phase) = PHASES
++            .iter()
++            .find(|(bit, _)| *bit == callback)
++            .map(|(_, phase)| *phase)
++        else {
++            return Vec::new();
++        };
++        touches
++            .into_iter()
++            .filter(|(_, bit, _)| *bit == callback)
++            .flat_map(|(key, _, position)| self.track(key, phase, position))
++            .collect()
++    }
++
 +    /// The touches (id, phase, position) one changed `NSTouch` makes. A move or end of an identity with no live
-+    /// touch is dropped; a begin of one still live cancels that stale touch where it was, then starts its own.
-+    pub(super) fn track(
++    /// touch is dropped; a begin of one still live cancels that stale touch where it was, then starts its own. A
++    /// cancel is where the touch last was: AppKit puts a touch the system took at no real place ((0, -32) in the
++    /// window on a Sidecar display).
++    fn track(
 +        &mut self,
 +        key: K,
 +        phase: TouchPhase,
@@ -174,9 +207,13 @@ index 0000000..ead481e
 +                self.live[index].2 = position;
 +                vec![(self.live[index].1, phase, position)]
 +            }
-+            (Some(index), TouchPhase::Ended | TouchPhase::Cancelled) => {
++            (Some(index), TouchPhase::Ended) => {
 +                let (_, id, _) = self.live.remove(index);
 +                vec![(id, phase, position)]
++            }
++            (Some(index), TouchPhase::Cancelled) => {
++                let (_, id, at) = self.live.remove(index);
++                vec![(id, phase, at)]
 +            }
 +        }
 +    }
@@ -356,7 +393,7 @@ index 0000000..ead481e
 +        use TouchPhase::*;
 +        let at = |x: f32| point(px(x), px(0.));
 +        // (name, identity, phase, x, touches out as (id, phase, x)): identities are reused, live ids never are.
-+        let rows: [(&str, u32, TouchPhase, f32, &[(u64, TouchPhase, f32)]); 8] = [
++        let rows: [(&str, u32, TouchPhase, f32, &[(u64, TouchPhase, f32)]); 9] = [
 +            ("first finger down", 7, Started, 1., &[(0, Started, 1.)]),
 +            ("second finger down", 8, Started, 2., &[(1, Started, 2.)]),
 +            ("first finger moves", 7, Moved, 3., &[(0, Moved, 3.)]),
@@ -375,6 +412,13 @@ index 0000000..ead481e
 +                6.,
 +                &[(1, Cancelled, 2.), (3, Started, 6.)],
 +            ),
++            (
++                "a cancel is where the touch last was, not where AppKit says",
++                7,
++                Cancelled,
++                0.,
++                &[(2, Cancelled, 5.)],
++            ),
 +            ("rejected: a move with no live begin", 9, Moved, 7., &[]),
 +            ("rejected: an end with no live begin", 9, Ended, 7., &[]),
 +        ];
@@ -392,12 +436,133 @@ index 0000000..ead481e
 +            .into_iter()
 +            .map(|(id, position)| (id.0, position.x.as_f32()))
 +            .collect();
-+        assert_eq!(
-+            cancelled,
-+            [(2, 5.), (3, 6.)],
-+            "reset cancels the live touches"
-+        );
++        assert_eq!(cancelled, [(3, 6.)], "reset cancels the live touches");
 +        assert!(!ids.is_touching(), "and forgets them");
++    }
++
++    /// The owner's Sidecar logs (macOS 27.3, Wave 13), replayed: one row per `touches…WithEvent:` call, with the
++    /// event's changed touches as (identity, phase bit, x, y) and the touches out as (id, phase, x, y). Every
++    /// touch is handled once though AppKit calls a callback per phase with the same event, and every id started
++    /// ends or is cancelled.
++    #[test]
++    fn appkit_callbacks() {
++        use TouchPhase::*;
++        type Touches<'a> = &'a [(u32, NSUInteger, f32, f32)];
++        type Out<'a> = &'a [(u64, TouchPhase, f32, f32)];
++        let rows: [(&str, NSUInteger, Touches, Out); 12] = [
++            (
++                "first finger down",
++                BEGAN,
++                &[(1, BEGAN, 256., 441.)],
++                &[(0, Started, 256., 441.)],
++            ),
++            (
++                "second finger lands while the first moves: begin callback (13:54:14.606)",
++                BEGAN,
++                &[(1, MOVED, 256., 441.), (2, BEGAN, 127.5, 402.)],
++                &[(1, Started, 127.5, 402.)],
++            ),
++            (
++                "same event, move callback: no second start, one move",
++                MOVED,
++                &[(1, MOVED, 256., 441.), (2, BEGAN, 127.5, 402.)],
++                &[(0, Moved, 256., 441.)],
++            ),
++            (
++                "a finger lifts while the other moves: end callback (13:57:14.251)",
++                ENDED,
++                &[(1, ENDED, 272., 217.5), (2, MOVED, 145.5, 166.5)],
++                &[(0, Ended, 272., 217.5)],
++            ),
++            (
++                "same event, move callback: one move",
++                MOVED,
++                &[(1, ENDED, 272., 217.5), (2, MOVED, 145.5, 166.5)],
++                &[(1, Moved, 145.5, 166.5)],
++            ),
++            (
++                "last finger lifts",
++                ENDED,
++                &[(2, ENDED, 147.5, 164.5)],
++                &[(1, Ended, 147.5, 164.5)],
++            ),
++            (
++                "three fingers land (Spotlight swipe, 13:51:11)",
++                BEGAN,
++                &[
++                    (3, BEGAN, 226.5, 256.5),
++                    (4, BEGAN, 324.5, 326.5),
++                    (5, BEGAN, 83., 248.5),
++                ],
++                &[
++                    (2, Started, 226.5, 256.5),
++                    (3, Started, 324.5, 326.5),
++                    (4, Started, 83., 248.5),
++                ],
++            ),
++            (
++                "they move",
++                MOVED,
++                &[
++                    (3, MOVED, 234., 247.5),
++                    (4, MOVED, 336., 313.5),
++                    (5, MOVED, 92.5, 244.5),
++                ],
++                &[
++                    (2, Moved, 234., 247.5),
++                    (3, Moved, 336., 313.5),
++                    (4, Moved, 92.5, 244.5),
++                ],
++            ),
++            (
++                "the system cancels them at (0, -32): each where it last was",
++                CANCELLED,
++                &[
++                    (3, CANCELLED, 0., -32.),
++                    (4, CANCELLED, 0., -32.),
++                    (5, CANCELLED, 0., -32.),
++                ],
++                &[
++                    (2, Cancelled, 234., 247.5),
++                    (3, Cancelled, 336., 313.5),
++                    (4, Cancelled, 92.5, 244.5),
++                ],
++            ),
++            (
++                "rejected: a move callback with only began touches",
++                MOVED,
++                &[(6, BEGAN, 1., 1.)],
++                &[],
++            ),
++            (
++                "rejected: an end callback with only began touches",
++                ENDED,
++                &[(6, BEGAN, 1., 1.)],
++                &[],
++            ),
++            (
++                "rejected: no callback has the stationary phase",
++                STATIONARY,
++                &[(6, STATIONARY, 1., 1.)],
++                &[],
++            ),
++        ];
++        let mut ids = TouchIds::default();
++        for (name, callback, touches, expected) in rows {
++            let touches = touches
++                .iter()
++                .map(|&(identity, bit, x, y)| (identity, bit, point(px(x), px(y))));
++            let got: Vec<_> = ids
++                .track_callback(callback, touches)
++                .into_iter()
++                .map(|(id, phase, at)| (id.0, phase, at.x.as_f32(), at.y.as_f32()))
++                .collect();
++            assert_eq!(got, expected, "{name}");
++        }
++        assert!(
++            !ids.is_touching(),
++            "every started id ended or was cancelled"
++        );
 +    }
 +
 +    /// One row per (callback free or busy × phase): what GPUI gets, in order, once the callback is free.

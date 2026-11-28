@@ -1,5 +1,6 @@
 // Parallax's own view. Surface and inset handling read from Flutter's FlutterSurfaceView and
-// FlutterView as reference. One line is ported: touchSlop() from
+// FlutterView as reference. Ported: touchSlop() and guessBottomKeyboardInset() (with its use in
+// onApplyWindowInsets before API 30) from
 // engine/src/flutter/shell/platform/android/io/flutter/embedding/android/FlutterView.java @ 3.50.1
 // (ae9b586f34a8443573f82ef57c3bf914a908cbf7). Copyright 2014 The Flutter Authors. BSD-3-Clause,
 // see third_party/flutter/LICENSE. How it fits together: docs/android.md.
@@ -47,10 +48,9 @@ final class ParallaxSurfaceView extends SurfaceView
   // Bound by JNI_OnLoad (RegisterNatives, the `natives` table in host.rs). Sizes and insets in pixels.
   // Every call that sends the density also sends `touchSlop`, the device's touch slop in pixels, as
   // FlutterView.sendViewportMetricsToFlutter sends devicePixelRatio and physicalTouchSlop together.
-  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust drops
-  // events from a view whose Activity does not own the window (it is covered, or destroyed and its
-  // callbacks arrive late). surfaceDestroyed is the exception: it always reaches the surface its
-  // own view created.
+  // The `activity` argument is the id nativeActivityCreated gave this view's Activity: Rust routes
+  // each event to that Activity's own GPUI window, and drops events from a destroyed Activity
+  // (late callbacks).
   // `languageTags`: the app's locales, BCP-47 tags joined by commas, preference order
   // (LocaleList.toLanguageTags()); the fonts take them when the first surface starts the app.
   private static native void nativeSurfaceCreated(
@@ -76,7 +76,8 @@ final class ParallaxSurfaceView extends SurfaceView
   // GPUI's pending calls to the platform, or null when there are none: a JSON object of Flutter
   // channel name → that channel's calls, each {"method", "args"} in Flutter's encoding, in order.
   // "flutter/textinput" goes to TextInputChannel.handleFrameworkCalls; "flutter/platform" holds
-  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()). One pull for both.
+  // HapticFeedback.vibrate calls (args null for HapticFeedback.vibrate()) and SystemNavigator.pop
+  // (the app closed this Activity's GPUI window). One pull for both.
   private static native String nativeFrameworkCalls(int activity);
 
   // Also after a density change: ParallaxActivity.onConfigurationChanged re-applies the insets, and
@@ -99,19 +100,21 @@ final class ParallaxSurfaceView extends SurfaceView
   static native void nativeDispatchPointerDataPacket(
       int activity, ByteBuffer buffer, int position);
 
-  // ParallaxActivity.onCreate: a new Activity owns the window; returns its id for every later event.
+  // ParallaxActivity.onCreate: a new Activity, with its own GPUI window; returns its id for every
+  // later event. `platformPlugin`: the Activity's, which Rust keeps for the clipboard.
   // Declared here so one class holds every native JNI_OnLoad binds.
-  static native int nativeActivityCreated();
+  static native int nativeActivityCreated(PlatformPlugin platformPlugin);
 
   // ParallaxActivity's lifecycle, focus and memory callbacks: its id, one of its EVENT_* codes and a
   // value (focus flag or trim level).
   static native void nativeActivityEvent(int activity, int event, int value);
 
   // Flutter's key data packet (KeyData.toBytes, the whole direct buffer), read before the call
-  // returns, and the event's isCanceled() (key data has no field for it: a cancelled back release
-  // must not go back). Returns whether GPUI handled it: the reply Flutter's framework sends
+  // returns, the event's isCanceled() (key data has no field for it: a cancelled back release
+  // must not go back) and its getMetaState() (Gboard's select mode holds Shift only there). Returns whether GPUI handled it: the reply Flutter's framework sends
   // asynchronously.
-  static native boolean nativeDispatchKeyData(int activity, ByteBuffer packet, boolean canceled);
+  static native boolean nativeDispatchKeyData(
+      int activity, ByteBuffer packet, boolean canceled, int metaState);
 
   // Text input (TextInputChannel): the editing state after an IME edit, in UTF-16 offsets, -1 for
   // none (Flutter's TextInputClient.updateEditingState); GPUI applies it synchronously.
@@ -128,6 +131,11 @@ final class ParallaxSurfaceView extends SurfaceView
 
   // GPUI's bounds of the UTF-16 range [start, end) in view pixels into `ltrb`; false if none.
   static native boolean nativeBoundsForRange(int activity, int start, int end, float[] ltrb);
+
+  // AccessibilityInfoModule: Settings.Global's TRANSITION_ANIMATION_SCALE and ANIMATOR_DURATION_SCALE
+  // as stored (null when never written); Rust decides whether motion is reduced.
+  static native void nativeAccessibilitySettings(
+      String transitionAnimationScale, String animatorDurationScale);
 
   // Both tag what they send with `activity`, so they are built once it is set.
   private final AndroidTouchProcessor touchProcessor;
@@ -325,21 +333,25 @@ final class ParallaxSurfaceView extends SurfaceView
   }
 
   // The `flutter/platform` calls GPUI makes, played as PlatformChannel's handler plays
-  // `HapticFeedback.vibrate` (an unknown type is logged, as its result.error).
+  // `HapticFeedback.vibrate` (an unknown call or haptic type is logged, as its result.error). The
+  // app closing this Activity's window calls PlatformPlugin.popSystemNavigator from Rust directly.
   private void runPlatformCalls(JSONArray calls) throws JSONException {
     for (int i = 0; i < calls.length(); i++) {
       JSONObject call = calls.getJSONObject(i);
       String method = call.getString("method");
-      if (!method.equals("HapticFeedback.vibrate")) {
-        Log.e(TAG, "unknown flutter/platform call " + method);
-        continue;
-      }
-      String feedbackType = call.isNull("args") ? null : call.getString("args");
-      try {
-        platformPlugin.vibrateHapticFeedback(
-            PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
-      } catch (NoSuchFieldException exception) {
-        Log.e(TAG, exception.getMessage());
+      switch (method) {
+        case "HapticFeedback.vibrate":
+          String feedbackType = call.isNull("args") ? null : call.getString("args");
+          try {
+            platformPlugin.vibrateHapticFeedback(
+                PlatformChannel.HapticFeedbackType.fromValue(feedbackType));
+          } catch (NoSuchFieldException exception) {
+            Log.e(TAG, exception.getMessage());
+          }
+          break;
+        default:
+          Log.e(TAG, "unknown flutter/platform call " + method);
+          break;
       }
     }
   }
@@ -366,9 +378,12 @@ final class ParallaxSurfaceView extends SurfaceView
           touchSlop(),
           safe.left, safe.top, safe.right, safe.bottom, ime.left, ime.top, ime.right, ime.bottom);
     } else {
-      // API 28-29: system window insets cover the bars (and the keyboard, which is not split out
-      // before API 30); the cutout is reported separately.
+      // API 28-29: system window insets cover the bars and the keyboard, which is not split out
+      // before API 30 (it arrives only with the manifest's adjustResize). As FlutterView, a bottom
+      // inset guessBottomKeyboardInset calls a keyboard is the ime inset, not the bars' padding;
+      // the cutout is reported separately.
       DisplayCutout cutout = insets.getDisplayCutout();
+      int keyboard = guessBottomKeyboardInset(insets);
       nativeInsets(
           activity,
           density(),
@@ -378,13 +393,40 @@ final class ParallaxSurfaceView extends SurfaceView
           Math.max(
               insets.getSystemWindowInsetRight(), cutout == null ? 0 : cutout.getSafeInsetRight()),
           Math.max(
-              insets.getSystemWindowInsetBottom(), cutout == null ? 0 : cutout.getSafeInsetBottom()),
+              keyboard == 0 ? insets.getSystemWindowInsetBottom() : 0,
+              cutout == null ? 0 : cutout.getSafeInsetBottom()),
           0,
           0,
           0,
-          0);
+          keyboard);
     }
     return super.onApplyWindowInsets(insets);
+  }
+
+  // Uses inset heights and screen heights as a heuristic to determine if the insets should
+  // be padded. When the on-screen keyboard is detected, we want to include the full inset
+  // but when the inset is just the hidden nav bar, we want to provide a zero inset so the space
+  // can be used.
+  //
+  // This method is replaced by Android API 30 (R/11) getInsets() method which can take the
+  // android.view.WindowInsets.Type.ime() flag to find the keyboard inset.
+  private int guessBottomKeyboardInset(WindowInsets insets) {
+    int screenHeight = getRootView().getHeight();
+    // Parallax change: the first insets arrive before the first layout, when the root view is 0
+    // high, and Flutter's guess calls the navigation bar a keyboard; the display's height stands in.
+    if (screenHeight == 0) {
+      screenHeight = getResources().getDisplayMetrics().heightPixels;
+    }
+    // Magic number due to this being a heuristic. This should be replaced, but we have not
+    // found a clean way to do it yet (Sept. 2018)
+    final double keyboardHeightRatioHeuristic = 0.18;
+    if (insets.getSystemWindowInsetBottom() < screenHeight * keyboardHeightRatioHeuristic) {
+      // Is not a keyboard, so return zero as inset.
+      return 0;
+    } else {
+      // Is a keyboard, so return the full inset.
+      return insets.getSystemWindowInsetBottom();
+    }
   }
 
   private float density() {

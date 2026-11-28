@@ -1,22 +1,34 @@
-//! One window: a prose field, an email field (with autofill), a line in several scripts, and a centred box; each
-//! click or tap moves the box to the next colour in `COLOURS`, and a two-finger (or trackpad) pinch resizes it
-//! within `ZOOM`, showing the zoom and the pinch's rotation; hovering or long-pressing it shows its colour as a
-//! tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
-//! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how
-//! long the frame that draws the grid took. Another swaps the whole window for a trace pad that logs every touch as
-//! a `touch(…)` line, the recorder for gesture traces (docs/traces.md).
-//! The same `launch` runs on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
+//! One window: a prose field, an email field (with autofill), a password field, a line in several scripts, and a
+//! centred box; each click or tap moves the box to the next colour in `COLOURS`, and a two-finger (or trackpad) pinch
+//! resizes it within `ZOOM`, showing the zoom and the pinch's rotation; hovering or long-pressing it shows its colour
+//! as a tooltip, and a long press plays the platform's long-press haptic (docs/haptics.md). Tapping outside a field
+//! blurs it (Android hides the keyboard). A button swaps the box for a grid of `EMOJI_GRID` and back, logging how long
+//! the frame that draws the grid took; tapping a grid row logs it. Another swaps the whole window for a trace pad that logs every touch as a
+//! `touch(…)` line, the recorder for gesture traces (docs/traces.md). It logs each app lifecycle phase and each change
+//! of the keyboard inset and of the OS's reduce-motion and reduce-transparency settings (docs/os-settings.md).
+//! Ctrl-W closes the window `CLOSE_DELAY` later (on Android its Activity finishes, docs/android-multi-window.md).
+//! `launch` and `open_window` run on every target: `main.rs` on desktop, `android_main!` on Android, `start` on the web.
 
 mod text_field;
 
 use parallax::gpui::{
-    AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity,
-    KeyboardType, MouseButton, PinchEvent, TextInputAction, TextInputConfiguration, TouchEvent,
-    TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    AnyElement, App, Autocapitalize, AutofillHint, Bounds, ClickEvent, Context, Entity, KeyBinding,
+    KeyboardType, MouseButton, PinchEvent, Pixels, TextInputAction, TextInputConfiguration,
+    TouchEvent, TouchPhase, TouchPinch, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    rgb, size,
 };
-use web_time::Instant;
+use web_time::{Duration, Instant};
 
 use text_field::TextField;
+
+// `actions!` expands to paths through a crate named `gpui`; through the facade it is `parallax::gpui`.
+use parallax::gpui;
+
+gpui::actions!(hello, [CloseWindow]);
+
+/// How long after Ctrl-W the window closes: time to send the app to the background first, so the Android check
+/// closes a window whose Activity is stopped (docs/android-multi-window-check.md).
+const CLOSE_DELAY: Duration = Duration::from_secs(3);
 
 /// The box shows these in order, wrapping around. Add a row to add a colour.
 const COLOURS: [u32; 4] = [0x3b82f6, 0xef4444, 0x22c55e, 0xeab308];
@@ -48,7 +60,13 @@ struct Hello {
     rotation: f32,
     prose: Entity<TextField>,
     email: Entity<TextField>,
+    /// Secure input: keyboards neither show nor learn it. Drawn in the clear (hello doesn't mask).
+    password: Entity<TextField>,
     screen: Screen,
+    /// The keyboard's inset (`WindowInsets::ime`) last drawn, logged when it changes.
+    keyboard: Pixels,
+    /// `(reduce_motion, reduce_transparency)` last drawn, logged when they change; `None` before the first frame.
+    os_settings: Option<(bool, bool)>,
 }
 
 /// What the window shows.
@@ -78,7 +96,21 @@ impl Render for Hello {
         };
         // Inside the status and navigation bars and any cutout on every side (in landscape the navigation bar sits
         // left or right); the keyboard covers the bottom, so the field sits at the top.
-        let safe = window.insets().safe_area;
+        let insets = window.insets();
+        let safe = insets.safe_area;
+        if insets.ime.bottom != self.keyboard {
+            self.keyboard = insets.ime.bottom;
+            log::info!("keyboard inset {}", f32::from(self.keyboard));
+        }
+        let os_settings = Some((cx.reduce_motion(), cx.reduce_transparency()));
+        if os_settings != self.os_settings {
+            self.os_settings = os_settings;
+            log::info!(
+                "os settings: reduce motion {}, reduce transparency {}",
+                cx.reduce_motion(),
+                cx.reduce_transparency()
+            );
+        }
         div()
             .size_full()
             .flex()
@@ -95,6 +127,7 @@ impl Render for Hello {
             .on_mouse_down(MouseButton::Left, |_, window, cx| window.blur(cx))
             .child(self.prose.clone())
             .child(self.email.clone())
+            .child(self.password.clone())
             .child(SCRIPTS)
             .child(
                 div()
@@ -157,11 +190,13 @@ impl Render for Hello {
                         .h(px(300.))
                         .overflow_y_scroll()
                         .text_size(px(28.))
-                        .children(
-                            emoji
-                                .chunks(GRID_COLUMNS)
-                                .map(|row| row.iter().collect::<String>()),
-                        )
+                        .children(emoji.chunks(GRID_COLUMNS).enumerate().map(|(index, row)| {
+                            // A tap picks from the row; a swipe (sideways too) never does (docs/touch-drag.md).
+                            div()
+                                .id(("emoji-row", index))
+                                .child(row.iter().collect::<String>())
+                                .on_click(move |_, _, _| log::info!("emoji row {index} tapped"))
+                        }))
                         .into_any_element()
                 }
                 Shown::Box => div()
@@ -178,17 +213,22 @@ impl Render for Hello {
                         // `delta` is the change since the last event, from a trackpad or the fingers alike.
                         this.zoom =
                             (this.zoom * (1. + event.delta)).clamp(*ZOOM.start(), *ZOOM.end());
-                        match &event.touch {
-                            Some(TouchPinch::Update(update)) => {
+                        match (&event.touch, event.phase) {
+                            (Some(TouchPinch::Update(update)), _) => {
                                 this.rotation = update.rotation.to_degrees()
                             }
-                            Some(TouchPinch::End(end)) => log::info!(
+                            (Some(TouchPinch::End(end)), _) => log::info!(
                                 "pinch end: zoom {:.2}, {} fingers left, velocity {:?}",
                                 this.zoom,
                                 end.pointer_count,
                                 end.velocity
                             ),
-                            Some(TouchPinch::Start(_)) | None => {}
+                            // A trackpad's, so a macOS check can tell AppKit's magnify copy of a touch pinch
+                            // (docs/desktop-touch-macos.md) from the fingers' own.
+                            (None, TouchPhase::Ended) => {
+                                log::info!("trackpad pinch end: zoom {:.2}", this.zoom)
+                            }
+                            (Some(TouchPinch::Start(_)), _) | (None, _) => {}
                         }
                         cx.notify();
                     }))
@@ -285,9 +325,32 @@ fn trace_pad(cx: &mut Context<Hello>) -> AnyElement {
         .into_any_element()
 }
 
-/// Opens the one window. Android and the web size it themselves and ignore the bounds.
+/// Once per process, on every target: binds the keys, logs the app's lifecycle and activates the app. Opens no
+/// window: [`open_window`] does, once on desktop and the web, once per Activity on Android
+/// (docs/android-multi-window.md).
 pub fn launch(cx: &mut App) {
     text_field::bind_keys(cx);
+    cx.bind_keys([KeyBinding::new("ctrl-w", CloseWindow, None)]);
+    cx.on_action(|_: &CloseWindow, cx| {
+        let Some(window) = cx.active_window() else {
+            return;
+        };
+        log::info!("closing the window in {CLOSE_DELAY:?}");
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(CLOSE_DELAY).await;
+            if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
+                log::error!("cannot close the window: {error:#}");
+            }
+        })
+        .detach();
+    });
+    cx.on_app_lifecycle(|phase, _| log::info!("lifecycle {phase:?}"))
+        .detach();
+    cx.activate(true);
+}
+
+/// Opens one window. Android and the web size it themselves and ignore the bounds.
+pub fn open_window(cx: &mut App) {
     // Tall enough for record-traces.sh's gestures (logical y up to 650) on desktop harnesses (docs/traces.md).
     let bounds = Bounds::centered(None, size(px(400.), px(700.)), cx);
     let options = WindowOptions {
@@ -326,17 +389,31 @@ pub fn launch(cx: &mut App) {
                     cx,
                 )
             }),
+            password: cx.new(|cx| {
+                TextField::new(
+                    "Password",
+                    TextInputConfiguration {
+                        secure: true,
+                        autofill: Some(AutofillHint::Password),
+                        input_action: TextInputAction::Done,
+                        ..TextInputConfiguration::default()
+                    },
+                    cx,
+                )
+            }),
             screen: Screen::Main(Shown::Box),
+            keyboard: px(0.),
+            os_settings: None,
         })
     });
     match opened {
-        Ok(_) => log::info!("window open"),
+        // One per Android Activity (docs/android-multi-window.md): the count shows a destroyed one's window closed.
+        Ok(_) => log::info!("window open, {} in all", cx.windows().len()),
         Err(error) => log::error!("cannot open the window: {error:#}"),
     }
-    cx.activate(true);
 }
 
-parallax::android_main!(launch);
+parallax::android_main!(launch, open_window);
 
 /// Fonts the web build embeds: a browser gives GPUI no system fonts, and with none loaded the first text draw
 /// panics. Noto Sans is in GPUI's fallback stack for `.SystemUIFont`; Noto Sans Arabic covers `SCRIPTS`' Arabic.
@@ -357,7 +434,10 @@ pub fn start() {
     let started = parallax::run(|cx| {
         let fonts = WEB_FONTS.iter().map(|font| (*font).into()).collect();
         match cx.text_system().add_fonts(fonts) {
-            Ok(()) => launch(cx),
+            Ok(()) => {
+                launch(cx);
+                open_window(cx);
+            }
             Err(error) => log::error!("cannot load the embedded fonts: {error:#}"),
         }
     });

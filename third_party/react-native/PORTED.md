@@ -1,0 +1,16 @@
+# Code ported from React Native
+
+React Native is MIT (see `LICENSE` here, shipped as `LICENSE-REACT-NATIVE` by every crate that carries a port:
+`parallax-android`, and `parallax-gpui-ios` through [fork-crates.sh](../../scripts/fork-crates.sh)'s `ported` table).
+Every file that ports or adapts React Native code gets one row, with what it left out (AGENTS.md porting rules 3, 4
+and 10 apply as for Flutter). Pinned React Native tag: `v0.88.1` (`c30b7f86850d47422637a64c70508e7411dbd8ea`).
+
+Sync rule: when a new React Native release ships, diff each source path between the old and new tag and port the
+fixes.
+
+| React Native path | Tag | Parallax path | Kind (port / oracle) | Dropped parts |
+|---|---|---|---|---|
+| `packages/react-native/ReactAndroid/src/main/java/com/facebook/react/modules/accessibilityinfo/AccessibilityInfoModule.kt` | `v0.88.1` | `crates/android/java/io/github/xuckless/parallax/AccessibilityInfoModule.java` | port (Kotlin → Java) | everything but the reduce-motion parts (`animationScaleObserver`, `updateAndSendReduceMotionChangeEvent`, `onHostResume`, `onHostPause`, `initialize`): touch exploration, the accessibility services, high text contrast, grayscale, inverted colours, the recommended timeout, `announceForAccessibility`, `setAccessibilityFocus`, the React module plumbing (`ReactContextBaseJavaModule`, the device event emitter: the raw scale strings go to `ParallaxSurfaceView.nativeAccessibilitySettings`). Added: the animator duration scale, observed next to the transition scale |
+| same file (`isReduceMotionEnabledValue`) | `v0.88.1` | `crates/android/src/accessibility.rs` | port | everything but the scale string's parsing (`"0"`, `"0.0"`, comma decimals, junk, a never-written setting); applied to both scales, either at zero reducing motion |
+| `packages/react-native/React/CoreModules/RCTAccessibilityManager.mm` | `v0.88.1` | `patches/0040-apple-accessibility-display.patch` (`gpui-pre-ios/src/ios/platform.rs`) | port | everything but the reduce-motion and reduce-transparency reads (`UIAccessibilityIsReduceMotionEnabled`, `UIAccessibilityIsReduceTransparencyEnabled`) and their two did-change notifications: bold text, grayscale, inverted colours, VoiceOver, darker system colours, content size categories and multipliers, announcements, the bridge and its event emitter (GPUI's change callback, deferred to the foreground executor, takes its place) |
+| `Libraries/Animated/animations/SpringAnimation.js` | `494c47360f62761176033a4da359f43b53c2182f` (Flutter's copy) | `patches/0032-ios-keyboard-inset.patch` (`gpui-pre-ios/src/ios/spring_animation.rs`) | port, through Flutter's `engine/src/flutter/third_party/spring_animation/spring_animation.mm` @ `3.50.1` (its row in [third_party/flutter/PORTED.md](../flutter/PORTED.md)) | everything but the spring curve Flutter kept (`curveFunction`: under- and critically damped, from stiffness, damping and mass): the Animated driver and its frame loop, the `bounciness` / `speed` and `tension` / `friction` configs, rest thresholds, `overshootClamping`. Synced through Flutter's tag, not React Native's |

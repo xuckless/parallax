@@ -30,7 +30,9 @@ headless backend, kiosk shell, Xwayland module, screenshooter and **test plugin*
 own suite injects input with. Distributions never ship that plugin, and outside Weston's runner it needs four NULL
 guards ([weston-test-standalone.patch](../scripts/weston-test-standalone.patch)).
 [weston-touch.py](../scripts/weston-touch.py) (python3, no libraries) sends `weston_test.send_touch`, so hello gets
-real `wl_touch` events stamped with `CLOCK_MONOTONIC`; it plays the same frames as Android (16 ms apart).
+real `wl_touch` events stamped with `CLOCK_MONOTONIC`; it plays the same frames as Android (16 ms apart). Its
+`pointer`, `button` and `key` inputs move, click and type through the same plugin
+([weston-selection-checks.sh](text-selection-tests.md#live-checks)).
 
 - **Output:** 400 × 700 logical px, `WESTON_SCALE` 1 (default) or 2; the kiosk shell fills it with hello's window.
 - **x11:** hello runs on the Xwayland Weston starts, which turns the touches into XInput 2 touch events: scale 1 only.

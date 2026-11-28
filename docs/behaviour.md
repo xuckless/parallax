@@ -16,6 +16,10 @@ GPUI's, ported once by patches 0012-0013; a row holds only what Flutter picks pe
 | Windows | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 | Linux | `Unset`: 18 / 36 / 18 | `Clamping` | `None` | `LeastSquares` | none | 48 |
 
+`text_selection`: Android, macOS, Windows and Linux run Flutter's selection rules (`TextSelectionControls::Flutter`
+with a `SelectionRules` row: Android's mobile arms, macOS the Apple ones, Windows and Linux the desktop ones, Material's
+22 px handle everywhere); iOS is `Native` (UIKit). What each rule does: [text-selection.md](text-selection.md).
+
 `scroll_physics` is GPUI's `ScrollPhysics` ([scroll-physics.md](scroll-physics.md)), which also gives the fling
 limits: min / max fling 100 / 8000 px/s for `Bouncing { Normal }`, 100 / 64000 for `Fast` (with its 1400 constant
 deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, none for clamping.
@@ -35,40 +39,13 @@ deceleration), 50 / 8000 for `Clamping`; drag start threshold 3.5 for bouncing, 
   `BrowserDetection.detectOperatingSystem`; unknown → Android), but with Flutter's slops (`web_behaviour`): Flutter
   web never sets `physicalTouchSlop`, so an Android browser keeps 18 / 36.
 - **Desktop touch:** touch slops, the row's physics, drags scroll: [desktop-touch-behaviour.md](desktop-touch-behaviour.md).
+- **Not in the table:** reduce motion and reduce transparency are the user's OS settings, read at runtime on every
+  target, not per-target defaults: [os-settings.md](os-settings.md).
 - The same everywhere (Flutter's `constants.dart`, `gpui::constants`): long press 500 ms, double tap within 300 ms,
   at least 40 ms apart, 100 px apart at most; taps count per target ([gesture-recognizers.md](gesture-recognizers.md)).
 
-## How GPUI gets it: automatically
-
-Every Parallax entry point applies the current target's row before app code runs:
-[`parallax::run(launch)`](../crates/parallax/src/lib.rs) on desktop, iOS and the web (hello's
-[main.rs](../examples/hello/src/main.rs) and web `start`), the facade's `android_main!` on Android. Both call
-`parallax::set_platform_gesture_tuning` (`Result<(), parallax_platform::Error>`; they log an error and keep the
-platform's tuning). `Behaviour::gesture_tuning(reported)` fills GPUI's `GestureTuning` from the row (`touch_slop` ←
-the hit slop of the resolved touch slop: Android passes `parallax_android::touch_slop()`, the others `None`;
-`scroll_physics`, `min_fling_velocity` / `max_fling_velocity` ← its fling limits, `velocity_tracker`, `overscroll`,
-`long_press_haptic` ← `haptics.long_press`, played on a claimed long press: [haptics.md](haptics.md)), the rest from
-`GestureTuning::default()` (Flutter's constants), through `App::set_gesture_tuning` (patch 0014).
-`parallax_android::android_main!` alone does not apply it (the table builds on that crate): use the facade's.
-
-**Density changes (Android):** when the device's logical slop changes while the app runs, parallax-android runs the
-hook the facade's `android_main!` passes (`TouchSlopChanged`) on the next looper turn, and `Behaviour::retune` sets
-the new hit slop on the app's tuning and on each open window's own (`Window::set_gesture_tuning`, patch 0019), while
-the tuning's owner (`TuningSource`, recorded by the facade) is the platform. Logcat:
-`parallax: touch slop <px> px at density <d>` from parallax-android whenever the density or slop moves (the density
-reaches it through `onApplyWindowInsets`), then `gesture tuning's touch slop now …` when the logical slop moved:
-Android scales it with the density, so most changes keep it (`wm density 450` makes it 23 px / 2.8125 = 8.18).
-
-**Override:** call `parallax::set_gesture_tuning(cx, tuning)` in `launch` with a changed copy, e.g.
-`GestureTuning { touch_slop: px(12.), ..cx.gesture_tuning() }`. Windows opened later use it, and the app owns the
-tuning from then on: density changes never touch it, even when it equals the platform's.
-
-**Read by GPUI:** `overscroll` is `GestureTuning::overscroll`, the default every scroll container follows (a
-container may set its own): [overscroll.md](overscroll.md). `haptics.long_press` plays on a claimed long press
-(patch 0018, [haptics.md](haptics.md)). The touch pinch's scale recognizer takes its pan and scale slops from
-`touch_slop` ([pinch.md](pinch.md)). The other `haptics` rows (`tap`, `selection_handle_drag`, `picker_item`: no
-GPUI widget plays them yet), `min_touch_target`, the pan and scale slops and `drag_start_distance_motion_threshold`
-are data GPUI doesn't take yet; the widgets that later waves wire read them (ROADMAP Phase 2).
+How the row reaches GPUI (automatically, before app code), density changes, overriding it and what GPUI reads:
+[behaviour-tuning.md](behaviour-tuning.md).
 
 ## Extending
 

@@ -36,14 +36,17 @@ pass. Add a row only for a test this setup can't run, never for one a patch brok
 libtest's `--skip` matches substrings, so the script lists the tests first (`--list`) and fails unless each row
 names exactly one test; your own filters still pass straight to libtest.
 
-## gpui_windows's pure modules
+## Backends' pure modules
 
-gpui_windows compiles only on Windows, and CI's Windows row never builds a dependency's tests. Its pure decision
-modules (plain values, no `windows` crate) therefore run here: after GPUI's tests, the script adds the scratch crate
-`windows-pure` to the scratch workspace, with each module in its `windows_pure` row included by `#[path]` on
-`parallax-gpui`, and runs its lib tests, in gpui_windows's own edition (read from its fork manifest). Today that is
-`pointer.rs` ([desktop-touch-windows.md](desktop-touch-windows.md)). A module listed there must use only `gpui` and
-`std`.
+gpui_windows and gpui_ios compile only on their own OS and gpui_web only on wasm32, and CI never builds a dependency's
+tests on those rows. Their pure decision modules (plain values, no `windows`, objc2 or `web_sys` crate) therefore run
+here: after GPUI's tests, the script adds one scratch crate per `pure_crates` row (`windows-pure`, `web-pure`,
+`ios-pure`) to the scratch workspace, with each module of the row included by `#[path]` on `parallax-gpui`, and runs
+its lib tests, in the backend's own edition (read from its fork manifest). Today: gpui_windows's `pointer.rs`
+([desktop-touch-windows.md](desktop-touch-windows.md)) and `accessibility_display.rs` ([os-settings.md](os-settings.md)); gpui_web's `text_editing.rs`
+([web-text-input.md](web-text-input.md)), `page_lifecycle.rs` and `keyboard_inset.rs`
+([web-lifecycle.md](web-lifecycle.md)); gpui_ios's `ios/keyboard.rs`, `ios/keyboard_inset.rs` and `ios/spring_animation.rs`
+([ios-keyboard.md](ios-keyboard.md)). A listed module must use only `gpui` and `std`.
 
 ## CI
 
