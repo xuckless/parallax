@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Parallax native views on the web</title>
+    <!-- gpui_web appends its full-page canvas to <body>. Green is the gap colour: it shows only where a hole has no
+         element under it (scripts/web-checks.mjs counts it). -->
+    <style>html, body { margin: 0; height: 100%; overflow: hidden; background: #00ff00; }</style>
+  </head>
+  <body>
+    <script type="module">
+      // The views, made here as an app would, and handed to the Rust side (src/lib.rs) by name. `?animate` moves
+      // and resizes them every GPUI frame; `?noview` shows the window without them, for the cost comparisons.
+      const options = new URLSearchParams(location.search);
+      const frame = (name, origin) => {
+        const iframe = document.createElement("iframe");
+        iframe.src = `${origin}/frame.html?name=${name}`;
+        iframe.style.border = "0";
+        iframe.style.width = iframe.style.height = "100%";
+        return iframe;
+      };
+      // A second origin: the other loopback name and the next port (docs/native-view-web.md serves both).
+      const other = `${location.protocol}//${location.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${Number(location.port) + 1}`;
+      const animated = document.createElement("canvas");
+      animated.width = 400;
+      animated.height = 260;
+      animated.style.width = animated.style.height = "100%";
+      window.elementFrames = 0;
+      window.frameEvents = [];
+      const context = animated.getContext("2d");
+      const draw = () => {
+        const n = ++window.elementFrames;
+        context.fillStyle = `hsl(${n % 360} 70% 60%)`;
+        context.fillRect(0, 0, 400, 260);
+        context.fillStyle = "#000";
+        context.fillRect((n * 4) % 400, 0, 20, 260);
+        requestAnimationFrame(draw);
+      };
+      requestAnimationFrame(draw);
+      for (const kind of ["click", "wheel"]) {
+        animated.addEventListener(kind, (event) =>
+          window.frameEvents.push({ frame: "canvas", kind, x: event.offsetX, y: event.offsetY, trusted: event.isTrusted }));
+      }
+      window.addEventListener("message", (event) => {
+        window.frameEvents.push(event.data);
+        console.log(`native-view-web: ${event.data.frame} ${event.data.kind} ${JSON.stringify(event.data)}`);
+      });
+      window.nativeViewElements = options.has("noview")
+        ? {}
+        : { same: frame("same", location.origin), cross: frame("cross", other), canvas: animated };
+      window.nativeViewAnimate = options.has("animate");
+
+      // The toggle cost: time from the first capture listener (this one, on window) to the last bubbling one, per
+      // pointer move; compared with `?noview` (scripts/web-checks.mjs).
+      window.moveTimes = [];
+      let moveStart = 0;
+      window.addEventListener("pointermove", () => { moveStart = performance.now(); }, { capture: true });
+      window.addEventListener("pointermove", () => window.moveTimes.push(performance.now() - moveStart));
+
+      import init from "./pkg/native_view_web.js";
+      init();
+    </script>
+  </body>
+</html>

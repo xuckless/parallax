@@ -73,7 +73,7 @@ done
 # and `std`.
 pure_crates=(
     "windows-pure:parallax-gpui-windows:pointer accessibility_display native_views"
-    "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset"
+    "web-pure:parallax-gpui-web:text_editing page_lifecycle keyboard_inset native_view_layout"
     "ios-pure:parallax-gpui-ios:ios/keyboard ios/keyboard_inset ios/spring_animation"
     "apple-pure:parallax-gpui-apple:native_view_placement"
 )

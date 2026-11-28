@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>native view frame</title>
+    <style>
+      html, body { margin: 0; font: 16px sans-serif; }
+      body { height: 3000px; background: linear-gradient(#ffffff, #8080ff); }
+    </style>
+  </head>
+  <body>
+    <p id="text" style="margin: 120px 8px 0">A page in an iframe, under GPUI's canvas. Select this text.</p>
+    <script>
+      // Tells the parent page what reached this frame (index.html logs it): trusted clicks and wheel turns with
+      // frame-relative positions, and how far the frame scrolled.
+      const name = new URLSearchParams(location.search).get("name");
+      const post = (kind, extra) => parent.postMessage({ frame: name, kind, ...extra }, "*");
+      addEventListener("click", (event) => post("click", { x: event.clientX, y: event.clientY, trusted: event.isTrusted }));
+      addEventListener("wheel", (event) => post("wheel", { x: event.clientX, y: event.clientY, trusted: event.isTrusted }));
+      addEventListener("scroll", () => post("scroll", { top: Math.round(scrollY) }));
+      document.addEventListener("selectionchange", () => post("selection", { text: String(getSelection()) }));
+    </script>
+  </body>
+</html>

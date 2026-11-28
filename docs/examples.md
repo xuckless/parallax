@@ -56,6 +56,15 @@ view-relative position. Flags: `--fps N` (page rate), `--animate` (the view move
 `--no-view` (the same window without the view, a cost baseline), `--seconds N` (quit after N seconds). The page's
 yellow band across its top half shows whether a clipped view is cropped or squeezed.
 
+## native-view-web
+
+[examples/native-view-web](../examples/native-view-web/) (web only): three DOM elements under GPUI's canvas as native
+views, made by [index.html](../examples/native-view-web/index.html): a same-origin iframe, a cross-origin one (the
+other loopback name, the next port) and a canvas redrawn every animation frame, each with a GPUI div over part of it.
+The iframes ([frame.html](../examples/native-view-web/frame.html)) post the clicks, wheels, scrolls and selections they
+get to the page. `window.gpuiFrames` counts GPUI's frames. `?animate` moves and resizes the views every GPUI frame;
+`?noview` is the same window without them. How to run it and the checks: [native-view-web.md](native-view-web.md).
+
 ## native-view-windows
 
 [examples/native-view-windows](../examples/native-view-windows/): a `NativeView` on Windows, the app's own composition
