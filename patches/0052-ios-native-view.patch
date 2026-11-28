@@ -51,6 +51,18 @@ to GPUI's field.
 
 Upstream PR: not filed (filing paused, patch rule 14).
 
+diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
+index e3d1b02..9ffb21b 100644
+--- a/gpui-pre-ios/src/ios.rs
++++ b/gpui-pre-ios/src/ios.rs
+@@ -5,6 +5,7 @@ mod display;
+ mod events;
+ mod keyboard;
+ mod keyboard_inset;
++mod native_view_state;
+ mod platform;
+ mod spring_animation;
+ mod text_input;
 diff --git a/gpui-pre-ios/src/ios/native_view_state.rs b/gpui-pre-ios/src/ios/native_view_state.rs
 new file mode 100644
 index 0000000..740ad43
@@ -254,12 +266,130 @@ index 67ee86b..14ba9fd 100644
      pub(super) fn set_input_field(&self, field: Option<gpui::FocusId>) {
          // Taking the handler during draw must not clear this identity: the
          // replacement adapter can still represent the same focused document.
+diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
+index 5865795..b6e69a1 100644
+--- a/gpui-pre-ios/src/ios/window.rs
++++ b/gpui-pre-ios/src/ios/window.rs
+@@ -10,11 +10,15 @@
+ //! whose view hosts a CAMetalLayer.
+ 
+ use super::events::*;
++
++mod native_views;
++mod rotation;
+ use super::keyboard::{KeyResponder, Press, PressPhase, Primary};
+ use super::keyboard_inset::{
+     InsetSample, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification, KeyboardSpring,
+     NotificationName, Rect, ViewGeometry,
+ };
++use super::native_view_state::{KeyboardEvent, Rotation};
+ use super::text_input::TextInputView;
+ use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
+ use gpui::{
+@@ -118,6 +122,16 @@ define_class!(
+             }
+         }
+ 
++        // Marks a rotation's turn (rotation.rs).
++        #[unsafe(method(viewWillTransitionToSize:withTransitionCoordinator:))]
++        fn view_will_transition_to_size(&self, size: CGSize, coordinator: &AnyObject) {
++            // SAFETY: UIViewController's own method, with UIKit's arguments; the coordinator is live for the call.
++            let _: () = unsafe {
++                msg_send![super(self), viewWillTransitionToSize: size, withTransitionCoordinator: coordinator]
++            };
++            rotation::will_transition(self.ivars().0.borrow().clone(), coordinator);
++        }
++
+         #[unsafe(method(viewDidLayoutSubviews))]
+         fn view_did_layout_subviews(&self) {
+             unsafe {
+@@ -376,6 +390,10 @@ pub(crate) struct IosWindowState {
+     /// Fires the held key's repeats while `key_responder` has a key that repeats.
+     key_repeat_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
+     renderer: Mutex<MetalRenderer>,
++    /// The app's views shown beneath GPUI's (native_views.rs).
++    native_views: RefCell<native_views::NativeViews>,
++    /// Whether UIKit is turning the window (`viewWillTransitionToSize:…` to its completion).
++    rotation: Cell<Rotation>,
+ }
+ 
+ impl IosWindow {
+@@ -487,7 +505,8 @@ impl IosWindow {
+         view.addGestureRecognizer(&back_recognizer);
+ 
+         let view_controller = ViewController::new(main_thread);
+-        view_controller.setView(Some(&view));
++        // In a host view, where native views go beneath it (rotation.rs).
++        view_controller.setView(Some(&rotation::nest(&view, metal_frame, main_thread)));
+         window.setRootViewController(Some(&view_controller));
+ 
+         // Make the window visible
+@@ -545,6 +564,8 @@ impl IosWindow {
+             key_responder: RefCell::default(),
+             key_repeat_timer: RefCell::default(),
+             renderer: Mutex::new(renderer),
++            native_views: RefCell::default(),
++            rotation: Cell::new(Rotation::Settled),
+         };
+ 
+         Ok(Self {
+@@ -1072,12 +1093,14 @@ impl IosWindowState {
+     }
+ 
+     pub fn handle_layout_change(&self) {
++        self.follow_root();
+         let view_bounds = self.view.bounds();
+         let display = IosDisplay::from_screen(self.window.screen());
+         if self.display_id.replace(display.id()) != display.id() {
+             self.display_changed_callback.with(|callback| callback());
+         }
+         let scale = display.scale() as f64;
++        self.update_hole_inset();
+ 
+         let width = view_bounds.size.width as f32;
+         let height = view_bounds.size.height as f32;
+@@ -1120,6 +1143,7 @@ impl IosWindowState {
+ 
+         self.resize_callback
+             .with(|callback| callback(new_size, new_scale));
++        self.draw_resized_frame();
+     }
+ }
+ 
+@@ -1355,7 +1379,26 @@ impl PlatformWindow for IosWindow {
+     }
+ 
+     fn draw(&self, scene: &Scene) {
+-        self.renderer.lock().draw(scene);
++        native_views::draw(self, scene);
++    }
++
++    unsafe fn attach_native_view(
++        &self,
++        id: gpui::NativeViewId,
++        view: NonNull<c_void>,
++    ) -> Option<Box<dyn std::any::Any>> {
++        // SAFETY: The caller upholds `attach`'s requirements for `view`, and
++        // GPUI's windows run on the main thread.
++        unsafe { native_views::attach(&self.state, id, view) }
++    }
++
++    fn native_view_input(&self) -> gpui::NativeViewInput {
++        gpui::NativeViewInput::Window
++    }
++
++    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
++        self.text_input_view
++            .move_keyboard_input(KeyboardEvent::Focused(id));
+     }
+ 
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
 diff --git a/gpui-pre-ios/src/ios/window/native_views.rs b/gpui-pre-ios/src/ios/window/native_views.rs
 new file mode 100644
-index 0000000..642c59c
+index 0000000..24097ce
 --- /dev/null
 +++ b/gpui-pre-ios/src/ios/window/native_views.rs
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,275 @@
 +//! Composites the app's `UIView`s beneath GPUI's view, which is non-opaque
 +//! while one shows (gpui_apple's `MetalRenderer` clears a hole over each).
 +//!
@@ -447,11 +577,15 @@ index 0000000..642c59c
 +        f64::from(window.scale_factor.get()),
 +        [origin.x, origin.y, size.width, size.height],
 +    );
-+    window
++    let presented = window
 +        .renderer
 +        .lock()
 +        .draw_placing_native_views(scene, layout.places_views());
-+    apply_layout(window, &window.view, layout);
++    // A scene that never reached the screen has no opening for the views to
++    // move to; the next one plans them again.
++    if presented {
++        apply_layout(window, &window.view, layout);
++    }
 +}
 +
 +/// Applies a planned layout. The views are cloned out first, because UIKit can
@@ -647,133 +781,3 @@ index 0000000..4ef1855
 +        self.request_frame(CACurrentMediaTime());
 +    }
 +}
-diff --git a/gpui-pre-ios/src/ios/window.rs b/gpui-pre-ios/src/ios/window.rs
-index 5865795..b6e69a1 100644
---- a/gpui-pre-ios/src/ios/window.rs
-+++ b/gpui-pre-ios/src/ios/window.rs
-@@ -10,11 +10,15 @@
- //! whose view hosts a CAMetalLayer.
- 
- use super::events::*;
-+
-+mod native_views;
-+mod rotation;
- use super::keyboard::{KeyResponder, Press, PressPhase, Primary};
- use super::keyboard_inset::{
-     InsetSample, KeyboardInsetAction, KeyboardInsetManager, KeyboardNotification, KeyboardSpring,
-     NotificationName, Rect, ViewGeometry,
- };
-+use super::native_view_state::{KeyboardEvent, Rotation};
- use super::text_input::TextInputView;
- use super::{CallbackSlot, IosDisplay, platform::IosPlatformState};
- use gpui::{
-@@ -118,6 +122,16 @@ define_class!(
-             }
-         }
- 
-+        // Marks a rotation's turn (rotation.rs).
-+        #[unsafe(method(viewWillTransitionToSize:withTransitionCoordinator:))]
-+        fn view_will_transition_to_size(&self, size: CGSize, coordinator: &AnyObject) {
-+            // SAFETY: UIViewController's own method, with UIKit's arguments; the coordinator is live for the call.
-+            let _: () = unsafe {
-+                msg_send![super(self), viewWillTransitionToSize: size, withTransitionCoordinator: coordinator]
-+            };
-+            rotation::will_transition(self.ivars().0.borrow().clone(), coordinator);
-+        }
-+
-         #[unsafe(method(viewDidLayoutSubviews))]
-         fn view_did_layout_subviews(&self) {
-             unsafe {
-@@ -376,6 +390,10 @@ pub(crate) struct IosWindowState {
-     /// Fires the held key's repeats while `key_responder` has a key that repeats.
-     key_repeat_timer: RefCell<Option<Retained<objc2_foundation::NSTimer>>>,
-     renderer: Mutex<MetalRenderer>,
-+    /// The app's views shown beneath GPUI's (native_views.rs).
-+    native_views: RefCell<native_views::NativeViews>,
-+    /// Whether UIKit is turning the window (`viewWillTransitionToSize:…` to its completion).
-+    rotation: Cell<Rotation>,
- }
- 
- impl IosWindow {
-@@ -487,7 +505,8 @@ impl IosWindow {
-         view.addGestureRecognizer(&back_recognizer);
- 
-         let view_controller = ViewController::new(main_thread);
--        view_controller.setView(Some(&view));
-+        // In a host view, where native views go beneath it (rotation.rs).
-+        view_controller.setView(Some(&rotation::nest(&view, metal_frame, main_thread)));
-         window.setRootViewController(Some(&view_controller));
- 
-         // Make the window visible
-@@ -545,6 +564,8 @@ impl IosWindow {
-             key_responder: RefCell::default(),
-             key_repeat_timer: RefCell::default(),
-             renderer: Mutex::new(renderer),
-+            native_views: RefCell::default(),
-+            rotation: Cell::new(Rotation::Settled),
-         };
- 
-         Ok(Self {
-@@ -1072,12 +1093,14 @@ impl IosWindowState {
-     }
- 
-     pub fn handle_layout_change(&self) {
-+        self.follow_root();
-         let view_bounds = self.view.bounds();
-         let display = IosDisplay::from_screen(self.window.screen());
-         if self.display_id.replace(display.id()) != display.id() {
-             self.display_changed_callback.with(|callback| callback());
-         }
-         let scale = display.scale() as f64;
-+        self.update_hole_inset();
- 
-         let width = view_bounds.size.width as f32;
-         let height = view_bounds.size.height as f32;
-@@ -1120,6 +1143,7 @@ impl IosWindowState {
- 
-         self.resize_callback
-             .with(|callback| callback(new_size, new_scale));
-+        self.draw_resized_frame();
-     }
- }
- 
-@@ -1355,7 +1379,26 @@ impl PlatformWindow for IosWindow {
-     }
- 
-     fn draw(&self, scene: &Scene) {
--        self.renderer.lock().draw(scene);
-+        native_views::draw(self, scene);
-+    }
-+
-+    unsafe fn attach_native_view(
-+        &self,
-+        id: gpui::NativeViewId,
-+        view: NonNull<c_void>,
-+    ) -> Option<Box<dyn std::any::Any>> {
-+        // SAFETY: The caller upholds `attach`'s requirements for `view`, and
-+        // GPUI's windows run on the main thread.
-+        unsafe { native_views::attach(&self.state, id, view) }
-+    }
-+
-+    fn native_view_input(&self) -> gpui::NativeViewInput {
-+        gpui::NativeViewInput::Window
-+    }
-+
-+    fn set_focused_native_view(&self, id: Option<gpui::NativeViewId>) {
-+        self.text_input_view
-+            .move_keyboard_input(KeyboardEvent::Focused(id));
-     }
- 
-     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-diff --git a/gpui-pre-ios/src/ios.rs b/gpui-pre-ios/src/ios.rs
-index e3d1b02..9ffb21b 100644
---- a/gpui-pre-ios/src/ios.rs
-+++ b/gpui-pre-ios/src/ios.rs
-@@ -5,6 +5,7 @@ mod display;
- mod events;
- mod keyboard;
- mod keyboard_inset;
-+mod native_view_state;
- mod platform;
- mod spring_animation;
- mod text_input;

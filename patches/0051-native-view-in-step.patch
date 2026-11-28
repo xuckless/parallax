@@ -7,6 +7,9 @@ What:
   view (`presentsWithTransaction` for that frame only, as upstream's live resize does for every frame), so hole and
   view reach the screen together; every other frame presents on its own. It logs the layer's alpha mode
   (`metal layer alpha: opaque` / `premultiplied, native views show through`) each time a native view shows or goes.
+  It returns whether the scene was presented; when it wasn't (no drawable, a failed render), macOS and iOS leave
+  their views where they were, so a view never moves to a hole that never reached the screen, and the next scene
+  plans them again.
 - gpui_apple `native_view_placement.rs` (new, pure, table-tested on the host by scripts/patch-test.sh, `apple-pure`):
   macOS's `Placement` (moved out of upstream's window/native_views.rs, with its test as table rows) made shared with
   iOS by a `YAxis` (AppKit up, UIKit down), from core's `native_view_placement::visible` (0048: the element's bounds
@@ -42,7 +45,7 @@ index 4ce5848..2191538 100644
  
  #[cfg(feature = "font-kit")]
 diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
-index 33c5299..9388d46 100644
+index 33c5299..be0146a 100644
 --- a/gpui-pre-apple/src/metal_renderer.rs
 +++ b/gpui-pre-apple/src/metal_renderer.rs
 @@ -131,6 +131,9 @@ pub struct MetalRenderer {
@@ -77,7 +80,7 @@ index 33c5299..9388d46 100644
      pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
          if let Some(layer) = &self.layer {
              layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
-@@ -509,6 +520,14 @@ impl MetalRenderer {
+@@ -509,13 +520,22 @@ impl MetalRenderer {
      }
  
      pub fn draw(&mut self, scene: &Scene) {
@@ -87,12 +90,21 @@ index 33c5299..9388d46 100644
 +    /// Draws `scene`. `places_native_views` says whether the platform moves, resizes, shows or hides a native view
 +    /// with this scene: such a frame is presented with the Core Animation transaction that places the view, so the
 +    /// hole and the view reach the screen together. Every other frame presents on its own, as `draw` does, so a
-+    /// window waits for the GPU only on frames that place a view.
-+    pub fn draw_placing_native_views(&mut self, scene: &Scene, places_native_views: bool) {
++    /// window waits for the GPU only on frames that place a view. Returns whether the scene was presented: when it
++    /// wasn't, the platform must not place its views either.
++    pub fn draw_placing_native_views(&mut self, scene: &Scene, places_native_views: bool) -> bool {
          let layer = match &self.layer {
              Some(l) => l.clone(),
              None => {
-@@ -524,6 +543,19 @@ impl MetalRenderer {
+                 log::error!(
+                     "draw() called on headless renderer - use render_scene_to_image() instead"
+                 );
+-                return;
++                return false;
+             }
+         };
+         // Native views sit beneath the layer, so it can only be opaque, and
+@@ -524,12 +544,25 @@ impl MetalRenderer {
          if shows_native_views != self.shows_native_views {
              self.shows_native_views = shows_native_views;
              layer.setOpaque(self.opaque && !shows_native_views);
@@ -112,7 +124,28 @@ index 33c5299..9388d46 100644
          }
          let drawable = match &mut self.display_link_mode {
              DisplayLinkMode::Attached { drawable } => {
-@@ -560,7 +592,7 @@ impl MetalRenderer {
+                 let Some(drawable) = drawable.take() else {
+                     log::error!("skipped a frame drawn outside its display link's update");
+-                    return;
++                    return false;
+                 };
+                 drawable
+             }
+@@ -539,7 +572,7 @@ impl MetalRenderer {
+                         "failed to retrieve next drawable, drawable size: {:?}",
+                         layer.drawableSize()
+                     );
+-                    return;
++                    return false;
+                 };
+                 drawable
+             }
+@@ -556,11 +589,11 @@ impl MetalRenderer {
+             Ok(command_buffer) => command_buffer,
+             Err(error) => {
+                 log::error!("failed to render: {error:#}");
+-                return;
++                return false;
              }
          };
  
@@ -121,7 +154,15 @@ index 33c5299..9388d46 100644
              command_buffer.commit();
              command_buffer.waitUntilScheduled();
              drawable.present();
-@@ -581,7 +613,7 @@ impl MetalRenderer {
+@@ -568,6 +601,7 @@ impl MetalRenderer {
+             command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
+             command_buffer.commit();
+         }
++        true
+     }
+ 
+     fn render_frame(
+@@ -581,7 +615,7 @@ impl MetalRenderer {
              &self.instance_buffer_pool,
              self.is_unified_memory,
          )?;
@@ -130,7 +171,7 @@ index 33c5299..9388d46 100644
              format!(
                  "writing instance data: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
                  scene.paths.len(),
-@@ -1478,7 +1510,11 @@ struct InstanceBindings {
+@@ -1478,7 +1512,11 @@ struct InstanceBindings {
      native_views: InstanceBinding,
  }
  
@@ -143,7 +184,7 @@ index 33c5299..9388d46 100644
      let mut path_paints = Vec::with_capacity(scene.paths.len());
      let mut path_curves = Vec::new();
      let mut path_tiles = Vec::new();
-@@ -1500,7 +1536,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
+@@ -1500,7 +1538,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
          }))?,
          native_views: writer.write_iter(scene.native_views.iter().map(|native_view| {
              SurfaceBounds {
@@ -337,19 +378,27 @@ index 0000000..860c1fc
 +    }
 +}
 diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
-index 7c0c918..b8d40a8 100644
+index 7c0c918..2e14571 100644
 --- a/gpui-pre-macos/src/window.rs
 +++ b/gpui-pre-macos/src/window.rs
-@@ -2219,7 +2219,8 @@ impl PlatformWindow for MacWindow {
+@@ -2219,9 +2219,15 @@ impl PlatformWindow for MacWindow {
          let native_view_layout = native_views::plan_layout(&this, scene);
          native_views::update_background(&mut this, scene);
          native_views::scene_drawn(&mut this, scene);
 -        this.renderer.draw(scene);
-+        this.renderer
++        let presented = this
++            .renderer
 +            .draw_placing_native_views(scene, native_view_layout.places_views());
          drop(this);
-         native_views::apply_layout(&self.0, native_view_layout);
+-        native_views::apply_layout(&self.0, native_view_layout);
++        // A scene that never reached the screen has no opening for the views to
++        // move to; the next one plans them again.
++        if presented {
++            native_views::apply_layout(&self.0, native_view_layout);
++        }
      }
+ 
+     unsafe fn attach_native_view(
 diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
 index 0f551ca..5e885e6 100644
 --- a/gpui-pre-macos/src/window/native_views.rs
