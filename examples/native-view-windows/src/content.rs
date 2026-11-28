@@ -36,6 +36,7 @@ use windows::{
 };
 
 /// The view's content, owned by its thread; the main thread asks for sizes and counts presents.
+#[derive(Clone)]
 pub struct Content {
     /// The swap chain's size the view wants, in device pixels, `width << 32 | height`.
     size: Arc<AtomicU64>,

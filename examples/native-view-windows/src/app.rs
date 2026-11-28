@@ -47,8 +47,8 @@ pub fn open_window(cx: &mut App) {
 
 impl Example {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let [width, height] = device_size(VIEW_SIZES[0], window.scale_factor());
-        let attached = Content::start(width, height).and_then(|(content, swap_chain)| {
+        // Any size: the first frame's layout resizes it (`render`'s canvas).
+        let attached = Content::start(1, 1).and_then(|(content, swap_chain)| {
             // SAFETY: `swap_chain` is a live composition swap chain; GPUI takes a reference of its own.
             let view = unsafe { NativeView::new(swap_chain.as_ptr(), window, cx) }?;
             Ok((content, view))
@@ -58,7 +58,7 @@ impl Example {
             std::process::exit(1)
         });
         view.set_background(rgb(GAP_COLOUR), cx);
-        log::info!("native view: attached, content {width}x{height}");
+        log::info!("native view: attached");
         let frames = Rc::new(Cell::new(0));
         let counted = frames.clone();
         let presents = content.presents.clone();
@@ -109,14 +109,6 @@ impl Example {
         .detach();
     }
 
-    fn resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.size_index = 1 - self.size_index;
-        let [width, height] = device_size(VIEW_SIZES[self.size_index], window.scale_factor());
-        self.content.resize(width, height);
-        log::info!("resize: content {width}x{height}");
-        cx.notify();
-    }
-
     /// Logs input at a window point by its position in the view, as the app would forward it to a browser.
     fn log_input(&self, kind: &str, position: Point<Pixels>, window: &Window) {
         let at = self
@@ -131,27 +123,32 @@ impl Example {
     }
 }
 
-/// The view's edges in device pixels, `[left, top, right, bottom]`, rounded as GPUI snaps them.
-fn device_edges([x, y]: [f32; 2], [width, height]: [f32; 2], scale: f32) -> [f32; 4] {
-    let edge = |logical: f32| (logical * scale).round();
-    [edge(x), edge(y), edge(x + width), edge(y + height)]
-}
-
-/// The view's size in device pixels, what its swap chain is made at.
-fn device_size(size: [f32; 2], scale: f32) -> [u32; 2] {
-    let [left, top, right, bottom] = device_edges(VIEW_ORIGIN, size, scale);
-    [(right - left) as u32, (bottom - top) as u32]
-}
-
 impl Render for Example {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let [x, y] = VIEW_ORIGIN;
         let [width, height] = VIEW_SIZES[self.size_index];
         let frames = self.frames.clone();
-        // Where this frame lays the view out: what the checks expect the composed screen to show.
-        let [left, top, right, bottom] =
-            device_edges([x + self.offset, y], [width, height], window.scale_factor());
-        log::info!("view placement: device {left} {top} {right} {bottom}");
+        let content = self.content.clone();
+        // Fills the view's element, so its prepaint gets this frame's layout of the view: the app sizes its swap
+        // chain from it, and logs it for the checks, in device pixels as GPUI snaps the hole.
+        let layout = canvas(
+            move |bounds: Bounds<Pixels>, window, _| {
+                frames.set(frames.get() + 1);
+                let scale = window.scale_factor();
+                let edge = |logical: Pixels| (f32::from(logical) * scale).round();
+                let [left, top, right, bottom] = [
+                    edge(bounds.left()),
+                    edge(bounds.top()),
+                    edge(bounds.right()),
+                    edge(bounds.bottom()),
+                ];
+                log::info!("view placement: device {left} {top} {right} {bottom}");
+                content.resize((right - left) as u32, (bottom - top) as u32);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         let button = |id: &'static str, top: f32| {
             div()
                 .id(id)
@@ -165,7 +162,6 @@ impl Render for Example {
         div()
             .size_full()
             .bg(rgb(WINDOW_COLOUR))
-            .child(canvas(move |_, _, _| frames.set(frames.get() + 1), |_, _, _, _| {}).size_full())
             .child(
                 div()
                     .id("page")
@@ -194,6 +190,7 @@ impl Render for Example {
                                 this.log_input("scroll", event.position, window)
                             })),
                     )
+                    .child(layout)
                     .child(
                         div()
                             .id("cover")
@@ -209,8 +206,11 @@ impl Render for Example {
             )
             .child(button("move", 360.).on_click(cx.listener(|this, _, _, cx| this.slide(cx))))
             .child(
-                button("resize", 420.)
-                    .on_click(cx.listener(|this, _, window, cx| this.resize(window, cx))),
+                button("resize", 420.).on_click(cx.listener(|this, _, _, cx| {
+                    this.size_index = 1 - this.size_index;
+                    log::info!("resize: to {:?}", VIEW_SIZES[this.size_index]);
+                    cx.notify();
+                })),
             )
     }
 }
