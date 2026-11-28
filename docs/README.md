@@ -66,6 +66,7 @@ How Parallax's code works. Rules live in [AGENTS.md](../AGENTS.md); the plan liv
 | [android-smoke.md](android-smoke.md) | android-smoke.sh: hello on an emulator, the step table (tap, type, rotate, background) |
 | [android-smoke-ci.md](android-smoke-ci.md) | android-smoke.sh: finding tap targets by colour, the CI job, limits |
 | [examples.md](examples.md) | The hello example: what it shows, its entry point per target |
+| [examples-native-view.md](examples-native-view.md) | The `native-view-*` examples, one per target (Wayland, web, Windows, WebView2, Apple, Android): what each shows and logs, its flags |
 | [examples-run.md](examples-run.md) | Running hello on desktop, web, Android and iOS (CI build only) |
 | [android-tests.md](android-tests.md) | JVM tests of the ported Android Java: Robolectric project, native shadow, Parallax's own tests |
 | [android-tests-porting.md](android-tests-porting.md) | The JVM test stack's versions, porting the next Flutter test, the tests ported so far |

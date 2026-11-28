@@ -37,7 +37,7 @@ commits and the app's `commit_buffer` take turns under one lock: each sets the s
 Clipped away entirely, the view hides. Pointer positions stay relative to the whole view.
 
 [examples/native-view-wayland](../examples/native-view-wayland/) does exactly this with shm buffers
-([examples.md](examples.md#native-view-wayland)), `--resize` with stale old-size frames from its thread.
+([examples.md](examples-native-view.md#native-view-wayland)), `--resize` with stale old-size frames from its thread.
 
 ## What GPUI does
 

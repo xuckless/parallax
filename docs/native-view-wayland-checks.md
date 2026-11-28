@@ -1,7 +1,7 @@
 # Native views on Wayland: the live checks
 
 [wayland-native-view-checks.sh](../scripts/wayland-native-view-checks.sh) runs
-[examples/native-view-wayland](../examples/native-view-wayland/) ([examples.md](examples.md#native-view-wayland)) in a
+[examples/native-view-wayland](../examples/native-view-wayland/) ([examples.md](examples-native-view.md#native-view-wayland)) in a
 private headless GNOME Shell and asserts on what the compositor showed and what the example logged: the acceptance
 list of [ROADMAP.md, Phase: NativeView](../ROADMAP.md#phase-nativeview) for patches 0047–0049
 ([native-view-wayland.md](native-view-wayland.md)).

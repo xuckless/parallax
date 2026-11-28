@@ -12,7 +12,7 @@ reference). GPUI moves the element into its slot, so make it fresh: moving an `<
 it. Give it `width` and `height` (`100%` fills the view; unset, GPUI sets `100%` and warns, as Flutter does).
 `view.set_background(colour, cx)` colours the slot: a cross-origin iframe draws in its own process and shows its new
 size a frame after a resize, and the slot's colour fills that frame (white for most pages).
-[examples/native-view-web](../examples/native-view-web/) does all of this ([examples.md](examples.md#native-view-web)).
+[examples/native-view-web](../examples/native-view-web/) does all of this ([examples.md](examples-native-view.md#native-view-web)).
 
 ## What GPUI does
 
