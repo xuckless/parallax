@@ -1,0 +1,270 @@
+Native views: place a view in step with the frame that moves its hole, log the layer's alpha, and let a platform give
+pointer input over a view to the window. Shared by every NativeView backend (macOS's, 0053's iOS, later ones).
+
+What:
+- gpui_apple `MetalRenderer::draw_placing_native_views(scene, places_native_views)` (`draw` passes false): a frame
+  that moves, resizes, shows or hides a native view is presented with the Core Animation transaction that places the
+  view (`presentsWithTransaction` for that frame only, as upstream's live resize does for every frame), so hole and
+  view reach the screen together; every other frame presents on its own. It logs the layer's alpha mode
+  (`metal layer alpha: opaque` / `premultiplied, native views show through`) each time a native view shows or goes.
+- macOS: `draw` passes `Layout::places_views()` (the scene changes a view's placement).
+- gpui: `NativeViewInput { View, Window }` (new window/native_view_input.rs, with its table test) and
+  `PlatformWindow::native_view_input` (default `View`, macOS's
+  behaviour). With `Window` the view's element is hit-tested like any element (`HitboxBehavior::Normal`), so its
+  ancestors' listeners hear pointer input over the view; with `View` it blocks the mouse as before.
+
+Why: upstream presents every frame on its own, so a view's new frame reaches the screen a frame or two before the
+hole that moves with it (upstream's own comment in macOS's native_views.rs); the gap shows the window's background.
+Measured on the iOS simulator (0053) with the view's slot moving every frame: 28 of 442 recorded frames showed the gap
+colour presented on their own, 0 of 212 presented in step. Idle frames are untouched, so a window whose native view
+alone changes still renders 0 GPUI frames. On iOS GPUI's view stays on top and takes every touch, so the element's
+listeners, not the view, must hear it; macOS keeps AppKit's routing to the view.
+
+Upstream PR: not filed (filing paused, patch rule 14).
+
+diff --git a/gpui-pre-apple/src/metal_renderer.rs b/gpui-pre-apple/src/metal_renderer.rs
+index 33c5299..b235ddf 100644
+--- a/gpui-pre-apple/src/metal_renderer.rs
++++ b/gpui-pre-apple/src/metal_renderer.rs
+@@ -509,6 +509,14 @@ impl MetalRenderer {
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
++        self.draw_placing_native_views(scene, false);
++    }
++
++    /// Draws `scene`. `places_native_views` says whether the platform moves, resizes, shows or hides a native view
++    /// with this scene: such a frame is presented with the Core Animation transaction that places the view, so the
++    /// hole and the view reach the screen together. Every other frame presents on its own, as `draw` does, so a
++    /// window waits for the GPU only on frames that place a view.
++    pub fn draw_placing_native_views(&mut self, scene: &Scene, places_native_views: bool) {
+         let layer = match &self.layer {
+             Some(l) => l.clone(),
+             None => {
+@@ -524,6 +532,19 @@ impl MetalRenderer {
+         if shows_native_views != self.shows_native_views {
+             self.shows_native_views = shows_native_views;
+             layer.setOpaque(self.opaque && !shows_native_views);
++            // The pixels are premultiplied BGRA either way; only whether Core Animation blends them changes.
++            log::info!(
++                "metal layer alpha: {}",
++                if layer.isOpaque() {
++                    "opaque"
++                } else {
++                    "premultiplied, native views show through"
++                }
++            );
++        }
++        let with_transaction = self.presents_with_transaction || places_native_views;
++        if layer.presentsWithTransaction() != with_transaction {
++            layer.setPresentsWithTransaction(with_transaction);
+         }
+         let drawable = match &mut self.display_link_mode {
+             DisplayLinkMode::Attached { drawable } => {
+@@ -560,7 +581,7 @@ impl MetalRenderer {
+             }
+         };
+ 
+-        if self.presents_with_transaction {
++        if with_transaction {
+             command_buffer.commit();
+             command_buffer.waitUntilScheduled();
+             drawable.present();
+diff --git a/gpui-pre-macos/src/window.rs b/gpui-pre-macos/src/window.rs
+index 7c0c918..b8d40a8 100644
+--- a/gpui-pre-macos/src/window.rs
++++ b/gpui-pre-macos/src/window.rs
+@@ -2219,7 +2219,8 @@ impl PlatformWindow for MacWindow {
+         let native_view_layout = native_views::plan_layout(&this, scene);
+         native_views::update_background(&mut this, scene);
+         native_views::scene_drawn(&mut this, scene);
+-        this.renderer.draw(scene);
++        this.renderer
++            .draw_placing_native_views(scene, native_view_layout.places_views());
+         drop(this);
+         native_views::apply_layout(&self.0, native_view_layout);
+     }
+diff --git a/gpui-pre-macos/src/window/native_views.rs b/gpui-pre-macos/src/window/native_views.rs
+index 0f551ca..5b36707 100644
+--- a/gpui-pre-macos/src/window/native_views.rs
++++ b/gpui-pre-macos/src/window/native_views.rs
+@@ -324,8 +324,9 @@ extern "C" fn container_perform_key_equivalent(_: &AnyObject, _: Sel, _: *mut An
+ /// A view's frame change reaches the screen a frame or two before the scene
+ /// that moves its opening, so the opening briefly uncovers whatever is behind
+ /// the views. That is the window's background, which is given the color the
+-/// scene asks for. Presenting scenes in step with AppKit would close the gap,
+-/// but costs every frame of a window that shows a native view.
++/// scene asks for. A scene that places a view is presented in step with
++/// AppKit's transaction, which closes the gap; the color still covers any
++/// frame the compositor shows early.
+ ///
+ /// The color stays until a scene without native views is drawn. The last
+ /// view's opening is still on screen when the view goes, and would show the
+@@ -369,6 +370,14 @@ pub(super) struct Layout {
+     stacking: Option<Vec<NativeViewId>>,
+ }
+ 
++impl Layout {
++    /// Whether the scene moves, resizes, shows or hides a view, whose frame must then reach the screen with the
++    /// scene that moves its opening (`MetalRenderer::draw_placing_native_views`).
++    pub(super) fn places_views(&self) -> bool {
++        !self.placements.is_empty()
++    }
++}
++
+ /// Works out which attached views the scene moves, shows, hides, or restacks.
+ pub(super) fn plan_layout(state: &MacWindowState, scene: &Scene) -> Layout {
+     if state.native_views.views.is_empty() {
+diff --git a/gpui-pre/src/platform.rs b/gpui-pre/src/platform.rs
+index 47d73df..ce738e5 100644
+--- a/gpui-pre/src/platform.rs
++++ b/gpui-pre/src/platform.rs
+@@ -1420,6 +1420,11 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     ) -> Option<Box<dyn std::any::Any>> {
+         None
+     }
++    /// Who gets pointer input over a shown native view: the view itself
++    /// (macOS), or the window's own content (iOS).
++    fn native_view_input(&self) -> crate::NativeViewInput {
++        crate::NativeViewInput::View
++    }
+     /// Gives keyboard input to the native view, or back to the window's own
+     /// content for `None`.
+     fn set_focused_native_view(&self, _id: Option<crate::NativeViewId>) {}
+diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
+index adc27c0..dcf6e82 100644
+--- a/gpui-pre/src/window.rs
++++ b/gpui-pre/src/window.rs
+@@ -79,6 +79,8 @@ mod prompts;
+ pub use a11y::A11ySubtreeBuilder;
+ use native_view::NativeViewState;
+ pub use native_view::{NativeView, NativeViewId};
++mod native_view_input;
++pub use native_view_input::NativeViewInput;
+ 
+ use self::a11y::A11y;
+ #[cfg(not(target_family = "wasm"))]
+diff --git a/gpui-pre/src/window/native_view.rs b/gpui-pre/src/window/native_view.rs
+index 06287b4..d21df3e 100644
+--- a/gpui-pre/src/window/native_view.rs
++++ b/gpui-pre/src/window/native_view.rs
+@@ -1,9 +1,8 @@
+ use crate::{Action, KeyBinding, KeyDownEvent, PlatformInput};
+ use crate::{
+     AnyWindowHandle, App, Bounds, Element, ElementId, FocusHandle, FocusId, Focusable,
+-    GlobalElementId, Hitbox, HitboxBehavior, HitboxId, Hsla, InspectorElementId,
+-    InteractiveElement, IntoElement, LayoutId, PaintNativeView, ParentElement, Pixels, Point,
+-    Style, Styled, Window, div,
++    GlobalElementId, Hitbox, HitboxId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
++    LayoutId, PaintNativeView, ParentElement, Pixels, Point, Style, Styled, Window, div,
+ };
+ use anyhow::{Context as _, Result};
+ use collections::HashSet;
+@@ -29,14 +28,17 @@ impl NativeViewId {
+ 
+ /// A view owned by the platform's UI toolkit, shown inside a GPUI window.
+ ///
+-/// Only macOS shows native views so far, where the view is an `NSView`.
+-/// [`NativeView::new`] fails on every other platform.
++/// macOS and iOS show native views so far, where the view is an `NSView` or
++/// a `UIView`. [`NativeView::new`] fails on every other platform.
+ ///
+ /// The view is composited beneath the window's GPUI content and shows through
+ /// wherever this handle is used as an element, so elements painted after it
+ /// cover it like they would cover any other element. The view is treated as
+ /// opaque, and is not affected by element opacity or transformations.
+ ///
++/// On iOS ([`crate::NativeViewInput::Window`]) every touch over the view goes to
++/// GPUI, to the view's element and its ancestors like any element's input;
++/// the rest of this paragraph describes macOS ([`crate::NativeViewInput::View`]).
+ /// Mouse input over the view goes to the view, and to nothing behind it,
+ /// wherever no element painted after the view takes mouse input. An element
+ /// that is only drawn over the view covers it without taking its mouse input. The window's own content is still told of a mouse press
+@@ -225,11 +227,10 @@ impl Element for NativeViewElement {
+                 .any(|hitbox| hitbox.id == shown)
+         });
+         let shows_view = is_visible && !is_shown_elsewhere;
+-        let behavior = if shows_view {
+-            HitboxBehavior::BlockMouse
+-        } else {
+-            HitboxBehavior::Normal
+-        };
++        let behavior = window
++            .platform_window
++            .native_view_input()
++            .hitbox_behavior(shows_view);
+         let hitbox = window.insert_hitbox(bounds, behavior);
+         if shows_view {
+             state.shown_hitbox.set(Some(hitbox.id));
+diff --git a/gpui-pre/src/window/native_view_input.rs b/gpui-pre/src/window/native_view_input.rs
+new file mode 100644
+index 0000000..1571e16
+--- /dev/null
++++ b/gpui-pre/src/window/native_view_input.rs
+@@ -0,0 +1,66 @@
++//! Who gets pointer input over a native view, per platform (`PlatformWindow::native_view_input`).
++
++use crate::HitboxBehavior;
++
++/// Who a platform gives pointer input over a shown native view to.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub enum NativeViewInput {
++    /// The view itself, as on macOS, where AppKit hit-tests the `NSView`.
++    /// The view's element blocks the mouse from everything behind it.
++    View,
++    /// The window's own content, as on iOS, where GPUI's view stays on top
++    /// and takes every touch. The view's element is hit-tested like any
++    /// other, so its ancestors' listeners hear the input; the view hears
++    /// nothing unless the app forwards it.
++    Window,
++}
++
++impl NativeViewInput {
++    /// The hitbox behavior of a native view's element, which blocks the mouse
++    /// only where the platform gives the input to the view instead of GPUI.
++    pub(super) fn hitbox_behavior(self, shows_view: bool) -> HitboxBehavior {
++        match (self, shows_view) {
++            (NativeViewInput::View, true) => HitboxBehavior::BlockMouse,
++            (NativeViewInput::View, false) | (NativeViewInput::Window, _) => HitboxBehavior::Normal,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_native_view_blocks_the_mouse_only_where_the_view_takes_the_input() {
++        // (name, input, shows view, behavior)
++        let cases = [
++            (
++                "macOS, shown",
++                NativeViewInput::View,
++                true,
++                HitboxBehavior::BlockMouse,
++            ),
++            (
++                "macOS, shown elsewhere",
++                NativeViewInput::View,
++                false,
++                HitboxBehavior::Normal,
++            ),
++            (
++                "iOS, shown",
++                NativeViewInput::Window,
++                true,
++                HitboxBehavior::Normal,
++            ),
++            (
++                "iOS, shown elsewhere",
++                NativeViewInput::Window,
++                false,
++                HitboxBehavior::Normal,
++            ),
++        ];
++        for (name, input, shows_view, behavior) in cases {
++            assert_eq!(input.hitbox_behavior(shows_view), behavior, "{name}");
++        }
++    }
++}

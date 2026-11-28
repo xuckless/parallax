@@ -3001,6 +3001,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-view-apple"
+version = "0.1.9"
+dependencies = [
+ "env_logger",
+ "log",
+ "objc2 0.6.5",
+ "parallax",
+]
+
+[[package]]
 name = "ndk-sys"
 version = "0.6.0+11769913"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3637,7 +3647,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -3707,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-apple"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "async-task",
@@ -3745,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-bench-metrics"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3755,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-collections"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "indexmap",
  "parallax-gpui-util",
@@ -3764,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-derive-refineable"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3773,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-http-client"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3790,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ios"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -3810,7 +3820,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-linux"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3853,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-macos"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3893,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-macros"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -3904,7 +3914,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-platform"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -3918,14 +3928,14 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-refineable"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "parallax-gpui-derive-refineable",
 ]
 
 [[package]]
 name = "parallax-gpui-scheduler"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "async-task",
  "backtrace",
@@ -3939,7 +3949,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-shared-string"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "schemars",
  "serde",
@@ -3948,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-sum-tree"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "heapless",
  "parallax-gpui-ztracing",
@@ -3958,7 +3968,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-util"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "log",
@@ -3967,7 +3977,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-web"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3994,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-wgpu"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4020,7 +4030,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-windows"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -4048,7 +4058,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ztracing"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 dependencies = [
  "parallax-gpui-ztracing-macro",
  "tracing",
@@ -4056,7 +4066,7 @@ dependencies = [
 
 [[package]]
 name = "parallax-gpui-ztracing-macro"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
 
 [[package]]
 name = "parallax-platform"
@@ -7535,4 +7545,4 @@ dependencies = [
 
 [[patch.unused]]
 name = "parallax-gpui-zlog"
-version = "0.3.14-parallax.11"
+version = "0.3.14-parallax.12"
