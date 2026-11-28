@@ -393,11 +393,8 @@ pub fn run(
     flags: &[String],
     app: &[String],
 ) -> Result<(), CliError> {
-    if !app.is_empty() {
-        // `am start` could pass them as Intent extras, but ParallaxActivity hands the app no arguments.
-        return Err(CliError::AppArgsUnsupported("android"));
-    }
     let args = parse_args(Verb::Run, flags)?;
+    let extras = intent_extras(app)?;
     let sdk = Sdk::find()?;
     let adb = existing(
         sdk.dir
@@ -439,9 +436,11 @@ pub fn run(
     }
     let component = format!("{}/{ACTIVITY}", config.id);
     step(
-        Command::new(&adb).args([
-            "-s", &serial, "shell", "am", "start", "-W", "-n", &component,
-        ]),
+        Command::new(&adb)
+            .args([
+                "-s", &serial, "shell", "am", "start", "-W", "-n", &component,
+            ])
+            .args(&extras),
         ADB_FIX,
         "adb shell am start",
         String::new(),
@@ -564,6 +563,27 @@ fn package(app_dir: &Path, config: &Config, args: &Args, sdk: &Sdk) -> Result<Pa
         ),
     )?;
     Ok(project.join(output))
+}
+
+/// The app's arguments after `--` as `am start` string extras, quoted for the device's shell: `--name value` is extra
+/// `name` = `value`, a bare `--name` is `name` = `""`. The app reads them from its Activity's Intent (an Android app
+/// has no argv); examples/native-view reads its desktop `--name [value]` options this way.
+fn intent_extras(app: &[String]) -> Result<Vec<String>, CliError> {
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+    let mut extras = Vec::new();
+    let mut rest = app.iter().peekable();
+    while let Some(arg) = rest.next() {
+        let name = arg.strip_prefix("--").filter(|n| !n.is_empty()).ok_or_else(|| {
+            CliError::Usage(format!(
+                "Android app arguments are --name [value] pairs (Intent extras); {arg:?} has no --name"
+            ))
+        })?;
+        let value = rest
+            .next_if(|v| !v.starts_with("--"))
+            .map_or("", String::as_str);
+        extras.extend(["--es".to_string(), quote(name), quote(value)]);
+    }
+    Ok(extras)
 }
 
 /// The Gradle task that makes `package` for `profile`, and its output relative to the Gradle project.
@@ -1078,6 +1098,44 @@ mod tests {
             let want = want
                 .map(|(profile, package, device)| (profile, package, device.map(String::from)))
                 .map_err(|()| "Usage".to_string());
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn intent_extras_table() {
+        // (row name, app arguments after `--`, expected `am start` arguments or a usage error)
+        type Case<'a> = (&'a str, &'a [&'a str], Option<&'a [&'a str]>);
+        let cases: [Case; 6] = [
+            ("none", &[], Some(&[])),
+            (
+                "name and value",
+                &["--view", "webview"],
+                Some(&["--es", "'view'", "'webview'"]),
+            ),
+            (
+                "bare flag",
+                &["--animate"],
+                Some(&["--es", "'animate'", "''"]),
+            ),
+            (
+                "flag then pair",
+                &["--animate", "--seconds", "5"],
+                Some(&["--es", "'animate'", "''", "--es", "'seconds'", "'5'"]),
+            ),
+            (
+                "value quoted for the device shell",
+                &["--title", "it's a b"],
+                Some(&["--es", "'title'", r"'it'\''s a b'"]),
+            ),
+            ("value without a name", &["webview"], None),
+        ];
+        for (name, app, want) in cases {
+            let app: Vec<String> = app.iter().map(|s| s.to_string()).collect();
+            let got = intent_extras(&app).map_err(|e| e.variant());
+            let want = want
+                .map(|w| w.iter().map(|s| s.to_string()).collect())
+                .ok_or_else(|| "Usage".to_string());
             assert_eq!(got, want, "{name}");
         }
     }

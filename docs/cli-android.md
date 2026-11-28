@@ -40,7 +40,8 @@ foreground: the whole SVG in the centre 72dp of the 108dp layer).
 6. Runs the Gradle wrapper (`java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain
    <task>`), as `gradlew` would: `assembleDebug`, or the release task. AGP strips the `.so` files with the NDK.
 7. `adb -s <serial> install -r` (if that fails, `adb uninstall <app.id>` and install again, as `flutter run` does),
-   then `am start -W -n <app.id>/io.github.xuckless.parallax.ParallaxActivity`.
+   then `am start -W -n <app.id>/io.github.xuckless.parallax.ParallaxActivity`. App arguments after `--` are
+   `--name [value]` pairs, passed as string extras (`--es name value`; an app has no argv on Android).
 
 ## Generated project
 

@@ -14,7 +14,7 @@
 | `run\|build macos [--release]` | A real `.app` (Info.plist, icon, ad-hoc signature), run from inside the bundle | [cli-desktop.md](cli-desktop.md) |
 | `run\|build linux\|windows [--release]` | `cargo run` / `cargo build` of the app crate | [cli-desktop.md](cli-desktop.md) |
 | `run\|build [--release]` | No target: this machine's desktop | [cli-desktop.md](cli-desktop.md) |
-| `run <target> … -- <app args>` | The app's own arguments: desktop `cargo run -- …`, macOS and iOS process arguments, web the URL's query; Android has none yet (`AppArgsUnsupported`: ParallaxActivity passes the app no launch arguments) | each target's doc |
+| `run <target> … -- <app args>` | The app's own arguments: desktop `cargo run -- …`, macOS and iOS process arguments, web the URL's query, Android `--name value` pairs as the Intent's string extras | each target's doc |
 
 ## Source
 
