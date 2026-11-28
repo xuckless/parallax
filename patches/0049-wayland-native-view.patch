@@ -1,0 +1,593 @@
+Show native views on Wayland: the app's wl_surface as a subsurface below the window, its hole cut by the renderer.
+
+What: `NativeView::new` takes the `wl_proxy` of a role-less `wl_surface` the app made on GPUI's own connection (the
+window's display handle), as macOS takes an `NSView`. GPUI gives it a `wp_viewport` at once and, the first frame that
+paints the view, a `wl_subsurface` of the window's surface: `place_below(parent)`, synchronized, an empty input region
+(all input stays on GPUI's surface: patch 0048's `NativeViewInput::Window`). Each frame, before the renderer commits
+the window, a view whose placement changed is synchronized, `set_position` and `wp_viewport.set_destination` take the
+element's bounds rounded outwards to whole logical pixels, and its surface is committed (cached until the window's
+commit), so the move, resize, show or hide lands in the frame that moves the hole; once the window has committed, the
+view goes back to desynchronized, so the app's own commits show at once and never wake GPUI's frame loop. A view no
+longer painted gets a null buffer, in step with the window's commit, and keeps its role (Chromium's mutter workaround:
+mutter may never release a buffer whose surface lost its role); painted again, it gets a fresh subsurface, as
+Chromium's `Show` does. At a fractional scale the hole is cut one physical pixel inside the view (patch 0047's
+`set_native_view_hole_inset`), so the window covers the rounded edges. An opaque window's opaque region leaves out the
+shown views. Dropping the last `NativeView` handle destroys the subsurface and viewport. `wl_subcompositor` is bound
+when offered; without it or `wp_viewporter`, `NativeView::new` fails as before.
+
+New file `wayland/window/native_view.rs`, ported from chromium/chromium ui/ozone/platform/wayland/host/
+wayland_subsurface.cc and wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2 (BSD-3-Clause,
+Copyright 2020 The Chromium Authors; LICENSE-CHROMIUM, NOTICE, third_party/chromium/PORTED.md, which lists what was
+dropped). Table tests: `steps` (placement × frame → step) and `subsurface_bounds_round_outwards`. `window.rs` holds
+only the hooks; `client.rs` binds `wl_subcompositor`. A port, so one patch whatever its size (patch rule 4).
+
+Why: `NativeView::new` failed on every platform but macOS, so a browser shell (wubble) had no zero-overhead page
+view on Linux (xuckless/parallax#1). The window's surface and frame commit are private to gpui_linux.
+
+Upstream PR: not filed yet.
+
+diff --git a/gpui-pre-linux/src/linux/wayland/client.rs b/gpui-pre-linux/src/linux/wayland/client.rs
+index b221464..4461a34 100644
+--- a/gpui-pre-linux/src/linux/wayland/client.rs
++++ b/gpui-pre-linux/src/linux/wayland/client.rs
+@@ -38,7 +38,7 @@ use wayland_client::{
+     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
+     protocol::{
+         wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
+-        wl_shm_pool, wl_surface, wl_touch,
++        wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface, wl_touch,
+     },
+ };
+ use wayland_protocols::ext::background_effect::v1::client::{
+@@ -254,6 +254,8 @@ pub struct Globals {
+     pub shm: wl_shm::WlShm,
+     pub seat: wl_seat::WlSeat,
+     pub viewporter: Option<wp_viewporter::WpViewporter>,
++    /// Makes native views subsurfaces of their windows.
++    pub subcompositor: Option<wl_subcompositor::WlSubcompositor>,
+     pub fractional_scale_manager:
+         Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+     pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+@@ -307,6 +309,7 @@ impl Globals {
+                 .bind(&qh, 1..=6, ())
+                 .context("Wayland compositor does not provide xdg_wm_base")?,
+             viewporter: globals.bind(&qh, 1..=1, ()).ok(),
++            subcompositor: globals.bind(&qh, 1..=1, ()).ok(),
+             fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
+             decoration_manager: globals.bind(&qh, 1..=1, ()).ok(),
+             layer_shell: globals.bind(&qh, 1..=5, ()).ok(),
+@@ -1697,6 +1700,8 @@ delegate_noop!(WaylandClientStatePtr: ignore zwp_text_input_manager_v3::ZwpTextI
+ delegate_noop!(WaylandClientStatePtr: ignore org_kde_kwin_blur::OrgKdeKwinBlur);
+ delegate_noop!(WaylandClientStatePtr: ignore wp_viewporter::WpViewporter);
+ delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
++delegate_noop!(WaylandClientStatePtr: ignore wl_subcompositor::WlSubcompositor);
++delegate_noop!(WaylandClientStatePtr: ignore wl_subsurface::WlSubsurface);
+ 
+ impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
+     fn event(
+diff --git a/gpui-pre-linux/src/linux/wayland/window.rs b/gpui-pre-linux/src/linux/wayland/window.rs
+index 7ee7a11..d9f2f51 100644
+--- a/gpui-pre-linux/src/linux/wayland/window.rs
++++ b/gpui-pre-linux/src/linux/wayland/window.rs
+@@ -33,6 +33,8 @@ use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
+ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
+ 
+ use crate::linux::wayland::{display::WaylandDisplay, serial::SerialKind};
++
++mod native_view;
+ use crate::linux::{Globals, Output, PendingActivation, WaylandClientStatePtr, get_window};
+ use gpui::{
+     AnyWindowHandle, Bounds, Capslock, Corners, Decorations, DevicePixels, ExternalDragPayload,
+@@ -143,6 +145,7 @@ pub struct WaylandWindowState {
+     client_inset: Option<Pixels>,
+     client_corner_radii: Corners<Pixels>,
+     accesskit_adapter: Option<accesskit_unix::Adapter>,
++    native_views: native_view::NativeViews,
+ }
+ 
+ pub enum WaylandSurfaceState {
+@@ -645,6 +648,7 @@ impl WaylandWindowState {
+             client_inset: None,
+             client_corner_radii: Corners::default(),
+             accesskit_adapter: None,
++            native_views: Vec::new(),
+         })
+     }
+ 
+@@ -2048,7 +2052,23 @@ impl PlatformWindow for WaylandWindow {
+         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
+     }
+ 
++    unsafe fn attach_native_view(
++        &self,
++        id: gpui::NativeViewId,
++        view: NonNull<c_void>,
++    ) -> Option<Box<dyn std::any::Any>> {
++        // SAFETY: NativeView::new's caller passes a live wl_surface proxy made on this display.
++        unsafe { native_view::attach(&mut self.borrow_mut(), id, view) }
++    }
++
++    fn native_view_input(&self) -> gpui::NativeViewInput {
++        gpui::NativeViewInput::Window
++    }
++
+     fn draw(&self, scene: &Scene) {
++        if native_view::place_views(&mut self.borrow_mut(), scene) {
++            update_window(self.borrow_mut());
++        }
+         let mut state = self.borrow_mut();
+         let state = &mut *state;
+         let Some(renderer) = &mut state.renderer else {
+@@ -2086,6 +2106,7 @@ impl PlatformWindow for WaylandWindow {
+         if renderer.draw(scene) {
+             state.presentation = PresentationState::Presented;
+             self.0.frame_loop.set(FrameLoop::AwaitingCallback);
++            native_view::frame_committed(&state.native_views);
+         } else {
+             state.presentation = state.presentation.failed();
+             self.0.frame_loop.set(FrameLoop::PresentationFailed);
+@@ -2494,6 +2515,7 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
+             area.size.width,
+             area.size.height,
+         );
++        native_view::subtract_holes(&state, &region);
+ 
+         // Promise the compositor that this region of the window surface
+         // contains no transparent pixels. This allows the compositor to skip
+diff --git a/gpui-pre-linux/src/linux/wayland/window/native_view.rs b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
+new file mode 100644
+index 0000000..c71dee5
+--- /dev/null
++++ b/gpui-pre-linux/src/linux/wayland/window/native_view.rs
+@@ -0,0 +1,451 @@
++// Ported from chromium/chromium ui/ozone/platform/wayland/host/wayland_subsurface.cc and
++// ui/ozone/platform/wayland/host/wayland_frame_manager.cc @ 4ea2b624ed0c500ec2f23ff17203dff91ad8faa2.
++// Copyright 2020 The Chromium Authors. BSD-3-Clause, see LICENSE-CHROMIUM.
++//
++// A native view on Wayland is a `wl_surface` the app made on GPUI's connection and fills with its own
++// buffers. GPUI makes it a `wl_subsurface` below the window's surface and places it each frame, while
++// the renderer cuts a hole in the window where it shows. Chromium does the same for its overlays; this
++// keeps its names and comments. Its sibling stacking list, buffer bookkeeping and presentation
++// feedback are left out: GPUI places every view directly below the window, and the app owns the
++// buffers.
++
++use std::{
++    any::Any,
++    cell::RefCell,
++    ffi::c_void,
++    ptr::NonNull,
++    rc::{Rc, Weak},
++};
++
++use gpui::{Bounds, NativeViewId, ScaledPixels, Scene, point, size};
++use wayland_client::{
++    Proxy, QueueHandle,
++    protocol::{wl_compositor, wl_region, wl_subcompositor, wl_subsurface, wl_surface},
++};
++use wayland_protocols::wp::viewporter::client::wp_viewport;
++
++use super::WaylandWindowState;
++use crate::linux::WaylandClientStatePtr;
++
++/// The window's native views, owned by the app's `NativeView` handles: a view is gone once its
++/// last handle is dropped.
++pub(crate) type NativeViews = Vec<Weak<RefCell<WaylandSubsurface>>>;
++
++/// `PlatformWindow::attach_native_view` on Wayland: the app's `wl_surface` becomes a view of
++/// this window. `None` when the compositor lacks `wl_subcompositor` or `wp_viewporter`.
++///
++/// # Safety
++///
++/// `view` must be a live `wl_proxy` of a role-less `wl_surface` made on the window's display.
++pub(crate) unsafe fn attach(
++    state: &mut WaylandWindowState,
++    id: NativeViewId,
++    view: NonNull<c_void>,
++) -> Option<Box<dyn Any>> {
++    let viewporter = state.globals.viewporter.as_ref()?;
++    state.globals.subcompositor.as_ref()?;
++    let connection = wayland_client::Connection::from_backend(state.surface.backend().upgrade()?);
++    // SAFETY: the caller passes a live wl_surface proxy made on this display.
++    let surface = unsafe { app_surface(&connection, view) }?;
++    let viewport = viewporter.get_viewport(&surface, &state.globals.qh, ());
++    let subsurface = Rc::new(RefCell::new(WaylandSubsurface::new(id, surface, viewport)));
++    state.native_views.push(Rc::downgrade(&subsurface));
++    Some(Box::new(subsurface))
++}
++
++/// Places every view where `scene` shows it, before the window commits the frame, so a frame that
++/// moves, resizes, shows or hides one carries its subsurface's change in that same commit. Returns
++/// whether the frame places views (macOS's `places_views()`), so the opaque region needs updating.
++pub(crate) fn place_views(state: &mut WaylandWindowState, scene: &Scene) -> bool {
++    state.native_views.retain(|view| view.strong_count() > 0);
++    if let Some(renderer) = &mut state.renderer {
++        renderer.set_native_view_hole_inset(hole_inset(state.scale));
++    }
++    let Some(subcompositor) = &state.globals.subcompositor else {
++        return false;
++    };
++    let parent = Parent {
++        surface: &state.surface,
++        compositor: &state.globals.compositor,
++        subcompositor,
++        qh: &state.globals.qh,
++    };
++    let mut places_views = false;
++    for view in state.native_views.iter().filter_map(Weak::upgrade) {
++        let mut view = view.borrow_mut();
++        let shown_at = scene
++            .native_views
++            .iter()
++            .find(|painted| painted.id == view.id)
++            .map(|painted| subsurface_bounds(painted.bounds, state.scale));
++        places_views |= view.configure(shown_at, &parent);
++    }
++    places_views
++}
++
++/// Called once the window has committed a frame.
++pub(crate) fn frame_committed(native_views: &NativeViews) {
++    for view in native_views.iter().filter_map(Weak::upgrade) {
++        view.borrow_mut().frame_committed();
++    }
++}
++
++/// Takes the shown views out of the window's opaque region: the compositor must blend their holes,
++/// and can still treat the rest of the window as opaque.
++pub(crate) fn subtract_holes(state: &WaylandWindowState, region: &wl_region::WlRegion) {
++    for view in state.native_views.iter().filter_map(Weak::upgrade) {
++        if let Some(hole) = view.borrow().shown_bounds() {
++            region.subtract(
++                hole.origin.x,
++                hole.origin.y,
++                hole.size.width,
++                hole.size.height,
++            );
++        }
++    }
++}
++
++/// Where a native view's subsurface is, in the window surface's logical pixels.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++enum Placement {
++    /// Never shown, so the surface has no role yet.
++    Unmapped,
++    Shown(Bounds<i32>),
++    /// Shown before; its subsurface stays, with no buffer, until it shows again.
++    Hidden,
++}
++
++/// What a frame does to a view's subsurface.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++enum Step {
++    Keep,
++    Show(Bounds<i32>),
++    Move(Bounds<i32>),
++    Hide,
++}
++
++/// `placement × where the frame shows the view → step`. The one place placement changes are decided.
++fn step(placement: Placement, shown_at: Option<Bounds<i32>>) -> Step {
++    match (placement, shown_at) {
++        (Placement::Unmapped | Placement::Hidden, None) => Step::Keep,
++        (Placement::Unmapped | Placement::Hidden, Some(bounds)) => Step::Show(bounds),
++        (Placement::Shown(current), Some(bounds)) if current == bounds => Step::Keep,
++        (Placement::Shown(_), Some(bounds)) => Step::Move(bounds),
++        (Placement::Shown(_), None) => Step::Hide,
++    }
++}
++
++/// The subsurface's bounds for a view painted at `bounds` (physical pixels), in the window surface's
++/// logical pixels. `wl_subsurface.set_position` and `wp_viewport.set_destination` take whole logical
++/// pixels, so the bounds are rounded outwards, and [`hole_inset`] keeps the window's own pixels over
++/// any partly covered edge. (Chromium's `AdjustSubsurfaceBounds` scales the same way, but rounds its
++/// origin up, as its overlays never need a hole.)
++fn subsurface_bounds(bounds: Bounds<ScaledPixels>, scale: f32) -> Bounds<i32> {
++    let logical = |value: ScaledPixels| value.0 / scale;
++    let left = logical(bounds.origin.x).floor() as i32;
++    let top = logical(bounds.origin.y).floor() as i32;
++    let right = logical(bounds.origin.x + bounds.size.width).ceil() as i32;
++    let bottom = logical(bounds.origin.y + bounds.size.height).ceil() as i32;
++    Bounds {
++        origin: point(left, top),
++        size: size(right - left, bottom - top),
++    }
++}
++
++/// How far inside a view's bounds its hole is cut: one physical pixel at a fractional scale, where a
++/// subsurface's whole logical pixels can end partway through a physical one, none otherwise.
++fn hole_inset(scale: f32) -> ScaledPixels {
++    if scale.fract() == 0. {
++        ScaledPixels(0.)
++    } else {
++        ScaledPixels(1.)
++    }
++}
++
++/// The subsurface's commit mode. Placement changes land in the window's next commit only while it
++/// is synchronized, and the app's own commits show at once only while it is not.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++enum Mode {
++    Synchronized,
++    Desynchronized,
++}
++
++/// A native view's `wl_surface` as a subsurface of a window. Dropping it destroys the subsurface
++/// and viewport, which unmaps the surface at once.
++pub(crate) struct WaylandSubsurface {
++    id: NativeViewId,
++    /// The app's surface. GPUI only ever adds the subsurface role, the viewport and the empty input
++    /// region to it, commits it while placing it, and attaches no buffer but a null one.
++    wayland_surface: wl_surface::WlSurface,
++    viewport: wp_viewport::WpViewport,
++    subsurface: Option<wl_subsurface::WlSubsurface>,
++    placement: Placement,
++    mode: Mode,
++}
++
++impl WaylandSubsurface {
++    fn new(
++        id: NativeViewId,
++        wayland_surface: wl_surface::WlSurface,
++        viewport: wp_viewport::WpViewport,
++    ) -> Self {
++        Self {
++            id,
++            wayland_surface,
++            viewport,
++            subsurface: None,
++            placement: Placement::Unmapped,
++            mode: Mode::Synchronized,
++        }
++    }
++
++    /// Places the view where this frame shows it, before the window commits the frame, so the
++    /// placement lands in that same commit. Returns whether the placement changed.
++    fn configure(&mut self, shown_at: Option<Bounds<i32>>, parent: &Parent<'_>) -> bool {
++        match step(self.placement, shown_at) {
++            Step::Keep => return false,
++            Step::Show(bounds) => {
++                self.show(parent);
++                self.configure_and_show_surface(bounds);
++            }
++            Step::Move(bounds) => self.configure_and_show_surface(bounds),
++            Step::Hide => self.hide(),
++        }
++        true
++    }
++
++    /// Called once the window has committed a frame: a shown view goes back to desynchronized, so
++    /// the app's commits show without waiting for a window commit.
++    fn frame_committed(&mut self) {
++        if let (Placement::Shown(_), Mode::Synchronized, Some(subsurface)) =
++            (self.placement, self.mode, &self.subsurface)
++        {
++            subsurface.set_desync();
++            self.mode = Mode::Desynchronized;
++        }
++    }
++
++    /// The window region the view covers, if it shows.
++    fn shown_bounds(&self) -> Option<Bounds<i32>> {
++        match self.placement {
++            Placement::Shown(bounds) => Some(bounds),
++            Placement::Unmapped | Placement::Hidden => None,
++        }
++    }
++
++    // WaylandSubsurface::Show()
++    fn show(&mut self, parent: &Parent<'_>) {
++        if self.subsurface.is_some() {
++            self.reset_subsurface();
++        }
++        self.create_subsurface(parent);
++    }
++
++    // WaylandSubsurface::Hide(), with the hiding half of WaylandFrameManager::PlayBackFrame().
++    fn hide(&mut self) {
++        self.set_sync();
++        // Mutter sometimes does not call buffer.release if wl_surface role is destroyed, causing
++        // graphics freeze. (Chromium, wayland_frame_manager.cc.) So the role stays, and the buffer
++        // is taken off the surface instead, in step with the window's commit.
++        self.wayland_surface.attach(None, 0, 0);
++        self.wayland_surface.commit();
++        self.placement = Placement::Hidden;
++    }
++
++    // WaylandSubsurface::ResetSubsurface()
++    fn reset_subsurface(&mut self) {
++        if let Some(subsurface) = self.subsurface.take() {
++            subsurface.destroy();
++        }
++    }
++
++    // WaylandSubsurface::CreateSubsurface()
++    fn create_subsurface(&mut self, parent: &Parent<'_>) {
++        let subsurface = parent.subcompositor.get_subsurface(
++            &self.wayland_surface,
++            parent.surface,
++            parent.qh,
++            (),
++        );
++        // A new sub-surface is initially added as the top-most in the stack.
++        subsurface.place_below(parent.surface);
++        subsurface.set_sync();
++        self.mode = Mode::Synchronized;
++
++        // Subsurfaces don't need to trap input events. Its display rect is fully contained in
++        // |parent_|'s. Setting input_region to empty allows |parent_| to dispatch all of the input
++        // to platform window.
++        let region = parent.compositor.create_region(parent.qh, ());
++        self.wayland_surface.set_input_region(Some(&region));
++        region.destroy();
++        self.subsurface = Some(subsurface);
++    }
++
++    // WaylandSubsurface::ConfigureAndShowSurface()
++    fn configure_and_show_surface(&mut self, bounds: Bounds<i32>) {
++        self.set_sync();
++        let Some(subsurface) = &self.subsurface else {
++            return;
++        };
++        let previous = self.shown_bounds();
++        if previous.map(|previous| previous.origin) != Some(bounds.origin) {
++            subsurface.set_position(bounds.origin.x, bounds.origin.y);
++        }
++        if previous.map(|previous| previous.size) != Some(bounds.size) {
++            self.viewport
++                .set_destination(bounds.size.width.max(1), bounds.size.height.max(1));
++        }
++        // Synchronized, so the commit is cached until the window's.
++        self.wayland_surface.commit();
++        self.placement = Placement::Shown(bounds);
++    }
++
++    fn set_sync(&mut self) {
++        if let (Mode::Desynchronized, Some(subsurface)) = (self.mode, &self.subsurface) {
++            subsurface.set_sync();
++        }
++        self.mode = Mode::Synchronized;
++    }
++}
++
++impl Drop for WaylandSubsurface {
++    fn drop(&mut self) {
++        // The viewport must go before the surface, which the app destroys after this.
++        self.reset_subsurface();
++        self.viewport.destroy();
++    }
++}
++
++/// The window surface a view's subsurface belongs to, and the globals that make one.
++struct Parent<'a> {
++    surface: &'a wl_surface::WlSurface,
++    compositor: &'a wl_compositor::WlCompositor,
++    subcompositor: &'a wl_subcompositor::WlSubcompositor,
++    qh: &'a QueueHandle<WaylandClientStatePtr>,
++}
++
++/// Wraps the app's `wl_surface` proxy so GPUI can send requests on it.
++///
++/// # Safety
++///
++/// `proxy` must be a live `wl_proxy` of a `wl_surface` made on `connection`'s display.
++unsafe fn app_surface(
++    connection: &wayland_client::Connection,
++    proxy: std::ptr::NonNull<std::ffi::c_void>,
++) -> Option<wl_surface::WlSurface> {
++    // SAFETY: the caller guarantees a live wl_surface proxy; from_ptr checks its interface.
++    let id = unsafe {
++        wayland_backend::client::ObjectId::from_ptr(
++            wl_surface::WlSurface::interface(),
++            proxy.as_ptr().cast(),
++        )
++    }
++    .ok()?;
++    wl_surface::WlSurface::from_id(connection, id).ok()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn rect(x: i32, y: i32, width: i32, height: i32) -> Bounds<i32> {
++        Bounds {
++            origin: point(x, y),
++            size: size(width, height),
++        }
++    }
++
++    #[test]
++    fn steps() {
++        let a = rect(0, 0, 10, 10);
++        let b = rect(5, 0, 10, 10);
++        // (row name, placement, where the frame shows the view, step)
++        let rows = [
++            (
++                "unmapped and not painted",
++                Placement::Unmapped,
++                None,
++                Step::Keep,
++            ),
++            (
++                "first paint shows",
++                Placement::Unmapped,
++                Some(a),
++                Step::Show(a),
++            ),
++            ("same bounds keep", Placement::Shown(a), Some(a), Step::Keep),
++            (
++                "new bounds move",
++                Placement::Shown(a),
++                Some(b),
++                Step::Move(b),
++            ),
++            ("not painted hides", Placement::Shown(a), None, Step::Hide),
++            (
++                "hidden and not painted",
++                Placement::Hidden,
++                None,
++                Step::Keep,
++            ),
++            (
++                "painted again shows",
++                Placement::Hidden,
++                Some(b),
++                Step::Show(b),
++            ),
++        ];
++        for (name, placement, shown_at, expected) in rows {
++            assert_eq!(step(placement, shown_at), expected, "{name}");
++        }
++    }
++
++    #[test]
++    fn subsurface_bounds_round_outwards() {
++        let physical = |x: f32, y: f32, width: f32, height: f32| Bounds {
++            origin: point(ScaledPixels(x), ScaledPixels(y)),
++            size: size(ScaledPixels(width), ScaledPixels(height)),
++        };
++        // (row name, physical bounds, scale, logical bounds, hole inset)
++        let rows = [
++            (
++                "whole pixels at 1",
++                physical(10., 20., 300., 200.),
++                1.0,
++                rect(10, 20, 300, 200),
++                0.,
++            ),
++            (
++                "whole pixels at 2",
++                physical(20., 40., 600., 400.),
++                2.0,
++                rect(10, 20, 300, 200),
++                0.,
++            ),
++            (
++                "half pixels at 2 grow",
++                physical(21., 41., 600., 400.),
++                2.0,
++                rect(10, 20, 301, 201),
++                0.,
++            ),
++            (
++                "exact at 1.25",
++                physical(125., 250., 500., 250.),
++                1.25,
++                rect(100, 200, 400, 200),
++                1.,
++            ),
++            (
++                "partial at 1.25 grow",
++                physical(126., 251., 500., 250.),
++                1.25,
++                rect(100, 200, 401, 201),
++                1.,
++            ),
++        ];
++        for (name, bounds, scale, logical, inset) in rows {
++            assert_eq!(subsurface_bounds(bounds, scale), logical, "{name}");
++            assert_eq!(hole_inset(scale), ScaledPixels(inset), "{name}: hole inset");
++        }
++    }
++}
