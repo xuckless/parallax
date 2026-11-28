@@ -18,14 +18,16 @@ It needs GNU sed (`sed -i`; on macOS, `gsed` as `sed`).
 [`patch-test.sh`](../scripts/patch-test.sh) copies [`build/parallax-gpui/`](gpui-fork-crates.md#generate) to
 `build/patch-tests/` (generated, git-ignored, rebuilt every run) and runs
 `cargo test -p parallax-gpui --features test-support --lib` there, compiled into `target/patch-tests/`, then the
-lib tests of each backend crate in its `host_backends` list (on Linux, `parallax-gpui-linux`: patches 0022 and 0023's
-tables, [desktop-touch-linux.md](desktop-touch-linux.md#tests)). It never
+lib tests of each backend crate in its `host_backends` list (on Linux, `parallax-gpui-linux`: patches 0022, 0023 and
+0049's tables, [desktop-touch-linux.md](desktop-touch-linux.md#tests), [native-view-wayland.md](native-view-wayland.md#tests);
+`parallax-gpui-wgpu`: patch 0047's hole, drawn by its headless renderer on the host's Vulkan, [native-view.md](native-view.md#tests)). It never
 changes `build/parallax-gpui/`, so what it tests is what [`publish-fork.sh`](../scripts/publish-fork.sh) packages,
-plus two test-only changes the crate needs because it can't run its own tests as shipped:
+plus the test-only changes the crates need because they can't run their own tests as shipped:
 
 | Shipped crate lacks | The scratch copy gets |
 |---|---|
-| `assets/fonts/…` that `svg_renderer.rs` tests `include_bytes!` from Zed's repo | the first two `.ttf` files under `/usr/share/fonts`, as stand-ins (Ubuntu: `fonts-dejavu-core`) |
+| `assets/fonts/…` that `svg_renderer.rs` and gpui_wgpu's `cosmic_text_system.rs` tests `include_bytes!` from Zed's repo | the first three `.ttf` files under `/usr/share/fonts`, as stand-ins (Ubuntu: `fonts-dejavu-core`) |
+| gpui_wgpu's `naga` dev-dependency (its shader tests) | `naga` 30 with `wgsl-in`; the script fails once the crate ships dev-dependencies of its own |
 | `util_macros` (Zed's `#[perf]` test attribute in `style.rs`) | `#[test]` in place of `#[perf]`, its `use` dropped; the script fails if neither is there any more |
 
 ## Skipped tests
@@ -34,7 +36,9 @@ The `skips` array in the script lists tests by full name, each with its reason: 
 tests that look IBM Plex Sans and Lilex up by family name, which the stand-ins don't have. Every other test must
 pass. Add a row only for a test this setup can't run, never for one a patch broke; fix the patch instead.
 libtest's `--skip` matches substrings, so the script lists the tests first (`--list`) and fails unless each row
-names exactly one test; your own filters still pass straight to libtest.
+names exactly one test; your own filters still pass straight to libtest. `backend_skips` does the same for the backend
+crates, where a row may name a whole module: today gpui_wgpu's `cosmic_text_system::tests::`, which shape text in
+Zed's fonts by family name.
 
 ## Backends' pure modules
 
