@@ -3024,6 +3024,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-view-web"
+version = "0.1.9"
+dependencies = [
+ "js-sys",
+ "log",
+ "parallax",
+ "wasm-bindgen",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
 name = "native-view-windows"
 version = "0.1.9"
 dependencies = [
