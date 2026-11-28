@@ -10,7 +10,8 @@ task. Anything but opaque red tries WebGL2 and logs
 WebGPU initialization failed; falling back to WebGL2: WebGPU draws nothing to a canvas here (a test clear read back blank)
 ```
 
-The WebGPU device is kept until WebGL2 works. If WebGL2 fails too (its `webglcontextcreationerror` status messages
+The WebGPU device is kept until WebGL2 works. A WebGL2 try that fails is made once more after the next
+`requestAnimationFrame` (a context refused while the page starts up). If WebGL2 fails twice (its `webglcontextcreationerror` status messages
 are in the log), the window still opens on WebGPU, logged as an error (`WebGL2 initialization failed too (..);
 staying on WebGPU, whose canvas test read back blank: this window may show nothing`): a window that may show nothing
 beats no window. An app that asks for `WebBackendPreference::WebGpu` explicitly is not probed. The probe costs one 4x4
@@ -41,7 +42,7 @@ to initialize vulkan surface"), so screenshots there are not usable.
   (GPUI's background, the divs, each view's colour) fail on a canvas that presents nothing.
 - Headless `--enable-features=Vulkan --use-angle=vulkan` on NVIDIA: the probe logs the fallback and native-view-web
   opens on WebGL2; with the page's WebGL2 contexts made to fail (an init script returning `null` from
-  `getContext("webgl2")` after firing `webglcontextcreationerror`), it logs both failures, the event's status
+  `getContext("webgl2")` after firing `webglcontextcreationerror`), it logs the retry and both failures, the event's status
   message among them, and the window opens on WebGPU.
 - Owed to the owner: a short look at native-view-web in a headed Chromium with the flags in the table's first row,
   which should now log the fallback and draw with WebGL2.

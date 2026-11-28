@@ -4,8 +4,9 @@ What: gpui_web's automatic backend choice (`WebBackendPreference::Auto`) gets on
 made, in a new file `webgpu_canvas_probe.rs` behind a nine-line hook in platform.rs: `shows_drawing` clears a detached
 4x4 WebGPU canvas to red and reads it back through a 2D `OffscreenCanvas` in the same task. Anything but opaque red
 runs `fall_back_to_webgl2`: it logs `WebGPU initialization failed; falling back to WebGL2: WebGPU draws nothing to a
-canvas here` and tries WebGL2 on a new canvas while keeping the WebGPU device. WebGL2 working, the WebGPU canvas is
-removed and the window draws with WebGL2. WebGL2 failing too (its `webglcontextcreationerror` status messages are in
+canvas here` and tries WebGL2 on a new canvas while keeping the WebGPU device, once more after the next
+requestAnimationFrame if the first try fails (a context refused while the page starts up). WebGL2 working, the WebGPU canvas is
+removed and the window draws with WebGL2. WebGL2 failing twice (its `webglcontextcreationerror` status messages are in
 the error), the window stays on the WebGPU device with an error logged (`WebGL2 initialization failed too (..);
 staying on WebGPU, whose canvas test read back blank: this window may show nothing`): a window that may show nothing
 beats no window. An app that asks for WebGPU explicitly is not probed.
@@ -69,10 +70,10 @@ index 5d1c9c2..d7b3470 100644
                      return Ok((webgpu_canvas, context, surface));
 diff --git a/gpui-pre-web/src/webgpu_canvas_probe.rs b/gpui-pre-web/src/webgpu_canvas_probe.rs
 new file mode 100644
-index 0000000..6920572
+index 0000000..7b96b5e
 --- /dev/null
 +++ b/gpui-pre-web/src/webgpu_canvas_probe.rs
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,178 @@
 +//! A browser can hand out a working WebGPU device whose canvases never show what it draws (Chromium 158 with its
 +//! Vulkan feature on NVIDIA's Linux driver: every WebGPU canvas composites black). Only reading a canvas back tells,
 +//! so a test clear decides before a window commits to WebGPU (`WebBackendPreference::Auto` only).
@@ -174,8 +175,9 @@ index 0000000..6920572
 +        .unwrap_or(false)
 +}
 +
-+/// Tries WebGL2 on a new canvas while keeping the WebGPU device that drew nothing visible: a window that may show
-+/// nothing still beats no window, so it is the answer when WebGL2 fails too (logged as an error).
++/// Tries WebGL2 on a new canvas, once more after the next animation frame if the first try fails, while keeping the
++/// WebGPU device that drew nothing visible: a window that may show nothing still beats no window, so it is the answer
++/// when WebGL2 fails twice (logged as an error).
 +pub(crate) async fn fall_back_to_webgl2(
 +    browser_window: &web_sys::Window,
 +    webgpu_canvas: web_sys::HtmlCanvasElement,
@@ -189,31 +191,16 @@ index 0000000..6920572
 +        "WebGPU initialization failed; falling back to WebGL2: WebGPU draws nothing to a canvas here \
 +         (a test clear read back blank)"
 +    );
-+    let webgl = async {
-+        let canvas = WebWindow::prepare_canvas(browser_window)?;
-+        // The browser says why it gave no context only in this event.
-+        let reasons = Rc::new(RefCell::new(Vec::new()));
-+        let _reasons_listener =
-+            EventListenerHandle::add(canvas.as_ref(), "webglcontextcreationerror", {
-+                let reasons = Rc::clone(&reasons);
-+                move |event| {
-+                    let message = js_sys::Reflect::get(&event, &JsValue::from_str("statusMessage"))
-+                        .ok()
-+                        .and_then(|message| message.as_string())
-+                        .unwrap_or_default();
-+                    reasons.borrow_mut().push(message);
-+                }
-+            });
-+        match WgpuContext::new_web(&canvas, WebBackendPreference::WebGl).await {
-+            Ok(prepared) => Ok((canvas, prepared)),
-+            Err(error) => {
-+                let element: &web_sys::Element = canvas.as_ref();
-+                element.remove();
-+                Err(error.context(format!("webglcontextcreationerror: {:?}", reasons.borrow())))
-+            }
++    let webgl = match try_webgl2(browser_window).await {
++        Ok(webgl) => Ok(webgl),
++        Err(error) => {
++            // A context the browser refused while the page was still starting up can come at the next frame.
++            log::warn!("WebGL2 initialization failed ({error:#}); trying again after the next animation frame");
++            next_animation_frame(browser_window).await;
++            try_webgl2(browser_window).await
 +        }
 +    };
-+    match webgl.await {
++    match webgl {
 +        Ok((canvas, PreparedWebGraphics { context, surface })) => {
 +            let element: &web_sys::Element = webgpu_canvas.as_ref();
 +            element.remove();
@@ -227,4 +214,41 @@ index 0000000..6920572
 +            Ok((webgpu_canvas, webgpu.context, webgpu.surface))
 +        }
 +    }
++}
++
++/// One WebGL2 context on a new canvas; the canvas is removed again if the browser gives none.
++async fn try_webgl2(
++    browser_window: &web_sys::Window,
++) -> anyhow::Result<(web_sys::HtmlCanvasElement, PreparedWebGraphics)> {
++    let canvas = WebWindow::prepare_canvas(browser_window)?;
++    // The browser says why it gave no context only in this event.
++    let reasons = Rc::new(RefCell::new(Vec::new()));
++    let _reasons_listener = EventListenerHandle::add(canvas.as_ref(), "webglcontextcreationerror", {
++        let reasons = Rc::clone(&reasons);
++        move |event| {
++            let message = js_sys::Reflect::get(&event, &JsValue::from_str("statusMessage"))
++                .ok()
++                .and_then(|message| message.as_string())
++                .unwrap_or_default();
++            reasons.borrow_mut().push(message);
++        }
++    });
++    match WgpuContext::new_web(&canvas, WebBackendPreference::WebGl).await {
++        Ok(prepared) => Ok((canvas, prepared)),
++        Err(error) => {
++            let element: &web_sys::Element = canvas.as_ref();
++            element.remove();
++            Err(error.context(format!("webglcontextcreationerror: {:?}", reasons.borrow())))
++        }
++    }
++}
++
++/// Resolves at the browser's next animation frame (at once if it won't schedule one).
++async fn next_animation_frame(browser_window: &web_sys::Window) {
++    let frame = js_sys::Promise::new(&mut |resolve, _reject| {
++        if browser_window.request_animation_frame(&resolve).is_err() {
++            let _ = resolve.call0(&JsValue::NULL);
++        }
++    });
++    let _ = wasm_bindgen_futures::JsFuture::from(frame).await;
 +}
