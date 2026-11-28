@@ -420,10 +420,10 @@ index 0000000..84ffc76
 +}
 diff --git a/gpui-pre-web/src/native_views.rs b/gpui-pre-web/src/native_views.rs
 new file mode 100644
-index 0000000..bad2cb5
+index 0000000..514659d
 --- /dev/null
 +++ b/gpui-pre-web/src/native_views.rs
-@@ -0,0 +1,789 @@
+@@ -0,0 +1,787 @@
 +// `render_content`, `ensure_content_correctly_sized`, `create_slot`, `reset_anchor` and `detach_native_view` are
 +// ported from flutter/flutter engine/src/flutter/lib/web_ui/lib/src/engine/platform_views/content_manager.dart,
 +// slots.dart and embedder.dart (`_resetAnchor`, `disposeView`) @ 3.50.1 (ae9b586f34a8443573f82ef57c3bf914a908cbf7).
@@ -482,12 +482,6 @@ index 0000000..bad2cb5
 +    fn set(&self, value: T) {
 +        self.generation.set(self.generation.get().wrapping_add(1));
 +        drop(self.value.replace(Some(value)));
-+    }
-+
-+    fn take(&self) -> Option<T> {
-+        // Even an empty take can mean the focused handler was withdrawn during a callback.
-+        self.generation.set(self.generation.get().wrapping_add(1));
-+        self.value.borrow_mut().take()
 +    }
 +
 +    fn with<R>(&self, callback: impl FnOnce(&mut T) -> R) -> Option<R> {
@@ -840,10 +834,18 @@ index 0000000..bad2cb5
 +        ];
 +        let focus = focus_targets.map(|(target, event_name)| {
 +            let window = Rc::downgrade(self);
++            let browser_window = self.browser_window.clone();
 +            EventListenerHandle::add(target, event_name, move |_| {
-+                if let Some(window) = window.upgrade() {
-+                    window.report_native_view_focus();
-+                }
++                // After this task: Firefox fires the window's `blur` before `activeElement` is the iframe.
++                let window = window.clone();
++                let report = Closure::once_into_js(move || {
++                    if let Some(window) = window.upgrade() {
++                        window.report_native_view_focus();
++                    }
++                });
++                browser_window
++                    .set_timeout_with_callback(report.unchecked_ref())
++                    .ok();
 +            })
 +        });
 +        let listeners = pointer.chain(focus).collect();
@@ -1196,13 +1198,9 @@ index 0000000..bad2cb5
 +        match (id, content) {
 +            // Focus already inside the element (an `<input>` in it) stays where the user put it.
 +            (Some(_), Some(content)) if self.holds_focus(&content) => {}
++            // The `focusin` this fires reports the view GPUI has just focused, which changes nothing.
 +            (Some(_), Some(content)) => {
-+                // GPUI moved its focus; the `focusin` this fires must not report it back.
-+                let callback = self.native_views.focused.take();
 +                content.focus().ok();
-+                if let Some(callback) = callback {
-+                    self.native_views.focused.set(callback);
-+                }
 +            }
 +            (Some(_), None) => {}
 +            (None, _) => {
