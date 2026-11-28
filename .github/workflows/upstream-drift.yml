@@ -4,6 +4,16 @@
 name: Upstream drift
 
 on:
+  # A push that changes the drift tooling runs it too (workflow_dispatch reaches a workflow only once it is on main).
+  push:
+    paths:
+      - .github/workflows/upstream-drift.yml
+      - scripts/vendor-zed.py
+      - scripts/sync-upstream.sh
+      - scripts/rebase-patches.sh
+      - scripts/sync-fork.sh
+      - scripts/patch-drift.sh
+      - scripts/patch-paths.sh
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:

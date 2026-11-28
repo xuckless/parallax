@@ -1,8 +1,9 @@
 # Weekly upstream drift report
 
 [upstream-drift.yml](../.github/workflows/upstream-drift.yml) applies every patch to Zed `main` once a week (Monday
-06:17 UTC), so drift shows while it is small instead of at the two-weekly sync ([upstream.md](upstream.md)). It came
-out of the [rehearsal](upstream-rehearsal.md): five days of Zed cost nine regenerated patches.
+06:17 UTC) and on any push that changes its scripts, so drift shows while it is small instead of at the two-weekly
+sync ([upstream.md](upstream.md)). It came out of the [rehearsal](upstream-rehearsal.md): five days of Zed cost nine
+regenerated patches.
 
 **Report only.** It pushes, publishes and commits nothing; the workspace it changes is the runner's checkout. Its
 concurrency group is its own, so it never cancels a `ci.yml` run or is cancelled by one.
