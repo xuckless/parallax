@@ -10,8 +10,8 @@ copy of the app's frames, and the app's presents reach the screen with no GPUI f
 `NativeView::new(ptr, window, cx)` takes an `IUnknown*` of anything `IDCompositionVisual::SetContent` takes: in
 practice a composition swap chain (`IDXGIFactory2::CreateSwapChainForComposition`) the app presents to on its own
 D3D11 device and thread. GPUI keeps a reference until the last handle drops. Its content shows 1:1 in device pixels
-from the element's top left, clipped to its content mask; size the swap chain from `view.bounds(window)` × scale and
-`ResizeBuffers` when it changes. Until it does, `set_background`'s colour (black by default) shows where the content
+from the element's top left, clipped to its content mask; size the swap chain from the element's laid-out bounds × scale
+(the example reads them in a canvas's prepaint) and `ResizeBuffers` when they change. Until it does, `set_background`'s colour (black by default) shows where the content
 doesn't reach. Listen on `view.clone().into_element()` (`on_mouse_move`, `on_mouse_down`, `on_scroll`, `on_key_down`)
 and subtract `bounds.origin` for positions in the view. [native-view-windows](../examples/native-view-windows/src/)
 is the whole pattern.
@@ -42,12 +42,16 @@ Everything outside the hole stays opaque. A frame that moves no view costs no `C
 composed screen back (`BitBlt` with `CAPTUREBLT`, which includes DComp; [pixels.py](../scripts/pixels.py)) and
 injects mouse moves, wheel and clicks. Per scale: alpha mode logged; 0 GPUI frames/s over 3 s while the view presents
 (the example counts paints and presents per second); the hole shows the view and the cover div over it shows (GPUI's
-visual is above the view's); one device pixel past each edge is GPUI's (no seam); no gap colour in 8 shots while the
+visual is above the view's); one device pixel past each edge is GPUI's (no seam); no gap colour in 20 shots while the
 view slides, nor after a resize; a move, wheel and click over the view reach its element at 200 150 in the view; a click
 on the cover stays the cover's. Logs and screenshots: the `windows-touch` artifact, `target/native-view-windows/`.
 
-Not measurable on the runner (WARP, no real GPU): DWM's GPU cost per view frame, and whether a present and a commit
-can land in different DWM frames under load; DComp gives no API to tie them, Chromium relies on the same order.
+Measured on the runner (WARP): 0 GPUI frames/s with the view presenting 53–65/s at both scales, in every run.
+Not measurable there: DWM's GPU cost per view frame. **Known gap:** a swap chain `Present` and a DComp `Commit` are not
+atomic (DComp has no API to tie them; Chromium relies on the same order). One CI run caught one shot of 40 with a
+3 px gap strip at the sliding view's leading edge; three other runs, 0 of 16–40. The atomic fix is to show GPUI's frame
+through a DComp surface (updated only on `Commit`) while a view shows, at one GPUI-frame copy per GPUI frame (never
+per view frame); left for the owner to decide.
 
 Cross-checking on Linux: `cargo clippy --target x86_64-pc-windows-gnu` works with a stub `x86_64-w64-mingw32-windres`
 on `PATH` (gpui's build script embeds a manifest; `cargo check` never links it).
